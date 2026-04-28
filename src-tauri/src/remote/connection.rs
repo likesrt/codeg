@@ -177,6 +177,12 @@ struct LoopCtx {
     sup_tx: mpsc::Sender<SupervisorEvent>,
     sup_killer: Option<oneshot::Sender<()>>,
     sup_handle: Option<JoinHandle<()>>,
+    /// WebSocket event bridge (CG-002.8 A): mirrors daemon `acp://event`
+    /// (and any other) frames into the local emitter so the frontend sees
+    /// remote ACP events identically to local ones. Lives alongside the
+    /// supervisor — same spawn/kill cadence.
+    bridge_killer: Option<oneshot::Sender<()>>,
+    bridge_handle: Option<JoinHandle<()>>,
 }
 
 impl LoopCtx {
@@ -185,6 +191,12 @@ impl LoopCtx {
             let _ = k.send(());
         }
         if let Some(h) = self.sup_handle.take() {
+            let _ = tokio::time::timeout(SUPERVISOR_KILL_GRACE, h).await;
+        }
+        if let Some(k) = self.bridge_killer.take() {
+            let _ = k.send(());
+        }
+        if let Some(h) = self.bridge_handle.take() {
             let _ = tokio::time::timeout(SUPERVISOR_KILL_GRACE, h).await;
         }
     }
@@ -203,7 +215,7 @@ impl LoopCtx {
             (Some(p), Some(t)) => (p, t),
             _ => return,
         };
-        let client = DaemonClient::new(port, token);
+        let client = DaemonClient::new(port, token.clone());
         let (kt, kr) = oneshot::channel();
         let sup_tx = self.sup_tx.clone();
         let h = tokio::spawn(async move {
@@ -211,6 +223,15 @@ impl LoopCtx {
         });
         self.sup_killer = Some(kt);
         self.sup_handle = Some(h);
+
+        // WS bridge mirrors daemon-emitted events into our local emitter.
+        let (bkt, bkr) = oneshot::channel();
+        let bridge_emitter = self.emitter.clone();
+        let bh = tokio::spawn(async move {
+            crate::remote::ws_bridge::bridge_loop(port, token, bridge_emitter, bkr).await;
+        });
+        self.bridge_killer = Some(bkt);
+        self.bridge_handle = Some(bh);
     }
 }
 
@@ -230,6 +251,8 @@ async fn run_loop(
         sup_tx,
         sup_killer: None,
         sup_handle: None,
+        bridge_killer: None,
+        bridge_handle: None,
     };
 
     loop {

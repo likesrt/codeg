@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::acp::types::PromptInputBlock;
 use crate::models::{AgentType, ConversationDetail, ConversationSummary};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -138,6 +139,62 @@ impl DaemonClient {
         self.post_json(&url, &body).await
     }
 
+    pub async fn acp_connect(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/acp_connect", self.base_url);
+        let body = AcpConnectBody {
+            agent_type,
+            working_dir,
+            session_id,
+        };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn acp_prompt(
+        &self,
+        connection_id: String,
+        blocks: Vec<PromptInputBlock>,
+        folder_id: Option<i32>,
+        conversation_id: Option<i32>,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/acp_prompt", self.base_url);
+        let body = AcpPromptBody {
+            connection_id,
+            blocks,
+            folder_id,
+            conversation_id,
+        };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn acp_cancel(&self, connection_id: String) -> Result<(), ClientError> {
+        let url = format!("{}/api/acp_cancel", self.base_url);
+        let body = AcpConnectionIdBody { connection_id };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn acp_respond_permission(
+        &self,
+        connection_id: String,
+        request_id: String,
+        option_id: String,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/acp_respond_permission", self.base_url);
+        let body = AcpRespondPermissionBody {
+            connection_id,
+            request_id,
+            option_id,
+        };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
     async fn post_json<B: serde::Serialize, R: for<'de> serde::Deserialize<'de>>(
         &self,
         url: &str,
@@ -179,6 +236,37 @@ struct ListConversationsBody {
 struct GetConversationBody {
     agent_type: AgentType,
     conversation_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpConnectBody {
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpPromptBody {
+    connection_id: String,
+    blocks: Vec<PromptInputBlock>,
+    folder_id: Option<i32>,
+    conversation_id: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpConnectionIdBody {
+    connection_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpRespondPermissionBody {
+    connection_id: String,
+    request_id: String,
+    option_id: String,
 }
 
 #[derive(Debug, thiserror::Error)]

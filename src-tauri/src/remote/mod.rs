@@ -8,5 +8,6 @@ pub mod platform;
 pub mod ssh_config;
 pub mod ssh_process;
 pub mod tunnel;
+pub mod ws_bridge;
 
 pub use manager::{ConnectError, RemoteConnectionManager};

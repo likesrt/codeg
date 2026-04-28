@@ -23,6 +23,10 @@ struct Inner {
     tasks: RwLock<HashMap<String, ConnectionTask>>,
     manifest: RwLock<Option<Arc<RemoteDaemonManifest>>>,
     emitter: RwLock<EventEmitter>,
+    /// Daemon-issued ACP `connection_id` → SSH connection id. Populated when
+    /// `acp_connect` is forwarded; consulted by every subsequent ACP command
+    /// to decide whether to route locally or proxy through the tunnel.
+    acp_connections: RwLock<HashMap<String, String>>,
 }
 
 impl Default for RemoteConnectionManager {
@@ -38,8 +42,58 @@ impl RemoteConnectionManager {
                 tasks: RwLock::new(HashMap::new()),
                 manifest: RwLock::new(None),
                 emitter: RwLock::new(EventEmitter::Noop),
+                acp_connections: RwLock::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Read the current emitter (used by remote pipelines that need to
+    /// re-emit events received from the daemon's WebSocket).
+    pub async fn emitter(&self) -> EventEmitter {
+        self.inner.emitter.read().await.clone()
+    }
+
+    /// Record that a daemon-issued ACP `connection_id` belongs to a given
+    /// SSH connection.
+    pub async fn register_acp(&self, acp_connection_id: String, ssh_connection_id: String) {
+        self.inner
+            .acp_connections
+            .write()
+            .await
+            .insert(acp_connection_id, ssh_connection_id);
+    }
+
+    /// Look up which SSH connection owns this ACP `connection_id`. Returns
+    /// `None` for IDs minted locally (frontend treats those as local-only).
+    pub async fn find_ssh_for_acp(&self, acp_connection_id: &str) -> Option<String> {
+        self.inner
+            .acp_connections
+            .read()
+            .await
+            .get(acp_connection_id)
+            .cloned()
+    }
+
+    /// Remove a single ACP id (called on `acp_disconnect`, A3+).
+    #[allow(dead_code)]
+    pub async fn unregister_acp(&self, acp_connection_id: &str) {
+        self.inner
+            .acp_connections
+            .write()
+            .await
+            .remove(acp_connection_id);
+    }
+
+    /// Drop every ACP id that was bound to the given SSH connection. Used
+    /// when the SSH-level connection itself is torn down (Disconnect / app
+    /// shutdown), so future calls with stale ACP ids fall back to "unknown
+    /// id" rather than re-using a dead daemon.
+    pub async fn forget_acp_for_ssh(&self, ssh_connection_id: &str) {
+        self.inner
+            .acp_connections
+            .write()
+            .await
+            .retain(|_, v| v != ssh_connection_id);
     }
 
     /// Shallow clone sharing the same state, mirroring the pattern used by
@@ -97,6 +151,9 @@ impl RemoteConnectionManager {
                 .await
                 .map_err(|_| ConnectError::TaskClosed)?;
         }
+        // Drop tracked ACP ids for this SSH connection: they're invalidated
+        // the moment we ask the underlying daemon to go away.
+        self.forget_acp_for_ssh(connection_id).await;
         Ok(())
     }
 
@@ -108,6 +165,9 @@ impl RemoteConnectionManager {
                 .await
                 .map_err(|_| ConnectError::TaskClosed)?;
         }
+        // HardReset replaces the daemon process; existing ACP ids point
+        // at a daemon that's about to go away.
+        self.forget_acp_for_ssh(connection_id).await;
         Ok(())
     }
 
@@ -187,6 +247,8 @@ impl RemoteConnectionManager {
         for task in tasks.values() {
             let _ = task.control_tx.send(ControlMessage::Disconnect).await;
         }
+        drop(tasks);
+        self.inner.acp_connections.write().await.clear();
     }
 
     async fn ensure_manifest(&self) -> Result<Arc<RemoteDaemonManifest>, ConnectError> {
@@ -229,4 +291,44 @@ fn rt_to_client(rt: &ConnectionRuntime) -> Option<DaemonClient> {
     let port = rt.local_port?;
     let token = rt.handshake.as_ref()?.token.clone();
     Some(DaemonClient::new(port, token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn acp_registry_register_and_lookup() {
+        let rcm = RemoteConnectionManager::new();
+        rcm.register_acp("acp-1".into(), "ssh-A".into()).await;
+        rcm.register_acp("acp-2".into(), "ssh-B".into()).await;
+
+        assert_eq!(rcm.find_ssh_for_acp("acp-1").await.as_deref(), Some("ssh-A"));
+        assert_eq!(rcm.find_ssh_for_acp("acp-2").await.as_deref(), Some("ssh-B"));
+        assert!(rcm.find_ssh_for_acp("acp-missing").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn acp_registry_unregister_single() {
+        let rcm = RemoteConnectionManager::new();
+        rcm.register_acp("acp-1".into(), "ssh-A".into()).await;
+        rcm.register_acp("acp-2".into(), "ssh-A".into()).await;
+
+        rcm.unregister_acp("acp-1").await;
+        assert!(rcm.find_ssh_for_acp("acp-1").await.is_none());
+        assert_eq!(rcm.find_ssh_for_acp("acp-2").await.as_deref(), Some("ssh-A"));
+    }
+
+    #[tokio::test]
+    async fn acp_registry_forget_drops_only_matching_ssh() {
+        let rcm = RemoteConnectionManager::new();
+        rcm.register_acp("acp-1".into(), "ssh-A".into()).await;
+        rcm.register_acp("acp-2".into(), "ssh-A".into()).await;
+        rcm.register_acp("acp-3".into(), "ssh-B".into()).await;
+
+        rcm.forget_acp_for_ssh("ssh-A").await;
+        assert!(rcm.find_ssh_for_acp("acp-1").await.is_none());
+        assert!(rcm.find_ssh_for_acp("acp-2").await.is_none());
+        assert_eq!(rcm.find_ssh_for_acp("acp-3").await.as_deref(), Some("ssh-B"));
+    }
 }

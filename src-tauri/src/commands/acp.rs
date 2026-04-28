@@ -9,6 +9,68 @@ use tauri::State;
 use crate::acp::binary_cache;
 use crate::acp::error::AcpError;
 use crate::acp::manager::ConnectionManager;
+#[cfg(feature = "tauri-runtime")]
+use crate::models::folder::parse_remote_path;
+#[cfg(feature = "tauri-runtime")]
+use crate::remote::http_client::ClientError;
+#[cfg(feature = "tauri-runtime")]
+use crate::remote::manager::EnsureLiveError;
+#[cfg(feature = "tauri-runtime")]
+use crate::remote::RemoteConnectionManager;
+
+#[cfg(feature = "tauri-runtime")]
+const REMOTE_ENSURE_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(feature = "tauri-runtime")]
+fn ensure_live_to_acp_error(err: EnsureLiveError) -> AcpError {
+    match err {
+        EnsureLiveError::AwaitingManual => AcpError::protocol(
+            "remote daemon needs manual install (open SSH connection settings)",
+        ),
+        EnsureLiveError::Timeout => {
+            AcpError::protocol("remote daemon not ready (timed out waiting for Live)")
+        }
+        EnsureLiveError::Failed(msg) => AcpError::protocol(format!("remote: {msg}")),
+        EnsureLiveError::Connect(e) => {
+            AcpError::protocol(format!("failed to dispatch remote connect: {e}"))
+        }
+        EnsureLiveError::MissingHandshake => {
+            AcpError::protocol("remote daemon handshake missing on Live runtime")
+        }
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn client_error_to_acp_error(err: ClientError) -> AcpError {
+    match err {
+        ClientError::Network(msg) => AcpError::protocol(format!("remote network: {msg}")),
+        ClientError::HttpStatus(s) => AcpError::protocol(format!("remote http {s}")),
+        ClientError::HttpStatusWithBody { status, body } => {
+            AcpError::protocol(format!("remote http {status}: {body}"))
+        }
+        ClientError::Parse(msg) => AcpError::protocol(format!("remote parse: {msg}")),
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+async fn resolve_remote_for_acp(
+    rcm: &RemoteConnectionManager,
+    db: &AppDatabase,
+    acp_connection_id: &str,
+) -> Result<Option<crate::remote::http_client::DaemonClient>, AcpError> {
+    let Some(ssh_id) = rcm.find_ssh_for_acp(acp_connection_id).await else {
+        return Ok(None);
+    };
+    let cfg = crate::db::service::connection_service::get_by_id(&db.conn, &ssh_id)
+        .await
+        .map_err(|e| AcpError::protocol(format!("connection lookup: {e}")))?
+        .ok_or_else(|| AcpError::protocol(format!("connection {ssh_id} not found")))?;
+    let client = rcm
+        .ensure_live(cfg, REMOTE_ENSURE_LIVE_TIMEOUT)
+        .await
+        .map_err(ensure_live_to_acp_error)?;
+    Ok(Some(client))
+}
 use crate::acp::opencode_plugins::{self, PluginCheckSummary};
 use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
@@ -2003,15 +2065,41 @@ pub async fn acp_preflight(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)] // Tauri commands compose many State<> args
 pub async fn acp_connect(
     agent_type: AgentType,
     working_dir: Option<String>,
     session_id: Option<String>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
+    rcm: State<'_, RemoteConnectionManager>,
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<String, AcpError> {
+    // Remote-folder branch (CG-002.8 A): if `working_dir` looks like our
+    // synthetic `ssh://<conn_id><real_path>` form, route the connect call
+    // through the matching daemon over the SSH tunnel. The daemon mints
+    // its own ACP connection id; we record it so subsequent commands
+    // (prompt / cancel / respond_permission / ...) resolve the same way.
+    if let Some(wd) = working_dir.as_deref() {
+        if let Some((ssh_id, real_path)) = parse_remote_path(wd) {
+            let cfg = crate::db::service::connection_service::get_by_id(&db.conn, ssh_id)
+                .await
+                .map_err(|e| AcpError::protocol(format!("connection lookup: {e}")))?
+                .ok_or_else(|| AcpError::protocol(format!("connection {ssh_id} not found")))?;
+            let client = rcm
+                .ensure_live(cfg, REMOTE_ENSURE_LIVE_TIMEOUT)
+                .await
+                .map_err(ensure_live_to_acp_error)?;
+            let daemon_id = client
+                .acp_connect(agent_type, Some(real_path.to_string()), session_id)
+                .await
+                .map_err(client_error_to_acp_error)?;
+            rcm.register_acp(daemon_id.clone(), ssh_id.to_string()).await;
+            return Ok(daemon_id);
+        }
+    }
+
     let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -2064,7 +2152,19 @@ pub async fn acp_prompt(
     conversation_id: Option<i32>,
     db: State<'_, crate::db::AppDatabase>,
     manager: State<'_, ConnectionManager>,
+    rcm: State<'_, RemoteConnectionManager>,
 ) -> Result<(), AcpError> {
+    if let Some(client) = resolve_remote_for_acp(&rcm, &db, &connection_id).await? {
+        // A: don't pass folder_id / conversation_id — those live in the
+        // desktop's DB namespace, not the daemon's. Without remapping
+        // (deferred to CG-002.8 B/C), the daemon manages its own
+        // conversation row independently. The frontend identifies events
+        // by ACP connection_id, which is shared, so the chat UI works.
+        return client
+            .acp_prompt(connection_id, blocks, None, None)
+            .await
+            .map_err(client_error_to_acp_error);
+    }
     manager
         .send_prompt_linked(&db, &connection_id, blocks, folder_id, conversation_id)
         .await
@@ -2098,7 +2198,15 @@ pub async fn acp_set_config_option(
 pub async fn acp_cancel(
     connection_id: String,
     manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
+    rcm: State<'_, RemoteConnectionManager>,
 ) -> Result<(), AcpError> {
+    if let Some(client) = resolve_remote_for_acp(&rcm, &db, &connection_id).await? {
+        return client
+            .acp_cancel(connection_id)
+            .await
+            .map_err(client_error_to_acp_error);
+    }
     manager.cancel(&connection_id).await
 }
 
@@ -2118,7 +2226,15 @@ pub async fn acp_respond_permission(
     request_id: String,
     option_id: String,
     manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
+    rcm: State<'_, RemoteConnectionManager>,
 ) -> Result<(), AcpError> {
+    if let Some(client) = resolve_remote_for_acp(&rcm, &db, &connection_id).await? {
+        return client
+            .acp_respond_permission(connection_id, request_id, option_id)
+            .await
+            .map_err(client_error_to_acp_error);
+    }
     manager
         .respond_permission(&connection_id, &request_id, &option_id)
         .await
