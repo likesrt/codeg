@@ -408,14 +408,14 @@ pub async fn git_set_remote_url(
 pub async fn git_merge(
     Json(params): Json<PathBranchParams>,
 ) -> Result<Json<folder_commands::GitMergeResult>, AppCommandError> {
-    let result = folder_commands::git_merge(params.path, params.branch_name).await?;
+    let result = folder_commands::git_merge_local(params.path, params.branch_name).await?;
     Ok(Json(result))
 }
 
 pub async fn git_rebase(
     Json(params): Json<PathBranchParams>,
 ) -> Result<Json<folder_commands::GitRebaseResult>, AppCommandError> {
-    let result = folder_commands::git_rebase(params.path, params.branch_name).await?;
+    let result = folder_commands::git_rebase_local(params.path, params.branch_name).await?;
     Ok(Json(result))
 }
 
@@ -465,35 +465,36 @@ pub async fn git_delete_remote_branch(
 pub async fn git_list_conflicts(
     Json(params): Json<PathParams>,
 ) -> Result<Json<Vec<String>>, AppCommandError> {
-    let result = folder_commands::git_list_conflicts(params.path).await?;
+    let result = folder_commands::git_list_conflicts_local(params.path).await?;
     Ok(Json(result))
 }
 
 pub async fn git_conflict_file_versions(
     Json(params): Json<PathFileParams>,
 ) -> Result<Json<folder_commands::GitConflictFileVersions>, AppCommandError> {
-    let result = folder_commands::git_conflict_file_versions(params.path, params.file).await?;
+    let result =
+        folder_commands::git_conflict_file_versions_local(params.path, params.file).await?;
     Ok(Json(result))
 }
 
 pub async fn git_resolve_conflict(
     Json(params): Json<PathFileContentParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_resolve_conflict(params.path, params.file, params.content).await?;
+    folder_commands::git_resolve_conflict_local(params.path, params.file, params.content).await?;
     Ok(Json(()))
 }
 
 pub async fn git_abort_operation(
     Json(params): Json<PathOperationParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_abort_operation(params.path, params.operation).await?;
+    folder_commands::git_abort_operation_local(params.path, params.operation).await?;
     Ok(Json(()))
 }
 
 pub async fn git_continue_operation(
     Json(params): Json<PathOperationParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_continue_operation(params.path, params.operation).await?;
+    folder_commands::git_continue_operation_local(params.path, params.operation).await?;
     Ok(Json(()))
 }
 

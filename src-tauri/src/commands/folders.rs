@@ -241,19 +241,19 @@ pub struct GitPushInfo {
     pub tracking_remote: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GitMergeResult {
     pub merged_commits: usize,
     pub conflict: Option<GitConflictInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GitRebaseResult {
     pub message: String,
     pub conflict: Option<GitConflictInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GitConflictFileVersions {
     pub base: String,
     pub ours: String,
@@ -2778,8 +2778,7 @@ pub async fn git_set_remote_url(
     git_set_remote_url_local(path, name, url).await
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_merge(
+pub async fn git_merge_local(
     path: String,
     branch_name: String,
 ) -> Result<GitMergeResult, AppCommandError> {
@@ -2828,8 +2827,25 @@ pub async fn git_merge(
     })
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_rebase(
+pub async fn git_merge(
+    path: String,
+    branch_name: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<GitMergeResult, AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_merge(real_path.to_string(), branch_name)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_merge_local(path, branch_name).await
+}
+
+pub async fn git_rebase_local(
     path: String,
     branch_name: String,
 ) -> Result<GitRebaseResult, AppCommandError> {
@@ -2859,6 +2875,24 @@ pub async fn git_rebase(
         message: String::from_utf8_lossy(&output.stdout).trim().to_string(),
         conflict: None,
     })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_rebase(
+    path: String,
+    branch_name: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<GitRebaseResult, AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_rebase(real_path.to_string(), branch_name)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_rebase_local(path, branch_name).await
 }
 
 pub async fn git_delete_branch_local(
@@ -2953,13 +2987,28 @@ pub async fn git_delete_remote_branch(
     .await
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_list_conflicts(path: String) -> Result<Vec<String>, AppCommandError> {
+pub async fn git_list_conflicts_local(path: String) -> Result<Vec<String>, AppCommandError> {
     detect_conflicts(&path).await
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_conflict_file_versions(
+pub async fn git_list_conflicts(
+    path: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<Vec<String>, AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_list_conflicts(real_path.to_string())
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_list_conflicts_local(path).await
+}
+
+pub async fn git_conflict_file_versions_local(
     path: String,
     file: String,
 ) -> Result<GitConflictFileVersions, AppCommandError> {
@@ -3001,8 +3050,25 @@ pub async fn git_conflict_file_versions(
     })
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_resolve_conflict(
+pub async fn git_conflict_file_versions(
+    path: String,
+    file: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<GitConflictFileVersions, AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_conflict_file_versions(real_path.to_string(), file)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_conflict_file_versions_local(path, file).await
+}
+
+pub async fn git_resolve_conflict_local(
     path: String,
     file: String,
     content: String,
@@ -3028,8 +3094,29 @@ pub async fn git_resolve_conflict(
     Ok(())
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_abort_operation(path: String, operation: String) -> Result<(), AppCommandError> {
+pub async fn git_resolve_conflict(
+    path: String,
+    file: String,
+    content: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<(), AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_resolve_conflict(real_path.to_string(), file, content)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_resolve_conflict_local(path, file, content).await
+}
+
+pub async fn git_abort_operation_local(
+    path: String,
+    operation: String,
+) -> Result<(), AppCommandError> {
     let args = match operation.as_str() {
         "merge" | "pull" => vec!["merge", "--abort"],
         "rebase" => vec!["rebase", "--abort"],
@@ -3056,8 +3143,25 @@ pub async fn git_abort_operation(path: String, operation: String) -> Result<(), 
     Ok(())
 }
 
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn git_continue_operation(
+pub async fn git_abort_operation(
+    path: String,
+    operation: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<(), AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_abort_operation(real_path.to_string(), operation)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_abort_operation_local(path, operation).await
+}
+
+pub async fn git_continue_operation_local(
     path: String,
     operation: String,
 ) -> Result<(), AppCommandError> {
@@ -3086,6 +3190,24 @@ pub async fn git_continue_operation(
         ));
     }
     Ok(())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_continue_operation(
+    path: String,
+    operation: String,
+    db: tauri::State<'_, AppDatabase>,
+    rcm: tauri::State<'_, RemoteConnectionManager>,
+) -> Result<(), AppCommandError> {
+    if let Some((ssh_id, real_path)) = parse_remote_path(&path) {
+        let client = resolve_remote_file_client(&rcm, &db, ssh_id).await?;
+        return client
+            .git_continue_operation(real_path.to_string(), operation)
+            .await
+            .map_err(client_error_to_app_error);
+    }
+    git_continue_operation_local(path, operation).await
 }
 
 const FILE_TREE_IGNORED_DIRS: &[&str] = &[".git", "__pycache__"];

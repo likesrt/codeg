@@ -11,8 +11,8 @@ use crate::acp::types::{ForkResultInfo, PromptInputBlock};
 use crate::acp::LiveSessionSnapshot;
 use crate::commands::folders::{
     FileEditContent, FilePreviewContent, FileSaveResult, GitBranchList, GitCommitResult,
-    GitLogResult, GitPullResult, GitPushInfo, GitPushResult, GitRemote, GitStashEntry,
-    GitStatusEntry,
+    GitConflictFileVersions, GitLogResult, GitMergeResult, GitPullResult, GitPushInfo,
+    GitPushResult, GitRebaseResult, GitRemote, GitStashEntry, GitStatusEntry,
 };
 use crate::models::{AgentType, ConversationDetail, ConversationSummary, GitCredentials};
 
@@ -802,6 +802,80 @@ impl DaemonClient {
         self.post_json(&url, &body).await
     }
 
+    pub async fn git_merge(
+        &self,
+        path: String,
+        branch_name: String,
+    ) -> Result<GitMergeResult, ClientError> {
+        let url = format!("{}/api/git_merge", self.base_url);
+        let body = GitBranchOpBody { path, branch_name };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_rebase(
+        &self,
+        path: String,
+        branch_name: String,
+    ) -> Result<GitRebaseResult, ClientError> {
+        let url = format!("{}/api/git_rebase", self.base_url);
+        let body = GitBranchOpBody { path, branch_name };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_list_conflicts(&self, path: String) -> Result<Vec<String>, ClientError> {
+        let url = format!("{}/api/git_list_conflicts", self.base_url);
+        let body = GitPathBody { path };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_conflict_file_versions(
+        &self,
+        path: String,
+        file: String,
+    ) -> Result<GitConflictFileVersions, ClientError> {
+        let url = format!("{}/api/git_conflict_file_versions", self.base_url);
+        let body = GitPathFileBody { path, file };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_resolve_conflict(
+        &self,
+        path: String,
+        file: String,
+        content: String,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/git_resolve_conflict", self.base_url);
+        let body = GitResolveConflictBody {
+            path,
+            file,
+            content,
+        };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn git_abort_operation(
+        &self,
+        path: String,
+        operation: String,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/git_abort_operation", self.base_url);
+        let body = GitOperationBody { path, operation };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn git_continue_operation(
+        &self,
+        path: String,
+        operation: String,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/git_continue_operation", self.base_url);
+        let body = GitOperationBody { path, operation };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
     async fn post_json<B: serde::Serialize, R: for<'de> serde::Deserialize<'de>>(
         &self,
         url: &str,
@@ -1136,6 +1210,28 @@ struct GitStashRefBody {
 struct GitCommitBranchesBody {
     path: String,
     commit: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitBranchOpBody {
+    path: String,
+    branch_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitResolveConflictBody {
+    path: String,
+    file: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitOperationBody {
+    path: String,
+    operation: String,
 }
 
 #[derive(Debug, thiserror::Error)]
