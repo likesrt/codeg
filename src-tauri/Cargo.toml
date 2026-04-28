@@ -103,5 +103,8 @@ junction = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }

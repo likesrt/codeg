@@ -2,16 +2,19 @@
 // connection; the task owns the SSH children (master, daemon-exec, tunnel)
 // and is driven by `ControlMessage`s sent through an mpsc channel.
 //
-// CG-002.4 M0 ships the happy path: NotAttempted → Probing → Deploying →
-// Launching → Handshaking → Live, plus user-driven Disconnect. The
-// reconnect supervisor / generation re-check / hard reset hooks are
-// stubbed so M1 can fill them in without restructuring this module.
+// CG-002.4 M0 shipped the happy path. CG-002.7 (M1) adds the reconnect
+// supervisor: after reaching Live, a child task pings /api/health every
+// 10s; two consecutive failures escalate to a Reconnecting loop with
+// exponential backoff (1s/3s/10s/30s/60s, max 10 attempts). User-issued
+// control messages always win — the supervisor and the reconnect loop
+// surrender immediately when one arrives.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::JoinHandle;
 
 use crate::models::connection::ConnectionConfig;
 use crate::remote::bootstrap::{
@@ -26,6 +29,10 @@ use crate::remote::tunnel::{establish_forward, TunnelHandle};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 pub const STATUS_EVENT: &str = "connection://status";
+const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(10);
+const SUPERVISOR_FAILURE_THRESHOLD: u32 = 2;
+const RECONNECT_MAX_ATTEMPTS: u32 = 10;
+const SUPERVISOR_KILL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -154,6 +161,59 @@ impl ConnectionTask {
     }
 }
 
+/// Internal event sent from the supervisor task back to the run loop.
+#[derive(Debug)]
+enum SupervisorEvent {
+    OutageDetected { reason: String },
+}
+
+/// Mutable per-loop bookkeeping. Lives only inside `run_loop`; not exposed
+/// to snapshots — keeps `RuntimeState` purely a data type.
+struct LoopCtx {
+    config: ConnectionConfig,
+    state: Arc<RwLock<RuntimeState>>,
+    emitter: EventEmitter,
+    manifest: Arc<RemoteDaemonManifest>,
+    sup_tx: mpsc::Sender<SupervisorEvent>,
+    sup_killer: Option<oneshot::Sender<()>>,
+    sup_handle: Option<JoinHandle<()>>,
+}
+
+impl LoopCtx {
+    async fn kill_supervisor(&mut self) {
+        if let Some(k) = self.sup_killer.take() {
+            let _ = k.send(());
+        }
+        if let Some(h) = self.sup_handle.take() {
+            let _ = tokio::time::timeout(SUPERVISOR_KILL_GRACE, h).await;
+        }
+    }
+
+    async fn spawn_supervisor(&mut self) {
+        // Build a DaemonClient pointing at the current Live runtime. If we
+        // somehow lack port/token we just skip spawning — the connection
+        // will only be supervised next time it reaches Live cleanly.
+        let (port, token) = {
+            let s = self.state.read().await;
+            let port = s.local_port;
+            let token = s.handshake.as_ref().map(|h| h.token.clone());
+            (port, token)
+        };
+        let (port, token) = match (port, token) {
+            (Some(p), Some(t)) => (p, t),
+            _ => return,
+        };
+        let client = DaemonClient::new(port, token);
+        let (kt, kr) = oneshot::channel();
+        let sup_tx = self.sup_tx.clone();
+        let h = tokio::spawn(async move {
+            supervisor_loop(client, sup_tx, kr).await;
+        });
+        self.sup_killer = Some(kt);
+        self.sup_handle = Some(h);
+    }
+}
+
 async fn run_loop(
     config: ConnectionConfig,
     state: Arc<RwLock<RuntimeState>>,
@@ -161,25 +221,181 @@ async fn run_loop(
     manifest: Arc<RemoteDaemonManifest>,
     mut rx: mpsc::Receiver<ControlMessage>,
 ) {
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            ControlMessage::Connect => {
-                connect_pipeline(&config, &state, &emitter, &manifest).await;
+    let (sup_tx, mut sup_rx) = mpsc::channel::<SupervisorEvent>(4);
+    let mut ctx = LoopCtx {
+        config,
+        state,
+        emitter,
+        manifest,
+        sup_tx,
+        sup_killer: None,
+        sup_handle: None,
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+            msg = rx.recv() => {
+                let Some(msg) = msg else { break; };
+                handle_control(&mut ctx, msg).await;
             }
-            ControlMessage::Disconnect => {
-                disconnect(&config, &state, &emitter).await;
-            }
-            ControlMessage::ResumeAfterManual => {
-                connect_pipeline(&config, &state, &emitter, &manifest).await;
-            }
-            ControlMessage::HardReset => {
-                disconnect(&config, &state, &emitter).await;
-                connect_pipeline(&config, &state, &emitter, &manifest).await;
+            Some(evt) = sup_rx.recv() => {
+                handle_supervisor(&mut ctx, &mut rx, evt).await;
             }
         }
     }
-    // Channel closed → drop owned children.
-    disconnect(&config, &state, &emitter).await;
+
+    // Channel closed → drop supervisor and owned children.
+    ctx.kill_supervisor().await;
+    disconnect(&ctx.config, &ctx.state, &ctx.emitter).await;
+}
+
+async fn handle_control(ctx: &mut LoopCtx, msg: ControlMessage) {
+    match msg {
+        ControlMessage::Connect => {
+            ctx.kill_supervisor().await;
+            connect_pipeline(&ctx.config, &ctx.state, &ctx.emitter, &ctx.manifest).await;
+            let is_live = matches!(
+                ctx.state.read().await.status,
+                ConnectionStatus::Live
+            );
+            if is_live {
+                ctx.spawn_supervisor().await;
+            }
+        }
+        ControlMessage::Disconnect => {
+            ctx.kill_supervisor().await;
+            disconnect(&ctx.config, &ctx.state, &ctx.emitter).await;
+        }
+        ControlMessage::HardReset => {
+            ctx.kill_supervisor().await;
+            disconnect(&ctx.config, &ctx.state, &ctx.emitter).await;
+            connect_pipeline(&ctx.config, &ctx.state, &ctx.emitter, &ctx.manifest).await;
+            let is_live = matches!(
+                ctx.state.read().await.status,
+                ConnectionStatus::Live
+            );
+            if is_live {
+                ctx.spawn_supervisor().await;
+            }
+        }
+        ControlMessage::ResumeAfterManual => {
+            // No supervisor to kill — we got here from AwaitingManual.
+            connect_pipeline(&ctx.config, &ctx.state, &ctx.emitter, &ctx.manifest).await;
+            let is_live = matches!(
+                ctx.state.read().await.status,
+                ConnectionStatus::Live
+            );
+            if is_live {
+                ctx.spawn_supervisor().await;
+            }
+        }
+    }
+}
+
+async fn handle_supervisor(
+    ctx: &mut LoopCtx,
+    rx: &mut mpsc::Receiver<ControlMessage>,
+    evt: SupervisorEvent,
+) {
+    let SupervisorEvent::OutageDetected { reason } = evt;
+
+    // Supervisor task already exited after sending the event. Drop the now-stale handle.
+    ctx.sup_killer = None;
+    ctx.sup_handle = None;
+
+    // Tear down stale children before we re-attempt the pipeline.
+    disconnect(&ctx.config, &ctx.state, &ctx.emitter).await;
+    {
+        let mut s = ctx.state.write().await;
+        s.last_error = Some(reason.clone());
+    }
+
+    let mut attempt: u32 = 1;
+    while attempt <= RECONNECT_MAX_ATTEMPTS {
+        set_status(
+            &ctx.state,
+            &ctx.emitter,
+            &ctx.config.id,
+            ConnectionStatus::Reconnecting { attempt },
+        )
+        .await;
+
+        // Race the backoff sleep against any incoming user message. A user
+        // intervention (Disconnect / HardReset / Connect / ResumeAfterManual)
+        // always preempts the auto-reconnect.
+        let backoff = compute_backoff(attempt);
+        let interrupted: Option<ControlMessage> = tokio::select! {
+            biased;
+            msg = rx.recv() => msg,
+            _ = tokio::time::sleep(backoff) => None,
+        };
+        if let Some(msg) = interrupted {
+            handle_control(ctx, msg).await;
+            return;
+        }
+
+        connect_pipeline(&ctx.config, &ctx.state, &ctx.emitter, &ctx.manifest).await;
+        let outcome = ctx.state.read().await.status.clone();
+        match outcome {
+            ConnectionStatus::Live => {
+                ctx.spawn_supervisor().await;
+                return;
+            }
+            ConnectionStatus::AwaitingManual => return,
+            ConnectionStatus::Error => {
+                attempt += 1;
+                continue;
+            }
+            _ => return, // unexpected — bail out and wait for user
+        }
+    }
+    // Exhausted attempts: status remains Error from the last try; the user
+    // must Hard Reset (or Disconnect) to break the cycle.
+}
+
+fn compute_backoff(attempt: u32) -> Duration {
+    let s = match attempt {
+        1 => 1,
+        2 => 3,
+        3 => 10,
+        4 => 30,
+        _ => 60,
+    };
+    Duration::from_secs(s)
+}
+
+async fn supervisor_loop(
+    client: DaemonClient,
+    sup_tx: mpsc::Sender<SupervisorEvent>,
+    mut killer: oneshot::Receiver<()>,
+) {
+    let mut consecutive_failures: u32 = 0;
+    loop {
+        let sleep = tokio::time::sleep(SUPERVISOR_INTERVAL);
+        tokio::pin!(sleep);
+        tokio::select! {
+            biased;
+            _ = &mut killer => return,
+            _ = &mut sleep => {}
+        }
+        match client.health().await {
+            Ok(()) => {
+                consecutive_failures = 0;
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= SUPERVISOR_FAILURE_THRESHOLD {
+                    let _ = sup_tx
+                        .send(SupervisorEvent::OutageDetected {
+                            reason: format!("health probe failed: {e}"),
+                        })
+                        .await;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 async fn connect_pipeline(
@@ -399,5 +615,127 @@ mod tests {
         let (maj, _min, _) = parse_semver(pkg).unwrap();
         let bumped = format!("{maj}.99.0");
         assert!(check_version_compat(&bumped).is_ok());
+    }
+
+    #[test]
+    fn backoff_schedule_matches_table() {
+        assert_eq!(compute_backoff(1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(2), Duration::from_secs(3));
+        assert_eq!(compute_backoff(3), Duration::from_secs(10));
+        assert_eq!(compute_backoff(4), Duration::from_secs(30));
+        assert_eq!(compute_backoff(5), Duration::from_secs(60));
+        assert_eq!(compute_backoff(99), Duration::from_secs(60));
+    }
+
+    /// Verifies that a single transient health failure does NOT escalate to
+    /// an outage (consecutive-failures threshold is 2). We start the
+    /// supervisor against a server that fails the first ping then succeeds,
+    /// give it enough time to perform two ticks, and then assert no
+    /// `OutageDetected` event was emitted.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn supervisor_tolerates_single_transient_failure() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Bind a real loopback port and accept a single connection that
+        // returns 500, then accept further connections returning 200.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+                let resp = if n == 0 {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                };
+                use tokio::io::AsyncWriteExt;
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let client = DaemonClient::new(port, "test-token".into());
+        let (sup_tx, mut sup_rx) = mpsc::channel::<SupervisorEvent>(4);
+        let (_killer_tx, killer_rx) = oneshot::channel();
+
+        let sup = tokio::spawn(supervisor_loop(client, sup_tx, killer_rx));
+
+        // Two intervals worth of paused time → supervisor probes twice.
+        tokio::time::advance(SUPERVISOR_INTERVAL * 2 + Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        // No outage should have been signalled (one failure, then a success
+        // resets the counter).
+        assert!(sup_rx.try_recv().is_err());
+        sup.abort();
+    }
+
+    /// Two consecutive failures must escalate to OutageDetected.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn supervisor_fires_on_two_consecutive_failures() {
+        // Always return 500.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                use tokio::io::AsyncWriteExt;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let client = DaemonClient::new(port, "test-token".into());
+        let (sup_tx, mut sup_rx) = mpsc::channel::<SupervisorEvent>(4);
+        let (_killer_tx, killer_rx) = oneshot::channel();
+
+        let sup = tokio::spawn(supervisor_loop(client, sup_tx, killer_rx));
+
+        // Allow up to 3 intervals so both failures land and the event is sent.
+        for _ in 0..40 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+            if let Ok(evt) = sup_rx.try_recv() {
+                match evt {
+                    SupervisorEvent::OutageDetected { .. } => {
+                        sup.abort();
+                        return;
+                    }
+                }
+            }
+        }
+        panic!("supervisor did not emit OutageDetected within 40 ticks");
+    }
+
+    /// Killing the supervisor before any failure must let it return cleanly.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn supervisor_exits_on_killer_signal() {
+        // Listener that never responds; we only care about the killer path.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::mem::forget(listener); // keep the port held; never accept
+
+        let client = DaemonClient::new(port, "test-token".into());
+        let (sup_tx, mut sup_rx) = mpsc::channel::<SupervisorEvent>(4);
+        let (killer_tx, killer_rx) = oneshot::channel();
+
+        let sup = tokio::spawn(supervisor_loop(client, sup_tx, killer_rx));
+        // Kill before the first interval elapses.
+        let _ = killer_tx.send(());
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        let res = tokio::time::timeout(Duration::from_secs(1), sup).await;
+        assert!(
+            res.is_ok(),
+            "supervisor did not exit promptly after killer signal"
+        );
+        // No event should have been emitted.
+        assert!(sup_rx.try_recv().is_err());
     }
 }
