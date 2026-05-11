@@ -167,6 +167,20 @@ export interface ConnectionState {
   lastAppliedSeq: number
 }
 
+type ConnectRequest = {
+  agentType: AgentType
+  workingDir?: string
+  sessionId?: string
+}
+
+function sameConnectRequest(a: ConnectRequest, b: ConnectRequest) {
+  return (
+    a.agentType === b.agentType &&
+    (a.workingDir ?? null) === (b.workingDir ?? null) &&
+    (a.sessionId ?? null) === (b.sessionId ?? null)
+  )
+}
+
 // ── Reducer actions ──
 
 type Action =
@@ -1626,8 +1640,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   // Guard against concurrent connect() calls
   const connectingKeysRef = useRef(new Set<string>())
+  const pendingConnectRequestsRef = useRef(new Map<string, ConnectRequest>())
   // Keys whose disconnect was requested while connect was still in flight
   const abandonedKeysRef = useRef(new Set<string>())
+  const connectRef = useRef<AcpActionsValue["connect"] | null>(null)
 
   type ConnectBlockState =
     | { kind: "none"; reason: "" }
@@ -2542,7 +2558,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       workingDir?: string,
       sessionId?: string
     ) => {
-      if (connectingKeysRef.current.has(contextKey)) return
+      const request: ConnectRequest = { agentType, workingDir, sessionId }
+      if (connectingKeysRef.current.has(contextKey)) {
+        pendingConnectRequestsRef.current.set(contextKey, request)
+        return
+      }
       connectingKeysRef.current.add(contextKey)
 
       try {
@@ -2664,6 +2684,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           acpDisconnect(connectionId).catch(() => {})
           return
         }
+        const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
+        if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
+          acpDisconnect(connectionId).catch(() => {})
+          return
+        }
 
         reverseMapRef.current.set(connectionId, contextKey)
         lastActivityRef.current.set(contextKey, Date.now())
@@ -2727,7 +2752,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (err) {
-        if (!isAlertedError(err)) {
+        const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
+        const superseded =
+          pendingRequest != null && !sameConnectRequest(pendingRequest, request)
+        if (!superseded && !isAlertedError(err)) {
           const message = normalizeErrorMessage(err)
           const agentLabel = AGENT_LABELS[agentType]
           // Backend safety net: if the agent turned out to be not
@@ -2761,10 +2789,28 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             )
           }
         }
-        throw err
+        if (!superseded) {
+          throw err
+        }
       } finally {
         connectingKeysRef.current.delete(contextKey)
         abandonedKeysRef.current.delete(contextKey)
+        const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
+        if (pendingRequest) {
+          pendingConnectRequestsRef.current.delete(contextKey)
+          if (!sameConnectRequest(pendingRequest, request)) {
+            queueMicrotask(() => {
+              connectRef
+                .current?.(
+                  contextKey,
+                  pendingRequest.agentType,
+                  pendingRequest.workingDir,
+                  pendingRequest.sessionId
+                )
+                .catch(() => {})
+            })
+          }
+        }
       }
     },
     [
@@ -2778,9 +2824,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       waitForListenerReady,
     ]
   )
+  connectRef.current = connect
 
   const disconnect = useCallback(
     async (contextKey: string) => {
+      pendingConnectRequestsRef.current.delete(contextKey)
       const conn = storeRef.current.connections.get(contextKey)
       if (!conn) {
         // connect() is still in flight — mark as abandoned so it
@@ -2801,6 +2849,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   const disconnectAll = useCallback(async () => {
     const promises: Promise<void>[] = []
+    pendingConnectRequestsRef.current.clear()
     for (const [, conn] of storeRef.current.connections) {
       promises.push(acpDisconnect(conn.connectionId).catch(() => {}))
       reverseMapRef.current.delete(conn.connectionId)
