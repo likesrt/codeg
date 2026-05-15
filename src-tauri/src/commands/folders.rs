@@ -2676,6 +2676,89 @@ pub async fn list_directory_entries(path: String) -> Result<Vec<DirectoryEntry>,
     Ok(entries)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryItem {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    /// Only meaningful when `is_dir` is true.
+    pub has_children: bool,
+    /// File size in bytes; `None` for directories.
+    pub size: Option<u64>,
+}
+
+/// List immediate children of `path`, returning both directories and files.
+/// Mirrors `list_directory_entries` but does not filter out files, used by the
+/// "attach server file" picker.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn list_directory_with_files(
+    path: String,
+) -> Result<Vec<DirectoryItem>, AppCommandError> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(AppCommandError::io_error("Path is not a directory").with_detail(path));
+    }
+
+    let mut items: Vec<DirectoryItem> = Vec::new();
+    let read_dir = std::fs::read_dir(&root).map_err(|e| {
+        AppCommandError::io_error("Failed to read directory").with_detail(e.to_string())
+    })?;
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        // Follow symlinks for the dir/file classification.
+        let is_dir = if file_type.is_symlink() {
+            entry.path().is_dir()
+        } else {
+            file_type.is_dir()
+        };
+        let abs_path = entry.path().to_string_lossy().to_string();
+
+        let (has_children, size) = if is_dir {
+            let has = match std::fs::read_dir(entry.path()) {
+                Ok(sub) => sub.filter_map(|e| e.ok()).any(|e| {
+                    let sub_name = e.file_name().to_string_lossy().to_string();
+                    !sub_name.starts_with('.')
+                }),
+                Err(_) => false,
+            };
+            (has, None)
+        } else {
+            let size = entry.metadata().ok().map(|m| m.len());
+            (false, size)
+        };
+
+        items.push(DirectoryItem {
+            name,
+            path: abs_path,
+            is_dir,
+            has_children,
+            size,
+        });
+    }
+
+    // Sort: directories first, then files; each group by name case-insensitive.
+    items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+
+    Ok(items)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_file_tree(
     path: String,

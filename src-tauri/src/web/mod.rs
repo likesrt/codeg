@@ -428,6 +428,11 @@ pub(crate) async fn do_start_web_server_with_state(
     // previous cycle cannot make a new handler exit immediately.
     ws.shutdown_signal.reset();
     let shutdown_signal = ws.shutdown_signal.clone();
+
+    // Sweep abandoned upload staging files from any previous run. Safe to
+    // call before binding the listener; only touches `<uploads_root>/.tmp/`.
+    handlers::files::purge_upload_staging().await;
+
     let router = router::build_router(
         app_state.clone(),
         token.clone(),
@@ -609,6 +614,11 @@ pub(crate) async fn do_start_web_server_tauri(
     // See do_start_web_server_with_state for rationale on the reset.
     ws.shutdown_signal.reset();
     let shutdown_signal = ws.shutdown_signal.clone();
+
+    // Sweep abandoned upload staging files. See the matching call in
+    // `do_start_web_server_with_state` for rationale.
+    handlers::files::purge_upload_staging().await;
+
     let router = router::build_router(
         app_state,
         token.clone(),

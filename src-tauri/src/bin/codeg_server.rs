@@ -173,6 +173,10 @@ async fn async_main() {
         ));
     }
 
+    // Sweep abandoned upload staging files from any prior run before
+    // serving the first request.
+    codeg_lib::web::handlers::files::purge_upload_staging().await;
+
     // Build router
     let shutdown_signal = state.web_server_state.shutdown_signal();
     let router = codeg_lib::web::router::build_router(

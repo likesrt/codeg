@@ -590,6 +590,7 @@ mod tauri_app {
                 workspace_state_commands::get_workspace_snapshot,
                 folders::get_home_directory,
                 folders::list_directory_entries,
+                folders::list_directory_with_files,
                 folders::get_file_tree,
                 folders::read_file_base64,
                 folders::read_file_preview,

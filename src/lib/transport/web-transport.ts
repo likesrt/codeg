@@ -1,6 +1,7 @@
 import { WS_READY_CHANNEL } from "./constants"
 import type { Transport, UnsubscribeFn } from "./types"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
+import { getCodegToken, redirectToCodegLogin } from "./web-auth"
 
 const WEB_CALL_TIMEOUT_MS = 30_000
 // Upper bound on how long `subscribe()` will wait for the server `__ready__`
@@ -25,9 +26,7 @@ interface WebEvent {
   payload: unknown
 }
 
-function getToken(): string {
-  return localStorage.getItem("codeg_token") ?? ""
-}
+const getToken = getCodegToken
 
 export class WebTransport implements Transport {
   private ws: WebSocket | null = null
@@ -117,7 +116,7 @@ export class WebTransport implements Transport {
       window.clearTimeout(timeout)
     }
     if (res.status === 401) {
-      WebTransport.redirectToLogin()
+      redirectToCodegLogin()
       throw new Error("Unauthorized")
     }
     if (!res.ok) {
@@ -172,12 +171,6 @@ export class WebTransport implements Transport {
     }
   }
 
-  private static redirectToLogin() {
-    if (window.location.pathname.startsWith("/login")) return
-    localStorage.removeItem("codeg_token")
-    window.location.href = "/login"
-  }
-
   private connectWs() {
     const token = getToken()
     if (!token) return
@@ -230,7 +223,7 @@ export class WebTransport implements Transport {
       if (this.destroyed) return
       this.wsFailCount++
       if (this.wsFailCount >= WS_RECONNECT_FAIL_THRESHOLD) {
-        WebTransport.redirectToLogin()
+        redirectToCodegLogin()
         return
       }
       // Exponential backoff: 1s, 2s, 4s, … capped at WS_BACKOFF_MAX_MS.

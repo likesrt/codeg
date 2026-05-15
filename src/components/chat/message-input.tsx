@@ -12,6 +12,7 @@ import {
   ChevronUp,
   Cog,
   FileSearch,
+  FolderSearch,
   GitFork,
   MessageSquareText,
   Paperclip,
@@ -21,6 +22,7 @@ import {
   Command,
   Sparkles,
   Square,
+  Upload,
   X,
 } from "lucide-react"
 import {
@@ -39,8 +41,16 @@ import { AgentIcon } from "@/components/agent-icon"
 import { cn, randomUUID } from "@/lib/utils"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { readFileBase64, quickMessagesList } from "@/lib/api"
+import {
+  readFileBase64,
+  quickMessagesList,
+  uploadAttachment,
+  UPLOAD_MAX_BYTES,
+} from "@/lib/api"
 import { openFileDialog } from "@/lib/platform"
+import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
+import { toast } from "sonner"
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import type {
   AgentSkillItem,
@@ -1330,8 +1340,19 @@ export function MessageInput({
     ]
   )
 
+  const tAttach = useTranslations("Folder.chat.messageInput")
+
   const handlePickFiles = useCallback(async () => {
     if (disabled) return
+    // The desktop Paperclip path passes raw local paths to the agent. When
+    // running inside a Tauri window that's connected to a remote workspace
+    // the agent lives on the other host, so the local path would be ENOENT
+    // there. Warn the user and bail; the fix is to expose the same upload
+    // flow we use in browser mode, but that's a separate change.
+    if (getActiveRemoteConnectionId() !== null) {
+      toast.warning(tAttach("attachRemoteUnsupported"))
+      return
+    }
     try {
       const selected = await openFileDialog({
         multiple: true,
@@ -1344,7 +1365,109 @@ export function MessageInput({
     } catch (error) {
       console.error("[MessageInput] pick files failed:", error)
     }
-  }, [appendResourceAttachments, defaultPath, disabled])
+  }, [appendResourceAttachments, defaultPath, disabled, tAttach])
+
+  const [serverFilePickerOpen, setServerFilePickerOpen] = useState(false)
+  const desktopMode = isDesktop()
+
+  const handleUploadLocalFiles = useCallback(async () => {
+    if (disabled) return
+    // Web mode only: open a hidden <input type="file"> to grab browser File
+    // objects, stream each one to the server upload endpoint, then attach the
+    // returned server-side paths via the common ResourceLink flow so the
+    // agent on the server can actually read them.
+    const input = document.createElement("input")
+    input.type = "file"
+    input.multiple = true
+    input.onchange = async () => {
+      const all = input.files ? Array.from(input.files) : []
+      if (all.length === 0) return
+
+      // Client-side size guard so a 100MB file doesn't make the user wait for
+      // a round-trip just to get rejected. The server enforces the same cap.
+      const oversized = all.filter((f) => f.size > UPLOAD_MAX_BYTES)
+      const accepted = all.filter((f) => f.size <= UPLOAD_MAX_BYTES)
+      const limitMb = Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))
+      if (oversized.length > 0) {
+        toast.error(
+          tAttach("attachUploadTooLarge", {
+            limit: limitMb,
+            names: oversized.map((f) => f.name).join(", "),
+          })
+        )
+      }
+      if (accepted.length === 0) return
+
+      // Concurrent uploads with allSettled so one failure doesn't block the
+      // rest. Cap concurrency at 3 — small enough to keep server load
+      // predictable, large enough to feel responsive for a handful of files.
+      const results: Array<{
+        status: "fulfilled" | "rejected"
+        path?: string
+        name: string
+        reason?: unknown
+      }> = []
+      const CONCURRENCY = 3
+      let cursor = 0
+      const workers = Array.from(
+        { length: Math.min(CONCURRENCY, accepted.length) },
+        async () => {
+          while (cursor < accepted.length) {
+            const idx = cursor++
+            const file = accepted[idx]
+            try {
+              const r = await uploadAttachment(file, attachmentTabId ?? null)
+              results.push({
+                status: "fulfilled",
+                path: r.path,
+                name: file.name,
+              })
+            } catch (error) {
+              results.push({
+                status: "rejected",
+                name: file.name,
+                reason: error,
+              })
+            }
+          }
+        }
+      )
+      await Promise.all(workers)
+
+      const uploaded = results
+        .filter(
+          (r): r is { status: "fulfilled"; path: string; name: string } =>
+            r.status === "fulfilled" && !!r.path
+        )
+        .map((r) => r.path)
+      const failed = results.filter((r) => r.status === "rejected")
+      if (failed.length > 0) {
+        for (const f of failed) {
+          console.error(
+            `[MessageInput] upload attachment failed (${f.name}):`,
+            f.reason
+          )
+        }
+        toast.error(
+          tAttach("attachUploadFailed", {
+            names: failed.map((r) => r.name).join(", "),
+          })
+        )
+      }
+      if (uploaded.length > 0) {
+        appendResourceAttachments(uploaded)
+      }
+    }
+    input.click()
+  }, [appendResourceAttachments, attachmentTabId, disabled, tAttach])
+
+  const handleServerFilesSelected = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) return
+      appendResourceAttachments(paths)
+    },
+    [appendResourceAttachments]
+  )
 
   const loadQuickMessages = useCallback(async () => {
     setQuickMessagesLoading(true)
@@ -1460,6 +1583,13 @@ export function MessageInput({
         setDragActiveIfChanged(false)
         if (Date.now() - lastDomDropAtRef.current < 250) return
         if (!inside || disabledRef.current) return
+        // Mirror the Paperclip guard: a Tauri webview connected to a remote
+        // workspace would otherwise hand local OS paths to the remote agent,
+        // which produces silent ENOENTs on the other host.
+        if (getActiveRemoteConnectionId() !== null) {
+          toast.warning(tAttach("attachRemoteUnsupported"))
+          return
+        }
         void appendPathsFromDropRef.current(payload.paths).catch((error) => {
           console.error("[MessageInput] drag drop paths failed:", error)
         })
@@ -1534,7 +1664,7 @@ export function MessageInput({
       cancelled = true
       cleanupListeners()
     }
-  }, [setDragActiveIfChanged])
+  }, [setDragActiveIfChanged, tAttach])
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((item) => item.id !== id))
@@ -2120,19 +2250,43 @@ export function MessageInput({
                 align="start"
                 className="min-w-48"
               >
-                <DropdownMenuItem
-                  onClick={() => {
-                    handlePickFiles().catch((error) => {
-                      console.error(
-                        "[MessageInput] pick files from menu failed:",
-                        error
-                      )
-                    })
-                  }}
-                >
-                  <Paperclip className="size-4" />
-                  {t("attachFiles")}
-                </DropdownMenuItem>
+                {desktopMode ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      handlePickFiles().catch((error) => {
+                        console.error(
+                          "[MessageInput] pick files from menu failed:",
+                          error
+                        )
+                      })
+                    }}
+                  >
+                    <Paperclip className="size-4" />
+                    {t("attachFiles")}
+                  </DropdownMenuItem>
+                ) : (
+                  <>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        handleUploadLocalFiles().catch((error) => {
+                          console.error(
+                            "[MessageInput] upload local files failed:",
+                            error
+                          )
+                        })
+                      }}
+                    >
+                      <Upload className="size-4" />
+                      {t("attachLocalUpload")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setServerFilePickerOpen(true)}
+                    >
+                      <FolderSearch className="size-4" />
+                      {t("attachServerFile")}
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <MessageSquareText className="size-4" />
@@ -2387,6 +2541,14 @@ export function MessageInput({
           if (!open) setPreviewAttachmentId(null)
         }}
       />
+      {!desktopMode && (
+        <ServerFileBrowserDialog
+          open={serverFilePickerOpen}
+          onOpenChange={setServerFilePickerOpen}
+          onSelect={handleServerFilesSelected}
+          initialPath={defaultPath ?? undefined}
+        />
+      )}
     </div>
   )
 }

@@ -1653,7 +1653,12 @@
         "expertSkills": "مهارات الخبراء",
         "expertsEmptyForAgent": "لا يحتوي هذا العميل على خبراء مفعّلين. فعّلهم من الإعدادات > الخبراء.",
         "slashSearchPlaceholder": "البحث عن الأوامر...",
-        "slashSearchEmpty": "لا توجد أوامر مطابقة"
+        "slashSearchEmpty": "لا توجد أوامر مطابقة",
+        "attachLocalUpload": "تحميل ملف محلي",
+        "attachServerFile": "اختيار ملف من الخادم",
+        "attachUploadTooLarge": "{names} يتجاوز حد التحميل {limit}MB وتم تخطيه.",
+        "attachUploadFailed": "فشل تحميل {names}.",
+        "attachRemoteUnsupported": "إرفاق الملفات المحلية غير مدعوم أثناء الاتصال بمساحة عمل بعيدة."
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
@@ -2398,5 +2403,17 @@
     "openFailed": "Failed to open remote workspace",
     "connectionLoadFailed": "Failed to load remote connection: {message}",
     "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
+  },
+  "ServerFileBrowser": {
+    "title": "اختر ملفًا من الخادم",
+    "pathPlaceholder": "أدخل مسار الدليل...",
+    "goHome": "اذهب إلى المجلد الرئيسي",
+    "navigateUp": "اذهب إلى المجلد الأعلى",
+    "select": "اختر",
+    "cancel": "إلغاء",
+    "loading": "جارٍ التحميل...",
+    "emptyDirectory": "هذا المجلد فارغ",
+    "errorLoadingDir": "فشل تحميل المجلد",
+    "selectedCount": "{count} محدد"
   }
 }

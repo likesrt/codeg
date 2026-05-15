@@ -4,6 +4,7 @@ import {
   getTransport,
   isDesktop,
 } from "./transport"
+import { getCodegToken, redirectToCodegLogin } from "./transport/web-auth"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import type { FolderThemeColor } from "./theme-presets"
 import type {
@@ -48,6 +49,8 @@ import type {
   PromptInputBlock,
   FileTreeNode,
   DirectoryEntry,
+  DirectoryItem,
+  UploadAttachmentResult,
   FilePreviewContent,
   FileEditContent,
   FileSaveResult,
@@ -1391,6 +1394,53 @@ export async function listDirectoryEntries(
   path: string
 ): Promise<DirectoryEntry[]> {
   return getTransport().call("list_directory_entries", { path })
+}
+
+export async function listDirectoryWithFiles(
+  path: string
+): Promise<DirectoryItem[]> {
+  return getTransport().call("list_directory_with_files", { path })
+}
+
+// Hard ceiling for a single attachment, kept in lockstep with the server's
+// `UPLOAD_MAX_BYTES`. Aligned with axum's default multipart body limit (and
+// with the fact that anything larger won't fit a model context anyway).
+export const UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+
+// Upload a single attachment to the server.
+//
+// Web mode only: streams the file via multipart/form-data to the same origin
+// the page was served from, then returns the server-side absolute path so the
+// caller can attach it as a `file://` ResourceLink (matching the desktop
+// flow). Not routed through `getTransport()` because the JSON transport can't
+// carry binary bodies; reuses `web-auth` helpers so token retrieval and 401
+// redirect behavior stay in sync with `WebTransport`.
+export async function uploadAttachment(
+  file: File,
+  sessionId?: string | null
+): Promise<UploadAttachmentResult> {
+  const token = getCodegToken()
+  const form = new FormData()
+  form.append("file", file, file.name)
+  if (sessionId) form.append("session_id", sessionId)
+
+  const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  if (res.status === 401) {
+    redirectToCodegLogin()
+    throw new Error("Unauthorized")
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({
+      code: "network_error",
+      message: `HTTP ${res.status}`,
+    }))
+    throw err
+  }
+  return res.json()
 }
 
 // File tree and git log commands

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 const CODEG_DIR_NAME: &str = ".codeg";
 const PETS_DIR_NAME: &str = "pets";
+const UPLOADS_DIR_NAME: &str = "uploads";
 
 /// `$CODEG_HOME` if set (and non-empty), else `~/.codeg/`.
 ///
@@ -40,6 +41,28 @@ pub fn codeg_pets_root() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(CODEG_DIR_NAME).join(PETS_DIR_NAME))
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(PETS_DIR_NAME))
+}
+
+/// Root directory for attachments uploaded from the web client.
+///
+/// Resolution order matches `codeg_pets_root()`:
+/// 1. `$CODEG_HOME/uploads`
+/// 2. `$CODEG_DATA_DIR/uploads` (server-mode data directory)
+/// 3. `~/.codeg/uploads` (desktop default)
+///
+/// Files in this directory are intentionally NOT garbage-collected — later
+/// conversations may still reference them via `file://` URIs embedded in
+/// session history.
+pub fn codeg_uploads_root() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(UPLOADS_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(UPLOADS_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(UPLOADS_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(UPLOADS_DIR_NAME))
 }
 
 // Path resolution depends on global env vars (`CODEG_HOME`, `CODEG_DATA_DIR`),
