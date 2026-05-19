@@ -1202,6 +1202,30 @@ function patchOpenCodeConfigText(
   }
 }
 
+// Fill in `provider.<id>.npm` with the first option for any providers that
+// lack it, so the displayed Select value matches what gets persisted to disk.
+function ensureOpenCodeProviderNpm(configText: string): string {
+  if (!configText.trim()) return configText
+  const parseResult = parseConfigJsonText(configText)
+  if (parseResult.error) return configText
+  const config = parseResult.config
+  const providerRoot = asObjectRecord(config.provider)
+  if (!providerRoot) return configText
+  let mutated = false
+  for (const providerId of Object.keys(providerRoot)) {
+    const provider = asObjectRecord(providerRoot[providerId])
+    if (!provider) continue
+    const currentNpm =
+      typeof provider.npm === "string" ? provider.npm.trim() : ""
+    if (!currentNpm) {
+      provider.npm = OPENCODE_PROVIDER_NPM_OPTIONS[0].value
+      mutated = true
+    }
+  }
+  if (!mutated) return configText
+  return JSON.stringify(config, null, 2)
+}
+
 interface CodexTomlImportantValues {
   model: string
   modelProvider: string
@@ -3003,7 +3027,10 @@ export function AcpAgentSettings() {
           throw new Error(authError)
         }
       }
-      const normalizedConfig = normalizeConfigText(configText)
+      let normalizedConfig = normalizeConfigText(configText)
+      if (agentType === "open_code" && normalizedConfig) {
+        normalizedConfig = ensureOpenCodeProviderNpm(normalizedConfig)
+      }
       // For agents using merge strategy, mark removed keys as null
       // so the backend merge_json_values can delete them from disk.
       let configForPersist =
@@ -6405,7 +6432,12 @@ supports_websockets = true`}
                               const isDisabled =
                                 selectedOpenCodeConfig.disabledProviders.includes(
                                   providerId
-                                )
+                                ) ||
+                                (selectedOpenCodeConfig.enabledProviders
+                                  .length > 0 &&
+                                  !selectedOpenCodeConfig.enabledProviders.includes(
+                                    providerId
+                                  ))
                               return (
                                 <Collapsible
                                   key={providerId}
