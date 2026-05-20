@@ -155,6 +155,7 @@ const ConversationTabView = memo(function ConversationTabView({
     pinTab,
     openNewConversationTab,
     closeTab,
+    confirmDraftAgent,
   } = useTabContext()
   const { setSessionStats } = useSessionStats()
   const {
@@ -718,14 +719,21 @@ const ConversationTabView = memo(function ConversationTabView({
   // a late-returning disconnect would dispatch CONNECTION_REMOVED by
   // contextKey and wipe the new connection's frontend state, leaving a
   // backend orphan.
-  const handleAgentSelect = useCallback((nextAgentType: AgentType) => {
-    if (nextAgentType === selectedAgentRef.current) return
-    if (dbConvIdRef.current) return
+  const handleAgentSelect = useCallback(
+    (nextAgentType: AgentType) => {
+      if (nextAgentType === selectedAgentRef.current) return
+      if (dbConvIdRef.current) return
 
-    setDraftAgentType(nextAgentType)
-    setModeId(getSavedModeId(nextAgentType))
-    setAgentConnectError(null)
-  }, [])
+      setDraftAgentType(nextAgentType)
+      setModeId(getSavedModeId(nextAgentType))
+      setAgentConnectError(null)
+      // Notify the tab provider so its provisional-default correction
+      // logic skips this tab — the agent is now a confirmed user choice
+      // (or an AgentSelector fallback, both equally final).
+      confirmDraftAgent(tabId, nextAgentType)
+    },
+    [confirmDraftAgent, tabId]
+  )
 
   const handleModeChange = useCallback(
     (newModeId: string) => {
