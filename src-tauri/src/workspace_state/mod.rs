@@ -396,6 +396,7 @@ fn git_check_ignored_paths(
     }
 
     let mut child = crate::process::std_command("git")
+        .arg("--no-optional-locks")
         .args(["check-ignore", "--stdin", "-z"])
         .current_dir(repo_path)
         .stdin(Stdio::piped())
@@ -654,6 +655,7 @@ fn parse_numstat_value(raw: &str) -> i32 {
 async fn git_numstat_map(path: &str) -> HashMap<String, (i32, i32)> {
     async fn run_numstat(path: &str, args: &[&str]) -> Option<HashMap<String, (i32, i32)>> {
         let output = crate::process::tokio_command("git")
+            .arg("--no-optional-locks")
             .args(args)
             .current_dir(path)
             .output()

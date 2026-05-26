@@ -1575,7 +1575,10 @@ pub async fn git_status(
     } else {
         "-unormal"
     };
+    // `--no-optional-locks` keeps this read-only query from contending with
+    // concurrent agent writes on `.git/index.lock`. See PR #215 follow-up.
     let output = crate::process::tokio_command("git")
+        .arg("--no-optional-locks")
         .args(["-c", "core.quotePath=false"])
         .args(["status", "--porcelain=v1", untracked_mode])
         .current_dir(&path)
