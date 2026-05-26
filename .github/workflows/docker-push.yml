@@ -1,9 +1,7 @@
 name: Docker Push
 
+# 仅允许手动触发，避免 push 到 main 时自动打包并推送镜像。
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 env:

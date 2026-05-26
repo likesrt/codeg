@@ -10,8 +10,8 @@ export VNC_DEPTH=${VNC_DEPTH:-24}
 export VNC_PASSWORD=${VNC_PASSWORD:-change-me}
 
 # bind mount 目录可能来自宿主机，启动时先确保存在并尽量修正权限。
-mkdir -p /data /workspace /home/codeg
-chown -R codeg:codeg /data /workspace /home/codeg 2>/dev/null || true
+mkdir -p /data /home/codeg/workspace /home/codeg
+chown -R codeg:codeg /data /home/codeg/workspace /home/codeg 2>/dev/null || true
 
 run_as_codeg() {
   gosu codeg "$@"
