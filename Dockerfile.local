@@ -59,6 +59,7 @@ RUN apt-get update \
     curl \
     git \
     gh \
+    gnupg \
     gosu \
     openssh-client \
     openssl \
@@ -112,11 +113,13 @@ RUN apt-get update \
  && update-locale LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh LC_ALL=zh_CN.UTF-8 \
  && rm -rf /var/lib/apt/lists/*
 
-# 使用非 root 的 codeg 用户运行服务，并预创建三个需要持久化的目录。
+# 使用非 root 的 codeg 用户运行服务，并授予本地开发容器免密 sudo 权限。
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
  && useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash ${USERNAME} \
  && mkdir -p /app /data /home/codeg/workspace /home/codeg \
- && chown -R ${USERNAME}:${USERNAME} /data /home/codeg/workspace /home/codeg
+ && chown -R ${USERNAME}:${USERNAME} /data /home/codeg/workspace /home/codeg \
+ && printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" >/etc/sudoers.d/${USERNAME} \
+ && chmod 0440 /etc/sudoers.d/${USERNAME}
 
 # 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件、容器启动脚本和按需工具链安装入口。
 COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
