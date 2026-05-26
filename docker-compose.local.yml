@@ -1,3 +1,12 @@
+# 如果要使用你现在的本地部署文件 docker-compose.local.yml，在项目根目录执行：
+# ```bash
+# docker compose -f docker-compose.local.yml up -d
+# ```
+# 如果需要重新构建镜像：
+# ```bash
+# docker compose -f docker-compose.local.yml up -d --build
+# ```
+
 services:
   codeg:
     build:
