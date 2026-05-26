@@ -1,0 +1,166 @@
+# Stage 1: Build Next.js static export
+FROM node:22-alpine AS frontend
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY src/ ./src/
+COPY public/ ./public/
+COPY next.config.ts tsconfig.json postcss.config.mjs components.json ./
+RUN pnpm build
+
+# Stage 2: Build Rust server binary + codeg-mcp companion
+FROM rust:slim-bookworm AS backend
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/src-tauri
+COPY src-tauri/ ./
+# codeg-mcp is the stdio MCP companion the runtime injects per session
+# (see acp/delegation/companion.rs). It must ship next to codeg-server so
+# `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
+RUN cargo build --release --bin codeg-server --no-default-features \
+ && cargo build --release --bin codeg-mcp --no-default-features
+
+# Stage 3: Runtime development workstation
+FROM debian:bookworm-slim
+
+# 这些 ARG 便于后续按需调整容器用户 UID/GID、Python 默认版本和 Node 主版本。
+ARG USERNAME=codeg
+ARG USER_UID=1000
+ARG USER_GID=1000
+ARG PYTHON_VERSION=3.12.8
+ARG NODE_VERSION=24
+
+# Codeg 服务和各语言工具链的默认路径都落在持久化目录中。
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+ENV HOME=/home/codeg
+ENV SHELL=/bin/bash
+ENV CODEG_STATIC_DIR=/app/web
+ENV CODEG_DATA_DIR=/data
+ENV CODEG_PORT=3080
+ENV CODEG_HOST=0.0.0.0
+ENV CODEG_MCP_BIN=/usr/local/bin/codeg-mcp
+ENV PYENV_ROOT=/home/codeg/.pyenv
+ENV NVM_DIR=/home/codeg/.nvm
+ENV CARGO_HOME=/home/codeg/.cargo
+ENV RUSTUP_HOME=/home/codeg/.rustup
+ENV BUN_INSTALL=/home/codeg/.bun
+ENV UV_CACHE_DIR=/home/codeg/.cache/uv
+ENV PIP_CACHE_DIR=/home/codeg/.cache/pip
+ENV PATH=/home/codeg/.pyenv/shims:/home/codeg/.pyenv/bin:/home/codeg/.nvm/versions/node/v24/bin:/home/codeg/.bun/bin:/home/codeg/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 安装系统依赖：开发工具、GitHub CLI、JDK、Python 构建依赖、XFCE、VNC/noVNC 和浏览器运行库。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    gh \
+    gosu \
+    openssh-client \
+    openssl \
+    rsync \
+    sudo \
+    tzdata \
+    xz-utils \
+    g++ \
+    make \
+    pkg-config \
+    openjdk-17-jdk \
+    libsqlite3-0 \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    llvm \
+    libncursesw5-dev \
+    tk-dev \
+    libxml2-dev \
+    libxmlsec1-dev \
+    libffi-dev \
+    liblzma-dev \
+    xfce4 \
+    xfce4-terminal \
+    dbus-x11 \
+    tigervnc-standalone-server \
+    tigervnc-common \
+    novnc \
+    websockify \
+    fonts-dejavu \
+    fonts-noto-cjk \
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libasound2 \
+    libnss3 \
+    libxss1 \
+    libxtst6 \
+    libgbm1 \
+    libxrandr2 \
+    libxdamage1 \
+    libxcomposite1 \
+    libxfixes3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+ && rm -rf /var/lib/apt/lists/*
+
+# 使用非 root 的 codeg 用户运行服务，并预创建三个需要持久化的目录。
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+ && useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash ${USERNAME} \
+ && mkdir -p /app /data /workspace /home/codeg /opt/codeg-home-template \
+ && chown -R ${USERNAME}:${USERNAME} /data /workspace /home/codeg /opt/codeg-home-template
+
+# 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件和容器启动脚本。
+COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
+COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
+COPY --from=frontend /app/out /app/web
+COPY docker/entrypoint.local.sh /usr/local/bin/codeg-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/codeg-server /usr/local/bin/codeg-mcp /usr/local/bin/codeg-entrypoint.sh \
+ && chown -R ${USERNAME}:${USERNAME} /app/web
+
+USER ${USERNAME}
+WORKDIR /workspace
+
+# pyenv 放在 /home/codeg 下，后续安装的 Python 版本会随 home bind mount 持久化。
+RUN git clone --depth=1 https://github.com/pyenv/pyenv.git "$PYENV_ROOT" \
+ && pyenv install "$PYTHON_VERSION" \
+ && pyenv global "$PYTHON_VERSION" \
+ && python -m pip install --upgrade pip setuptools wheel \
+ && python -m pip install uv camoufox \
+ && camoufox fetch
+
+# nvm、Node.js 24、全局 npm 包、pnpm/yarn/bun 都安装到 /home/codeg，便于持久化。
+RUN mkdir -p "$NVM_DIR" \
+ && curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
+ && bash -lc 'source "$NVM_DIR/nvm.sh" && nvm install "$NODE_VERSION" && nvm alias default "$NODE_VERSION"' \
+ && bash -lc 'source "$NVM_DIR/nvm.sh" && npm install -g corepack pnpm yarn @anthropic-ai/claude-code @openai/codex opencode-ai' \
+ && curl -fsSL https://bun.sh/install | bash
+
+# Rust 工具链同样安装到 /home/codeg，cargo/rustup 数据会随用户目录持久化。
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default \
+ && bash -lc 'source "$CARGO_HOME/env" && rustup default stable'
+
+# 为交互式 shell 写入工具链初始化逻辑，进入容器后可直接使用 python/node/rust/bun。
+RUN printf '%s\n' \
+    'export PYENV_ROOT="$HOME/.pyenv"' \
+    'export NVM_DIR="$HOME/.nvm"' \
+    'export CARGO_HOME="$HOME/.cargo"' \
+    'export RUSTUP_HOME="$HOME/.rustup"' \
+    'export BUN_INSTALL="$HOME/.bun"' \
+    'export PATH="$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/versions/node/v24/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$PATH"' \
+    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' \
+    'eval "$(pyenv init -)"' \
+    > /home/codeg/.bashrc
+
+USER root
+# 首次挂载空的 /home/codeg 时，entrypoint 会从这个模板恢复镜像内预装的工具链文件。
+RUN rsync -a /home/codeg/ /opt/codeg-home-template/ \
+ && chown -R ${USERNAME}:${USERNAME} /home/codeg /opt/codeg-home-template /data /workspace
+
+# 3080 是 Codeg Web；6080 是 noVNC HTTPS Web；50000-50100 预留给容器内开发服务。
+EXPOSE 3080 6080 50000-50100
+VOLUME ["/data", "/home/codeg", "/workspace"]
+
+ENTRYPOINT ["/usr/local/bin/codeg-entrypoint.sh"]
