@@ -1062,7 +1062,9 @@
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "preview": "預覽",
-      "editSource": "編輯原始碼"
+      "editSource": "編輯原始碼",
+      "maximize": "最大化",
+      "restore": "還原"
     },
     "terminal": {
       "rename": "重新命名",

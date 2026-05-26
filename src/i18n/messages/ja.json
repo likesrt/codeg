@@ -1062,7 +1062,9 @@
       "closeOthers": "他を閉じる",
       "closeAll": "すべて閉じる",
       "preview": "プレビュー",
-      "editSource": "ソースを編集"
+      "editSource": "ソースを編集",
+      "maximize": "最大化",
+      "restore": "元に戻す"
     },
     "terminal": {
       "rename": "名前を変更",

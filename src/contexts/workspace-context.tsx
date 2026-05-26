@@ -106,6 +106,8 @@ interface WorkspaceContextValue {
   reloadActiveFile: () => Promise<void>
   previewFileTabIds: Set<string>
   toggleFileTabPreview: (tabId: string) => void
+  filesMaximized: boolean
+  toggleFilesMaximized: () => void
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null)
@@ -218,6 +220,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const [previewFileTabIds, setPreviewFileTabIds] = useState<Set<string>>(
     new Set()
   )
+  const [filesMaximized, setFilesMaximized] = useState(false)
   const fileTabsRef = useRef<FileWorkspaceTab[]>([])
   const fileRevealRequestIdRef = useRef(0)
 
@@ -226,6 +229,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [fileTabs])
 
   const mode: WorkspaceMode = fileTabs.length > 0 ? "fusion" : "conversation"
+  const effectiveFilesMaximized = mode === "fusion" && filesMaximized
+
+  // Reset maximize state once the file workspace is empty so reopening a file
+  // later starts from the normal split instead of a stale maximized layout.
+  useEffect(() => {
+    if (fileTabs.length === 0 && filesMaximized) {
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setFilesMaximized(false)
+      /* eslint-enable react-hooks/set-state-in-effect */
+    }
+  }, [fileTabs.length, filesMaximized])
+
+  const toggleFilesMaximized = useCallback(() => {
+    setFilesMaximized((prev) => !prev)
+  }, [])
 
   // Clear file tabs when the active folder changes — files are not persisted
   // across folder switches in the workspace model.
@@ -1049,6 +1067,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       previewFileTabIds,
       toggleFileTabPreview,
+      filesMaximized: effectiveFilesMaximized,
+      toggleFilesMaximized,
     }),
     [
       mode,
@@ -1078,6 +1098,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reloadActiveFile,
       previewFileTabIds,
       toggleFileTabPreview,
+      effectiveFilesMaximized,
+      toggleFilesMaximized,
     ]
   )
 

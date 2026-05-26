@@ -1062,7 +1062,9 @@
       "closeOthers": "다른 항목 닫기",
       "closeAll": "모두 닫기",
       "preview": "미리보기",
-      "editSource": "소스 편집"
+      "editSource": "소스 편집",
+      "maximize": "최대화",
+      "restore": "복원"
     },
     "terminal": {
       "rename": "이름 변경",

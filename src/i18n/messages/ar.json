@@ -1062,7 +1062,9 @@
       "closeOthers": "إغلاق البقية",
       "closeAll": "إغلاق الكل",
       "preview": "معاينة",
-      "editSource": "تحرير المصدر"
+      "editSource": "تحرير المصدر",
+      "maximize": "تكبير",
+      "restore": "استعادة"
     },
     "terminal": {
       "rename": "إعادة تسمية",

@@ -1062,7 +1062,9 @@
       "closeOthers": "Close Others",
       "closeAll": "Close All",
       "preview": "Preview",
-      "editSource": "Edit Source"
+      "editSource": "Edit Source",
+      "maximize": "Maximize",
+      "restore": "Restore"
     },
     "terminal": {
       "rename": "Rename",

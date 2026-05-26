@@ -1062,7 +1062,9 @@
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "preview": "Aperçu",
-      "editSource": "Modifier la source"
+      "editSource": "Modifier la source",
+      "maximize": "Agrandir",
+      "restore": "Restaurer"
     },
     "terminal": {
       "rename": "Renommer",

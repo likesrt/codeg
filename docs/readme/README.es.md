@@ -23,6 +23,26 @@ Codeg (Code Generation) es un espacio de trabajo de codificación multiagente. U
 
 ![gallery](../images/gallery.svg)
 
+## Patrocinadores
+
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <a href="https://myclaw.ai/?utm_source=github&utm_campaign=codeg" target="_blank"><img src="https://raw.githubusercontent.com/LeoYeAI/myclaw-sponsor-preview/main/banner.svg" alt="MyClaw.ai — Your OpenClaw Agent, Always On." /></a><br/>
+      <strong><a href="https://myclaw.ai/?utm_source=github&utm_campaign=codeg">MyClaw.ai</a></strong> — Plataforma OpenClaw en la nube totalmente gestionada: despliegue en un clic, disponibilidad 24/7 y propiedad total de los datos, sin tener que administrar servidores.
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="Compshare" width="160" /></a><br/>
+      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">Compshare (UCloud)</a></strong>
+    </td>
+    <td>¡Gracias a Compshare por patrocinar este proyecto! Compshare es la plataforma de IA en la nube de UCloud, que ofrece planes Plan de agentes con modelos nacionales en suscripción mensual o por uso, desde 49 ¥/mes. También proporciona acceso estable a modelos extranjeros mediante proxy oficial. Compatible con Claude Code, Codex y llamadas a la API. Apto para empresas: alta concurrencia, soporte técnico 24/7 y facturación en autoservicio. ¡Los usuarios que se registren a través de <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">este enlace</a> recibirán 5 ¥ de saldo de prueba gratis!</td>
+  </tr>
+</table>
+
+> ¿Quieres convertirte en patrocinador de Codeg? [Contáctanos por correo electrónico.](mailto:itpkcn@gmail.com)
+
 ## Interfaz principal
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)

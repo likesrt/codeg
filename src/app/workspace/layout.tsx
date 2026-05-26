@@ -123,16 +123,16 @@ function resolvePanelSizeRange(
 }
 
 function WorkspaceContent({ children }: { children: React.ReactNode }) {
-  const { mode, setActivePane } = useWorkspaceContext()
+  const { mode, setActivePane, filesMaximized } = useWorkspaceContext()
   const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
   const fusionLayoutRef = useRef<[number, number]>(DEFAULT_FUSION_LAYOUT)
   const desiredLayoutRef = useRef<[number, number]>(DEFAULT_FUSION_LAYOUT)
   const appliedLayoutRef = useRef<[number, number] | null>(null)
 
   const markConversationActive = useCallback(() => {
-    if (mode !== "fusion") return
+    if (mode !== "fusion" || filesMaximized) return
     setActivePane("conversation")
-  }, [mode, setActivePane])
+  }, [mode, filesMaximized, setActivePane])
 
   const markFileActive = useCallback(() => {
     if (mode !== "fusion") return
@@ -208,6 +208,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
             )}
             onPointerDownCapture={markConversationActive}
             onFocusCapture={markConversationActive}
+            inert={filesMaximized || undefined}
           >
             <TabBar />
             <div className="relative flex-1 min-h-0 overflow-hidden">
@@ -229,8 +230,22 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
           defaultSize={44}
           minSize={mode === "fusion" ? 20 : 0}
         >
+          {/* When maximized, overlay the file section across the entire
+              workspace area instead of resizing the conversation panel — that
+              would fire ResizeObserver on the conversation's stick-to-bottom
+              scroll container and reset its position.
+              The `absolute inset-0` resolves to the outer `relative` wrapper,
+              not the Panel root. This depends on react-resizable-panels
+              keeping the Panel root at `position: static`; if a future
+              version sets `position: relative` there, this overlay (and the
+              mirrored `mode === "conversation"` overlay above) would clip to
+              the Panel's allocated slice and need to be lifted outside the
+              panel group. */}
           <section
-            className="flex h-full min-h-0 flex-col overflow-hidden"
+            className={cn(
+              "flex h-full min-h-0 flex-col overflow-hidden",
+              filesMaximized && "absolute inset-0 z-30 bg-background"
+            )}
             onPointerDownCapture={markFileActive}
             onFocusCapture={markFileActive}
             aria-hidden={mode === "conversation"}

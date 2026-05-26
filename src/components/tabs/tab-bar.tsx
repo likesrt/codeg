@@ -26,7 +26,7 @@ export function TabBar() {
     reorderTabs,
   } = useTabContext()
   const { allFolders, branches } = useAppWorkspace()
-  const { mode, activePane } = useWorkspaceContext()
+  const { mode, activePane, filesMaximized } = useWorkspaceContext()
 
   const folderIndex = useMemo(() => {
     const map = new Map<number, { name: string }>()
@@ -59,7 +59,7 @@ export function TabBar() {
     const onKeyDown = (event: KeyboardEvent) => {
       const shouldHandleShortcut =
         mode === "conversation" ||
-        (mode === "fusion" && activePane === "conversation")
+        (mode === "fusion" && activePane === "conversation" && !filesMaximized)
       if (!shouldHandleShortcut) return
       if (!matchShortcutEvent(event, shortcuts.close_current_tab)) return
       if (!activeTabId) return
@@ -72,7 +72,14 @@ export function TabBar() {
     return () => {
       window.removeEventListener("keydown", onKeyDown)
     }
-  }, [activePane, activeTabId, closeTab, mode, shortcuts.close_current_tab])
+  }, [
+    activePane,
+    activeTabId,
+    closeTab,
+    filesMaximized,
+    mode,
+    shortcuts.close_current_tab,
+  ])
 
   const handleReorder = useCallback(
     (nextTabs: TabItemData[]) => {

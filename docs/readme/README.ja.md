@@ -23,6 +23,26 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 
 ![gallery](../images/gallery.svg)
 
+## スポンサー
+
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <a href="https://myclaw.ai/?utm_source=github&utm_campaign=codeg" target="_blank"><img src="https://raw.githubusercontent.com/LeoYeAI/myclaw-sponsor-preview/main/banner.svg" alt="MyClaw.ai — Your OpenClaw Agent, Always On." /></a><br/>
+      <strong><a href="https://myclaw.ai/?utm_source=github&utm_campaign=codeg">MyClaw.ai</a></strong> — OpenClaw のフルマネージド型クラウド実行環境。ワンクリックでセットアップ、24 時間 365 日稼働、データは完全にユーザー所有。サーバー管理は一切不要です。
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="Compshare" width="160" /></a><br/>
+      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">Compshare（UCloud）</a></strong>
+    </td>
+    <td>本プロジェクトをスポンサードしてくださった Compshare に感謝します！Compshare は UCloud 傘下の AI クラウドプラットフォームで、月額制・従量制のコストパフォーマンスに優れた国内モデル agent Plan プランを提供しており、月額 49 元から利用可能です。安定した公式リダイレクトによる海外モデルへのアクセスも提供しています。Claude Code、Codex、API 連携に対応。企業向けの高並列対応、7×24 テクニカルサポート、セルフ請求書発行をサポートしています。<a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">こちらのリンク</a>から登録された方には、5 元分の無料プラットフォームクレジットが進呈されます！</td>
+  </tr>
+</table>
+
+> Codeg のスポンサーになりませんか？[メールでお問い合わせください。](mailto:itpkcn@gmail.com)
+
 ## メインインターフェース
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)

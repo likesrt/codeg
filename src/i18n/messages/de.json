@@ -1062,7 +1062,9 @@
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "preview": "Vorschau",
-      "editSource": "Quelle bearbeiten"
+      "editSource": "Quelle bearbeiten",
+      "maximize": "Maximieren",
+      "restore": "Wiederherstellen"
     },
     "terminal": {
       "rename": "Umbenennen",
