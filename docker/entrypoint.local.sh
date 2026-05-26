@@ -13,15 +13,19 @@ export VNC_PASSWORD=${VNC_PASSWORD:-change-me}
 mkdir -p /data /workspace /home/codeg
 chown -R codeg:codeg /data /workspace /home/codeg 2>/dev/null || true
 
-# 如果 /home/codeg 是首次挂载的空目录，恢复镜像构建阶段预装的工具链和 shell 配置。
-if [ -d /opt/codeg-home-template ]; then
-  rsync -a --ignore-existing /opt/codeg-home-template/ /home/codeg/
-  chown -R codeg:codeg /home/codeg 2>/dev/null || true
-fi
-
 run_as_codeg() {
   gosu codeg "$@"
 }
+
+# 修复已持久化 home 中旧镜像留下的 Node 路径，确保 npm/pnpm 可被默认 PATH 找到。
+if [ -s /home/codeg/.nvm/nvm.sh ]; then
+  run_as_codeg bash -lc 'source "$HOME/.nvm/nvm.sh" && nvm use --silent default >/dev/null && ln -sfn "$(npm prefix -g)" "$HOME/.nvm/current"'
+fi
+if [ -f /home/codeg/.bashrc ]; then
+  sed -i 's|$NVM_DIR/versions/node/v24/bin|$NVM_DIR/current/bin|g' /home/codeg/.bashrc
+  grep -qxF 'export NVM_SYMLINK_CURRENT=true' /home/codeg/.bashrc || sed -i '/export NVM_DIR="\$HOME\/\.nvm"/a export NVM_SYMLINK_CURRENT=true' /home/codeg/.bashrc
+  chown codeg:codeg /home/codeg/.bashrc 2>/dev/null || true
+fi
 
 # 初始化 VNC 配置目录和密码文件，密码来自 docker-compose.yml 的 VNC_PASSWORD。
 run_as_codeg bash -lc 'mkdir -p "$HOME/.vnc" "$HOME/.config" "$HOME/.cache"'
@@ -56,4 +60,4 @@ fi
 run_as_codeg websockify --web=/usr/share/novnc/ --cert=/home/codeg/.vnc/novnc.pem 0.0.0.0:6080 localhost:5901 &
 
 # 前台运行 Codeg 服务，让容器生命周期跟随 codeg-server。
-exec run_as_codeg codeg-server
+exec gosu codeg codeg-server

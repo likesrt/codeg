@@ -7,6 +7,11 @@
 # docker compose -f docker-compose.local.yml up -d --build
 # ```
 
+# 如果要在持久化 home 中按需安装 Python/Node/Rust/Bun 等工具链：
+# ```bash
+# docker exec -it codeg codeg init tool
+# ```
+
 services:
   codeg:
     build:
