@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+    # image: ghcr.io/likesrt/codeg:latest
+    container_name: codeg
     labels:
       - createdBy=Apps
     networks:
