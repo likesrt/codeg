@@ -31,8 +31,6 @@ services:
       # 预留给容器内开发服务使用，例如 npm/pnpm/yarn dev、Python 服务等
       - "50000-50100:50000-50100"
     volumes:
-      # 工作区目录：放代码仓库和项目文件，容器内路径为 /workspace
-      - ./workspace:/workspace
       # codeg 用户目录：持久化 Claude Code、Codex、OpenCode、nvm、pyenv、Rust、Bun、npm/pnpm/yarn 全局包和缓存
       - ./home/codeg:/home/codeg
       # Codeg 数据目录：持久化 SQLite 数据库、tokens.json、uploads、pets、凭据 helper 等

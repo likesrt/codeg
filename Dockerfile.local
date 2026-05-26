@@ -115,8 +115,8 @@ RUN apt-get update \
 # 使用非 root 的 codeg 用户运行服务，并预创建三个需要持久化的目录。
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
  && useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash ${USERNAME} \
- && mkdir -p /app /data /workspace /home/codeg \
- && chown -R ${USERNAME}:${USERNAME} /data /workspace /home/codeg
+ && mkdir -p /app /data /home/codeg/workspace /home/codeg \
+ && chown -R ${USERNAME}:${USERNAME} /data /home/codeg/workspace /home/codeg
 
 # 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件、容器启动脚本和按需工具链安装入口。
 COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
@@ -126,12 +126,12 @@ COPY docker/entrypoint.local.sh /usr/local/bin/codeg-entrypoint.sh
 COPY docker/codeg.local.sh /usr/local/bin/codeg
 
 RUN chmod +x /usr/local/bin/codeg-server /usr/local/bin/codeg-mcp /usr/local/bin/codeg-entrypoint.sh /usr/local/bin/codeg \
- && chown -R ${USERNAME}:${USERNAME} /app/web /home/codeg /data /workspace
+ && chown -R ${USERNAME}:${USERNAME} /app/web /home/codeg /data /home/codeg/workspace
 
-WORKDIR /workspace
+WORKDIR /home/codeg/workspace
 
 # 3080 是 Codeg Web；6080 是 noVNC HTTPS
 EXPOSE 3080 6080
-VOLUME ["/data", "/home/codeg", "/workspace"]
+VOLUME ["/data", "/home/codeg", "/home/codeg/workspace"]
 
 ENTRYPOINT ["/usr/local/bin/codeg-entrypoint.sh"]
