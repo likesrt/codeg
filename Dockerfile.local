@@ -20,8 +20,8 @@ COPY src-tauri/ ./
 RUN cargo build --release --bin codeg-server --no-default-features \
  && cargo build --release --bin codeg-mcp --no-default-features
 
-# Stage 3: Runtime development workstation
-FROM debian:bookworm-slim
+# Stage 3: Runtime base shared by the final image and the home-template builder
+FROM debian:bookworm-slim AS runtime-base
 
 # 这些 ARG 便于后续按需调整容器用户 UID/GID、Python 默认版本和 Node 主版本。
 ARG USERNAME=codeg
@@ -63,6 +63,7 @@ RUN apt-get update \
     rsync \
     sudo \
     tzdata \
+    unzip \
     xz-utils \
     g++ \
     make \
@@ -86,6 +87,7 @@ RUN apt-get update \
     dbus-x11 \
     tigervnc-standalone-server \
     tigervnc-common \
+    tigervnc-tools \
     novnc \
     websockify \
     fonts-dejavu \
@@ -111,14 +113,10 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
  && mkdir -p /app /data /workspace /home/codeg /opt/codeg-home-template \
  && chown -R ${USERNAME}:${USERNAME} /data /workspace /home/codeg /opt/codeg-home-template
 
-# 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件和容器启动脚本。
-COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
-COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
-COPY --from=frontend /app/out /app/web
-COPY docker/entrypoint.local.sh /usr/local/bin/codeg-entrypoint.sh
+# Stage 4: Build the persistent home template outside the final image layers
+FROM runtime-base AS home-template
 
-RUN chmod +x /usr/local/bin/codeg-server /usr/local/bin/codeg-mcp /usr/local/bin/codeg-entrypoint.sh \
- && chown -R ${USERNAME}:${USERNAME} /app/web
+ARG USERNAME=codeg
 
 USER ${USERNAME}
 WORKDIR /workspace
@@ -154,10 +152,29 @@ RUN printf '%s\n' \
     'eval "$(pyenv init -)"' \
     > /home/codeg/.bashrc
 
-USER root
-# 首次挂载空的 /home/codeg 时，entrypoint 会从这个模板恢复镜像内预装的工具链文件。
-RUN rsync -a /home/codeg/ /opt/codeg-home-template/ \
- && chown -R ${USERNAME}:${USERNAME} /home/codeg /opt/codeg-home-template /data /workspace
+RUN rm -rf \
+    "$PYENV_ROOT/cache" \
+    "$PIP_CACHE_DIR" \
+    "$UV_CACHE_DIR" \
+    "$NVM_DIR/.cache" \
+    "$HOME/.npm/_cacache" \
+    "$CARGO_HOME/registry" \
+    "$CARGO_HOME/git"
+
+# Stage 5: Runtime development workstation
+FROM runtime-base
+
+# 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件、容器启动脚本和 home 初始化模板。
+COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
+COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
+COPY --from=frontend /app/out /app/web
+COPY docker/entrypoint.local.sh /usr/local/bin/codeg-entrypoint.sh
+COPY --from=home-template --chown=codeg:codeg /home/codeg/ /opt/codeg-home-template/
+
+RUN chmod +x /usr/local/bin/codeg-server /usr/local/bin/codeg-mcp /usr/local/bin/codeg-entrypoint.sh \
+ && chown -R codeg:codeg /app/web /home/codeg /opt/codeg-home-template /data /workspace
+
+WORKDIR /workspace
 
 # 3080 是 Codeg Web；6080 是 noVNC HTTPS Web；50000-50100 预留给容器内开发服务。
 EXPOSE 3080 6080 50000-50100

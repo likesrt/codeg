@@ -19,8 +19,8 @@ services:
     networks:
       - 1panel-network
     ports:
-      # Codeg Web 服务：宿主机访问 http://<服务器IP>:6060
-      - "6060:3080"
+      # Codeg Web 服务：宿主机访问 http://<服务器IP>:3080
+      - "3080:3080"
       # noVNC HTTPS Web 桌面：宿主机访问 https://<服务器IP>:49999
       - "49999:6080"
       # 预留给容器内开发服务使用，例如 npm/pnpm/yarn dev、Python 服务等
@@ -36,7 +36,7 @@ services:
       # 容器时区
       - TZ=Asia/Shanghai
 
-      # Codeg HTTP 端口，需与上方 6060:3080 的容器端口保持一致
+      # Codeg HTTP 端口，需与上方 3080:3080 的容器端口保持一致
       - CODEG_PORT=3080
       # Codeg 绑定地址；容器内必须绑定 0.0.0.0，宿主机才能访问
       - CODEG_HOST=0.0.0.0
