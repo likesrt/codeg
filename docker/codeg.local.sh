@@ -116,7 +116,7 @@ install_nvm_node() {
   nvm alias default "$CODEG_NODE_VERSION"
   nvm use --silent default
   ln -sfn "$(npm prefix -g)" "$NVM_DIR/current"
-  npm install -g corepack pnpm yarn @anthropic-ai/claude-code @openai/codex opencode-ai
+  npm install -g corepack pnpm yarn
   corepack enable || true
 }
 
