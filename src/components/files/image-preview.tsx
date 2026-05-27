@@ -196,7 +196,7 @@ export function ImagePreview({ tab }: { tab: FileWorkspaceTab }) {
           {t("loading")}
         </div>
       )}
-      {!tab.loading && tab.content && (
+      {tab.content && (
         <>
           {/* Toolbar */}
           <div className="flex-none flex items-center gap-1 border-b border-border bg-muted/30 px-3 py-1">
@@ -284,6 +284,11 @@ export function ImagePreview({ tab }: { tab: FileWorkspaceTab }) {
             </div>
           </div>
         </>
+      )}
+      {!tab.content && tab.loading && (
+        <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+          {t("loading")}
+        </div>
       )}
     </div>
   )
