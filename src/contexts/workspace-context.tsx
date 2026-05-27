@@ -23,6 +23,7 @@ import {
   readFilePreview,
   saveFileContent,
 } from "@/lib/api"
+import type { FileEditContent } from "@/lib/types"
 import { languageFromPath } from "@/lib/language-detect"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -53,6 +54,10 @@ export interface FileWorkspaceTab {
   lineEnding?: LineEnding
   saveState?: FileSaveState
   saveError?: string | null
+  // True iff an external change to this tab's path was observed by the
+  // workspace watcher while the tab was inactive or otherwise not yet
+  // resolved against disk. Cleared by any successful content reload.
+  stale?: boolean
 }
 
 interface WorkspaceContextValue {
@@ -70,7 +75,31 @@ interface WorkspaceContextValue {
   closeOtherFileTabs: (tabId: string) => void
   closeAllFileTabs: () => void
   reorderFileTabs: (tabs: FileWorkspaceTab[]) => void
-  openFilePreview: (path: string, options?: { line?: number }) => Promise<void>
+  openFilePreview: (
+    path: string,
+    options?: { line?: number; reload?: boolean }
+  ) => Promise<void>
+  // Refetch the open tab matching `path` without changing activeFileTabId.
+  // No-op when no tab matches or when the tab has unsaved local edits
+  // (use markTabsStale for that case).
+  reloadOpenFileBackground: (path: string) => Promise<void>
+  // Write prefetched file content into the open tab matching `path` without
+  // issuing a second readFileForEdit. Used by the change-detection watcher
+  // whose resolver has already paid for the read — avoids the I/O double
+  // when many tabs are affected by a single workspace event. Skips dirty
+  // tabs and tabs that aren't open.
+  applyExternalReload: (path: string, fetched: FileEditContent) => Promise<void>
+  // Flip stale=true on the tab matching `path`. Activating a stale tab
+  // forces a refetch (clean) or triggers conflict resolution (dirty).
+  markTabsStale: (path: string) => void
+  // Mark a clean open tab as load-failed, replacing its body with the
+  // supplied error message and routing it into the editor's error state.
+  // No-op when no tab matches OR when the tab is dirty — unsaved edits
+  // must never be silently clobbered. Used by the watcher when a workspace
+  // event reports a path whose disk read fails (external delete, locked,
+  // permission revoked, …), so the user is never shown a stale buffer that
+  // no longer corresponds to disk.
+  rejectFileTab: (path: string, errorMessage: string) => void
   pendingFileReveal: {
     requestId: number
     path: string
@@ -146,7 +175,7 @@ const IMAGE_MIME: Record<string, string> = {
   ico: "image/x-icon",
 }
 
-function isImageFile(path: string): boolean {
+export function isImageFile(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? ""
   return IMAGE_EXTENSIONS.has(ext)
 }
@@ -178,6 +207,8 @@ function loadingTab(
     saveError: null,
   }
 }
+
+type LoadDecision = { kind: "skip" } | { kind: "fetch"; gen: number }
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -223,6 +254,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const [filesMaximized, setFilesMaximized] = useState(false)
   const fileTabsRef = useRef<FileWorkspaceTab[]>([])
   const fileRevealRequestIdRef = useRef(0)
+  // tabId -> generation of its current in-flight fetch. Serves two roles:
+  //   (a) Dedup: `has(tabId)` collapses rapid re-clicks within one event
+  //       loop turn (where fileTabsRef.current is still pre-render-stale).
+  //   (b) Staleness check: each fetch captures the generation it was
+  //       started with and only commits state on resolve if it still
+  //       matches — preventing an orphaned fetch (after close+reopen, or
+  //       a superseding refresh) from clobbering the tab.
+  const inFlightLoadsRef = useRef<Map<string, number>>(new Map())
+  const nextLoadGenRef = useRef(0)
 
   useEffect(() => {
     fileTabsRef.current = fileTabs
@@ -253,6 +293,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     setActiveFileTabId(null)
     setPreviewFileTabIds(new Set())
     setPendingFileReveal(null)
+    // Any in-flight fetches belong to the previous folder. Their resolve
+    // handlers will no-op against the now-empty tab list, but we must drop
+    // their markers so a subsequent re-open of the same path is not
+    // erroneously deduped.
+    inFlightLoadsRef.current.clear()
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [activeFolderId])
 
@@ -270,19 +315,83 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     setActivePaneState((prev) => (prev === "files" ? prev : "files"))
   }, [])
 
-  const upsertLoadingTab = useCallback(
+  // Pure activation — no content mutation.
+  const activateTab = useCallback(
+    (tabId: string) => {
+      setActiveFileTabId(tabId)
+      activateFilePane()
+    },
+    [activateFilePane]
+  )
+
+  // Insert a freshly created (loading, empty) tab. Caller has verified no tab
+  // with this id exists. If a race introduced one, leave it alone.
+  const seedLoadingTab = useCallback(
+    (nextTab: FileWorkspaceTab) => {
+      setFileTabs((prev) => {
+        if (prev.some((tab) => tab.id === nextTab.id)) return prev
+        return [...prev, nextTab]
+      })
+      setActiveFileTabId(nextTab.id)
+      activateFilePane()
+    },
+    [activateFilePane]
+  )
+
+  // Mark an existing tab as refreshing. Preserves content / originalContent /
+  // modifiedContent / gitBaseContent / savedContent / etag / mtimeMs /
+  // isDirty / readonly / lineEnding. Clears any prior error state.
+  const markTabRefreshing = useCallback((tabId: string) => {
+    setFileTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              loading: true,
+              saveState: "idle",
+              saveError: null,
+            }
+          : tab
+      )
+    )
+  }, [])
+
+  // Reset an errored tab to a clean cold-load state. The previous error
+  // message is currently stored in `content`; clear it so the next load
+  // re-enters the placeholder branch instead of flashing the error string.
+  const markErrorRetry = useCallback(
+    (tabId: string, kind: FileWorkspaceTabKind) => {
+      setFileTabs((prev) =>
+        prev.map((tab) =>
+          tab.id === tabId
+            ? {
+                ...tab,
+                loading: true,
+                content: "",
+                originalContent:
+                  kind === "rich-diff" ? undefined : tab.originalContent,
+                modifiedContent:
+                  kind === "rich-diff" ? undefined : tab.modifiedContent,
+                saveState: "idle",
+                saveError: null,
+              }
+            : tab
+        )
+      )
+    },
+    []
+  )
+
+  // Replace an entire tab atomically. Used for synchronous content sources
+  // (session diffs, external-conflict diffs) where the caller already holds
+  // the final content.
+  const replaceTabContent = useCallback(
     (nextTab: FileWorkspaceTab) => {
       setFileTabs((prev) => {
         const idx = prev.findIndex((tab) => tab.id === nextTab.id)
-        if (idx < 0) {
-          return [...prev, nextTab]
-        }
-
+        if (idx < 0) return [...prev, nextTab]
         const updated = [...prev]
-        updated[idx] = {
-          ...updated[idx],
-          ...nextTab,
-        }
+        updated[idx] = nextTab
         return updated
       })
       setActiveFileTabId(nextTab.id)
@@ -290,6 +399,112 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     },
     [activateFilePane]
   )
+
+  // Orchestrates the "I want to start (or restart) a load for this tab" flow.
+  // Encapsulates: cache short-circuit, in-flight dedup, error retry, forced
+  // refresh, and cold-load creation. Returns whether the caller should
+  // proceed with its fetch.
+  const beginFetchGeneration = useCallback((tabId: string): number => {
+    nextLoadGenRef.current += 1
+    const gen = nextLoadGenRef.current
+    inFlightLoadsRef.current.set(tabId, gen)
+    return gen
+  }, [])
+
+  const decideLoad = useCallback(
+    (seed: FileWorkspaceTab, reload: boolean): LoadDecision => {
+      // Dedup synchronously. inFlightLoadsRef is updated immediately on
+      // generation start, so rapid re-clicks within a single event loop
+      // turn collapse here — unlike fileTabsRef.current, which only
+      // reflects state after React flushes a render.
+      if (inFlightLoadsRef.current.has(seed.id)) {
+        activateTab(seed.id)
+        return { kind: "skip" }
+      }
+
+      const existing = fileTabsRef.current.find((t) => t.id === seed.id)
+      if (!existing) {
+        // "reload" means "refresh an existing tab". If the tab is gone —
+        // e.g. the user closed it while a watcher-driven reload was in
+        // flight — do not resurrect it as a phantom tab.
+        if (reload) return { kind: "skip" }
+        seedLoadingTab(seed)
+        return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
+      }
+
+      activateTab(existing.id)
+
+      if (existing.saveState === "error") {
+        markErrorRetry(existing.id, existing.kind)
+        return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
+      }
+
+      // Stale clean tab — the watcher saw an external change while we were
+      // inactive. Promote to reload now so the user never sees stale bytes.
+      // Stale dirty tabs are NOT auto-reloaded: conflict resolution belongs
+      // to the watcher, which surfaces the prompt instead of clobbering
+      // unsaved edits.
+      const stalePromotesReload =
+        existing.kind === "file" && existing.stale === true && !existing.isDirty
+
+      if (!reload && !stalePromotesReload) {
+        // Cache hit — nothing to do.
+        return { kind: "skip" }
+      }
+
+      markTabRefreshing(existing.id)
+      return { kind: "fetch", gen: beginFetchGeneration(seed.id) }
+    },
+    [
+      activateTab,
+      beginFetchGeneration,
+      markErrorRetry,
+      markTabRefreshing,
+      seedLoadingTab,
+    ]
+  )
+
+  // Variant of decideLoad for diff tabs: content is inherently volatile
+  // (git state changes), so we always refetch — but non-destructively.
+  const beginDiffLoad = useCallback(
+    (seed: FileWorkspaceTab): { skip: true } | { skip: false; gen: number } => {
+      if (inFlightLoadsRef.current.has(seed.id)) {
+        activateTab(seed.id)
+        return { skip: true }
+      }
+
+      const existing = fileTabsRef.current.find((t) => t.id === seed.id)
+      if (!existing) {
+        seedLoadingTab(seed)
+        return { skip: false, gen: beginFetchGeneration(seed.id) }
+      }
+
+      activateTab(seed.id)
+      if (existing.saveState === "error") {
+        markErrorRetry(seed.id, seed.kind)
+      } else {
+        markTabRefreshing(seed.id)
+      }
+      return { skip: false, gen: beginFetchGeneration(seed.id) }
+    },
+    [
+      activateTab,
+      beginFetchGeneration,
+      markErrorRetry,
+      markTabRefreshing,
+      seedLoadingTab,
+    ]
+  )
+
+  // Called from every fetch's resolve/error path. Returns true iff this
+  // particular fetch is still the canonical in-flight load for the tab —
+  // i.e. the user hasn't closed the tab, switched folders, or started a
+  // newer fetch in the meantime. Also performs the cleanup atomically.
+  const settleFetch = useCallback((tabId: string, gen: number): boolean => {
+    if (inFlightLoadsRef.current.get(tabId) !== gen) return false
+    inFlightLoadsRef.current.delete(tabId)
+    return true
+  }, [])
 
   const resolveTab = useCallback(
     (tabId: string, content: string, loading = false) => {
@@ -354,8 +569,271 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     )
   }, [])
 
+  // Background reload: refresh an open tab's content without changing
+  // activeFileTabId or activating the file pane. Used by the workspace
+  // watcher when an external change touches a clean tab the user isn't
+  // currently looking at — VS Code / IntelliJ silently absorb such changes
+  // so the next activation sees the latest bytes. Dirty tabs are off-limits
+  // (conflict resolution belongs to the watcher via markTabsStale).
+  const reloadOpenFileBackground = useCallback(
+    async (rawPath: string) => {
+      if (!folderPath) return
+      const path = normalizePath(rawPath)
+      const tabId = `file:${path}`
+      const existing = fileTabsRef.current.find((t) => t.id === tabId)
+      if (!existing || existing.kind !== "file") return
+      if (existing.isDirty) return
+      if (inFlightLoadsRef.current.has(tabId)) return
+
+      const image = isImageFile(path)
+
+      markTabRefreshing(tabId)
+      const gen = beginFetchGeneration(tabId)
+
+      try {
+        if (image) {
+          const absPath = `${folderPath}/${path}`
+          const ext = path.split(".").pop()?.toLowerCase() ?? ""
+          const mime = IMAGE_MIME[ext] ?? "image/png"
+          const b64 = await withTimeout(
+            readFileBase64(absPath),
+            15_000,
+            t("previewRequestTimedOut")
+          )
+          if (!settleFetch(tabId, gen)) return
+          setFileTabs((prev) =>
+            prev.map((tab) =>
+              tab.id === tabId
+                ? {
+                    ...tab,
+                    content: `data:${mime};base64,${b64}`,
+                    readonly: true,
+                    loading: false,
+                    saveState: "idle",
+                    saveError: null,
+                    stale: false,
+                  }
+                : tab
+            )
+          )
+          return
+        }
+
+        const [result, gitBaseContent] = await withTimeout(
+          Promise.all([
+            readFileForEdit(folderPath, path),
+            (async () => {
+              const tracked = await gitIsTracked(folderPath, path).catch(
+                () => false
+              )
+              if (!tracked) return undefined
+              return gitShowFile(folderPath, path).catch(() => "")
+            })(),
+          ]),
+          15_000,
+          t("previewRequestTimedOut")
+        )
+        if (!settleFetch(tabId, gen)) return
+        setFileTabs((prev) =>
+          prev.map((tab) =>
+            tab.id === tabId
+              ? {
+                  ...tab,
+                  content: result.content,
+                  gitBaseContent,
+                  savedContent: result.content,
+                  isDirty: false,
+                  etag: result.etag,
+                  mtimeMs: result.mtime_ms,
+                  readonly: result.readonly,
+                  lineEnding: result.line_ending,
+                  saveState: "idle",
+                  saveError: null,
+                  loading: false,
+                  stale: false,
+                }
+              : tab
+          )
+        )
+      } catch (error) {
+        if (!settleFetch(tabId, gen)) return
+        rejectTab(tabId, toErrorMessage(error))
+      }
+    },
+    [
+      folderPath,
+      beginFetchGeneration,
+      markTabRefreshing,
+      rejectTab,
+      settleFetch,
+      t,
+    ]
+  )
+
+  // Mark the tab matching `path` as stale so the next activation triggers a
+  // reload (clean) or a conflict prompt (dirty). The watcher calls this for
+  // dirty non-active tabs when an external change is observed, since silently
+  // reloading would discard the user's unsaved edits.
+  const markTabsStale = useCallback((rawPath: string) => {
+    const path = normalizePath(rawPath)
+    const tabId = `file:${path}`
+    setFileTabs((prev) => {
+      const idx = prev.findIndex((tab) => tab.id === tabId)
+      if (idx < 0) return prev
+      const tab = prev[idx]
+      if (tab.stale === true) return prev
+      const updated = [...prev]
+      updated[idx] = { ...tab, stale: true }
+      return updated
+    })
+  }, [])
+
+  // Write a prefetched FileEditContent into the matching tab. The change-
+  // detection watcher uses this after its resolver has already read the
+  // latest disk content — without this we would re-read every file twice
+  // per workspace event (resolver + reload). Dirty tabs are skipped so
+  // unsaved edits are never silently clobbered.
+  //
+  // Concurrency contract: the in-flight marker is bumped to invalidate any
+  // concurrent openFilePreview's pending settle (so an older read cannot
+  // overwrite our newer payload) and is then settled IMMEDIATELY after the
+  // synchronous content write. The slow, cosmetic git-base refresh runs
+  // out-of-band — it does NOT extend the in-flight marker's lifetime —
+  // so a stuck git invocation cannot block a subsequent user-initiated
+  // reload via the openFilePreview dedup path.
+  const applyExternalReload = useCallback(
+    async (rawPath: string, fetched: FileEditContent) => {
+      if (!folderPath) return
+      const path = normalizePath(rawPath)
+      const tabId = `file:${path}`
+      // Outer existence check — purely to avoid bumping the in-flight gen
+      // for a non-existent path (which would pollute openFilePreview's
+      // dedup). The dirty guard is NOT outer: fileTabsRef can lag a tick
+      // behind a user keystroke whose dirty update is already enqueued
+      // but not yet committed. The atomic check lives inside the
+      // setFileTabs updater below, where prev reflects every earlier
+      // queued updater (including the keystroke).
+      const existing = fileTabsRef.current.find((t) => t.id === tabId)
+      if (!existing || existing.kind !== "file") return
+
+      const gen = beginFetchGeneration(tabId)
+      const fetchedEtag = fetched.etag
+
+      // Atomic write: refuses the apply if the tab became dirty between
+      // our outer existence check and the actual commit (e.g. user typed
+      // in the same React batch as the watcher's apply call). The refused
+      // branch flips stale=true so the aux-panel effect (stale && isDirty
+      // → announceConflict) surfaces the divergence immediately instead
+      // of waiting for the next save to discover the etag mismatch.
+      setFileTabs((prev) =>
+        prev.map((tab) => {
+          if (tab.id !== tabId || tab.kind !== "file") return tab
+          if (tab.isDirty) return { ...tab, stale: true }
+          return {
+            ...tab,
+            content: fetched.content,
+            savedContent: fetched.content,
+            isDirty: false,
+            etag: fetched.etag,
+            mtimeMs: fetched.mtime_ms,
+            readonly: fetched.readonly,
+            lineEnding: fetched.line_ending,
+            loading: false,
+            stale: false,
+            saveState: "idle",
+            saveError: null,
+          }
+        })
+      )
+
+      // Release the in-flight marker NOW. Two-stage invalidation: the
+      // beginFetchGeneration above already poisoned any concurrent
+      // openFilePreview fetch (its settleFetch will fail), so clearing
+      // here cannot resurrect an in-flight overwrite. The cosmetic git
+      // base refresh below is decoupled — slow git must not block user
+      // reload dedup. (Each call's settle is mutually exclusive: the
+      // last applyExternalReload's gen wins, prior gens are stale.)
+      settleFetch(tabId, gen)
+
+      // Fire-and-forget git base refresh, etag-gated.
+      //
+      // The captured fetchedEtag doubles as a staleness token: if our
+      // atomic write above succeeded, the tab now carries fetchedEtag;
+      // if it was refused (dirty), or a later applyExternalReload /
+      // openFilePreview reload / close+reopen changed the tab, the tab
+      // carries a different etag. The final write checks tab.etag ===
+      // fetchedEtag inside the updater so a stale fetch can never paint
+      // gitter decorations onto a tab whose content has moved on. No
+      // separate generation token needed — etag is the natural fingerprint.
+      void (async () => {
+        try {
+          const gitBaseContent = await withTimeout(
+            (async () => {
+              const tracked = await gitIsTracked(folderPath, path).catch(
+                () => false
+              )
+              if (!tracked) return undefined
+              return gitShowFile(folderPath, path).catch(() => "")
+            })(),
+            15_000,
+            t("previewRequestTimedOut")
+          )
+          setFileTabs((prev) =>
+            prev.map((tab) => {
+              if (tab.id !== tabId || tab.kind !== "file") return tab
+              if (tab.etag !== fetchedEtag) return tab
+              return { ...tab, gitBaseContent }
+            })
+          )
+        } catch {
+          // Timeout or unexpected failure: leave existing gitBaseContent.
+        }
+      })()
+    },
+    [folderPath, beginFetchGeneration, settleFetch, t]
+  )
+
+  // Mark a clean open tab as load-failed. Used by the change-detection
+  // watcher when a readFileForEdit on a changed path fails (most commonly
+  // external delete). Dirty tabs are deliberately not touched here — the
+  // watcher routes them to markTabsStale so unsaved edits are preserved.
+  const rejectFileTab = useCallback(
+    (rawPath: string, errorMessage: string) => {
+      const path = normalizePath(rawPath)
+      const tabId = `file:${path}`
+      // Outer existence check only; the dirty guard is atomic inside the
+      // updater (see applyExternalReload for the same race shape).
+      const existing = fileTabsRef.current.find((t) => t.id === tabId)
+      if (!existing || existing.kind !== "file") return
+
+      // Bump generation so any concurrent fetch's settle is invalidated
+      // and cannot overwrite the error message we are about to write.
+      const gen = beginFetchGeneration(tabId)
+      setFileTabs((prev) =>
+        prev.map((tab) => {
+          if (tab.id !== tabId || tab.kind !== "file") return tab
+          // Symmetric with applyExternalReload's dirty refusal: surface
+          // the divergence via stale rather than silently no-op. Callers
+          // typically also call markTabsStale, so this is usually
+          // idempotent; the in-updater write protects direct callers.
+          if (tab.isDirty) return { ...tab, stale: true }
+          return {
+            ...tab,
+            content: t("unableLoadContent", { message: errorMessage }),
+            loading: false,
+            stale: false,
+            saveState: "error",
+            saveError: errorMessage,
+          }
+        })
+      )
+      settleFetch(tabId, gen)
+    },
+    [beginFetchGeneration, settleFetch, t]
+  )
+
   const openFilePreview = useCallback(
-    async (rawPath: string, options?: { line?: number }) => {
+    async (rawPath: string, options?: { line?: number; reload?: boolean }) => {
       if (!folderPath) return
       const path = normalizePath(rawPath)
       const requestedLine =
@@ -374,19 +852,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
       const tabId = `file:${path}`
       const image = isImageFile(path)
-      upsertLoadingTab(
-        loadingTab(
-          tabId,
-          "file",
-          fileName(path),
-          path,
-          path,
-          image ? "image" : languageFromPath(path)
-        )
+      const seed = loadingTab(
+        tabId,
+        "file",
+        fileName(path),
+        path,
+        path,
+        image ? "image" : languageFromPath(path)
       )
 
-      if (image) {
-        try {
+      const decision = decideLoad(seed, options?.reload ?? false)
+      if (decision.kind === "skip") return
+      const { gen } = decision
+
+      try {
+        if (image) {
           const absPath = `${folderPath}/${path}`
           const ext = path.split(".").pop()?.toLowerCase() ?? ""
           const mime = IMAGE_MIME[ext] ?? "image/png"
@@ -395,6 +875,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             15_000,
             t("previewRequestTimedOut")
           )
+          if (!settleFetch(tabId, gen)) return
           setFileTabs((prev) =>
             prev.map((tab) =>
               tab.id === tabId
@@ -405,17 +886,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                     loading: false,
                     saveState: "idle",
                     saveError: null,
+                    stale: false,
                   }
                 : tab
             )
           )
-        } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          return
         }
-        return
-      }
 
-      try {
         const [result, gitBaseContent] = await withTimeout(
           Promise.all([
             readFileForEdit(folderPath, path),
@@ -430,6 +908,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           15_000,
           t("previewRequestTimedOut")
         )
+        if (!settleFetch(tabId, gen)) return
         setFileTabs((prev) =>
           prev.map((tab) =>
             tab.id === tabId
@@ -446,11 +925,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   saveState: "idle",
                   saveError: null,
                   loading: false,
+                  stale: false,
                 }
               : tab
           )
         )
       } catch (error) {
+        if (!settleFetch(tabId, gen)) return
         if (requestedLine) {
           setPendingFileReveal((prev) =>
             prev && prev.path === path ? null : prev
@@ -459,7 +940,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         rejectTab(tabId, toErrorMessage(error))
       }
     },
-    [folderPath, rejectTab, t, upsertLoadingTab]
+    [folderPath, decideLoad, rejectTab, settleFetch, t]
   )
 
   const openWorkingTreeDiff = useCallback(
@@ -473,18 +954,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const tabId = "diff:working:all"
         const title = t("diffTitleWorkspace")
         const description = t("diffDescriptionWorkingTree")
-        upsertLoadingTab(
-          loadingTab(tabId, "diff", title, description, null, "diff")
-        )
+        const seed = loadingTab(tabId, "diff", title, description, null, "diff")
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const result = await withTimeout(
             gitDiff(folderPath),
             20_000,
             t("diffRequestTimedOut")
           )
-          resolveTab(tabId, result || t("noChanges"), false)
+          if (settleFetch(tabId, gen))
+            resolveTab(tabId, result || t("noChanges"), false)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
         return
       }
@@ -501,19 +984,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           name: fileName(displayPath ?? path),
         })
         const description = displayPath ?? path
-        upsertLoadingTab(
-          loadingTab(tabId, "diff", title, description, path, "diff")
-        )
-
+        const seed = loadingTab(tabId, "diff", title, description, path, "diff")
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const result = await withTimeout(
             gitDiff(folderPath, path),
             20_000,
             t("diffRequestTimedOut")
           )
-          resolveTab(tabId, result || t("noChanges"), false)
+          if (settleFetch(tabId, gen))
+            resolveTab(tabId, result || t("noChanges"), false)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
         return
       }
@@ -522,19 +1006,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const tabId = `diff:working:${path}:unified`
         const title = t("diffTitleFile", { name: fileName(path) })
         const description = path
-        upsertLoadingTab(
-          loadingTab(tabId, "diff", title, description, path, "diff")
-        )
-
+        const seed = loadingTab(tabId, "diff", title, description, path, "diff")
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const result = await withTimeout(
             gitDiff(folderPath, path),
             20_000,
             t("diffRequestTimedOut")
           )
-          resolveTab(tabId, result || t("noChanges"), false)
+          if (settleFetch(tabId, gen))
+            resolveTab(tabId, result || t("noChanges"), false)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
         return
       }
@@ -544,10 +1029,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const description = path
       const lang = languageFromPath(path)
 
-      upsertLoadingTab(
-        loadingTab(tabId, "rich-diff", title, description, path, lang)
+      const seed = loadingTab(
+        tabId,
+        "rich-diff",
+        title,
+        description,
+        path,
+        lang
       )
-
+      const decision = beginDiffLoad(seed)
+      if (decision.skip) return
+      const { gen } = decision
       try {
         const [originalContent, modifiedResult] = await withTimeout(
           Promise.all([
@@ -560,12 +1052,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           20_000,
           t("diffRequestTimedOut")
         )
-        resolveRichDiffTab(tabId, originalContent, modifiedResult.content)
+        if (settleFetch(tabId, gen))
+          resolveRichDiffTab(tabId, originalContent, modifiedResult.content)
       } catch (error) {
-        rejectTab(tabId, toErrorMessage(error))
+        if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
       }
     },
-    [folderPath, rejectTab, resolveTab, resolveRichDiffTab, t, upsertLoadingTab]
+    [
+      folderPath,
+      beginDiffLoad,
+      rejectTab,
+      resolveTab,
+      resolveRichDiffTab,
+      settleFetch,
+      t,
+    ]
   )
 
   const openBranchDiff = useCallback(
@@ -595,10 +1096,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       if (mode !== "overview" && path) {
         const lang = languageFromPath(path)
-        upsertLoadingTab(
-          loadingTab(tabId, "rich-diff", title, description, path, lang)
+        const seed = loadingTab(
+          tabId,
+          "rich-diff",
+          title,
+          description,
+          path,
+          lang
         )
-
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const [originalContent, modifiedResult] = await withTimeout(
             Promise.all([
@@ -611,29 +1119,39 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             20_000,
             t("branchCompareRequestTimedOut")
           )
-          resolveRichDiffTab(tabId, originalContent, modifiedResult.content)
+          if (settleFetch(tabId, gen))
+            resolveRichDiffTab(tabId, originalContent, modifiedResult.content)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
         return
       }
 
-      upsertLoadingTab(
-        loadingTab(tabId, "diff", title, description, path, "diff")
-      )
-
+      const seed = loadingTab(tabId, "diff", title, description, path, "diff")
+      const decision = beginDiffLoad(seed)
+      if (decision.skip) return
+      const { gen } = decision
       try {
         const result = await withTimeout(
           gitDiffWithBranch(folderPath, targetBranch, path ?? undefined),
           20_000,
           t("branchCompareRequestTimedOut")
         )
-        resolveTab(tabId, result || t("noChanges"), false)
+        if (settleFetch(tabId, gen))
+          resolveTab(tabId, result || t("noChanges"), false)
       } catch (error) {
-        rejectTab(tabId, toErrorMessage(error))
+        if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
       }
     },
-    [folderPath, rejectTab, resolveRichDiffTab, resolveTab, t, upsertLoadingTab]
+    [
+      folderPath,
+      beginDiffLoad,
+      rejectTab,
+      resolveRichDiffTab,
+      resolveTab,
+      settleFetch,
+      t,
+    ]
   )
 
   const openCommitDiff = useCallback(
@@ -653,10 +1171,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       if (path) {
         const lang = languageFromPath(path)
-        upsertLoadingTab(
-          loadingTab(tabId, "rich-diff", title, description, path, lang)
+        const seed = loadingTab(
+          tabId,
+          "rich-diff",
+          title,
+          description,
+          path,
+          lang
         )
-
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const [originalContent, modifiedContent] = await withTimeout(
             Promise.all([
@@ -666,28 +1191,38 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             20_000,
             t("commitDiffRequestTimedOut")
           )
-          resolveRichDiffTab(tabId, originalContent, modifiedContent)
+          if (settleFetch(tabId, gen))
+            resolveRichDiffTab(tabId, originalContent, modifiedContent)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
       } else {
-        upsertLoadingTab(
-          loadingTab(tabId, "diff", title, description, path, "diff")
-        )
-
+        const seed = loadingTab(tabId, "diff", title, description, path, "diff")
+        const decision = beginDiffLoad(seed)
+        if (decision.skip) return
+        const { gen } = decision
         try {
           const result = await withTimeout(
             gitShowDiff(folderPath, commit, undefined),
             20_000,
             t("commitDiffRequestTimedOut")
           )
-          resolveTab(tabId, result || t("noDiffOutput"), false)
+          if (settleFetch(tabId, gen))
+            resolveTab(tabId, result || t("noDiffOutput"), false)
         } catch (error) {
-          rejectTab(tabId, toErrorMessage(error))
+          if (settleFetch(tabId, gen)) rejectTab(tabId, toErrorMessage(error))
         }
       }
     },
-    [folderPath, rejectTab, resolveTab, resolveRichDiffTab, t, upsertLoadingTab]
+    [
+      folderPath,
+      beginDiffLoad,
+      rejectTab,
+      resolveTab,
+      resolveRichDiffTab,
+      settleFetch,
+      t,
+    ]
   )
 
   const openSessionFileDiff = useCallback(
@@ -708,9 +1243,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         loading: false,
       }
 
-      upsertLoadingTab(tab)
+      replaceTabContent(tab)
     },
-    [t, upsertLoadingTab]
+    [replaceTabContent, t]
   )
 
   const openExternalConflictDiff = useCallback(
@@ -734,9 +1269,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         modifiedContent: unsavedContent,
       }
 
-      upsertLoadingTab(tab)
+      replaceTabContent(tab)
     },
-    [t, upsertLoadingTab]
+    [replaceTabContent, t]
   )
 
   const updateActiveFileContent = useCallback(
@@ -975,6 +1510,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           return updated
         })
 
+        // Drop any in-flight marker so reopening this path does not get
+        // deduped against a now-orphaned fetch.
+        inFlightLoadsRef.current.delete(tabId)
+
         return next
       })
     },
@@ -993,6 +1532,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           if (!confirmed) return prev
         }
 
+        for (const closing of closingTabs) {
+          inFlightLoadsRef.current.delete(closing.id)
+        }
+
         setActiveFileTabId(tabId)
         activateFilePane()
         return remaining
@@ -1008,6 +1551,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         if (!confirmed) return prev
       }
 
+      inFlightLoadsRef.current.clear()
       setActiveFileTabId(null)
       setPreviewFileTabIds(new Set())
       activateConversationPane()
@@ -1055,6 +1599,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       closeAllFileTabs,
       reorderFileTabs,
       openFilePreview,
+      reloadOpenFileBackground,
+      applyExternalReload,
+      markTabsStale,
+      rejectFileTab,
       pendingFileReveal,
       consumePendingFileReveal,
       openWorkingTreeDiff,
@@ -1086,6 +1634,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       closeAllFileTabs,
       reorderFileTabs,
       openFilePreview,
+      reloadOpenFileBackground,
+      applyExternalReload,
+      markTabsStale,
+      rejectFileTab,
       pendingFileReveal,
       consumePendingFileReveal,
       openWorkingTreeDiff,
