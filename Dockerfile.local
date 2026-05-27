@@ -70,6 +70,8 @@ RUN apt-get update \
     locales \
     unzip \
     xz-utils \
+    lsof \
+    psmisc \
     g++ \
     make \
     pkg-config \
