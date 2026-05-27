@@ -26,13 +26,16 @@ export NVM_SYMLINK_CURRENT=${NVM_SYMLINK_CURRENT:-true}
 export CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
 export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
 export BUN_INSTALL=${BUN_INSTALL:-$HOME/.bun}
+export GOROOT=${GOROOT:-$HOME/.go}
+export GOPATH=${GOPATH:-$HOME/go}
 export UV_INSTALL_DIR=${UV_INSTALL_DIR:-$HOME/.local/bin}
 export UV_CACHE_DIR=${UV_CACHE_DIR:-$HOME/.cache/uv}
 export PIP_CACHE_DIR=${PIP_CACHE_DIR:-$HOME/.cache/pip}
 export CODEG_PYTHON_VERSION=${CODEG_PYTHON_VERSION:-3.12.8}
 export CODEG_NODE_VERSION=${CODEG_NODE_VERSION:-24}
 export CODEG_NVM_VERSION=${CODEG_NVM_VERSION:-v0.40.3}
-export PATH="$UV_INSTALL_DIR:$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/current/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export CODEG_GO_VERSION=${CODEG_GO_VERSION:-1.25.4}
+export PATH="$UV_INSTALL_DIR:$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/current/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$GOROOT/bin:$GOPATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # 容器默认可能以 root 启动；先修正挂载目录归属，再降权到 codeg 用户继续安装。
 if [ "$(id -u)" -eq 0 ]; then
@@ -47,12 +50,15 @@ if [ "$(id -u)" -eq 0 ]; then
     CARGO_HOME="$CARGO_HOME" \
     RUSTUP_HOME="$RUSTUP_HOME" \
     BUN_INSTALL="$BUN_INSTALL" \
+    GOROOT="$GOROOT" \
+    GOPATH="$GOPATH" \
     UV_INSTALL_DIR="$UV_INSTALL_DIR" \
     UV_CACHE_DIR="$UV_CACHE_DIR" \
     PIP_CACHE_DIR="$PIP_CACHE_DIR" \
     CODEG_PYTHON_VERSION="$CODEG_PYTHON_VERSION" \
     CODEG_NODE_VERSION="$CODEG_NODE_VERSION" \
     CODEG_NVM_VERSION="$CODEG_NVM_VERSION" \
+    CODEG_GO_VERSION="$CODEG_GO_VERSION" \
     PATH="$PATH" \
     "$0" "$@"
 fi
@@ -67,6 +73,8 @@ home_has_toolchain_state() {
     [ -e "$CARGO_HOME" ] || \
     [ -e "$RUSTUP_HOME" ] || \
     [ -e "$BUN_INSTALL" ] || \
+    [ -e "$GOROOT" ] || \
+    [ -d "$GOPATH" ] || \
     [ -x "$UV_INSTALL_DIR/uv" ] || \
     [ -x "$UV_INSTALL_DIR/uvx" ] || \
     [ -f "$HOME/.codeg/toolchains.ready" ]
@@ -110,9 +118,11 @@ write_shell_init() {
   append_if_missing "$HOME/.bashrc" 'export CARGO_HOME="$HOME/.cargo"'
   append_if_missing "$HOME/.bashrc" 'export RUSTUP_HOME="$HOME/.rustup"'
   append_if_missing "$HOME/.bashrc" 'export BUN_INSTALL="$HOME/.bun"'
+  append_if_missing "$HOME/.bashrc" 'export GOROOT="$HOME/.go"'
+  append_if_missing "$HOME/.bashrc" 'export GOPATH="$HOME/go"'
   append_if_missing "$HOME/.bashrc" 'export UV_INSTALL_DIR="$HOME/.local/bin"'
   append_if_missing "$HOME/.bashrc" 'export UV_CACHE_DIR="$HOME/.cache/uv"'
-  append_if_missing "$HOME/.bashrc" 'export PATH="$UV_INSTALL_DIR:$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/current/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$PATH"'
+  append_if_missing "$HOME/.bashrc" 'export PATH="$UV_INSTALL_DIR:$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/current/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$GOROOT/bin:$GOPATH/bin:$PATH"'
   append_if_missing "$HOME/.bashrc" '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
   append_if_missing "$HOME/.bashrc" 'command -v pyenv >/dev/null 2>&1 && eval "$(pyenv init -)"'
   write_bash_login_profile
@@ -176,6 +186,37 @@ install_rust() {
   rustup default stable
 }
 
+# Installs the requested Go release into the persistent home directory.
+# Arguments: none. Returns success after `go version` works. Side effect: replaces $GOROOT when the requested version is missing.
+install_go() {
+  local machine go_arch archive url tmp_dir
+  machine=$(uname -m)
+  case "$machine" in
+    x86_64) go_arch=amd64 ;;
+    aarch64|arm64) go_arch=arm64 ;;
+    *)
+      echo "Unsupported Go architecture: $machine" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -x "$GOROOT/bin/go" ] && "$GOROOT/bin/go" version | grep -q "go$CODEG_GO_VERSION "; then
+    "$GOROOT/bin/go" version >/dev/null
+    return 0
+  fi
+
+  archive="go$CODEG_GO_VERSION.linux-$go_arch.tar.gz"
+  url="https://go.dev/dl/$archive"
+  tmp_dir=$(mktemp -d)
+  curl -fsSL "$url" -o "$tmp_dir/$archive"
+  rm -rf "$GOROOT"
+  mkdir -p "$(dirname "$GOROOT")" "$GOPATH/bin"
+  tar -C "$(dirname "$GOROOT")" -xzf "$tmp_dir/$archive"
+  mv "$(dirname "$GOROOT")/go" "$GOROOT"
+  rm -rf "$tmp_dir"
+  "$GOROOT/bin/go" version >/dev/null
+}
+
 # 根据 HOME 的现状输出不同提示；安装逻辑始终是幂等补齐缺失工具。
 if home_has_toolchain_state; then
   echo "Existing toolchain state found in $HOME; installing any missing pieces."
@@ -191,12 +232,14 @@ install_pyenv_python
 install_nvm_node
 install_bun
 install_rust
+install_go
 
 # ready 文件记录最后一次初始化结果，便于用户或后续脚本快速确认工具链版本。
 cat >"$HOME/.codeg/toolchains.ready" <<EOF
 python=$CODEG_PYTHON_VERSION
 node=$CODEG_NODE_VERSION
 nvm=$CODEG_NVM_VERSION
+go=$(go version 2>/dev/null || true)
 uv=$("$UV_INSTALL_DIR/uv" --version 2>/dev/null || true)
 uvx=$("$UV_INSTALL_DIR/uvx" --version 2>/dev/null || true)
 updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
