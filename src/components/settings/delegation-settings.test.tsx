@@ -36,8 +36,12 @@ function renderWithIntl() {
 function settings(
   overrides: Partial<DelegationSettings> = {}
 ): DelegationSettings {
+  // Mirror the new backend default (DelegationSettings::default) so tests
+  // that don't care about the toggle reflect the production wire shape.
+  // Tests that need delegation active for save/depth assertions must
+  // override explicitly.
   return {
-    enabled: true,
+    enabled: false,
     depth_limit: 2,
     agent_defaults: {},
     ...overrides,
@@ -64,7 +68,9 @@ describe("DelegationSettingsSection", () => {
   })
 
   it("saves the depth_limit and enabled flag", async () => {
-    mockGetDelegationSettings.mockResolvedValue(settings())
+    // Depth input is disabled while `enabled` is false (the production
+    // default), so this flow explicitly opts in.
+    mockGetDelegationSettings.mockResolvedValue(settings({ enabled: true }))
     mockSetDelegationSettings.mockImplementation(async (next) => next)
 
     renderWithIntl()
@@ -80,5 +86,26 @@ describe("DelegationSettingsSection", () => {
         agent_defaults: {},
       })
     })
+  })
+
+  it("reflects backend default (disabled): switch off, depth input disabled", async () => {
+    // Regression for the "default off" UX guarantee: when persistence has
+    // never been written, the backend returns `enabled: false` and the
+    // panel must surface that. Switch un-checked + depth input disabled
+    // is what blocks the user from changing depth/agent-defaults before
+    // they consciously opt in.
+    mockGetDelegationSettings.mockResolvedValue(settings())
+
+    renderWithIntl()
+
+    const depthInput = (await screen.findByLabelText(
+      "Maximum delegation depth"
+    )) as HTMLInputElement
+    const enableSwitch = screen.getByLabelText(
+      "Enable delegation"
+    ) as HTMLButtonElement
+
+    expect(enableSwitch).toHaveAttribute("data-state", "unchecked")
+    expect(depthInput).toBeDisabled()
   })
 })

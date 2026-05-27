@@ -886,6 +886,7 @@ mod tauri_app {
                 mcp_commands::mcp_remove_server,
                 notification::send_notification,
                 file_io::save_binary_file,
+                file_io::save_text_file,
                 chat_channel_commands::list_chat_channels,
                 chat_channel_commands::create_chat_channel,
                 chat_channel_commands::update_chat_channel,

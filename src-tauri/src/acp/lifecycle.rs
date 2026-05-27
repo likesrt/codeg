@@ -1710,6 +1710,15 @@ mod tests {
             mock as Arc<dyn ConnectionSpawner>,
             Arc::new(NoopDepthLookup) as Arc<dyn ConversationDepthLookup>,
         ));
+        // Production default is `enabled: false`; lifecycle tests need
+        // delegation active so `handle_request` parks the pending entry
+        // they're about to assert against.
+        broker
+            .set_config(crate::acp::delegation::broker::DelegationConfig {
+                enabled: true,
+                ..crate::acp::delegation::broker::DelegationConfig::default()
+            })
+            .await;
         let driver = {
             let broker = broker.clone();
             let id = child_conn_id.to_string();

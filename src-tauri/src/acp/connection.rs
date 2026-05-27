@@ -4313,4 +4313,66 @@ mod tests {
         );
         assert!(is_opencode_subagent_invocation(AgentType::OpenCode, &input));
     }
+
+    // ─── inject_codeg_delegate_mcp: enabled=false short-circuit ──────────
+    //
+    // Guards the "default off" product contract: when the broker config has
+    // `enabled: false` (the new production default for fresh installs), the
+    // delegate-MCP injection must not push a server entry and must not
+    // register a per-launch token. The early return at the top of
+    // `inject_codeg_delegate_mcp` is the single chokepoint that keeps a
+    // codeg-delegate stdio MCP out of every ACP session until the user
+    // opts in via the settings panel.
+    #[tokio::test]
+    async fn inject_codeg_delegate_skipped_when_broker_disabled() {
+        use crate::acp::delegation::broker::{
+            ConversationDepthLookup, DelegationBroker,
+        };
+        use crate::acp::delegation::listener::TokenRegistry;
+        use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
+        use crate::acp::delegation::types::DelegationError;
+
+        struct EmptyLookup;
+        #[async_trait::async_trait]
+        impl ConversationDepthLookup for EmptyLookup {
+            async fn parent_of(&self, _id: i32) -> Result<Option<i32>, DelegationError> {
+                Ok(None)
+            }
+        }
+
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::default()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(EmptyLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        // No set_config call: broker carries its default config, which is
+        // `enabled: false` after the product-default flip. This is the
+        // exact state a fresh install reaches before the user touches the
+        // settings panel.
+        let injection = DelegationInjection {
+            broker,
+            tokens: Arc::new(TokenRegistry::default()),
+            socket_path: std::path::PathBuf::from("/tmp/codeg-delegate.sock"),
+        };
+
+        let mut servers: Vec<McpServer> = Vec::new();
+        let result = inject_codeg_delegate_mcp(
+            &mut servers,
+            &injection,
+            "parent-conn",
+            std::path::Path::new("/tmp"),
+        )
+        .await;
+
+        assert!(result.is_none(), "disabled broker must return None");
+        assert!(
+            servers.is_empty(),
+            "disabled broker must not push any MCP server entry; got {servers:?}"
+        );
+        // Token registry stays untouched — no lookup should resolve to a
+        // valid entry because nothing was registered.
+        assert!(
+            injection.tokens.lookup("any-token").await.is_none(),
+            "disabled broker must not register a delegate token"
+        );
+    }
 }

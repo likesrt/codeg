@@ -329,11 +329,22 @@ mod tests {
         }
     }
 
-    fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
-        Arc::new(DelegationBroker::new(
+    async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
+        let broker = Arc::new(DelegationBroker::new(
             mock as Arc<dyn ConnectionSpawner>,
             Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
-        ))
+        ));
+        // Production default is `enabled: false`; listener tests that don't
+        // explicitly set their own config need the switch flipped on so
+        // `handle_request` parks pending entries instead of returning
+        // `Canceled { reason: "delegation disabled" }` straight away.
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                ..DelegationConfig::default()
+            })
+            .await;
+        broker
     }
 
     fn make_listener(
@@ -361,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_token_rejected() {
         let listener = make_listener(
-            make_broker(Arc::new(MockSpawner::new())),
+            make_broker(Arc::new(MockSpawner::new())).await,
             Arc::new(TokenRegistry::default()),
             Some(1),
         );
@@ -389,7 +400,8 @@ mod tests {
                 },
             )
             .await;
-        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())), tokens, Some(1));
+        let listener =
+            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
         let outcome = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
@@ -415,7 +427,7 @@ mod tests {
             )
             .await;
         // parent_conversation = None: parent has no live conversation.
-        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())), tokens, None);
+        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, None);
         let outcome = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
@@ -440,7 +452,8 @@ mod tests {
                 },
             )
             .await;
-        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())), tokens, Some(1));
+        let listener =
+            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
         let outcome = listener
             .process(make_request(json!({"agent_type": "garbage", "task": "x"})).await)
             .await;
@@ -455,7 +468,7 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Ok("child-conn".into())).await;
         mock.queue_send(Ok(42)).await;
-        let broker = make_broker(mock.clone());
+        let broker = make_broker(mock.clone()).await;
         let tokens = Arc::new(TokenRegistry::default());
         tokens
             .register(
@@ -522,7 +535,7 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Ok("c-cancel".into())).await;
         mock.queue_send(Ok(99)).await;
-        let broker = make_broker(mock.clone());
+        let broker = make_broker(mock.clone()).await;
         let tokens = Arc::new(TokenRegistry::default());
         tokens
             .register(
@@ -626,7 +639,10 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Err(SpawnerError::Spawn("agent missing".into())))
             .await;
-        let broker = make_broker(mock);
+        // `make_broker` already enables delegation; this call narrows the
+        // depth limit (8 instead of the helper's default) without changing
+        // the enable bit.
+        let broker = make_broker(mock).await;
         broker
             .set_config(DelegationConfig {
                 enabled: true,

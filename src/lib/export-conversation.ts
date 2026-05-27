@@ -6,7 +6,25 @@ import type {
   TurnUsage,
 } from "@/lib/types"
 import { AGENT_LABELS } from "@/lib/types"
+import { downloadImage } from "@/lib/image-download"
+import { isDesktop } from "@/lib/platform"
 import { toPng } from "html-to-image"
+
+/**
+ * Outcome of an export operation.
+ *
+ * - `"saved"`: the file was actually written (desktop) or the browser
+ *   download was kicked off (web — best effort, the browser owns the
+ *   download manager from there).
+ * - `"cancelled"`: the user dismissed the desktop save dialog. Only
+ *   reachable on desktop; web mode never returns this.
+ *
+ * Real I/O failures (e.g. macOS TCC denying disk write after the user
+ * picked a path) are surfaced as thrown exceptions so callers can
+ * disambiguate from cancellation and render a real error toast instead
+ * of a misleading success.
+ */
+export type ExportResult = "saved" | "cancelled"
 
 export interface ExportLabels {
   untitledConversation: string
@@ -40,20 +58,50 @@ export interface ExportConversationData {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function downloadFile(
-  content: string,
-  filename: string,
+/**
+ * Save a UTF-8 text payload to disk.
+ *
+ * Desktop (Tauri): pops the system "Save As" dialog and writes via the
+ * `save_text_file` Rust command — write failures (e.g. macOS TCC denial
+ * after the dialog cached an earlier "Don't Allow") propagate as
+ * exceptions, so the caller can show a real error toast instead of a
+ * misleading success.
+ *
+ * Web (browser): falls back to the legacy `<a download>` Blob link;
+ * the browser owns the download manager and we have no per-call status
+ * channel, so this path is always reported as `"saved"`.
+ */
+async function saveTextFile(opts: {
+  content: string
+  suggestedName: string
   mimeType: string
-): void {
+  filterName: string
+  ext: string
+}): Promise<ExportResult> {
+  const { content, suggestedName, mimeType, filterName, ext } = opts
+
+  if (isDesktop()) {
+    const { save } = await import("@tauri-apps/plugin-dialog")
+    const path = await save({
+      defaultPath: suggestedName,
+      filters: [{ name: filterName, extensions: [ext] }],
+    })
+    if (!path) return "cancelled"
+    const { invoke } = await import("@tauri-apps/api/core")
+    await invoke("save_text_file", { path, contents: content })
+    return "saved"
+  }
+
   const blob = new Blob([content], { type: mimeType })
   const url = URL.createObjectURL(blob)
   const link = document.createElement("a")
   link.href = url
-  link.download = filename
+  link.download = suggestedName
   document.body.append(link)
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+  return "saved"
 }
 
 function makeExportFilename(title: string | null, ext: string): string {
@@ -431,7 +479,9 @@ ${header}
 // Public export functions
 // ---------------------------------------------------------------------------
 
-export function exportAsMarkdown(data: ExportConversationData): void {
+export async function exportAsMarkdown(
+  data: ExportConversationData
+): Promise<ExportResult> {
   const { summary, turns, sessionStats, labels } = data
   const parts: string[] = []
 
@@ -454,21 +504,25 @@ export function exportAsMarkdown(data: ExportConversationData): void {
   parts.push("---")
   parts.push("*Codeg*")
 
-  const content = parts.join("\n")
-  downloadFile(
-    content,
-    makeExportFilename(summary.title, "md"),
-    "text/markdown"
-  )
+  return saveTextFile({
+    content: parts.join("\n"),
+    suggestedName: makeExportFilename(summary.title, "md"),
+    mimeType: "text/markdown",
+    filterName: "Markdown",
+    ext: "md",
+  })
 }
 
-export function exportAsHtml(data: ExportConversationData): void {
-  const html = buildHtmlDocument(data)
-  downloadFile(
-    html,
-    makeExportFilename(data.summary.title, "html"),
-    "text/html"
-  )
+export async function exportAsHtml(
+  data: ExportConversationData
+): Promise<ExportResult> {
+  return saveTextFile({
+    content: buildHtmlDocument(data),
+    suggestedName: makeExportFilename(data.summary.title, "html"),
+    mimeType: "text/html",
+    filterName: "HTML",
+    ext: "html",
+  })
 }
 
 // Safari caps at 16384, Chrome at ~32767. Use a safe limit.
@@ -483,7 +537,7 @@ export class ExportTooLongError extends Error {
 
 export async function exportAsImage(
   data: ExportConversationData
-): Promise<void> {
+): Promise<ExportResult> {
   const html = buildHtmlDocument(data)
 
   const iframe = document.createElement("iframe")
@@ -491,6 +545,7 @@ export async function exportAsImage(
     "position:fixed;left:0;top:0;width:800px;height:0;border:none;opacity:0;pointer-events:none;z-index:-1;"
   document.body.appendChild(iframe)
 
+  let dataUrl: string
   try {
     iframe.srcdoc = html
     await new Promise<void>((resolve) => {
@@ -513,7 +568,6 @@ export async function exportAsImage(
     })
 
     const target = iframeDoc.querySelector(".container") ?? body
-    let dataUrl: string
     try {
       dataUrl = await toPng(target as HTMLElement, {
         width: 800,
@@ -523,17 +577,20 @@ export async function exportAsImage(
     } catch {
       throw new ExportTooLongError()
     }
-    const res = await fetch(dataUrl)
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement("a")
-    link.href = url
-    link.download = makeExportFilename(data.summary.title, "png")
-    document.body.append(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
   } finally {
     iframe.remove()
   }
+
+  // `dataUrl` is a `data:image/png;base64,...` URI. `downloadImage` handles
+  // desktop (Save As dialog + `save_binary_file` invoke — surfaces real
+  // write failures) vs web (Blob link) and returns `false` when the user
+  // cancelled the dialog.
+  const commaIdx = dataUrl.indexOf(",")
+  const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl
+  const saved = await downloadImage({
+    data: base64,
+    mime_type: "image/png",
+    suggestedName: makeExportFilename(data.summary.title, "png"),
+  })
+  return saved ? "saved" : "cancelled"
 }

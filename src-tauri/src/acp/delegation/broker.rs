@@ -70,7 +70,7 @@ pub struct DelegationConfig {
 impl Default for DelegationConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             depth_limit: 2,
             agent_defaults: BTreeMap::new(),
         }
@@ -968,6 +968,20 @@ mod tests {
         r
     }
 
+    /// Bring the broker's `enabled` switch up before driving any test that
+    /// hits `handle_request`. Production now defaults to `enabled: false`,
+    /// so a bare `DelegationBroker::new(...)` would short-circuit before
+    /// parking a pending entry. Tests that assert disabled behavior set
+    /// their own config explicitly and skip this helper.
+    async fn enable_delegation(broker: &DelegationBroker) {
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                ..DelegationConfig::default()
+            })
+            .await;
+    }
+
     // -- Task 4.3 -----------------------------------------------------------
 
     #[tokio::test]
@@ -1017,6 +1031,7 @@ mod tests {
         mock.queue_send(Ok(42)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1067,6 +1082,7 @@ mod tests {
         mock.queue_spawn(Err(SpawnerError::Spawn("nope".into())))
             .await;
         let broker = DelegationBroker::new(mock as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
         let outcome = broker.handle_request(request(1, "pt-1")).await;
         match outcome {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
@@ -1160,6 +1176,7 @@ mod tests {
             .await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
         let outcome = broker.handle_request(request(1, "pt-1")).await;
         match outcome {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
@@ -1178,6 +1195,7 @@ mod tests {
         mock.queue_send(Ok(99)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1222,6 +1240,7 @@ mod tests {
         }
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let mut handles = Vec::new();
         for i in 0..3 {
@@ -1256,6 +1275,7 @@ mod tests {
         mock.queue_send(Ok(200)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1361,6 +1381,7 @@ mod tests {
         mock.queue_send(Ok(7)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
         broker
             .register_pending_tool_call("parent-conn", "tu-from-acp".into())
             .await;
@@ -1402,6 +1423,7 @@ mod tests {
         mock.queue_send(Ok(13)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1447,6 +1469,7 @@ mod tests {
         mock.queue_send(Ok(11)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
         let driver = {
             let broker = broker.clone();
             tokio::spawn(async move { broker.handle_request(request(1, "")).await })
@@ -1530,12 +1553,17 @@ mod tests {
     use crate::acp::delegation::meta_writer::mock::MockMetaWriter;
     use crate::acp::delegation::meta_writer::DelegationMetaWriter;
 
-    fn broker_with_meta(mock: Arc<MockSpawner>, writer: Arc<MockMetaWriter>) -> DelegationBroker {
-        DelegationBroker::with_meta_writer(
+    async fn broker_with_meta(
+        mock: Arc<MockSpawner>,
+        writer: Arc<MockMetaWriter>,
+    ) -> DelegationBroker {
+        let broker = DelegationBroker::with_meta_writer(
             mock as Arc<dyn ConnectionSpawner>,
             shallow_lookup(),
             writer as Arc<dyn DelegationMetaWriter>,
-        )
+        );
+        enable_delegation(&broker).await;
+        broker
     }
 
     #[tokio::test]
@@ -1544,7 +1572,7 @@ mod tests {
         mock.queue_spawn(Ok("child-conn-1".into())).await;
         mock.queue_send(Ok(42)).await;
         let writer = Arc::new(MockMetaWriter::new());
-        let broker = broker_with_meta(mock.clone(), writer.clone());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1622,7 +1650,7 @@ mod tests {
         mock.queue_spawn(Ok("child-conn-2".into())).await;
         mock.queue_send(Ok(7)).await;
         let writer = Arc::new(MockMetaWriter::new());
-        let broker = broker_with_meta(mock.clone(), writer.clone());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1666,7 +1694,7 @@ mod tests {
         mock.queue_spawn(Ok("c-cancel".into())).await;
         mock.queue_send(Ok(33)).await;
         let writer = Arc::new(MockMetaWriter::new());
-        let broker = broker_with_meta(mock.clone(), writer.clone());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1701,7 +1729,7 @@ mod tests {
         mock.queue_spawn(Ok("c-synth".into())).await;
         mock.queue_send(Ok(8)).await;
         let writer = Arc::new(MockMetaWriter::new());
-        let broker = broker_with_meta(mock.clone(), writer.clone());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
 
         // Empty `parent_tool_use_id` triggers the broker's UUID fallback —
         // `"delegation-<uuid>"` — which the writer must skip because no
@@ -1753,17 +1781,19 @@ mod tests {
     use crate::acp::delegation::event_emitter::DelegationEventEmitter;
     use crate::acp::types::DelegationResultSummary;
 
-    fn broker_with_emitter(
+    async fn broker_with_emitter(
         mock: Arc<MockSpawner>,
         writer: Arc<MockMetaWriter>,
         emitter: Arc<MockEventEmitter>,
     ) -> DelegationBroker {
-        DelegationBroker::with_writers(
+        let broker = DelegationBroker::with_writers(
             mock as Arc<dyn ConnectionSpawner>,
             shallow_lookup(),
             writer as Arc<dyn DelegationMetaWriter>,
             emitter as Arc<dyn DelegationEventEmitter>,
-        )
+        );
+        enable_delegation(&broker).await;
+        broker
     }
 
     #[tokio::test]
@@ -1773,7 +1803,7 @@ mod tests {
         mock.queue_send(Ok(42)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1820,7 +1850,7 @@ mod tests {
         mock.queue_send(Ok(11)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1864,7 +1894,7 @@ mod tests {
         mock.queue_send(Ok(91)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1911,7 +1941,7 @@ mod tests {
         mock.queue_send(Ok(13)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         // Pre-cancel before spawning the driver — handle is unknown to the
         // broker right now, but a buffered entry should make the next
@@ -1941,7 +1971,7 @@ mod tests {
         mock.queue_send(Ok(55)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -1986,7 +2016,7 @@ mod tests {
         mock.queue_send(Ok(77)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -2021,6 +2051,7 @@ mod tests {
         mock.queue_send(Ok(78)).await;
         let broker =
             DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();
@@ -2053,7 +2084,7 @@ mod tests {
         }
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let mut handles = Vec::new();
         for i in 0..3 {
@@ -2096,7 +2127,7 @@ mod tests {
         mock.queue_send(Ok(42)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -2123,7 +2154,7 @@ mod tests {
         mock.queue_send(Ok(8)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -2170,7 +2201,7 @@ mod tests {
         mock.queue_send(Ok(7)).await;
         let writer = Arc::new(MockMetaWriter::new());
         let emitter = Arc::new(MockEventEmitter::new());
-        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
 
         let driver = {
             let broker = broker.clone();
@@ -2275,6 +2306,7 @@ mod tests {
                 as Arc<dyn crate::acp::delegation::meta_writer::DelegationMetaWriter>,
             real_emitter as Arc<dyn crate::acp::delegation::event_emitter::DelegationEventEmitter>,
         );
+        enable_delegation(&broker).await;
 
         // Park a pending entry then trigger cancel_by_parent to drive the
         // production emit path. `request()` hard-codes parent_connection_id
@@ -2356,6 +2388,7 @@ mod tests {
                 as Arc<dyn crate::acp::delegation::meta_writer::DelegationMetaWriter>,
             real_emitter as Arc<dyn crate::acp::delegation::event_emitter::DelegationEventEmitter>,
         );
+        enable_delegation(&broker).await;
 
         let driver = {
             let broker = broker.clone();

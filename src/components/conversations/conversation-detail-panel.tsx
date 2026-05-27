@@ -1265,24 +1265,26 @@ export function ConversationDetailPanel() {
     }
   }, [activeConversationTab, getSession, exportLabels])
 
-  const handleExportMarkdown = useCallback(() => {
+  const handleExportMarkdown = useCallback(async () => {
     const data = getExportData()
     if (!data) return
     try {
-      exportAsMarkdown(data)
-      toast.success(t("exportSuccess"))
+      const result = await exportAsMarkdown(data)
+      if (result === "saved") toast.success(t("exportSuccess"))
+      // "cancelled": user dismissed the Save dialog — stay silent,
+      // matching the downloadImage / workspace-download conventions.
     } catch (err) {
       toast.error(t("exportFailed"))
       console.error("[ConversationDetailPanel] export markdown:", err)
     }
   }, [getExportData, t])
 
-  const handleExportHtml = useCallback(() => {
+  const handleExportHtml = useCallback(async () => {
     const data = getExportData()
     if (!data) return
     try {
-      exportAsHtml(data)
-      toast.success(t("exportSuccess"))
+      const result = await exportAsHtml(data)
+      if (result === "saved") toast.success(t("exportSuccess"))
     } catch (err) {
       toast.error(t("exportFailed"))
       console.error("[ConversationDetailPanel] export html:", err)
@@ -1296,9 +1298,9 @@ export function ConversationDetailPanel() {
     addTask(taskId, t("exportImage"))
     updateTask(taskId, { status: "running" })
     try {
-      await exportAsImage(data)
+      const result = await exportAsImage(data)
       updateTask(taskId, { status: "completed" })
-      toast.success(t("exportSuccess"))
+      if (result === "saved") toast.success(t("exportSuccess"))
     } catch (err) {
       updateTask(taskId, { status: "failed" })
       if (err instanceof ExportTooLongError) {

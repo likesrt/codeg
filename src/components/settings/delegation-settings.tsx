@@ -50,7 +50,7 @@ export function DelegationSettingsSection() {
   const t = useTranslations("AcpAgentSettings.multiAgent")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [enabled, setEnabled] = useState(true)
+  const [enabled, setEnabled] = useState(false)
   const [depth, setDepth] = useState<number>(2)
   const [agentDefaults, setAgentDefaults] = useState<
     Partial<Record<AgentType, AgentDelegationDefaults>>

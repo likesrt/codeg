@@ -1,7 +1,7 @@
 //! Delegation settings persistence + Tauri/HTTP command surface.
 //!
 //! Two knobs survive across restarts:
-//!   * `delegation.enabled` — feature kill switch (default true)
+//!   * `delegation.enabled` — feature kill switch (default false)
 //!   * `delegation.depth_limit` — max chain depth a child is allowed to sit at
 //!
 //! On startup `apply_persisted_config` reads both keys from `app_metadata`
@@ -56,7 +56,7 @@ pub struct DelegationSettings {
 impl Default for DelegationSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             depth_limit: 2,
             agent_defaults: BTreeMap::new(),
         }
@@ -231,7 +231,7 @@ mod tests {
     async fn load_returns_defaults_when_unset() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let settings = load_delegation_settings(&db.conn).await;
-        assert!(settings.enabled);
+        assert!(!settings.enabled);
         assert_eq!(settings.depth_limit, 2);
     }
 
