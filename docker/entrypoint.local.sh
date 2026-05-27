@@ -17,6 +17,28 @@ run_as_codeg() {
   gosu codeg "$@"
 }
 
+# Ensures Bash login shells inherit ~/.bashrc-managed toolchain paths.
+# Arguments: none. Returns success unless the profile cannot be written. Side effect: creates or updates /home/codeg/.bash_profile.
+ensure_bash_login_profile() {
+  local profile=/home/codeg/.bash_profile
+  touch "$profile"
+  grep -qxF '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' "$profile" || printf '%s\n' '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"' >>"$profile"
+  chown codeg:codeg "$profile" 2>/dev/null || true
+}
+
+# Starts the optional full toolchain initializer without blocking Codeg Web startup.
+# Arguments: none. Returns immediately after launching the background job. Side effect: writes initialization logs under /home/codeg/.codeg.
+start_toolchain_init_if_enabled() {
+  [ "${CODEG_INIT_TOOL_ON_START:-false}" = "true" ] || return 0
+
+  mkdir -p /home/codeg/.codeg
+  chown codeg:codeg /home/codeg/.codeg 2>/dev/null || true
+  run_as_codeg bash -lc 'codeg init tool >>/home/codeg/.codeg/toolchains-init.log 2>&1' &
+}
+
+ensure_bash_login_profile
+start_toolchain_init_if_enabled
+
 # 修复已持久化 home 中旧镜像留下的 Node 路径，确保 npm/pnpm 可被默认 PATH 找到。
 if [ -s /home/codeg/.nvm/nvm.sh ]; then
   run_as_codeg bash -lc 'source "$HOME/.nvm/nvm.sh" && nvm use --silent default >/dev/null && ln -sfn "$(npm prefix -g)" "$HOME/.nvm/current"'

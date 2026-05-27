@@ -96,6 +96,12 @@ append_if_missing() {
   grep -qxF "$line" "$file" || printf '%s\n' "$line" >>"$file"
 }
 
+# Ensures Bash login shells load the interactive shell initialization file.
+# Arguments: none. Returns success unless writing the profile fails. Side effect: creates or updates ~/.bash_profile.
+write_bash_login_profile() {
+  append_if_missing "$HOME/.bash_profile" '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"'
+}
+
 write_shell_init() {
   # 把本脚本安装的工具链加入交互式 shell，用户重新进入容器后可以直接使用。
   append_if_missing "$HOME/.bashrc" 'export PYENV_ROOT="$HOME/.pyenv"'
@@ -109,6 +115,7 @@ write_shell_init() {
   append_if_missing "$HOME/.bashrc" 'export PATH="$UV_INSTALL_DIR:$PYENV_ROOT/bin:$PYENV_ROOT/shims:$NVM_DIR/current/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$PATH"'
   append_if_missing "$HOME/.bashrc" '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
   append_if_missing "$HOME/.bashrc" 'command -v pyenv >/dev/null 2>&1 && eval "$(pyenv init -)"'
+  write_bash_login_profile
 }
 
 install_uv() {
