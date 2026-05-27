@@ -1452,6 +1452,7 @@
       "openInFinder": "在访达打开",
       "openInExplorer": "在资源管理器打开",
       "attachToCurrentSession": "添加到会话",
+      "copyFilePath": "复制文件路径",
       "compareWithBranch": "与分支比较...",
       "reloadFromDisk": "从磁盘重新加载",
       "new": "新建",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "打开目录失败",
+        "pathCopied": "路径已复制",
         "openBuiltinTerminalFailed": "无法打开内置终端",
         "openCommitWindowFailed": "打开提交窗口失败",
         "noAddableFilesInDir": "该目录下没有可添加到 VCS 的变更文件",

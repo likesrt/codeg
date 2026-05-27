@@ -1452,6 +1452,7 @@
       "openInFinder": "Ouvrir dans Finder",
       "openInExplorer": "Ouvrir dans Explorer",
       "attachToCurrentSession": "Ajouter à la session",
+      "copyFilePath": "Copier le chemin du fichier",
       "compareWithBranch": "Comparer avec la branche...",
       "reloadFromDisk": "Recharger depuis le disque",
       "new": "Nouveau",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "Échec de l'ouverture du dossier",
+        "pathCopied": "Chemin copié",
         "openBuiltinTerminalFailed": "Impossible d'ouvrir le terminal intégré",
         "openCommitWindowFailed": "Échec de l'ouverture de la fenêtre de commit",
         "noAddableFilesInDir": "Aucun fichier modifié de ce dossier ne peut être ajouté au VCS",

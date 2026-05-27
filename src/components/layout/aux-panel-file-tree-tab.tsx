@@ -95,6 +95,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
 import { toErrorMessage } from "@/lib/app-error"
+import { copyTextToClipboard } from "@/lib/utils"
 
 function parentDir(filePath: string): string {
   const slashIndex = filePath.lastIndexOf("/")
@@ -481,7 +482,13 @@ interface RenderNodeProps {
   onRefresh: () => void
 }
 
-function RenderNode({
+/**
+ * Renders one file-tree node and its context-menu actions.
+ * @param props Node metadata, workspace path, git status sets, and callbacks for menu actions.
+ * @returns A context-menu wrapped file or directory tree item.
+ * @remarks Menu actions can trigger clipboard writes, toasts, filesystem reveals, and parent callbacks.
+ */
+export function RenderNode({
   node,
   expandedPaths,
   workspacePath,
@@ -551,6 +558,18 @@ function RenderNode({
       }
     }
 
+    /**
+     * Copies this file's workspace-relative path to the clipboard.
+     * @returns A promise that resolves after the clipboard attempt completes.
+     * @remarks Shows a success toast only when the clipboard API reports success.
+     */
+    const handleCopyFilePath = async () => {
+      const copied = await copyTextToClipboard(node.path)
+      if (copied) {
+        toast.success(t("toasts.pathCopied"), { description: node.path })
+      }
+    }
+
     return (
       <ContextMenu>
         <ContextMenuTrigger>
@@ -573,6 +592,9 @@ function RenderNode({
             disabled={!activeSessionTabId}
           >
             {t("attachToCurrentSession")}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void handleCopyFilePath()}>
+            {t("copyFilePath")}
           </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
@@ -700,6 +722,18 @@ function RenderNode({
     }
   }
 
+  /**
+   * Copies this directory's workspace-relative path to the clipboard.
+   * @returns A promise that resolves after the clipboard attempt completes.
+   * @remarks Shows a success toast only when the clipboard API reports success.
+   */
+  const handleCopyDirPath = async () => {
+    const copied = await copyTextToClipboard(node.path)
+    if (copied) {
+      toast.success(t("toasts.pathCopied"), { description: node.path })
+    }
+  }
+
   return (
     <ContextMenu>
       <ContextMenuTrigger>
@@ -758,6 +792,9 @@ function RenderNode({
           disabled={!activeSessionTabId}
         >
           {t("attachToCurrentSession")}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void handleCopyDirPath()}>
+          {t("copyFilePath")}
         </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>

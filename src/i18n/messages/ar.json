@@ -1452,6 +1452,7 @@
       "openInFinder": "فتح في Finder",
       "openInExplorer": "فتح في Explorer",
       "attachToCurrentSession": "إضافة إلى الجلسة",
+      "copyFilePath": "نسخ مسار الملف",
       "compareWithBranch": "المقارنة مع الفرع...",
       "reloadFromDisk": "إعادة التحميل من القرص",
       "new": "جديد",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "فشل فتح المجلد",
+        "pathCopied": "تم نسخ المسار",
         "openBuiltinTerminalFailed": "تعذر فتح الطرفية المدمجة",
         "openCommitWindowFailed": "فشل فتح نافذة الالتزام",
         "noAddableFilesInDir": "لا توجد ملفات متغيرة في هذا المجلد يمكن إضافتها إلى VCS",

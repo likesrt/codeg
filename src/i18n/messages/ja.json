@@ -1452,6 +1452,7 @@
       "openInFinder": "Finderで開く",
       "openInExplorer": "エクスプローラーで開く",
       "attachToCurrentSession": "セッションに追加",
+      "copyFilePath": "ファイルパスをコピー",
       "compareWithBranch": "ブランチと比較...",
       "reloadFromDisk": "ディスクから再読み込み",
       "new": "新規作成",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "ディレクトリを開けませんでした",
+        "pathCopied": "パスをコピーしました",
         "openBuiltinTerminalFailed": "内蔵ターミナルを開けませんでした",
         "openCommitWindowFailed": "コミットウィンドウを開けませんでした",
         "noAddableFilesInDir": "このディレクトリには VCS に追加できる変更ファイルがありません",

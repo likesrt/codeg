@@ -1452,6 +1452,7 @@
       "openInFinder": "In Finder öffnen",
       "openInExplorer": "In Explorer öffnen",
       "attachToCurrentSession": "Zur Sitzung hinzufügen",
+      "copyFilePath": "Dateipfad kopieren",
       "compareWithBranch": "Mit Branch vergleichen...",
       "reloadFromDisk": "Von Datenträger neu laden",
       "new": "Neu",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "Verzeichnis konnte nicht geöffnet werden",
+        "pathCopied": "Pfad kopiert",
         "openBuiltinTerminalFailed": "Integriertes Terminal konnte nicht geöffnet werden",
         "openCommitWindowFailed": "Commit-Fenster konnte nicht geöffnet werden",
         "noAddableFilesInDir": "Keine geänderten Dateien in diesem Verzeichnis können zu VCS hinzugefügt werden",

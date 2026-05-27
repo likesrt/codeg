@@ -1452,6 +1452,7 @@
       "openInFinder": "在 Finder 開啟",
       "openInExplorer": "在檔案總管開啟",
       "attachToCurrentSession": "添加到會話",
+      "copyFilePath": "複製檔案路徑",
       "compareWithBranch": "與分支比較...",
       "reloadFromDisk": "從磁碟重新載入",
       "new": "新建",
@@ -1474,6 +1475,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "開啟目錄失敗",
+        "pathCopied": "路徑已複製",
         "openBuiltinTerminalFailed": "無法開啟內建終端",
         "openCommitWindowFailed": "打開提交視窗失敗",
         "noAddableFilesInDir": "該目錄下沒有可加入到 VCS 的變更檔案",
