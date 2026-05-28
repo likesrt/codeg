@@ -247,6 +247,18 @@ jobs:
           name: codeg-backend-arm64
           path: dist/arm64
 
+      - name: Restore exec permissions (lost during artifact upload)
+        shell: bash
+        run: |
+          IFS=',' read -ra PLATS <<< "${{ needs.validate-platforms.outputs.platforms }}"
+          for p in "${PLATS[@]}"; do
+            p="${p#"${p%%[![:space:]]*}"}"
+            p="${p%"${p##*[![:space:]]}"}"
+            arch="${p#linux/}"
+            chmod +x "dist/${arch}/codeg-server" "dist/${arch}/codeg-mcp" || true
+            file "dist/${arch}/codeg-server" "dist/${arch}/codeg-mcp" || true
+          done
+
       - name: Verify Docker build context
         shell: bash
         run: |
