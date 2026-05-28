@@ -119,6 +119,23 @@ function baseName(path: string): string {
 const FILE_TREE_ROOT_PATH = "__workspace_root__"
 const GITIGNORE_MUTED_CLASS = "text-muted-foreground/55"
 
+/**
+ * Copies a path string to the clipboard and reports a successful copy.
+ * @param path Path text to copy and show in the toast description.
+ * @param successMessage Localized success message shown after a successful copy.
+ * @returns A promise that resolves after the clipboard attempt and optional toast.
+ * @remarks Does not show a toast when the clipboard API reports failure.
+ */
+async function copyPathToClipboard(
+  path: string,
+  successMessage: string
+): Promise<void> {
+  const copied = await copyTextToClipboard(path)
+  if (copied) {
+    toast.success(successMessage, { description: path })
+  }
+}
+
 interface FileActionTarget {
   kind: "file" | "dir"
   path: string
@@ -563,11 +580,17 @@ export function RenderNode({
      * @returns A promise that resolves after the clipboard attempt completes.
      * @remarks Shows a success toast only when the clipboard API reports success.
      */
-    const handleCopyFilePath = async () => {
-      const copied = await copyTextToClipboard(node.path)
-      if (copied) {
-        toast.success(t("toasts.pathCopied"), { description: node.path })
-      }
+    const handleCopyFilePath = () => {
+      return copyPathToClipboard(node.path, t("toasts.pathCopied"))
+    }
+
+    /**
+     * Copies this file's absolute filesystem path to the clipboard.
+     * @returns A promise that resolves after the clipboard attempt completes.
+     * @remarks Uses the precomputed workspace-joined filesystem path.
+     */
+    const handleCopyAbsolutePath = () => {
+      return copyPathToClipboard(absolutePath, t("toasts.pathCopied"))
     }
 
     return (
@@ -593,9 +616,17 @@ export function RenderNode({
           >
             {t("attachToCurrentSession")}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => void handleCopyFilePath()}>
-            {t("copyFilePath")}
-          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("copyFilePath")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onSelect={() => void handleCopyFilePath()}>
+                {t("copyRelativePath")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => void handleCopyAbsolutePath()}>
+                {t("copyAbsolutePath")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           <ContextMenuSub>
             <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
             <ContextMenuSubContent>
@@ -727,11 +758,17 @@ export function RenderNode({
    * @returns A promise that resolves after the clipboard attempt completes.
    * @remarks Shows a success toast only when the clipboard API reports success.
    */
-  const handleCopyDirPath = async () => {
-    const copied = await copyTextToClipboard(node.path)
-    if (copied) {
-      toast.success(t("toasts.pathCopied"), { description: node.path })
-    }
+  const handleCopyDirPath = () => {
+    return copyPathToClipboard(node.path, t("toasts.pathCopied"))
+  }
+
+  /**
+   * Copies this directory's absolute filesystem path to the clipboard.
+   * @returns A promise that resolves after the clipboard attempt completes.
+   * @remarks Uses the precomputed workspace-joined filesystem path.
+   */
+  const handleCopyDirAbsolutePath = () => {
+    return copyPathToClipboard(absolutePath, t("toasts.pathCopied"))
   }
 
   return (
@@ -793,9 +830,17 @@ export function RenderNode({
         >
           {t("attachToCurrentSession")}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void handleCopyDirPath()}>
-          {t("copyFilePath")}
-        </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{t("copyFilePath")}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <ContextMenuItem onSelect={() => void handleCopyDirPath()}>
+              {t("copyRelativePath")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => void handleCopyDirAbsolutePath()}>
+              {t("copyAbsolutePath")}
+            </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
           <ContextMenuSubContent>

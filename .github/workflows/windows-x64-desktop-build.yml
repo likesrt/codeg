@@ -1,0 +1,68 @@
+name: Windows x64 Desktop Build
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: short
+  HUSKY: 0
+  TAURI_TARGET_TRIPLE: x86_64-pc-windows-msvc
+
+concurrency:
+  group: windows-x64-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-x64:
+    name: Build Windows x64 desktop artifact
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.24.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Windows x64 sidecar
+        run: pnpm tauri:prepare-sidecars -- --target x86_64-pc-windows-msvc
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Windows x64 installer
+        env:
+          CODEG_SKIP_SIDECAR: "1"
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis,updater
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeg-windows-x64
+          if-no-files-found: error
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/**
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/updater/**

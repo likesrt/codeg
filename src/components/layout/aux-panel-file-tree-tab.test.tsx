@@ -6,7 +6,13 @@ import { copyTextToClipboard } from "@/lib/utils"
 vi.mock("next-intl", () => ({
   useTranslations: (namespace?: string) => (key: string) => {
     if (namespace === "Folder.fileTreeTab" && key === "copyFilePath") {
-      return "Copy file path"
+      return "Copy path"
+    }
+    if (namespace === "Folder.fileTreeTab" && key === "copyRelativePath") {
+      return "Copy relative path"
+    }
+    if (namespace === "Folder.fileTreeTab" && key === "copyAbsolutePath") {
+      return "Copy absolute path"
     }
     if (namespace === "Folder.fileTreeTab" && key === "toasts.pathCopied") {
       return "Path copied"
@@ -102,10 +108,147 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy file path" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
 
     await waitFor(() => {
       expect(copyTextToClipboard).toHaveBeenCalledWith("src/app.ts")
+    })
+  })
+
+  it("copies the absolute path from the file node menu", async () => {
+    render(
+      <RenderNode
+        activeSessionTabId={null}
+        ancestorGitignoreIgnored={false}
+        ancestorUntracked={false}
+        expandedPaths={new Set()}
+        folderUploadSupported={false}
+        gitChangedDirPaths={new Set()}
+        gitEnabled={false}
+        gitStatusByPath={new Map()}
+        gitignoreIgnoredPaths={new Set()}
+        node={{ kind: "file", name: "app.ts", path: "src/app.ts" }}
+        onOpenCommitWindow={vi.fn()}
+        onOpenDirDiff={vi.fn()}
+        onOpenDirInTerminal={vi.fn()}
+        onOpenFileDiff={vi.fn()}
+        onOpenFilePreview={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestAddToVcs={vi.fn()}
+        onRequestCompareWithBranch={vi.fn()}
+        onRequestCreate={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestDownloadDir={vi.fn()}
+        onRequestDownloadFile={vi.fn()}
+        onRequestRename={vi.fn()}
+        onRequestRollback={vi.fn()}
+        onRequestUpload={vi.fn()}
+        untrackedDirPaths={new Set()}
+        webMode={false}
+        workspacePath="/home/me/project"
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
+
+    await waitFor(() => {
+      expect(copyTextToClipboard).toHaveBeenCalledWith(
+        "/home/me/project/src/app.ts"
+      )
+    })
+  })
+
+  it("copies the workspace-relative path from the directory node menu", async () => {
+    render(
+      <RenderNode
+        activeSessionTabId={null}
+        ancestorGitignoreIgnored={false}
+        ancestorUntracked={false}
+        expandedPaths={new Set()}
+        folderUploadSupported={false}
+        gitChangedDirPaths={new Set()}
+        gitEnabled={false}
+        gitStatusByPath={new Map()}
+        gitignoreIgnoredPaths={new Set()}
+        node={{
+          children: [],
+          kind: "dir",
+          name: "components",
+          path: "src/components",
+        }}
+        onOpenCommitWindow={vi.fn()}
+        onOpenDirDiff={vi.fn()}
+        onOpenDirInTerminal={vi.fn()}
+        onOpenFileDiff={vi.fn()}
+        onOpenFilePreview={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestAddToVcs={vi.fn()}
+        onRequestCompareWithBranch={vi.fn()}
+        onRequestCreate={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestDownloadDir={vi.fn()}
+        onRequestDownloadFile={vi.fn()}
+        onRequestRename={vi.fn()}
+        onRequestRollback={vi.fn()}
+        onRequestUpload={vi.fn()}
+        untrackedDirPaths={new Set()}
+        webMode={false}
+        workspacePath="/home/me/project"
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
+
+    await waitFor(() => {
+      expect(copyTextToClipboard).toHaveBeenCalledWith("src/components")
+    })
+  })
+
+  it("copies the absolute path from the directory node menu", async () => {
+    render(
+      <RenderNode
+        activeSessionTabId={null}
+        ancestorGitignoreIgnored={false}
+        ancestorUntracked={false}
+        expandedPaths={new Set()}
+        folderUploadSupported={false}
+        gitChangedDirPaths={new Set()}
+        gitEnabled={false}
+        gitStatusByPath={new Map()}
+        gitignoreIgnoredPaths={new Set()}
+        node={{
+          children: [],
+          kind: "dir",
+          name: "components",
+          path: "src/components",
+        }}
+        onOpenCommitWindow={vi.fn()}
+        onOpenDirDiff={vi.fn()}
+        onOpenDirInTerminal={vi.fn()}
+        onOpenFileDiff={vi.fn()}
+        onOpenFilePreview={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestAddToVcs={vi.fn()}
+        onRequestCompareWithBranch={vi.fn()}
+        onRequestCreate={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestDownloadDir={vi.fn()}
+        onRequestDownloadFile={vi.fn()}
+        onRequestRename={vi.fn()}
+        onRequestRollback={vi.fn()}
+        onRequestUpload={vi.fn()}
+        untrackedDirPaths={new Set()}
+        webMode={false}
+        workspacePath="/home/me/project"
+      />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
+
+    await waitFor(() => {
+      expect(copyTextToClipboard).toHaveBeenCalledWith(
+        "/home/me/project/src/components"
+      )
     })
   })
 })

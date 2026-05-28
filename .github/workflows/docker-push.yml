@@ -3,6 +3,17 @@ name: Docker Push
 # 仅允许手动触发，避免 push 到 main 时自动打包并推送镜像。
 on:
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "GHCR image tag to push, e.g. latest, manual, main-20260528"
+        required: true
+        type: string
+        default: latest
+      platforms:
+        description: "Target platforms for the local workstation image"
+        required: true
+        type: string
+        default: linux/amd64,linux/arm64
 
 env:
   RUST_BACKTRACE: short
@@ -41,15 +52,19 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            type=raw,value=${{ inputs.image_tag }}
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push local Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.local
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ inputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true

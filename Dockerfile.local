@@ -1,9 +1,12 @@
+# syntax=docker/dockerfile:1.7
 # Stage 1: Build Next.js static export
 FROM node:22-alpine AS frontend
-RUN corepack enable && corepack prepare pnpm@10 --activate
+ARG TARGETARCH
+RUN corepack enable && corepack prepare pnpm@10.24.0 --activate
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=codeg-pnpm-store-${TARGETARCH},target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 COPY src/ ./src/
 COPY public/ ./public/
 COPY next.config.ts tsconfig.json postcss.config.mjs components.json ./
@@ -11,14 +14,20 @@ RUN pnpm build
 
 # Stage 2: Build Rust server binary + codeg-mcp companion
 FROM rust:slim-bookworm AS backend
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/src-tauri
 COPY src-tauri/ ./
 # codeg-mcp is the stdio MCP companion the runtime injects per session
 # (see acp/delegation/companion.rs). It must ship next to codeg-server so
 # `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
-RUN cargo build --release --bin codeg-server --no-default-features \
- && cargo build --release --bin codeg-mcp --no-default-features
+RUN --mount=type=cache,id=codeg-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=codeg-cargo-git-${TARGETARCH},target=/usr/local/cargo/git \
+    --mount=type=cache,id=codeg-cargo-target-${TARGETARCH},target=/app/src-tauri/target \
+    cargo build --release --bin codeg-server --no-default-features \
+ && cargo build --release --bin codeg-mcp --no-default-features \
+ && mkdir -p /app/bin \
+ && cp target/release/codeg-server target/release/codeg-mcp /app/bin/
 
 # Stage 3: Runtime development workstation
 FROM debian:bookworm-slim
@@ -126,8 +135,8 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME}
 
 # 拷贝 Codeg 服务端、MCP 伴生进程、前端静态文件、容器启动脚本和按需工具链安装入口。
-COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
-COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
+COPY --from=backend /app/bin/codeg-server /usr/local/bin/codeg-server
+COPY --from=backend /app/bin/codeg-mcp /usr/local/bin/codeg-mcp
 COPY --from=frontend /app/out /app/web
 COPY docker/entrypoint.local.sh /usr/local/bin/codeg-entrypoint.sh
 COPY docker/codeg.local.sh /usr/local/bin/codeg
