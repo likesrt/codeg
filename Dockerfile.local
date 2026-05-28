@@ -66,6 +66,7 @@ ENV PATH=/home/codeg/.pyenv/shims:/home/codeg/.pyenv/bin:/home/codeg/.nvm/curren
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     ca-certificates \
     curl \
     git \
