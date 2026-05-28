@@ -33,6 +33,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate target platforms input
+        shell: bash
+        run: |
+          INPUT="${{ inputs.platforms }}"
+          # Trim surrounding whitespace
+          INPUT="${INPUT#"${INPUT%%[![:space:]]*}"}"
+          INPUT="${INPUT%"${INPUT##*[![:space:]]}"}"
+          if [ -z "$INPUT" ]; then
+            echo "::error::platforms input is empty"
+            exit 1
+          fi
+          IFS=',' read -ra PLATS <<< "$INPUT"
+          for p in "${PLATS[@]}"; do
+            # Trim each token
+            p="${p#"${p%%[![:space:]]*}"}"
+            p="${p%"${p##*[![:space:]]}"}"
+            if ! echo "$p" | grep -qE '^[a-z]+/[a-z0-9_]+$'; then
+              echo "::error::Invalid platform token '${p}' in platforms input '${INPUT}'. Expected format like 'linux/amd64,linux/arm64'. Check for typos such as doubled letters (e.g. 'llinux')."
+              exit 1
+            fi
+          done
+          echo "Platforms validated: ${INPUT}"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
