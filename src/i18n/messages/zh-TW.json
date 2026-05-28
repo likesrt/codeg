@@ -1875,6 +1875,9 @@
         "subAgentRunning": "子代理執行中…",
         "noDetail": "暫無詳情。",
         "unknownAgent": "子智慧體",
+        "openDetail": "檢視會話",
+        "detailTitle": "子智慧體會話",
+        "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
         "status": {
           "running": "執行中",
           "ok": "完成",

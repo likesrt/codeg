@@ -87,6 +87,28 @@ vi.mock("@/components/chat/permission-dialog", () => ({
     ) : null,
 }))
 
+// SubAgentSessionSheet pulls in MessageListView + useConversationRuntime,
+// which would require the full runtime provider tree. Stub it down to a
+// sentinel that exposes the open state via `data-open` so we can assert
+// that the header's open-conversation (Eye) button toggles it. The
+// sheet's own behavior (bridge, read-only rendering) is covered by its
+// dedicated test file.
+vi.mock("@/components/message/sub-agent-session-sheet", () => ({
+  SubAgentSessionSheet: ({
+    open,
+    childConversationId,
+  }: {
+    open: boolean
+    childConversationId: number
+  }) =>
+    open ? (
+      <div
+        data-testid="sub-agent-session-sheet"
+        data-conversation-id={childConversationId}
+      />
+    ) : null,
+}))
+
 // MessageResponse pulls in workspace context + active folder hooks that
 // aren't available in this test's shallow render. We only care that the
 // component shows markdown text — render an h1 for fenced headers + the
@@ -162,6 +184,44 @@ describe("DelegatedSubThread", () => {
       <DelegatedSubThread parentToolUseId="pt-1" />
     )
     expect(container.firstChild).toBeNull()
+  })
+
+  it("renders the open-conversation button when the child id is known and toggles the read-only sheet on click", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "running" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    // Sheet starts closed.
+    expect(
+      screen.queryByTestId("sub-agent-session-sheet")
+    ).not.toBeInTheDocument()
+    const openButton = screen.getByRole("button", { name: "Open conversation" })
+    fireEvent.click(openButton)
+    const sheet = screen.getByTestId("sub-agent-session-sheet")
+    expect(sheet).toBeInTheDocument()
+    // The sheet receives the binding's childConversationId so it can fetch
+    // the right transcript — not the parent's id.
+    expect(sheet).toHaveAttribute("data-conversation-id", "99")
+  })
+
+  it("hides the open-conversation button when the child id is unknown (snapshot replay without delegation meta)", () => {
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({
+      agent_type: "codex",
+      task: "no child id available",
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input={input} />)
+    expect(
+      screen.queryByRole("button", { name: "Open conversation" })
+    ).not.toBeInTheDocument()
   })
 
   it("renders agent label + running badge when delegation is in-flight", () => {
@@ -295,7 +355,7 @@ describe("DelegatedSubThread", () => {
     )
     expect(screen.queryByText(/All good\./)).not.toBeInTheDocument()
     // Markdown header sticks an <h1> inside the body — find via heading role.
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText(/All good\./)).toBeInTheDocument()
     // Heading was extracted, not rendered as literal "# Result".
     expect(screen.queryByText(/^# Result/)).not.toBeInTheDocument()
@@ -328,7 +388,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText("Build succeeded.")).toBeInTheDocument()
     expect(
       screen.queryByText(/Waiting for the child agent to start/)
@@ -354,7 +414,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.queryByText(/Sub-agent running/)).not.toBeInTheDocument()
     // Falls back to the "no detail" copy instead of a misleading indicator.
     expect(screen.getByText(/No detail available yet/)).toBeInTheDocument()
@@ -379,7 +439,7 @@ describe("DelegatedSubThread", () => {
         state="output-error"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText(/Child timed out after 30s/)).toBeInTheDocument()
   })
 
@@ -434,7 +494,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText("Final result body.")).toBeInTheDocument()
     // Intermediate child turns must not leak into the parent's expanded
     // body — neither the User/Assistant labels nor the intermediate text.
@@ -545,7 +605,7 @@ describe("DelegatedSubThread", () => {
     const { unmount } = renderWithIntl(
       <DelegatedSubThread parentToolUseId="pt-1" />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     // Both text segments must be visible — later segments NEVER cover
     // earlier ones. Segments are joined directly with no separator, so
     // the rendered string contains both substrings in arrival order.
@@ -580,7 +640,7 @@ describe("DelegatedSubThread", () => {
     const { unmount: unmount2 } = renderWithIntl(
       <DelegatedSubThread parentToolUseId="pt-1" />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText("earlier text")).toBeInTheDocument()
     expect(screen.getByText(/Sub-agent running/)).toBeInTheDocument()
     expect(screen.queryByText(/Run bash/)).not.toBeInTheDocument()
@@ -603,7 +663,7 @@ describe("DelegatedSubThread", () => {
       },
     }
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText(/Sub-agent running/)).toBeInTheDocument()
     expect(
       screen.queryByText(/Waiting for the child agent to start/)
@@ -699,7 +759,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     // Inner text is rendered through the markdown stub; the H1 heading
     // proves the markdown path, not the JSON pretty-print path.
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
@@ -744,7 +804,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText("All green.")).toBeInTheDocument()
     expect(screen.queryByText(/Wall time:/)).not.toBeInTheDocument()
     expect(screen.queryByText(/structuredContent/)).not.toBeInTheDocument()
@@ -777,7 +837,7 @@ describe("DelegatedSubThread", () => {
         state="output-error"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     // The destructive container wraps DelegationOutcomeText — assert via
     // the inner text plus the destructive className on the container.
     const card = screen.getByTestId("markdown-stub").parentElement
@@ -814,7 +874,7 @@ describe("DelegatedSubThread", () => {
         state="output-available"
       />
     )
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText("Build succeeded.")).toBeInTheDocument()
     expect(screen.getByText(/Exit code: 0/)).toBeInTheDocument()
     expect(screen.queryByText(/Wall time:/)).not.toBeInTheDocument()
@@ -874,7 +934,7 @@ describe("DelegatedSubThread", () => {
       },
     }
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
-    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
     expect(screen.getByText(/checking the build first/)).toBeInTheDocument()
 
     // STATUS_CHANGED("prompting") fires for turn 2: liveMessage is

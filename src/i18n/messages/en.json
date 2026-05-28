@@ -1875,6 +1875,9 @@
         "subAgentRunning": "Sub-agent running…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-agent",
+        "openDetail": "Open conversation",
+        "detailTitle": "Sub-agent conversation",
+        "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
         "status": {
           "running": "running",
           "ok": "done",

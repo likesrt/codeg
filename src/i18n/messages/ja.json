@@ -1875,6 +1875,9 @@
         "subAgentRunning": "サブエージェント実行中…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "サブエージェント",
+        "openDetail": "会話を表示",
+        "detailTitle": "サブエージェントの会話",
+        "detailDescription": "委任されたサブエージェントの会話を読み取り専用で表示します。",
         "status": {
           "running": "実行中",
           "ok": "完了",

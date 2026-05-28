@@ -1875,6 +1875,9 @@
         "subAgentRunning": "العميل الفرعي قيد التشغيل…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "وكيل فرعي",
+        "openDetail": "عرض المحادثة",
+        "detailTitle": "محادثة الوكيل الفرعي",
+        "detailDescription": "عرض للقراءة فقط لمحادثة الوكيل الفرعي المُفوَّض.",
         "status": {
           "running": "قيد التشغيل",
           "ok": "اكتمل",

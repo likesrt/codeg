@@ -1875,6 +1875,9 @@
         "subAgentRunning": "Unteragent läuft…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-Agent",
+        "openDetail": "Konversation anzeigen",
+        "detailTitle": "Unteragent-Konversation",
+        "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
         "status": {
           "running": "läuft",
           "ok": "fertig",

@@ -1425,13 +1425,6 @@ export function ConversationDetailPanel() {
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
-          disabled={!canReloadActiveConversation}
-          onSelect={handleReloadActiveConversation}
-        >
-          <RefreshCw className="h-4 w-4" />
-          {t("reload")}
-        </ContextMenuItem>
-        <ContextMenuItem
           disabled={!folder?.path}
           onSelect={handleNewConversation}
         >
@@ -1458,6 +1451,13 @@ export function ConversationDetailPanel() {
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuItem
+          disabled={!canReloadActiveConversation}
+          onSelect={handleReloadActiveConversation}
+        >
+          <RefreshCw className="h-4 w-4" />
+          {t("reload")}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           disabled={!activeTabId}

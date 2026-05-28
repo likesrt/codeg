@@ -1875,6 +1875,9 @@
         "subAgentRunning": "Sous-agent en cours…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sous-agent",
+        "openDetail": "Voir la conversation",
+        "detailTitle": "Conversation du sous-agent",
+        "detailDescription": "Vue en lecture seule de la conversation du sous-agent délégué.",
         "status": {
           "running": "en cours",
           "ok": "terminé",

@@ -1875,6 +1875,9 @@
         "subAgentRunning": "Subagente en ejecución…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-agente",
+        "openDetail": "Ver conversación",
+        "detailTitle": "Conversación del subagente",
+        "detailDescription": "Vista de solo lectura de la conversación del subagente delegado.",
         "status": {
           "running": "en curso",
           "ok": "completado",

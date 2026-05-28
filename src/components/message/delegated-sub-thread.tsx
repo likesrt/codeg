@@ -20,19 +20,13 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react"
-import {
-  CheckCircleIcon,
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  XCircleIcon,
-} from "lucide-react"
+import { ChevronDown, ChevronRight, Eye, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { AgentIcon } from "@/components/agent-icon"
-import { Badge } from "@/components/ui/badge"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { useDelegatedSubSession } from "@/hooks/use-delegated-sub-session"
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
@@ -48,6 +42,8 @@ import {
   type PendingPermission as ChildPendingPermission,
 } from "@/contexts/acp-connections-context"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
+import { StatusBadge } from "@/components/message/delegation-status-badge"
+import { SubAgentSessionSheet } from "@/components/message/sub-agent-session-sheet"
 
 interface Props {
   parentToolUseId: string
@@ -415,6 +411,7 @@ export function DelegatedSubThread({
   meta,
 }: Props) {
   const t = useTranslations("Folder.chat.delegation")
+  const [sheetOpen, setSheetOpen] = useState(false)
   // expanded is driven by user click OR by the arrival of a child
   // pending permission. useReducer (not useState) so the in-effect
   // auto-expand dispatch on first permission appearance doesn't trip
@@ -593,45 +590,62 @@ export function DelegatedSubThread({
     return null
   }
 
+  const childConversationId =
+    binding?.childConversationId ?? parsedMeta?.childConversationId ?? null
+
   return (
     <div
       data-testid="delegated-sub-thread"
       className="rounded-lg border border-border bg-card"
     >
-      <button
-        type="button"
-        onClick={() => dispatchExpand("toggle")}
-        className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors rounded-t-lg"
-        aria-expanded={expanded}
-      >
-        <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground">
-          {agentType ? (
-            <AgentIcon agentType={agentType} className="h-3.5 w-3.5" />
-          ) : (
-            <span className="h-2 w-2 rounded-sm bg-muted-foreground/60" />
-          )}
-        </span>
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">
-              {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
-            </span>
-            <StatusBadge status={status} errorCode={errorCode} />
-          </div>
-          {parsed.task && (
-            <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-2">
-              {parsed.task}
+      <div className="flex w-full items-stretch rounded-t-lg overflow-hidden">
+        <button
+          type="button"
+          onClick={() => dispatchExpand("toggle")}
+          className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
+          aria-expanded={expanded}
+        >
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
+            {agentType ? (
+              <AgentIcon agentType={agentType} className="h-5 w-5" />
+            ) : (
+              <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
+            )}
+          </span>
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">
+                {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
+              </span>
+              <StatusBadge status={status} errorCode={errorCode} />
             </div>
-          )}
-        </div>
-        <span className="self-center shrink-0 text-muted-foreground">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-        </span>
-      </button>
+            {parsed.task && (
+              <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
+                {parsed.task}
+              </div>
+            )}
+          </div>
+          <span className="shrink-0 text-muted-foreground">
+            {expanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+          </span>
+        </button>
+        {childConversationId != null && (
+          <button
+            type="button"
+            onClick={() => setSheetOpen(true)}
+            className="shrink-0 flex items-center gap-1.5 px-3 border-l border-border text-xs font-medium text-foreground/80 hover:bg-muted/60 hover:text-foreground transition-colors"
+            title={t("openDetail")}
+            aria-label={t("openDetail")}
+          >
+            <Eye className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t("openDetail")}</span>
+          </button>
+        )}
+      </div>
       {expanded && (
         <div className="border-t border-border px-3 py-3 max-h-96 overflow-auto text-xs space-y-3">
           <ExpandedBody
@@ -644,6 +658,15 @@ export function DelegatedSubThread({
             tNoDetail={t("noDetail")}
           />
         </div>
+      )}
+      {childConversationId != null && (
+        <SubAgentSessionSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          childConversationId={childConversationId}
+          childConnectionId={childConnectionId}
+          agentType={agentType}
+        />
       )}
     </div>
   )
@@ -724,72 +747,4 @@ function DelegationOutcomeText({
       <MessageResponse>{text}</MessageResponse>
     </div>
   )
-}
-
-function StatusBadge({
-  status,
-  errorCode,
-}: {
-  status: "running" | "ok" | "err"
-  errorCode?: string
-}) {
-  const t = useTranslations("Folder.chat.delegation.status")
-  if (status === "running") {
-    return (
-      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
-        <Loader2 className="animate-spin" />
-        {t("running")}
-      </Badge>
-    )
-  }
-  if (status === "ok") {
-    return (
-      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
-        <CheckCircleIcon className="text-green-600" />
-        {t("ok")}
-      </Badge>
-    )
-  }
-  return (
-    <Badge
-      className="gap-1.5 rounded-full text-xs"
-      variant="secondary"
-      title={errorCode ?? undefined}
-    >
-      <XCircleIcon className="text-red-600" />
-      <ErrorLabel code={errorCode} />
-    </Badge>
-  )
-}
-
-function ErrorLabel({ code }: { code?: string }) {
-  const t = useTranslations("Folder.chat.delegation.status.err")
-  switch (code) {
-    case "delegation_disabled":
-      return <>{t("delegation_disabled")}</>
-    case "depth_limit":
-      return <>{t("depth_limit")}</>
-    case "invalid_agent_type":
-      return <>{t("invalid_agent_type")}</>
-    case "spawn_failed":
-      return <>{t("spawn_failed")}</>
-    case "send_failed":
-      return <>{t("send_failed")}</>
-    case "timeout":
-      return <>{t("timeout")}</>
-    case "canceled":
-      return <>{t("canceled")}</>
-    case "child_refusal":
-      return <>{t("child_refusal")}</>
-    case "child_max_tokens":
-      return <>{t("child_max_tokens")}</>
-    case "child_max_turn_requests":
-      return <>{t("child_max_turn_requests")}</>
-    case "child_empty":
-      return <>{t("child_empty")}</>
-    case "child_unknown":
-      return <>{t("child_unknown")}</>
-    default:
-      return <>{t("default")}</>
-  }
 }

@@ -1118,48 +1118,91 @@ export function ConversationRuntimeProvider({
     [state.byConversationId]
   )
 
-  const fetchDetail = useCallback((conversationId: number) => {
-    const session = stateRef.current.byConversationId.get(conversationId)
-    if (session?.detail || session?.detailLoading) return
+  // Per-conversation fetch-generation counter. Each `fetchDetail` /
+  // `refetchDetail` / `removeConversation` increments the counter for
+  // that conversationId; an outstanding fetch promise captures the
+  // value it was issued with and refuses to dispatch its
+  // `FETCH_DETAIL_SUCCESS` / `FETCH_DETAIL_ERROR` if the counter has
+  // moved on. Closes two races:
+  //
+  //   1. Stale-response overwrite — open A → close A → open B → A
+  //      resolves last and clobbers B's fresh detail with stale data.
+  //   2. Resurrection after removeConversation — an in-flight fetch
+  //      resolves after the session was removed and recreates it with
+  //      stale data, blocking the next open from seeing fresh state.
+  //
+  // The counter lives in a ref so callers don't trigger renders. Cells
+  // are kept indefinitely (small int per conversation); a cleanup
+  // sweep isn't needed for the expected cardinality.
+  const fetchGenerationRef = useRef(new Map<number, number>())
 
-    // Skip fetch if session has active data (ongoing conversation)
-    if (
-      session &&
-      (session.optimisticTurns.length > 0 ||
-        session.liveMessage !== null ||
-        session.localTurns.length > 0)
-    ) {
-      return
-    }
-
-    dispatch({ type: "FETCH_DETAIL_START", conversationId })
-    getFolderConversation(conversationId)
-      .then((detail) => {
-        dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
-      })
-      .catch((error: unknown) => {
-        dispatch({
-          type: "FETCH_DETAIL_ERROR",
-          conversationId,
-          error: toErrorMessage(error),
-        })
-      })
+  const bumpFetchGeneration = useCallback((conversationId: number): number => {
+    const map = fetchGenerationRef.current
+    const next = (map.get(conversationId) ?? 0) + 1
+    map.set(conversationId, next)
+    return next
   }, [])
 
-  const refetchDetail = useCallback((conversationId: number) => {
-    dispatch({ type: "FETCH_DETAIL_START", conversationId })
-    getFolderConversation(conversationId)
-      .then((detail) => {
-        dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
-      })
-      .catch((error: unknown) => {
-        dispatch({
-          type: "FETCH_DETAIL_ERROR",
-          conversationId,
-          error: toErrorMessage(error),
+  const isLatestGeneration = useCallback(
+    (conversationId: number, generation: number): boolean =>
+      fetchGenerationRef.current.get(conversationId) === generation,
+    []
+  )
+
+  const fetchDetail = useCallback(
+    (conversationId: number) => {
+      const session = stateRef.current.byConversationId.get(conversationId)
+      if (session?.detail || session?.detailLoading) return
+
+      // Skip fetch if session has active data (ongoing conversation)
+      if (
+        session &&
+        (session.optimisticTurns.length > 0 ||
+          session.liveMessage !== null ||
+          session.localTurns.length > 0)
+      ) {
+        return
+      }
+
+      const generation = bumpFetchGeneration(conversationId)
+      dispatch({ type: "FETCH_DETAIL_START", conversationId })
+      getFolderConversation(conversationId)
+        .then((detail) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
         })
-      })
-  }, [])
+        .catch((error: unknown) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({
+            type: "FETCH_DETAIL_ERROR",
+            conversationId,
+            error: toErrorMessage(error),
+          })
+        })
+    },
+    [bumpFetchGeneration, isLatestGeneration]
+  )
+
+  const refetchDetail = useCallback(
+    (conversationId: number) => {
+      const generation = bumpFetchGeneration(conversationId)
+      dispatch({ type: "FETCH_DETAIL_START", conversationId })
+      getFolderConversation(conversationId)
+        .then((detail) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
+        })
+        .catch((error: unknown) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({
+            type: "FETCH_DETAIL_ERROR",
+            conversationId,
+            error: toErrorMessage(error),
+          })
+        })
+    },
+    [bumpFetchGeneration, isLatestGeneration]
+  )
 
   const syncTurnMetadata = useCallback(
     (
@@ -1385,9 +1428,16 @@ export function ConversationRuntimeProvider({
     []
   )
 
-  const removeConversation = useCallback((conversationId: number) => {
-    dispatch({ type: "REMOVE_CONVERSATION", conversationId })
-  }, [])
+  const removeConversation = useCallback(
+    (conversationId: number) => {
+      // Invalidate any outstanding fetch for this conversation so a
+      // late-arriving response can't resurrect the session with stale
+      // detail. See `fetchGenerationRef` comment above.
+      bumpFetchGeneration(conversationId)
+      dispatch({ type: "REMOVE_CONVERSATION", conversationId })
+    },
+    [bumpFetchGeneration]
+  )
 
   const reset = useCallback(() => {
     dispatch({ type: "RESET" })
