@@ -65,6 +65,7 @@ jobs:
         run: pnpm build
 
       - name: Build Windows x64 installer
+        shell: bash
         env:
           CODEG_SKIP_SIDECAR: "1"
         run: >
