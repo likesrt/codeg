@@ -151,6 +151,7 @@ install_pyenv_python() {
   pyenv global "$CODEG_PYTHON_VERSION"
   python -m pip install --upgrade pip setuptools wheel uv camoufox
   camoufox fetch
+  python -m playwright install chromium
 }
 
 install_nvm_node() {

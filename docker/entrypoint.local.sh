@@ -39,6 +39,95 @@ start_toolchain_init_if_enabled() {
 ensure_bash_login_profile
 start_toolchain_init_if_enabled
 
+# Registers the Camoufox browser binary (installed via `codeg init tool`) as a
+# system-level desktop application so it appears in the XFCE application menu
+# and serves as the primary system web browser (priority 60).
+# Arguments: none. Returns success unless filesystem writes fail.
+# Side effect: creates /usr/local/bin/camoufox-browser,
+# /usr/local/share/applications/camoufox.desktop, and update-alternatives entries.
+register_camoufox_system_browser() {
+  local browser_bin=/home/codeg/.cache/camoufox/camoufox
+  local wrapper=/usr/local/bin/camoufox-browser
+  local desktop_dir=/usr/local/share/applications
+  local desktop_file=$desktop_dir/camoufox.desktop
+
+  [ -x "$browser_bin" ] || return 0
+
+  mkdir -p "$desktop_dir"
+
+  cat >"$wrapper" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+exec /home/codeg/.cache/camoufox/camoufox "$@"
+WRAPPER_EOF
+  chmod 755 "$wrapper"
+
+  cat >"$desktop_file" <<DESKTOP_EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Camoufox
+Comment=Anti-detection Firefox-based browser
+Exec=/usr/local/bin/camoufox-browser %u
+Icon=web-browser
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Terminal=false
+StartupNotify=true
+DESKTOP_EOF
+
+  update-desktop-database "$desktop_dir" 2>/dev/null || true
+  update-alternatives --install /usr/bin/x-www-browser x-www-browser "$wrapper" 60 2>/dev/null || true
+  update-alternatives --install /usr/bin/www-browser www-browser "$wrapper" 60 2>/dev/null || true
+}
+
+# Registers Playwright-installed Chromium as a fallback system browser
+# (priority 40, lower than Camoufox). Activates automatically when Chromium
+# has been installed via `python -m playwright install chromium`.
+# Arguments: none. Returns success unless filesystem writes fail.
+# Side effect: creates /usr/local/bin/chromium-browser,
+# /usr/local/share/applications/chromium.desktop, and update-alternatives entries.
+register_chromium_system_browser() {
+  local playwright_cache=/home/codeg/.cache/ms-playwright
+  local chromium_dir chromium_bin wrapper desktop_dir desktop_file
+
+  chromium_dir=$(find "$playwright_cache" -maxdepth 1 -type d -name 'chromium-*' 2>/dev/null | sort -V | tail -1)
+  [ -n "$chromium_dir" ] || return 0
+  chromium_bin=$chromium_dir/chrome-linux/chrome
+  [ -x "$chromium_bin" ] || return 0
+
+  wrapper=/usr/local/bin/chromium-browser
+  desktop_dir=/usr/local/share/applications
+  desktop_file=$desktop_dir/chromium.desktop
+  mkdir -p "$desktop_dir"
+
+  cat >"$wrapper" <<WRAPPER_EOF
+#!/usr/bin/env bash
+exec "$chromium_bin" "\$@"
+WRAPPER_EOF
+  chmod 755 "$wrapper"
+
+  cat >"$desktop_file" <<DESKTOP_EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chromium
+Comment=Playwright Chromium browser
+Exec=/usr/local/bin/chromium-browser %u
+Icon=web-browser
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Terminal=false
+StartupNotify=true
+DESKTOP_EOF
+
+  update-desktop-database "$desktop_dir" 2>/dev/null || true
+  update-alternatives --install /usr/bin/x-www-browser x-www-browser "$wrapper" 40 2>/dev/null || true
+  update-alternatives --install /usr/bin/www-browser www-browser "$wrapper" 40 2>/dev/null || true
+}
+
+register_camoufox_system_browser
+register_chromium_system_browser
+
 # 修复已持久化 home 中旧镜像留下的 Node 路径，确保 npm/pnpm 可被默认 PATH 找到。
 if [ -s /home/codeg/.nvm/nvm.sh ]; then
   run_as_codeg bash -lc 'source "$HOME/.nvm/nvm.sh" && nvm use --silent default >/dev/null && ln -sfn "$(npm prefix -g)" "$HOME/.nvm/current"'
