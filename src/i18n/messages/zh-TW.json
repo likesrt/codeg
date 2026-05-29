@@ -983,7 +983,21 @@
       "typeToSearch": "輸入關鍵字搜尋會話",
       "typeToSearchFiles": "輸入關鍵字搜尋檔案或目錄",
       "noResults": "找不到結果。",
-      "untitledConversation": "未命名會話"
+      "untitledConversation": "未命名會話",
+      "tabContent": "內容",
+      "contentPlaceholder": "搜尋檔案內容...",
+      "searchContent": "搜尋內容",
+      "showContentSettings": "顯示設定",
+      "hideContentSettings": "隱藏設定",
+      "typeToSearchContent": "輸入關鍵字後按 Enter 或點擊搜尋內容",
+      "contentSearchError": "內容搜尋失敗：{message}",
+      "contentResultsTruncated": "結果已截斷。請縮小關鍵字或調整設定。",
+      "searchDirs": "搜尋目錄",
+      "includeExtensions": "包含副檔名",
+      "excludeDirs": "排除目錄",
+      "excludeExtensions": "排除副檔名",
+      "maxResults": "最大結果數",
+      "maxFileBytesMb": "最大檔案大小（MB）"
     },
     "folderTitleBar": {
       "showSidebar": "顯示側邊欄",

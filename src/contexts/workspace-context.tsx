@@ -77,7 +77,7 @@ interface WorkspaceContextValue {
   reorderFileTabs: (tabs: FileWorkspaceTab[]) => void
   openFilePreview: (
     path: string,
-    options?: { line?: number; reload?: boolean }
+    options?: { line?: number; reload?: boolean; searchQuery?: string }
   ) => Promise<void>
   // Refetch the open tab matching `path` without changing activeFileTabId.
   // No-op when no tab matches or when the tab has unsaved local edits
@@ -837,7 +837,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
 
   const openFilePreview = useCallback(
-    async (rawPath: string, options?: { line?: number; reload?: boolean }) => {
+    async (
+      rawPath: string,
+      options?: { line?: number; reload?: boolean; searchQuery?: string }
+    ) => {
       if (!folderPath) return
       const path = normalizePath(rawPath)
       const requestedLine =

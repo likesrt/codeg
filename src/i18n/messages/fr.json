@@ -983,7 +983,21 @@
       "typeToSearch": "Tapez pour rechercher des conversations",
       "typeToSearchFiles": "Tapez pour rechercher des fichiers ou répertoires",
       "noResults": "Aucun résultat trouvé.",
-      "untitledConversation": "Conversation sans titre"
+      "untitledConversation": "Conversation sans titre",
+      "tabContent": "Contenu",
+      "contentPlaceholder": "Rechercher dans le contenu des fichiers...",
+      "searchContent": "Rechercher le contenu",
+      "showContentSettings": "Afficher les paramètres",
+      "hideContentSettings": "Masquer les paramètres",
+      "typeToSearchContent": "Saisissez une requête, puis appuyez sur Entrée ou Rechercher le contenu",
+      "contentSearchError": "Échec de la recherche de contenu : {message}",
+      "contentResultsTruncated": "Les résultats ont été tronqués. Affinez la requête ou les paramètres.",
+      "searchDirs": "Dossiers à rechercher",
+      "includeExtensions": "Extensions incluses",
+      "excludeDirs": "Dossiers exclus",
+      "excludeExtensions": "Extensions exclues",
+      "maxResults": "Nombre maximal de résultats",
+      "maxFileBytesMb": "Taille max. de fichier (Mo)"
     },
     "folderTitleBar": {
       "showSidebar": "Afficher la barre latérale",

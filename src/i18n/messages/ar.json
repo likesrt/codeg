@@ -983,7 +983,21 @@
       "typeToSearch": "اكتب للبحث في المحادثات",
       "typeToSearchFiles": "اكتب للبحث في الملفات أو المجلدات",
       "noResults": "لم يتم العثور على نتائج.",
-      "untitledConversation": "محادثة بدون عنوان"
+      "untitledConversation": "محادثة بدون عنوان",
+      "tabContent": "المحتوى",
+      "contentPlaceholder": "البحث في محتوى الملفات...",
+      "searchContent": "بحث في المحتوى",
+      "showContentSettings": "إظهار الإعدادات",
+      "hideContentSettings": "إخفاء الإعدادات",
+      "typeToSearchContent": "اكتب استعلامًا ثم اضغط Enter أو بحث في المحتوى",
+      "contentSearchError": "فشل البحث في المحتوى: {message}",
+      "contentResultsTruncated": "تم اقتطاع النتائج. قلّل نطاق الاستعلام أو الإعدادات.",
+      "searchDirs": "مجلدات البحث",
+      "includeExtensions": "الامتدادات المضمنة",
+      "excludeDirs": "المجلدات المستبعدة",
+      "excludeExtensions": "الامتدادات المستبعدة",
+      "maxResults": "الحد الأقصى للنتائج",
+      "maxFileBytesMb": "أقصى حجم للملف (MB)"
     },
     "folderTitleBar": {
       "showSidebar": "إظهار الشريط الجانبي",

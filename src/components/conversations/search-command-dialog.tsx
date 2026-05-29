@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import type * as React from "react"
 import { formatDistanceToNow } from "date-fns"
 import { enUS, zhCN, zhTW } from "date-fns/locale"
 import { File, Folder } from "lucide-react"
@@ -10,16 +11,24 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
-import { listAllConversations } from "@/lib/api"
+import { listAllConversations, searchFiles } from "@/lib/api"
 import type {
   AgentType,
   ConversationStatus,
   DbConversationSummary,
+  SearchFileMatch,
 } from "@/lib/types"
+import {
+  loadContentSearchSettings,
+  saveContentSearchSettings,
+  toSearchFilesRequest,
+  type ContentSearchSettings,
+} from "@/lib/content-search-settings"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
 import { AGENT_LABELS, compareAgentType } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
+import { Button } from "@/components/ui/button"
 import {
   CommandDialog,
   CommandInput,
@@ -28,83 +37,191 @@ import {
   CommandGroup,
   CommandItem,
 } from "@/components/ui/command"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
-type SearchTab = "conversations" | "files"
+type SearchTab = "conversations" | "files" | "content"
 
 interface SearchCommandDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
+interface ContentSearchState {
+  results: SearchFileMatch[]
+  searching: boolean
+  error: string | null
+  truncated: boolean
+}
+
+interface ContentSettingsPanelProps {
+  settings: ContentSearchSettings
+  onChange: (settings: ContentSearchSettings) => void
+}
+
+interface ContentResultsProps {
+  activeTab: SearchTab
+  state: ContentSearchState
+  query: string
+  onSelect: (match: SearchFileMatch, query: string) => void
+}
+
+/**
+ * Renders the folder-aware search command dialog.
+ * @param props Dialog open state and close callback from the title bar.
+ * @returns Command dialog with conversation, filename, and content search tabs.
+ * @remarks Content search is deliberately manual to avoid expensive scans.
+ */
 export function SearchCommandDialog({
   open,
   onOpenChange,
 }: SearchCommandDialogProps) {
+  const model = useSearchDialogModel(open, onOpenChange)
+  return <SearchCommandDialogView model={model} />
+}
+
+/**
+ * Builds all state and callbacks needed by the search dialog view.
+ * @param open Whether the dialog is currently visible.
+ * @param onOpenChange Callback used to close the dialog after selection.
+ * @returns View model containing data, actions, and translated labels.
+ * @remarks Effects are centralized here so render helpers stay small.
+ */
+function useSearchDialogModel(
+  open: boolean,
+  onOpenChange: (open: boolean) => void
+) {
+  const base = useBaseSearchState()
+  const conversations = useConversationSearch(base, open)
+  const files = useFileSearch(base.activeTab, base.folderPath, base.query)
+  const content = useContentSearch(base.folderPath, base.query)
+  const actions = useSearchActions(base, conversations, content, onOpenChange)
+  useResetOnClose(open, base, conversations, files, content)
+  return {
+    ...base,
+    ...conversations,
+    ...files,
+    ...content,
+    ...actions,
+    open,
+    onOpenChange,
+  }
+}
+
+/**
+ * Creates shared dialog state and translated metadata.
+ * @returns Base state used by all search tabs.
+ * @remarks Locale selection only affects date formatting in conversation rows.
+ */
+function useBaseSearchState() {
   const t = useTranslations("Folder.search")
   const locale = useLocale()
   const dateFnsLocale =
     locale === "zh-CN" ? zhCN : locale === "zh-TW" ? zhTW : enUS
   const { activeFolder: folder, activeFolderId } = useActiveFolder()
   const { conversations: allConversations } = useAppWorkspace()
-  const folderId = activeFolderId ?? 0
-  const conversations = useMemo(
-    () =>
-      activeFolderId == null
-        ? []
-        : allConversations.filter((c) => c.folder_id === activeFolderId),
-    [allConversations, activeFolderId]
-  )
-  const { openTab } = useTabContext()
-  const { openFilePreview } = useWorkspaceContext()
-  const { revealInFileTree } = useAuxPanelContext()
-
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   const [query, setQuery] = useState("")
+  const folderId = activeFolderId ?? 0
+  const folderPath = folder?.path ?? ""
+  const conversations = useMemo(
+    () => getFolderConversations(allConversations, activeFolderId),
+    [allConversations, activeFolderId]
+  )
+  return {
+    t,
+    dateFnsLocale,
+    folder,
+    folderId,
+    folderPath,
+    conversations,
+    activeTab,
+    setActiveTab,
+    query,
+    setQuery,
+  }
+}
+
+/**
+ * Filters workspace conversations to the active folder.
+ * @param conversations All conversations loaded in the workspace.
+ * @param activeFolderId Current folder id, or null when no folder is active.
+ * @returns Conversations belonging to the active folder only.
+ * @remarks Null active folder returns an empty list to avoid global leakage.
+ */
+function getFolderConversations(
+  conversations: DbConversationSummary[],
+  activeFolderId: number | null
+): DbConversationSummary[] {
+  if (activeFolderId == null) return []
+  return conversations.filter((c) => c.folder_id === activeFolderId)
+}
+
+/**
+ * Manages debounced conversation search state.
+ * @param base Shared dialog state from the active folder and query.
+ * @param open Whether the dialog is visible.
+ * @returns Conversation results, filters, and reset helpers.
+ * @remarks Searching remains debounced only for the conversations tab.
+ */
+function useConversationSearch(
+  base: ReturnType<typeof useBaseSearchState>,
+  open: boolean
+) {
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
   const [results, setResults] = useState<DbConversationSummary[]>([])
   const [searching, setSearching] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const availableAgents = getAvailableAgents(base.conversations)
+  const doSearch = useConversationSearchCallback(
+    base.folderId,
+    setResults,
+    setSearching
+  )
+  useConversationSearchEffect(base, agentFilter, doSearch, debounceRef)
+  return {
+    agentFilter,
+    setAgentFilter,
+    results,
+    setResults,
+    searching,
+    setSearching,
+    availableAgents,
+    open,
+  }
+}
 
-  const folderPath = folder?.path ?? ""
+/**
+ * Returns sorted agent types present in the active folder.
+ * @param conversations Active-folder conversation summaries.
+ * @returns Unique agent types sorted by project display order.
+ * @remarks Used to hide the filter bar when only one agent is present.
+ */
+function getAvailableAgents(
+  conversations: DbConversationSummary[]
+): AgentType[] {
+  return Array.from(new Set(conversations.map((c) => c.agent_type))).sort(
+    compareAgentType
+  )
+}
 
-  // File search via shared hook (lazy-loaded when files tab is active)
-  const {
-    allFiles,
-    loading: filesLoading,
-    reset: resetFileTree,
-  } = useFileTree({
-    folderPath: folderPath || undefined,
-    enabled: activeTab === "files",
-  })
-
-  // Compute which agent types exist in current folder
-  const availableAgents = Array.from(
-    new Set(conversations.map((c) => c.agent_type))
-  ).sort(compareAgentType)
-
-  // Filter files by query using pre-computed lowercase fields
-  const filteredFiles = useMemo(() => {
-    const trimmed = query.trim()
-    if (!trimmed) return allFiles.slice(0, 100)
-    const lower = trimmed.toLowerCase()
-    const matched: FlatFileEntry[] = []
-    for (const f of allFiles) {
-      if (f.lowerName.includes(lower) || f.lowerPath.includes(lower)) {
-        matched.push(f)
-        if (matched.length >= 100) break
-      }
-    }
-    return matched
-  }, [allFiles, query])
-
-  const doSearch = useCallback(
+/**
+ * Creates the async conversation search callback.
+ * @param folderId Active folder id used to scope backend search.
+ * @param setResults Setter for conversation results.
+ * @param setSearching Setter for the loading flag.
+ * @returns Callback that searches conversations by text and agent.
+ * @remarks Empty text with no agent clears results without a backend request.
+ */
+function useConversationSearchCallback(
+  folderId: number,
+  setResults: (results: DbConversationSummary[]) => void,
+  setSearching: (searching: boolean) => void
+) {
+  return useCallback(
     async (q: string, agent: AgentType | null) => {
-      if (!q.trim() && !agent) {
-        setResults([])
-        setSearching(false)
-        return
-      }
+      if (!q.trim() && !agent)
+        return clearConversationResults(setResults, setSearching)
       setSearching(true)
       try {
         const data = await listAllConversations({
@@ -119,226 +236,1040 @@ export function SearchCommandDialog({
         setSearching(false)
       }
     },
-    [folderId]
+    [folderId, setResults, setSearching]
   )
+}
 
-  // Debounced search on query change (conversations tab only)
+/**
+ * Clears conversation search output and loading state.
+ * @param setResults Setter for conversation results.
+ * @param setSearching Setter for the loading flag.
+ * @returns Nothing.
+ * @remarks This avoids backend calls for the empty default state.
+ */
+function clearConversationResults(
+  setResults: (results: DbConversationSummary[]) => void,
+  setSearching: (searching: boolean) => void
+): void {
+  setResults([])
+  setSearching(false)
+}
+
+/**
+ * Runs the debounced conversation search effect.
+ * @param base Shared dialog state containing active tab and query.
+ * @param agentFilter Current agent filter.
+ * @param doSearch Backend-backed conversation search callback.
+ * @param debounceRef Mutable timeout holder for cancellation.
+ * @returns Nothing.
+ */
+function useConversationSearchEffect(
+  base: ReturnType<typeof useBaseSearchState>,
+  agentFilter: AgentType | null,
+  doSearch: (q: string, agent: AgentType | null) => Promise<void>,
+  debounceRef: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>
+): void {
   useEffect(() => {
-    if (activeTab !== "conversations") return
+    if (base.activeTab !== "conversations") return
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      doSearch(query, agentFilter)
-    }, 300)
+    debounceRef.current = setTimeout(
+      () => void doSearch(base.query, agentFilter),
+      300
+    )
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [query, agentFilter, doSearch, activeTab])
+  }, [base.query, agentFilter, doSearch, base.activeTab, debounceRef])
+}
 
-  // Reset state when dialog closes
-  useEffect(() => {
-    if (!open) {
-      setQuery("")
-      setAgentFilter(null)
-      setResults([])
-      setActiveTab("conversations")
-      resetFileTree()
+/**
+ * Loads and filters the file tree for filename search.
+ * @param activeTab Current search tab.
+ * @param folderPath Active folder path used by the file-tree hook.
+ * @param query Current search query.
+ * @returns File-tree loading state, reset callback, and filtered rows.
+ * @remarks File tree is only enabled while the files tab is active.
+ */
+function useFileSearch(
+  activeTab: SearchTab,
+  folderPath: string,
+  query: string
+) {
+  const {
+    allFiles,
+    loading: filesLoading,
+    reset: resetFileTree,
+  } = useFileTree({
+    folderPath: folderPath || undefined,
+    enabled: activeTab === "files",
+  })
+  const filteredFiles = useMemo(
+    () => filterFiles(allFiles, query),
+    [allFiles, query]
+  )
+  return { allFiles, filesLoading, resetFileTree, filteredFiles }
+}
+
+/**
+ * Filters flat file entries against the current query.
+ * @param allFiles Flat file entries from the active workspace.
+ * @param query Filename or path query.
+ * @returns Up to 100 matching entries.
+ * @remarks Empty query returns the first 100 entries for browse-like behavior.
+ */
+function filterFiles(
+  allFiles: FlatFileEntry[],
+  query: string
+): FlatFileEntry[] {
+  const trimmed = query.trim()
+  if (!trimmed) return allFiles.slice(0, 100)
+  const lower = trimmed.toLowerCase()
+  return allFiles
+    .filter((f) => f.lowerName.includes(lower) || f.lowerPath.includes(lower))
+    .slice(0, 100)
+}
+
+/**
+ * Manages manual content-search settings and results.
+ * @param folderPath Active workspace root path.
+ * @param query Current search query.
+ * @returns Content settings, results, flags, and search callbacks.
+ * @remarks Backend search is only triggered by Enter or the search button.
+ */
+function useContentSearch(folderPath: string, query: string) {
+  const [contentSettings, setContentSettings] = useState(
+    loadContentSearchSettings
+  )
+  const [showContentSettings, setShowContentSettings] = useState(false)
+  const [contentState, setContentState] = useState<ContentSearchState>(
+    createEmptyContentState
+  )
+  const resetContentSearch = useCallback(
+    () => setContentState(createEmptyContentState()),
+    []
+  )
+  const runContentSearch = useContentSearchRunner(
+    folderPath,
+    query,
+    contentSettings,
+    setContentState
+  )
+  const updateContentSettings = useUpdateContentSettings(setContentSettings)
+  return {
+    contentSettings,
+    updateContentSettings,
+    showContentSettings,
+    setShowContentSettings,
+    contentState,
+    setContentState,
+    resetContentSearch,
+    runContentSearch,
+  }
+}
+
+/**
+ * Creates the empty content-search state object.
+ * @returns Initial content search result state.
+ * @remarks A fresh object avoids accidental state sharing between resets.
+ */
+function createEmptyContentState(): ContentSearchState {
+  return { results: [], searching: false, error: null, truncated: false }
+}
+
+/**
+ * Creates the manual backend content-search runner.
+ * @param folderPath Workspace root sent to the backend.
+ * @param query Current query text.
+ * @param settings Current content search settings.
+ * @param setState Setter for content-search state.
+ * @returns Function that executes one content search when the query is non-empty.
+ * @remarks Blank queries reset results and never reach the backend.
+ */
+function useContentSearchRunner(
+  folderPath: string,
+  query: string,
+  settings: ContentSearchSettings,
+  setState: (state: ContentSearchState) => void
+) {
+  return useCallback(async () => {
+    const trimmed = query.trim()
+    if (!trimmed || !folderPath) return setState(createEmptyContentState())
+    setState({ results: [], searching: true, error: null, truncated: false })
+    try {
+      const response = await searchFiles(
+        toSearchFilesRequest(folderPath, trimmed, settings)
+      )
+      setState({
+        results: response.results,
+        searching: false,
+        error: null,
+        truncated: response.truncated,
+      })
+    } catch (error) {
+      setState({
+        results: [],
+        searching: false,
+        error: getErrorMessage(error),
+        truncated: false,
+      })
     }
-  }, [open, resetFileTree])
+  }, [folderPath, query, settings, setState])
+}
 
-  const handleSelectConversation = useCallback(
+/**
+ * Normalizes unknown thrown values into displayable text.
+ * @param error Unknown value caught from a backend request.
+ * @returns Human-readable error message.
+ * @remarks Non-Error values fall back to a stable generic message.
+ */
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Search failed"
+}
+
+/**
+ * Creates a settings updater that also persists to localStorage.
+ * @param setSettings React state setter for content settings.
+ * @returns Callback accepting a complete settings object.
+ * @remarks Persistence errors are swallowed by saveContentSearchSettings.
+ */
+function useUpdateContentSettings(
+  setSettings: (settings: ContentSearchSettings) => void
+) {
+  return useCallback(
+    (settings: ContentSearchSettings) => {
+      setSettings(settings)
+      saveContentSearchSettings(settings)
+    },
+    [setSettings]
+  )
+}
+
+/**
+ * Builds selection and keyboard callbacks for all tabs.
+ * @param base Shared dialog state.
+ * @param conversations Conversation search state.
+ * @param content Content search state.
+ * @param onOpenChange Dialog open-state callback.
+ * @returns Action callbacks consumed by the view.
+ * @remarks File and content selections reveal parent folders before opening.
+ */
+function useSearchActions(
+  base: ReturnType<typeof useBaseSearchState>,
+  conversations: ReturnType<typeof useConversationSearch>,
+  content: ReturnType<typeof useContentSearch>,
+  onOpenChange: (open: boolean) => void
+) {
+  const { openTab } = useTabContext()
+  const { openFilePreview } = useWorkspaceContext()
+  const { revealInFileTree } = useAuxPanelContext()
+  const handleSelectConversation = useSelectConversation(openTab, onOpenChange)
+  const handleSelectFile = useSelectFile(
+    revealInFileTree,
+    openFilePreview,
+    onOpenChange
+  )
+  const handleSelectContentResult = useSelectContentResult(
+    revealInFileTree,
+    openFilePreview,
+    onOpenChange
+  )
+  const handleInputKeyDown = useContentEnterHandler(
+    base.activeTab,
+    content.runContentSearch
+  )
+  return {
+    handleSelectConversation,
+    handleSelectFile,
+    handleSelectContentResult,
+    handleInputKeyDown,
+  }
+}
+
+/**
+ * Creates a conversation selection callback.
+ * @param openTab Function that activates a conversation tab.
+ * @param onOpenChange Dialog open-state callback.
+ * @returns Callback for selecting a conversation row.
+ * @remarks The dialog closes only after routing to the selected conversation.
+ */
+function useSelectConversation(
+  openTab: (
+    folderId: number,
+    conversationId: number,
+    agentType: AgentType,
+    focus?: boolean
+  ) => void,
+  onOpenChange: (open: boolean) => void
+) {
+  return useCallback(
     (conv: DbConversationSummary) => {
       openTab(conv.folder_id, conv.id, conv.agent_type, true)
       onOpenChange(false)
     },
     [openTab, onOpenChange]
   )
+}
 
-  const handleSelectFile = useCallback(
+/**
+ * Creates a file selection callback.
+ * @param revealInFileTree Function that focuses a directory in the tree.
+ * @param openFilePreview Function that opens file preview tabs.
+ * @param onOpenChange Dialog open-state callback.
+ * @returns Callback for selecting a file-tree row.
+ * @remarks Directories are revealed without opening a preview tab.
+ */
+function useSelectFile(
+  revealInFileTree: (path: string) => void,
+  openFilePreview: (path: string) => Promise<void>,
+  onOpenChange: (open: boolean) => void
+) {
+  return useCallback(
     (entry: FlatFileEntry) => {
-      if (entry.kind === "dir") {
-        revealInFileTree(entry.relativePath)
-      } else {
-        // Reveal parent directory in file tree, then open the file
-        const lastSlash = entry.relativePath.lastIndexOf("/")
-        if (lastSlash > 0) {
-          revealInFileTree(entry.relativePath.slice(0, lastSlash))
-        }
-        openFilePreview(entry.relativePath)
-      }
+      if (entry.kind === "dir") revealInFileTree(entry.relativePath)
+      else
+        openFileWithReveal(
+          entry.relativePath,
+          revealInFileTree,
+          openFilePreview
+        )
       onOpenChange(false)
     },
     [revealInFileTree, openFilePreview, onOpenChange]
   )
+}
 
-  const placeholder =
-    activeTab === "conversations" ? t("placeholder") : t("filePlaceholder")
+/**
+ * Opens a file after revealing its parent directory.
+ * @param path Relative file path to reveal and open.
+ * @param revealInFileTree Function that focuses a directory in the tree.
+ * @param openFilePreview Function that opens file preview tabs.
+ * @returns Nothing.
+ * @remarks Parent reveal is skipped for root-level files.
+ */
+function openFileWithReveal(
+  path: string,
+  revealInFileTree: (path: string) => void,
+  openFilePreview: (path: string) => Promise<void>
+): void {
+  const parent = getParentPath(path)
+  if (parent) revealInFileTree(parent)
+  void openFilePreview(path)
+}
 
+/**
+ * Creates a content-result selection callback.
+ * @param revealInFileTree Function that focuses a directory in the tree.
+ * @param openFilePreview Function that opens file preview tabs.
+ * @param onOpenChange Dialog open-state callback.
+ * @returns Callback for selecting a content-search row.
+ * @remarks The query is forwarded for Task 5 Monaco find integration.
+ */
+function useSelectContentResult(
+  revealInFileTree: (path: string) => void,
+  openFilePreview: (
+    path: string,
+    options?: { searchQuery?: string }
+  ) => Promise<void>,
+  onOpenChange: (open: boolean) => void
+) {
+  return useCallback(
+    (match: SearchFileMatch, query: string) => {
+      const parent = getParentPath(match.path)
+      if (parent) revealInFileTree(parent)
+      void openFilePreview(match.path, { searchQuery: query.trim() })
+      onOpenChange(false)
+    },
+    [revealInFileTree, openFilePreview, onOpenChange]
+  )
+}
+
+/**
+ * Returns the parent directory for a relative path.
+ * @param path File or directory path using slash separators.
+ * @returns Parent path, or an empty string for root-level paths.
+ * @remarks The caller decides whether an empty parent should be revealed.
+ */
+function getParentPath(path: string): string {
+  const lastSlash = path.lastIndexOf("/")
+  return lastSlash > 0 ? path.slice(0, lastSlash) : ""
+}
+
+/**
+ * Creates an Enter-key handler for manual content search.
+ * @param activeTab Current search tab.
+ * @param runContentSearch Function that performs the backend content search.
+ * @returns Keyboard handler for the command input.
+ * @remarks Enter is ignored outside the content tab to preserve existing tabs.
+ */
+function useContentEnterHandler(
+  activeTab: SearchTab,
+  runContentSearch: () => Promise<void>
+) {
+  return useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (activeTab !== "content" || event.key !== "Enter") return
+      event.preventDefault()
+      void runContentSearch()
+    },
+    [activeTab, runContentSearch]
+  )
+}
+
+/**
+ * Resets dialog state when it closes.
+ * @param open Whether the dialog is currently visible.
+ * @param base Shared tab and query state.
+ * @param conversations Conversation search state setters.
+ * @param files File-search reset helper.
+ * @param content Content-search reset helper.
+ * @returns Nothing.
+ */
+function useResetOnClose(
+  open: boolean,
+  base: ReturnType<typeof useBaseSearchState>,
+  conversations: ReturnType<typeof useConversationSearch>,
+  files: ReturnType<typeof useFileSearch>,
+  content: ReturnType<typeof useContentSearch>
+): void {
+  useEffect(() => {
+    if (open) return
+    base.setQuery("")
+    conversations.setAgentFilter(null)
+    conversations.setResults([])
+    base.setActiveTab("conversations")
+    files.resetFileTree()
+    content.resetContentSearch()
+  }, [open, base, conversations, files, content])
+}
+
+/**
+ * Renders the complete dialog from a prepared view model.
+ * @param props View model returned by useSearchDialogModel.
+ * @returns Dialog JSX.
+ * @remarks This component intentionally contains no business logic.
+ */
+function SearchCommandDialogView({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  const placeholder = getSearchPlaceholder(model.activeTab, model.t)
   return (
     <CommandDialog
-      title={
-        folder
-          ? t("dialogTitleWithFolder", { name: folder.name })
-          : t("dialogTitle")
-      }
-      open={open}
-      onOpenChange={onOpenChange}
-      shouldFilter={activeTab === "conversations"}
+      title={getDialogTitle(model)}
+      open={model.open}
+      onOpenChange={model.onOpenChange}
+      shouldFilter={model.activeTab === "conversations"}
     >
-      {/* Folder context header */}
-      {folder && (
-        <div className="flex items-center gap-2 border-b px-4 py-2.5">
-          <Folder className="w-4 h-4 shrink-0 text-muted-foreground" />
-          <span className="text-sm font-medium truncate">
-            {t("dialogTitleWithFolder", { name: folder.name })}
-          </span>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex items-center gap-0 border-b px-3">
-        <button
-          onClick={() => setActiveTab("conversations")}
-          className={cn(
-            "relative h-9 px-3 text-sm font-medium transition-colors",
-            activeTab === "conversations"
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          )}
-        >
-          {t("tabConversations")}
-          {activeTab === "conversations" && (
-            <span className="absolute bottom-0 left-3 right-3 h-0.5 bg-foreground rounded-full" />
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab("files")}
-          className={cn(
-            "relative h-9 px-3 text-sm font-medium transition-colors",
-            activeTab === "files"
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          )}
-        >
-          {t("tabFiles")}
-          {activeTab === "files" && (
-            <span className="absolute bottom-0 left-3 right-3 h-0.5 bg-foreground rounded-full" />
-          )}
-        </button>
-      </div>
-
+      <FolderHeader folder={model.folder} t={model.t} />
+      <SearchTabs
+        activeTab={model.activeTab}
+        setActiveTab={model.setActiveTab}
+        t={model.t}
+      />
       <CommandInput
         placeholder={placeholder}
-        value={query}
-        onValueChange={setQuery}
+        value={model.query}
+        onValueChange={model.setQuery}
+        onKeyDown={model.handleInputKeyDown}
       />
-
-      {/* Agent filter (conversations tab only) */}
-      {activeTab === "conversations" && availableAgents.length > 1 && (
-        <div className="flex items-center gap-1 px-3 py-2 border-b">
-          <button
-            onClick={() => setAgentFilter(null)}
-            className={cn(
-              "h-6 text-xs px-2 rounded-md transition-colors",
-              agentFilter === null
-                ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {t("allAgents")}
-          </button>
-          {availableAgents.map((at) => (
-            <button
-              key={at}
-              onClick={() => setAgentFilter(at)}
-              className={cn(
-                "flex items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
-                agentFilter === at
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <AgentIcon agentType={at} className="w-3.5 h-3.5" />
-              {AGENT_LABELS[at]}
-            </button>
-          ))}
-        </div>
-      )}
-
+      <ConversationFilters model={model} />
+      <ContentToolbar model={model} />
       <CommandList className="min-h-96">
-        {/* Conversations tab */}
-        {activeTab === "conversations" && (
-          <>
-            <CommandEmpty>
-              {searching
-                ? t("searching")
-                : !query.trim() && !agentFilter
-                  ? t("typeToSearch")
-                  : t("noResults")}
-            </CommandEmpty>
-            {results.length > 0 && (
-              <CommandGroup>
-                {results.map((conv) => (
-                  <CommandItem
-                    key={conv.id}
-                    value={`${conv.id}-${conv.title ?? ""}`}
-                    onSelect={() => handleSelectConversation(conv)}
-                  >
-                    <ConversationStatusDot
-                      status={conv.status as ConversationStatus}
-                    />
-                    <span className="flex-1 truncate">
-                      {conv.title || t("untitledConversation")}
-                    </span>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {AGENT_LABELS[conv.agent_type]}
-                    </span>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {formatDistanceToNow(new Date(conv.created_at), {
-                        addSuffix: true,
-                        locale: dateFnsLocale,
-                      })}
-                    </span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-          </>
-        )}
-
-        {/* Files tab */}
-        {activeTab === "files" && (
-          <>
-            <CommandEmpty>
-              {filesLoading
-                ? t("searching")
-                : !query.trim()
-                  ? t("typeToSearchFiles")
-                  : t("noResults")}
-            </CommandEmpty>
-            {filteredFiles.length > 0 && (
-              <CommandGroup>
-                {filteredFiles.map((entry) => (
-                  <CommandItem
-                    key={entry.relativePath}
-                    value={entry.relativePath}
-                    onSelect={() => handleSelectFile(entry)}
-                  >
-                    {entry.kind === "dir" ? (
-                      <Folder className="w-4 h-4 shrink-0 text-blue-500" />
-                    ) : (
-                      <File className="w-4 h-4 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="flex-1 truncate">{entry.name}</span>
-                    <span className="text-xs text-muted-foreground shrink-0 truncate max-w-48">
-                      {entry.relativePath}
-                    </span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-          </>
-        )}
+        <ConversationResults model={model} />
+        <FileResults model={model} />
+        <ContentResults
+          activeTab={model.activeTab}
+          state={model.contentState}
+          query={model.query}
+          onSelect={model.handleSelectContentResult}
+        />
       </CommandList>
     </CommandDialog>
+  )
+}
+
+/**
+ * Computes the dialog title from current folder context.
+ * @param model Search dialog view model.
+ * @returns Localized dialog title.
+ * @remarks Folderless mode uses the generic search title.
+ */
+function getDialogTitle(
+  model: ReturnType<typeof useSearchDialogModel>
+): string {
+  return model.folder
+    ? model.t("dialogTitleWithFolder", { name: model.folder.name })
+    : model.t("dialogTitle")
+}
+
+/**
+ * Selects the command input placeholder for the active tab.
+ * @param activeTab Current search tab.
+ * @param t Translation function for Folder.search.
+ * @returns Localized placeholder text.
+ * @remarks Content tab uses a distinct text to communicate file-body search.
+ */
+function getSearchPlaceholder(
+  activeTab: SearchTab,
+  t: ReturnType<typeof useTranslations>
+): string {
+  if (activeTab === "conversations") return t("placeholder")
+  return activeTab === "files" ? t("filePlaceholder") : t("contentPlaceholder")
+}
+
+/**
+ * Renders the active folder header above tabs.
+ * @param props Folder and translation function.
+ * @returns Header JSX or null when no folder is active.
+ * @remarks The header is informational and does not affect search scope.
+ */
+function FolderHeader({
+  folder,
+  t,
+}: {
+  folder: { name: string } | null | undefined
+  t: ReturnType<typeof useTranslations>
+}) {
+  if (!folder) return null
+  return (
+    <div className="flex items-center gap-2 border-b px-4 py-2.5">
+      <Folder className="w-4 h-4 shrink-0 text-muted-foreground" />
+      <span className="text-sm font-medium truncate">
+        {t("dialogTitleWithFolder", { name: folder.name })}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * Renders the three search tabs.
+ * @param props Current tab, setter, and translations.
+ * @returns Tab button row.
+ * @remarks Buttons share markup through SearchTabButton for consistent styling.
+ */
+function SearchTabs({
+  activeTab,
+  setActiveTab,
+  t,
+}: {
+  activeTab: SearchTab
+  setActiveTab: (tab: SearchTab) => void
+  t: ReturnType<typeof useTranslations>
+}) {
+  return (
+    <div className="flex items-center gap-0 border-b px-3">
+      <SearchTabButton
+        tab="conversations"
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        label={t("tabConversations")}
+      />
+      <SearchTabButton
+        tab="files"
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        label={t("tabFiles")}
+      />
+      <SearchTabButton
+        tab="content"
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        label={t("tabContent")}
+      />
+    </div>
+  )
+}
+
+/**
+ * Renders one search tab button.
+ * @param props Tab identity, active tab, setter, and label.
+ * @returns Button JSX.
+ * @remarks The underline is visual only; state lives in the parent.
+ */
+function SearchTabButton({
+  tab,
+  activeTab,
+  setActiveTab,
+  label,
+}: {
+  tab: SearchTab
+  activeTab: SearchTab
+  setActiveTab: (tab: SearchTab) => void
+  label: string
+}) {
+  const active = activeTab === tab
+  return (
+    <button
+      onClick={() => setActiveTab(tab)}
+      className={cn(
+        "relative h-9 px-3 text-sm font-medium transition-colors",
+        active
+          ? "text-foreground"
+          : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {label}
+      {active && (
+        <span className="absolute bottom-0 left-3 right-3 h-0.5 bg-foreground rounded-full" />
+      )}
+    </button>
+  )
+}
+
+/**
+ * Renders agent filters for the conversations tab.
+ * @param props Search dialog view model.
+ * @returns Filter buttons or null.
+ * @remarks Hidden unless more than one agent exists in the active folder.
+ */
+function ConversationFilters({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  if (model.activeTab !== "conversations" || model.availableAgents.length <= 1)
+    return null
+  return (
+    <div className="flex items-center gap-1 px-3 py-2 border-b">
+      <AgentFilterButton
+        active={model.agentFilter === null}
+        onClick={() => model.setAgentFilter(null)}
+        label={model.t("allAgents")}
+      />
+      {model.availableAgents.map((at) => (
+        <AgentFilterButton
+          key={at}
+          active={model.agentFilter === at}
+          onClick={() => model.setAgentFilter(at)}
+          label={AGENT_LABELS[at]}
+          agentType={at}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Renders one agent filter button.
+ * @param props Active state, click callback, label, and optional agent icon.
+ * @returns Button JSX.
+ * @remarks Agent icon is omitted for the catch-all filter.
+ */
+function AgentFilterButton({
+  active,
+  onClick,
+  label,
+  agentType,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+  agentType?: AgentType
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
+        active
+          ? "bg-secondary text-secondary-foreground"
+          : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {agentType && <AgentIcon agentType={agentType} className="w-3.5 h-3.5" />}
+      {label}
+    </button>
+  )
+}
+
+/**
+ * Renders manual content-search controls and settings.
+ * @param props Search dialog view model.
+ * @returns Toolbar JSX or null outside the content tab.
+ * @remarks The search button is the primary trigger for backend scans.
+ */
+function ContentToolbar({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  if (model.activeTab !== "content") return null
+  return (
+    <div className="space-y-2 border-b px-3 py-2">
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={() => void model.runContentSearch()}>
+          {model.t("searchContent")}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() =>
+            model.setShowContentSettings(!model.showContentSettings)
+          }
+        >
+          {model.showContentSettings
+            ? model.t("hideContentSettings")
+            : model.t("showContentSettings")}
+        </Button>
+      </div>
+      {model.showContentSettings && (
+        <ContentSettingsPanel
+          settings={model.contentSettings}
+          onChange={model.updateContentSettings}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Renders editable content-search settings.
+ * @param props Current settings and complete-settings change callback.
+ * @returns Settings form JSX.
+ * @remarks Comma text is kept raw until converted by toSearchFilesRequest.
+ */
+function ContentSettingsPanel({
+  settings,
+  onChange,
+}: ContentSettingsPanelProps) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <SettingInput
+        labelKey="searchDirs"
+        field="searchDirsText"
+        settings={settings}
+        onChange={onChange}
+      />
+      <SettingInput
+        labelKey="includeExtensions"
+        field="includeExtensionsText"
+        settings={settings}
+        onChange={onChange}
+      />
+      <SettingInput
+        labelKey="excludeDirs"
+        field="excludeDirsText"
+        settings={settings}
+        onChange={onChange}
+      />
+      <SettingInput
+        labelKey="excludeExtensions"
+        field="excludeExtensionsText"
+        settings={settings}
+        onChange={onChange}
+      />
+      <NumericSettingInput
+        labelKey="maxResults"
+        field="maxResults"
+        settings={settings}
+        onChange={onChange}
+      />
+      <NumericSettingInput
+        labelKey="maxFileBytesMb"
+        field="maxFileBytesMb"
+        settings={settings}
+        onChange={onChange}
+      />
+    </div>
+  )
+}
+
+/**
+ * Renders a text setting input.
+ * @param props Setting key, label key, current settings, and updater.
+ * @returns Labeled input JSX.
+ * @remarks The field is stored as typed to preserve comma-separated intent.
+ */
+function SettingInput({
+  labelKey,
+  field,
+  settings,
+  onChange,
+}: {
+  labelKey: keyof ContentSearchLabels
+  field: keyof Pick<
+    ContentSearchSettings,
+    | "searchDirsText"
+    | "includeExtensionsText"
+    | "excludeDirsText"
+    | "excludeExtensionsText"
+  >
+  settings: ContentSearchSettings
+  onChange: (settings: ContentSearchSettings) => void
+}) {
+  const t = useTranslations("Folder.search")
+  return (
+    <label className="space-y-1 text-xs text-muted-foreground">
+      <span>{t(labelKey)}</span>
+      <Input
+        value={settings[field]}
+        onChange={(event) =>
+          onChange({ ...settings, [field]: event.target.value })
+        }
+      />
+    </label>
+  )
+}
+
+/**
+ * Renders a numeric content-search setting input.
+ * @param props Numeric setting key, label key, current settings, and updater.
+ * @returns Labeled number input JSX.
+ * @remarks Invalid numeric text is held as zero until request clamping applies.
+ */
+function NumericSettingInput({
+  labelKey,
+  field,
+  settings,
+  onChange,
+}: {
+  labelKey: keyof ContentSearchLabels
+  field: keyof Pick<ContentSearchSettings, "maxResults" | "maxFileBytesMb">
+  settings: ContentSearchSettings
+  onChange: (settings: ContentSearchSettings) => void
+}) {
+  const t = useTranslations("Folder.search")
+  return (
+    <label className="space-y-1 text-xs text-muted-foreground">
+      <span>{t(labelKey)}</span>
+      <Input
+        type="number"
+        value={settings[field]}
+        onChange={(event) =>
+          onChange({ ...settings, [field]: Number(event.target.value) })
+        }
+      />
+    </label>
+  )
+}
+
+interface ContentSearchLabels {
+  searchDirs: string
+  includeExtensions: string
+  excludeDirs: string
+  excludeExtensions: string
+  maxResults: string
+  maxFileBytesMb: string
+}
+
+/**
+ * Renders conversation search results.
+ * @param props Search dialog view model.
+ * @returns Conversation result list or null for other tabs.
+ * @remarks Empty text without filters shows an instructional empty state.
+ */
+function ConversationResults({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  if (model.activeTab !== "conversations") return null
+  return (
+    <>
+      <CommandEmpty>
+        {model.searching
+          ? model.t("searching")
+          : !model.query.trim() && !model.agentFilter
+            ? model.t("typeToSearch")
+            : model.t("noResults")}
+      </CommandEmpty>
+      {model.results.length > 0 && (
+        <CommandGroup>
+          {model.results.map((conv) => (
+            <ConversationItem key={conv.id} conv={conv} model={model} />
+          ))}
+        </CommandGroup>
+      )}
+    </>
+  )
+}
+
+/**
+ * Renders one conversation result row.
+ * @param props Conversation and view model callbacks.
+ * @returns Command item JSX.
+ * @remarks The created-at timestamp is localized by the parent model.
+ */
+function ConversationItem({
+  conv,
+  model,
+}: {
+  conv: DbConversationSummary
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  return (
+    <CommandItem
+      value={`${conv.id}-${conv.title ?? ""}`}
+      onSelect={() => model.handleSelectConversation(conv)}
+    >
+      <ConversationStatusDot status={conv.status as ConversationStatus} />
+      <span className="flex-1 truncate">
+        {conv.title || model.t("untitledConversation")}
+      </span>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {AGENT_LABELS[conv.agent_type]}
+      </span>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {formatDistanceToNow(new Date(conv.created_at), {
+          addSuffix: true,
+          locale: model.dateFnsLocale,
+        })}
+      </span>
+    </CommandItem>
+  )
+}
+
+/**
+ * Renders filename search results.
+ * @param props Search dialog view model.
+ * @returns File result list or null for other tabs.
+ * @remarks The existing file-tab browse behavior is preserved for empty query.
+ */
+function FileResults({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  if (model.activeTab !== "files") return null
+  return (
+    <>
+      <CommandEmpty>
+        {model.filesLoading
+          ? model.t("searching")
+          : !model.query.trim()
+            ? model.t("typeToSearchFiles")
+            : model.t("noResults")}
+      </CommandEmpty>
+      {model.filteredFiles.length > 0 && (
+        <CommandGroup>
+          {model.filteredFiles.map((entry) => (
+            <FileItem
+              key={entry.relativePath}
+              entry={entry}
+              onSelect={model.handleSelectFile}
+            />
+          ))}
+        </CommandGroup>
+      )}
+    </>
+  )
+}
+
+/**
+ * Renders one file or directory result row.
+ * @param props Flat file entry and selection callback.
+ * @returns Command item JSX.
+ * @remarks Directories and files use distinct icons for quick scanning.
+ */
+function FileItem({
+  entry,
+  onSelect,
+}: {
+  entry: FlatFileEntry
+  onSelect: (entry: FlatFileEntry) => void
+}) {
+  return (
+    <CommandItem value={entry.relativePath} onSelect={() => onSelect(entry)}>
+      {entry.kind === "dir" ? (
+        <Folder className="w-4 h-4 shrink-0 text-blue-500" />
+      ) : (
+        <File className="w-4 h-4 shrink-0 text-muted-foreground" />
+      )}
+      <span className="flex-1 truncate">{entry.name}</span>
+      <span className="text-xs text-muted-foreground shrink-0 truncate max-w-48">
+        {entry.relativePath}
+      </span>
+    </CommandItem>
+  )
+}
+
+/**
+ * Renders content-search results and status messages.
+ * @param props Content-search state, active query, and row selection callback.
+ * @returns Content result list for the active content tab.
+ * @remarks Error and truncation messages are shown above successful results.
+ */
+function ContentResults({
+  activeTab,
+  state,
+  query,
+  onSelect,
+}: ContentResultsProps) {
+  const t = useTranslations("Folder.search")
+  if (activeTab !== "content") return null
+  return (
+    <>
+      <CommandEmpty>{getContentEmptyText(state, query, t)}</CommandEmpty>
+      {state.error && (
+        <div className="px-4 py-2 text-sm text-destructive">
+          {t("contentSearchError", { message: state.error })}
+        </div>
+      )}
+      {state.truncated && (
+        <div className="px-4 py-2 text-sm text-muted-foreground">
+          {t("contentResultsTruncated")}
+        </div>
+      )}
+      {state.results.length > 0 && (
+        <CommandGroup>
+          {state.results.map((match) => (
+            <ContentResultItem
+              key={`${match.path}:${match.lineNumber}`}
+              match={match}
+              query={query}
+              onSelect={onSelect}
+            />
+          ))}
+        </CommandGroup>
+      )}
+    </>
+  )
+}
+
+/**
+ * Chooses the empty-state text for content search.
+ * @param state Current content-search state.
+ * @param query Current search query.
+ * @param t Translation function for Folder.search.
+ * @returns Localized empty-state text.
+ * @remarks Blank queries explain that content search is manual.
+ */
+function getContentEmptyText(
+  state: ContentSearchState,
+  query: string,
+  t: ReturnType<typeof useTranslations>
+): string {
+  if (state.searching) return t("searching")
+  if (!query.trim()) return t("typeToSearchContent")
+  return t("noResults")
+}
+
+/**
+ * Renders one content-search match row.
+ * @param props Match data, current query, and selection callback.
+ * @returns Command item JSX.
+ * @remarks lineText is the primary row text to expose match context.
+ */
+function ContentResultItem({
+  match,
+  query,
+  onSelect,
+}: {
+  match: SearchFileMatch
+  query: string
+  onSelect: (match: SearchFileMatch, query: string) => void
+}) {
+  return (
+    <CommandItem
+      value={`${match.path}:${match.lineNumber}:${match.lineText}`}
+      onSelect={() => onSelect(match, query)}
+    >
+      <File className="w-4 h-4 shrink-0 text-muted-foreground" />
+      <span className="flex-1 truncate">{match.lineText}</span>
+      <span className="text-xs text-muted-foreground shrink-0 truncate max-w-48">
+        {match.path}:{match.lineNumber}
+      </span>
+    </CommandItem>
   )
 }

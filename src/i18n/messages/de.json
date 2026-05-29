@@ -983,7 +983,21 @@
       "typeToSearch": "Tippen, um Konversationen zu suchen",
       "typeToSearchFiles": "Tippen, um Dateien oder Verzeichnisse zu suchen",
       "noResults": "Keine Ergebnisse gefunden.",
-      "untitledConversation": "Unbenannte Konversation"
+      "untitledConversation": "Unbenannte Konversation",
+      "tabContent": "Inhalt",
+      "contentPlaceholder": "Dateiinhalte suchen...",
+      "searchContent": "Inhalt suchen",
+      "showContentSettings": "Einstellungen anzeigen",
+      "hideContentSettings": "Einstellungen ausblenden",
+      "typeToSearchContent": "Suchbegriff eingeben und Enter oder Inhalt suchen drücken",
+      "contentSearchError": "Inhaltssuche fehlgeschlagen: {message}",
+      "contentResultsTruncated": "Ergebnisse wurden gekürzt. Verfeinere Suche oder Einstellungen.",
+      "searchDirs": "Suchverzeichnisse",
+      "includeExtensions": "Erweiterungen einschließen",
+      "excludeDirs": "Verzeichnisse ausschließen",
+      "excludeExtensions": "Erweiterungen ausschließen",
+      "maxResults": "Maximale Ergebnisse",
+      "maxFileBytesMb": "Max. Dateigröße (MB)"
     },
     "folderTitleBar": {
       "showSidebar": "Seitenleiste anzeigen",

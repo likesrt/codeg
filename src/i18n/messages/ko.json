@@ -983,7 +983,21 @@
       "typeToSearch": "입력하여 대화를 검색하세요",
       "typeToSearchFiles": "입력하여 파일 또는 디렉토리를 검색하세요",
       "noResults": "검색 결과가 없습니다.",
-      "untitledConversation": "제목 없는 대화"
+      "untitledConversation": "제목 없는 대화",
+      "tabContent": "내용",
+      "contentPlaceholder": "파일 내용 검색...",
+      "searchContent": "내용 검색",
+      "showContentSettings": "설정 표시",
+      "hideContentSettings": "설정 숨기기",
+      "typeToSearchContent": "검색어를 입력한 뒤 Enter 또는 내용 검색을 누르세요",
+      "contentSearchError": "내용 검색 실패: {message}",
+      "contentResultsTruncated": "결과가 잘렸습니다. 검색어나 설정을 좁혀 주세요.",
+      "searchDirs": "검색 디렉터리",
+      "includeExtensions": "포함할 확장자",
+      "excludeDirs": "제외할 디렉터리",
+      "excludeExtensions": "제외할 확장자",
+      "maxResults": "최대 결과 수",
+      "maxFileBytesMb": "최대 파일 크기(MB)"
     },
     "folderTitleBar": {
       "showSidebar": "사이드바 표시",

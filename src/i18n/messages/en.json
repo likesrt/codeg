@@ -983,7 +983,21 @@
       "typeToSearch": "Type to search conversations",
       "typeToSearchFiles": "Type to search files or directories",
       "noResults": "No results found.",
-      "untitledConversation": "Untitled conversation"
+      "untitledConversation": "Untitled conversation",
+      "tabContent": "Content",
+      "contentPlaceholder": "Search file contents...",
+      "searchContent": "Search content",
+      "showContentSettings": "Show settings",
+      "hideContentSettings": "Hide settings",
+      "typeToSearchContent": "Type a query, then press Enter or Search content",
+      "contentSearchError": "Content search failed: {message}",
+      "contentResultsTruncated": "Results were truncated. Narrow your query or settings.",
+      "searchDirs": "Search dirs",
+      "includeExtensions": "Include extensions",
+      "excludeDirs": "Exclude dirs",
+      "excludeExtensions": "Exclude extensions",
+      "maxResults": "Max results",
+      "maxFileBytesMb": "Max file size (MB)"
     },
     "folderTitleBar": {
       "showSidebar": "Show Sidebar",

@@ -983,7 +983,21 @@
       "typeToSearch": "入力して会話を検索",
       "typeToSearchFiles": "入力してファイルまたはディレクトリを検索",
       "noResults": "結果が見つかりません。",
-      "untitledConversation": "無題の会話"
+      "untitledConversation": "無題の会話",
+      "tabContent": "内容",
+      "contentPlaceholder": "ファイル内容を検索...",
+      "searchContent": "内容を検索",
+      "showContentSettings": "設定を表示",
+      "hideContentSettings": "設定を非表示",
+      "typeToSearchContent": "キーワードを入力し、Enter または内容を検索を押してください",
+      "contentSearchError": "内容検索に失敗しました: {message}",
+      "contentResultsTruncated": "結果は切り捨てられました。キーワードまたは設定を絞り込んでください。",
+      "searchDirs": "検索ディレクトリ",
+      "includeExtensions": "含める拡張子",
+      "excludeDirs": "除外ディレクトリ",
+      "excludeExtensions": "除外拡張子",
+      "maxResults": "最大結果数",
+      "maxFileBytesMb": "最大ファイルサイズ（MB）"
     },
     "folderTitleBar": {
       "showSidebar": "サイドバーを表示",

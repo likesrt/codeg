@@ -983,7 +983,21 @@
       "typeToSearch": "输入关键词搜索会话",
       "typeToSearchFiles": "输入关键词搜索文件或目录",
       "noResults": "未找到结果。",
-      "untitledConversation": "未命名会话"
+      "untitledConversation": "未命名会话",
+      "tabContent": "内容",
+      "contentPlaceholder": "搜索文件内容...",
+      "searchContent": "搜索内容",
+      "showContentSettings": "显示设置",
+      "hideContentSettings": "隐藏设置",
+      "typeToSearchContent": "输入关键词后按 Enter 或点击搜索内容",
+      "contentSearchError": "内容搜索失败：{message}",
+      "contentResultsTruncated": "结果已截断。请缩小关键词或调整设置。",
+      "searchDirs": "搜索目录",
+      "includeExtensions": "包含扩展名",
+      "excludeDirs": "排除目录",
+      "excludeExtensions": "排除扩展名",
+      "maxResults": "最大结果数",
+      "maxFileBytesMb": "最大文件大小（MB）"
     },
     "folderTitleBar": {
       "showSidebar": "显示侧边栏",
