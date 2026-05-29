@@ -805,6 +805,8 @@ fn canonicalize_existing_dir(path: &str) -> Result<PathBuf, AppCommandError> {
 /// Relative entries are joined to `root`, absolute entries are used directly,
 /// and every resolved directory must remain inside `root`. Missing paths and
 /// escape attempts return errors; an empty list defaults to the root itself.
+/// Canonical duplicates and child directories already covered by an earlier
+/// parent are collapsed so each file tree is walked at most once.
 fn resolve_search_dirs(
     root: &Path,
     search_dirs: Option<Vec<String>>,
@@ -819,7 +821,15 @@ fn resolve_search_dirs(
             resolved.push(candidate);
         }
     }
-    Ok(resolved)
+    resolved.sort_by_key(|path| path.components().count());
+    resolved.dedup_by(|a, b| a == b);
+    let mut covered = Vec::new();
+    for candidate in resolved {
+        if !covered.iter().any(|parent: &PathBuf| candidate.starts_with(parent)) {
+            covered.push(candidate);
+        }
+    }
+    Ok(covered)
 }
 
 /// Resolve one search directory candidate and enforce root containment.
@@ -4492,6 +4502,23 @@ mod search_files_tests {
         assert_eq!(result.scanned_files, 1);
     }
 
+    /// Verify overlapping search dirs do not scan child files twice.
+    #[tokio::test]
+    async fn search_files_deduplicates_child_search_dirs_covered_by_parent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).expect("create src");
+        write_file(&src.join("app.ts"), "needle\n");
+        let mut req = request(temp.path(), "needle");
+        req.search_dirs = Some(vec![".".to_string(), "src".to_string()]);
+
+        let result = search_files(req).await.expect("search files");
+
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("src/app.ts"));
+        assert_eq!(result.scanned_files, 1);
+    }
+
     #[tokio::test]
     async fn search_files_returns_line_matches() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -4516,31 +4543,27 @@ mod search_files_tests {
         assert_eq!(result.skipped_files, 0);
     }
 
-    /// Verify an unreadable file is skipped without hiding readable matches.
-    #[cfg(unix)]
+    /// Verify a stable read error is skipped without hiding readable matches.
     #[tokio::test]
-    async fn search_files_skips_unreadable_file_and_continues() {
-        use std::os::unix::fs::PermissionsExt;
-
+    async fn search_files_skips_read_error_and_continues() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let unreadable = temp.path().join("unreadable.txt");
-        write_file(&temp.path().join("readable.txt"), "needle\n");
-        write_file(&unreadable, "needle\n");
-        let original_permissions = std::fs::metadata(&unreadable)
-            .expect("unreadable metadata")
-            .permissions();
-        std::fs::set_permissions(&unreadable, PermissionsExt::from_mode(0o000))
-            .expect("make unreadable");
+        let config = build_search_config(&request(temp.path(), "needle")).expect("config");
+        let mut response = empty_search_response();
+        let read_error_path = temp.path();
+        let readable = temp.path().join("readable.txt");
+        write_file(&readable, "needle\n");
 
-        let result = search_files(request(temp.path(), "needle"))
-            .await
-            .expect("search files should continue after unreadable file");
+        let read_step = search_file(read_error_path, &config, &mut response)
+            .expect("read error should be skipped");
+        let readable_step = search_file(&readable, &config, &mut response)
+            .expect("readable file should still be searched");
 
-        std::fs::set_permissions(&unreadable, original_permissions).expect("restore permissions");
-        assert_eq!(result.results.len(), 1);
-        assert!(result.results[0].path.ends_with("readable.txt"));
-        assert_eq!(result.scanned_files, 1);
-        assert_eq!(result.skipped_files, 1);
+        assert_eq!(read_step, SearchStep::Continue);
+        assert_eq!(readable_step, SearchStep::Continue);
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].path.ends_with("readable.txt"));
+        assert_eq!(response.scanned_files, 1);
+        assert_eq!(response.skipped_files, 1);
     }
 
     #[tokio::test]
