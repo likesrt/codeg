@@ -808,24 +808,18 @@ function openFileWithReveal(
  * @param openFilePreview Function that opens file preview tabs.
  * @param onOpenChange Dialog open-state callback.
  * @returns Callback for selecting a content-search row.
- * @remarks The query is forwarded for Task 5 Monaco find integration.
+ * @remarks Content rows only open the file and reveal the matching line.
  */
 function useSelectContentResult(
   revealInFileTree: (path: string) => void,
-  openFilePreview: (
-    path: string,
-    options?: { line?: number; searchQuery?: string }
-  ) => Promise<void>,
+  openFilePreview: (path: string, options?: { line?: number }) => Promise<void>,
   onOpenChange: (open: boolean) => void
 ) {
   return useCallback(
-    (match: SearchFileMatch, query: string) => {
+    (match: SearchFileMatch) => {
       const parent = getParentPath(match.path)
       if (parent) revealInFileTree(parent)
-      void openFilePreview(match.path, {
-        line: match.lineNumber,
-        searchQuery: query.trim(),
-      })
+      void openFilePreview(match.path, { line: match.lineNumber })
       onOpenChange(false)
     },
     [revealInFileTree, openFilePreview, onOpenChange]

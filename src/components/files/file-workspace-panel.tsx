@@ -197,35 +197,6 @@ function PreviewImage({
   return <img {...props} src={resolvedSrc} />
 }
 
-type FindCapableEditor = Pick<MonacoEditorNs.IStandaloneCodeEditor, "focus"> & {
-  getAction: (id: string) => { run: () => unknown } | null | undefined
-}
-
-/**
- * Opens Monaco's find widget for non-empty preview search handoff text.
- *
- * @param editor - Monaco editor instance that should receive the find command.
- * @param query - Search text requested by the caller; whitespace is ignored.
- * @returns A promise that settles after the best-effort find action completes.
- * @remarks The current Monaco command API only opens the widget here; the
- * query currently gates the handoff and is not written through unstable
- * Monaco internals. Missing or rejected actions are tolerated so file opening
- * is never blocked by find integration.
- */
-export async function runEditorFindAction(
-  editor: FindCapableEditor,
-  query: string | null | undefined
-): Promise<void> {
-  if (!query?.trim()) return
-  editor.focus()
-
-  try {
-    await editor.getAction("actions.find")?.run()
-  } catch {
-    // Monaco actions are best-effort UI hints; failures must not block preview.
-  }
-}
-
 const AUTO_SAVE_DELAY_MS = 5000
 
 function buildMonacoModelPath(path: string | null, id: string): string {
@@ -1176,14 +1147,6 @@ export function FileWorkspacePanel() {
     jumpToLine,
     pendingFileReveal,
   ])
-
-  useEffect(() => {
-    const query = activeFileTab?.pendingSearchQuery
-    const editorInstance = editorRef.current
-    if (!query || !editorInstance) return
-
-    void runEditorFindAction(editorInstance, query)
-  }, [activeFileTab?.id, activeFileTab?.pendingSearchQuery, editorMountVersion])
 
   useEffect(() => {
     autoSaveGuardRef.current = {

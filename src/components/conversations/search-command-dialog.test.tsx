@@ -287,7 +287,6 @@ describe("SearchCommandDialog content tab", () => {
     expect(screen.queryByText("foo result")).toBeNull()
     expect(mockOpenFilePreview).not.toHaveBeenCalledWith("src/foo.ts", {
       line: 1,
-      searchQuery: "bar",
     })
   })
 
@@ -440,7 +439,7 @@ describe("SearchCommandDialog content tab", () => {
     expect(screen.getByText("bar")).toBeTruthy()
   })
 
-  it("opens the selected content result with line and current search query", async () => {
+  it("opens the selected content result at its line without editor search handoff", async () => {
     vi.mocked(searchFiles).mockResolvedValueOnce({
       results: [
         {
@@ -468,7 +467,6 @@ describe("SearchCommandDialog content tab", () => {
     expect(mockRevealInFileTree).toHaveBeenCalledWith("src")
     expect(mockOpenFilePreview).toHaveBeenCalledWith("src/app.ts", {
       line: 2,
-      searchQuery: "needle",
     })
   })
 
