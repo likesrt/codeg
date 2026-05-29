@@ -636,6 +636,8 @@ pub fn default_search_exclude_dirs() -> Vec<String> {
         ".next",
         ".turbo",
         "coverage",
+        "out",
+        "public/vs",
         "__pycache__",
         ".venv",
         "venv",
@@ -985,14 +987,70 @@ fn append_line_matches(
             response.truncated = true;
             return Ok(SearchStep::Stop);
         }
-        response.results.push(SearchFileMatch {
-            path: relative_path_string(&config.root, path)?,
-            name: file_name_string(path),
-            line_number: index + 1,
-            line_text: line.to_string(),
-        });
+        push_search_match(path, line, index + 1, config, response)?;
     }
     Ok(SearchStep::Continue)
+}
+
+/// Add one bounded search match to the response.
+///
+/// The line text is shortened around the query before serialization so minified
+/// generated files cannot send multi-megabyte rows back to the webview. The
+/// filesystem is not touched; path validation is delegated to relative path
+/// conversion.
+fn push_search_match(
+    path: &Path,
+    line: &str,
+    line_number: usize,
+    config: &SearchConfig,
+    response: &mut SearchFilesResponse,
+) -> Result<(), AppCommandError> {
+    response.results.push(SearchFileMatch {
+        path: relative_path_string(&config.root, path)?,
+        name: file_name_string(path),
+        line_number,
+        line_text: snippet_around_query(line, &config.query_lower),
+    });
+    Ok(())
+}
+
+/// Build a compact line preview centered on the matched query.
+///
+/// Matching is case-insensitive and uses character indices so UTF-8 boundaries
+/// remain valid. Lines shorter than the preview limit are returned unchanged;
+/// longer lines receive ellipses on the trimmed sides.
+fn snippet_around_query(line: &str, query_lower: &str) -> String {
+    const MAX: usize = 240;
+    if line.chars().count() <= MAX {
+        return line.to_string();
+    }
+    let lower = line.to_lowercase();
+    let match_byte = lower.find(query_lower).unwrap_or(0);
+    let match_char = line[..match_byte].chars().count();
+    let half = MAX / 2;
+    let start = match_char.saturating_sub(half);
+    let end = start + MAX;
+    compact_char_range(line, start, end)
+}
+
+/// Return one character range with ellipses when content is omitted.
+///
+/// `start` and `end` are character offsets, not bytes. The function walks the
+/// string once and allocates only the returned preview, keeping long minified
+/// lines cheap to display.
+fn compact_char_range(line: &str, start: usize, end: usize) -> String {
+    let total = line.chars().count();
+    let body: String = line
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    match (start > 0, end < total) {
+        (true, true) => format!("…{body}…"),
+        (true, false) => format!("…{body}"),
+        (false, true) => format!("{body}…"),
+        (false, false) => body,
+    }
 }
 
 /// Return a displayable file basename for a search result.
@@ -4619,6 +4677,40 @@ mod search_files_tests {
         assert!(result.results[0].path.ends_with("visible.txt"));
         assert_eq!(result.scanned_files, 1);
         assert_eq!(result.skipped_files, 1);
+    }
+
+    #[tokio::test]
+    async fn search_files_truncates_long_matching_lines() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let long_line = format!("{}chrome{}", "a".repeat(50_000), "b".repeat(50_000));
+        write_file(&temp.path().join("bundle.js"), &long_line);
+
+        let result = search_files(request(temp.path(), "chrome"))
+            .await
+            .expect("search files");
+
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].line_text.contains("chrome"));
+        assert!(result.results[0].line_text.len() <= 260);
+    }
+
+    #[tokio::test]
+    async fn search_files_skips_generated_frontend_assets_by_default() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let public_vs = temp.path().join("public").join("vs");
+        let out_chunks = temp.path().join("out").join("_next").join("static");
+        std::fs::create_dir_all(&public_vs).expect("create public vs");
+        std::fs::create_dir_all(&out_chunks).expect("create out chunks");
+        write_file(&public_vs.join("worker.js"), "chrome\n");
+        write_file(&out_chunks.join("bundle.js"), "chrome\n");
+        write_file(&temp.path().join("visible.txt"), "chrome\n");
+
+        let result = search_files(request(temp.path(), "chrome"))
+            .await
+            .expect("search files");
+
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("visible.txt"));
     }
 
     #[tokio::test]
