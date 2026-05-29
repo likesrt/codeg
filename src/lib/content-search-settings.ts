@@ -2,9 +2,10 @@ import type { SearchFilesRequest } from "./types"
 
 const STORAGE_KEY = "codeg.contentSearch.settings"
 const MAX_RESULTS_LIMIT = 1000
-const MAX_FILE_BYTES_LIMIT = 10 * 1024 * 1024
-const MIN_FILE_BYTES_MB = 0.0625
 const BYTES_PER_MB = 1024 * 1024
+const MAX_FILE_BYTES_LIMIT = 10 * BYTES_PER_MB
+const MAX_FILE_BYTES_MB = MAX_FILE_BYTES_LIMIT / BYTES_PER_MB
+const MIN_FILE_BYTES_MB = 0.0625
 
 export interface ContentSearchSettings {
   searchDirsText: string
@@ -57,12 +58,16 @@ export function loadContentSearchSettings(): ContentSearchSettings {
  * Persists content search settings to browser localStorage.
  * @param settings Settings selected by the user for future searches.
  * @returns Nothing.
- * @remarks Storage quota or unavailable-storage errors are surfaced to callers.
+ * @remarks Storage quota or unavailable-storage errors are ignored safely.
  */
 export function saveContentSearchSettings(
   settings: ContentSearchSettings
 ): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // 持久化只是用户体验增强；SSR、隐私模式或配额错误时应静默降级。
+  }
 }
 
 /**
@@ -201,6 +206,9 @@ function toClampedFileBytes(megabytes: number): number {
     return MIN_FILE_BYTES_MB * BYTES_PER_MB
   }
 
-  const clamped = Math.min(Math.max(megabytes, MIN_FILE_BYTES_MB), 10)
+  const clamped = Math.min(
+    Math.max(megabytes, MIN_FILE_BYTES_MB),
+    MAX_FILE_BYTES_MB
+  )
   return Math.round(Math.min(clamped * BYTES_PER_MB, MAX_FILE_BYTES_LIMIT))
 }

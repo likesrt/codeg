@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   CONTENT_SEARCH_DEFAULT_SETTINGS,
@@ -15,8 +15,22 @@ describe("parseCommaList", () => {
 })
 
 describe("content search settings persistence", () => {
+  const originalLocalStorage = globalThis.localStorage
+
   beforeEach(() => {
+    vi.restoreAllMocks()
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalLocalStorage,
+    })
     localStorage.clear()
+  })
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: originalLocalStorage,
+    })
   })
 
   it("loads defaults when storage is empty", () => {
@@ -43,6 +57,49 @@ describe("content search settings persistence", () => {
 
     expect(loadContentSearchSettings()).toEqual(settings)
   })
+
+  it("ignores save when localStorage is unavailable", () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: undefined,
+    })
+
+    expect(() => {
+      saveContentSearchSettings(CONTENT_SEARCH_DEFAULT_SETTINGS)
+    }).not.toThrow()
+  })
+
+  it("ignores save when localStorage.setItem throws", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded")
+    })
+
+    expect(() => {
+      saveContentSearchSettings(CONTENT_SEARCH_DEFAULT_SETTINGS)
+    }).not.toThrow()
+  })
+
+  it("loads defaults when storage JSON is not an object", () => {
+    localStorage.setItem("codeg.contentSearch.settings", "[]")
+
+    expect(loadContentSearchSettings()).toEqual(CONTENT_SEARCH_DEFAULT_SETTINGS)
+  })
+
+  it("ignores stored fields with invalid types", () => {
+    localStorage.setItem(
+      "codeg.contentSearch.settings",
+      JSON.stringify({
+        searchDirsText: ["src"],
+        includeExtensionsText: 7,
+        excludeDirsText: null,
+        excludeExtensionsText: false,
+        maxResults: "250",
+        maxFileBytesMb: Number.NaN,
+      })
+    )
+
+    expect(loadContentSearchSettings()).toEqual(CONTENT_SEARCH_DEFAULT_SETTINGS)
+  })
 })
 
 describe("toSearchFilesRequest", () => {
@@ -57,10 +114,46 @@ describe("toSearchFilesRequest", () => {
     expect(request.maxFileBytes).toBe(10 * 1024 * 1024)
   })
 
-  it("clamps maxFileBytesMb to at least 0.0625MB", () => {
+  it("clamps maxResults below 1 to the minimum", () => {
     const request = toSearchFilesRequest("/repo", "needle", {
       ...CONTENT_SEARCH_DEFAULT_SETTINGS,
-      maxFileBytesMb: 0.01,
+      maxResults: 0,
+    })
+
+    expect(request.maxResults).toBe(1)
+  })
+
+  it("rounds maxResults to the nearest integer", () => {
+    const request = toSearchFilesRequest("/repo", "needle", {
+      ...CONTENT_SEARCH_DEFAULT_SETTINGS,
+      maxResults: 1.6,
+    })
+
+    expect(request.maxResults).toBe(2)
+  })
+
+  it("treats non-finite maxResults as the minimum", () => {
+    const request = toSearchFilesRequest("/repo", "needle", {
+      ...CONTENT_SEARCH_DEFAULT_SETTINGS,
+      maxResults: Number.NaN,
+    })
+
+    expect(request.maxResults).toBe(1)
+  })
+
+  it("rounds maxFileBytesMb to the nearest byte and clamps low values", () => {
+    const request = toSearchFilesRequest("/repo", "needle", {
+      ...CONTENT_SEARCH_DEFAULT_SETTINGS,
+      maxFileBytesMb: 0.5,
+    })
+
+    expect(request.maxFileBytes).toBe(524288)
+  })
+
+  it("treats non-finite maxFileBytesMb as the minimum", () => {
+    const request = toSearchFilesRequest("/repo", "needle", {
+      ...CONTENT_SEARCH_DEFAULT_SETTINGS,
+      maxFileBytesMb: Number.POSITIVE_INFINITY,
     })
 
     expect(request.maxFileBytes).toBe(64 * 1024)
