@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -57,16 +57,32 @@ vi.mock("@/hooks/use-file-tree", () => ({
 }))
 
 /**
- * Renders the search dialog with English messages and default open state.
+ * Renders the search dialog with English messages and a configurable open state.
+ * @param open Dialog visibility to pass into SearchCommandDialog.
  * @returns Testing Library render result for the mounted dialog.
  * @remarks The helper keeps provider setup identical across content-tab tests.
  */
-function renderDialog() {
+function renderDialog(open = true) {
   return render(
     <NextIntlClientProvider locale="en" messages={enMessages}>
-      <SearchCommandDialog open={true} onOpenChange={vi.fn()} />
+      <SearchCommandDialog open={open} onOpenChange={vi.fn()} />
     </NextIntlClientProvider>
   )
+}
+
+/**
+ * Creates a promise plus external settle functions for async ordering tests.
+ * @returns Deferred promise controls for resolving or rejecting on demand.
+ * @remarks Tests use this to prove stale content searches cannot overwrite newer ones.
+ */
+function createDeferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 describe("SearchCommandDialog content tab", () => {
@@ -96,7 +112,16 @@ describe("SearchCommandDialog content tab", () => {
     expect(searchFiles).not.toHaveBeenCalled()
   })
 
-  it("searches content on button click and shows line text", async () => {
+  it("does not repeatedly reset while already closed", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    expect(() => renderDialog(false)).not.toThrow()
+    expect(consoleError).not.toHaveBeenCalledWith(
+      expect.stringContaining("Maximum update depth exceeded")
+    )
+  })
+
+  it("searches content on button click and shows file name with line text", async () => {
     vi.mocked(searchFiles).mockResolvedValueOnce({
       results: [
         {
@@ -121,18 +146,107 @@ describe("SearchCommandDialog content tab", () => {
     await user.click(screen.getByRole("button", { name: "Search content" }))
 
     await screen.findByText("const value = 'needle'")
+    expect(screen.getByText("app.ts")).toBeTruthy()
     expect(searchFiles).toHaveBeenCalledWith(
       expect.objectContaining({ rootPath: "/repo", query: "needle" })
     )
   })
 
-  it("opens the selected content result with the current search query", async () => {
+  it("searches content when Enter is pressed on the content tab", async () => {
     vi.mocked(searchFiles).mockResolvedValueOnce({
       results: [
         {
           path: "src/app.ts",
           name: "app.ts",
-          lineNumber: 7,
+          lineNumber: 2,
+          lineText: "needle()",
+        },
+      ],
+      truncated: false,
+      scannedFiles: 1,
+      skippedFiles: 0,
+    })
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "needle"
+    )
+    fireEvent.keyDown(screen.getByPlaceholderText("Search file contents..."), {
+      key: "Enter",
+    })
+
+    await screen.findByText("needle()")
+    expect(searchFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps newer content results when an older search resolves later", async () => {
+    const slowFoo = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    const fastBar = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    vi.mocked(searchFiles)
+      .mockReturnValueOnce(slowFoo.promise)
+      .mockReturnValueOnce(fastBar.promise)
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+    await user.clear(screen.getByPlaceholderText("Search file contents..."))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "bar"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+
+    await act(async () => {
+      fastBar.resolve({
+        results: [
+          {
+            path: "src/bar.ts",
+            name: "bar.ts",
+            lineNumber: 2,
+            lineText: "bar",
+          },
+        ],
+        truncated: false,
+        scannedFiles: 1,
+        skippedFiles: 0,
+      })
+    })
+    await screen.findByText("bar")
+    await act(async () => {
+      slowFoo.resolve({
+        results: [
+          {
+            path: "src/foo.ts",
+            name: "foo.ts",
+            lineNumber: 1,
+            lineText: "foo",
+          },
+        ],
+        truncated: false,
+        scannedFiles: 1,
+        skippedFiles: 0,
+      })
+    })
+
+    await waitFor(() => expect(screen.queryByText("foo")).toBeNull())
+    expect(screen.getByText("bar")).toBeTruthy()
+  })
+
+  it("opens the selected content result with line and current search query", async () => {
+    vi.mocked(searchFiles).mockResolvedValueOnce({
+      results: [
+        {
+          path: "src/app.ts",
+          name: "app.ts",
+          lineNumber: 2,
           lineText: "const value = 'needle'",
         },
       ],
@@ -153,6 +267,7 @@ describe("SearchCommandDialog content tab", () => {
 
     expect(mockRevealInFileTree).toHaveBeenCalledWith("src")
     expect(mockOpenFilePreview).toHaveBeenCalledWith("src/app.ts", {
+      line: 2,
       searchQuery: "needle",
     })
   })

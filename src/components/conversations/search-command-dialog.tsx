@@ -17,6 +17,7 @@ import type {
   ConversationStatus,
   DbConversationSummary,
   SearchFileMatch,
+  SearchFilesResponse,
 } from "@/lib/types"
 import {
   loadContentSearchSettings,
@@ -321,12 +322,26 @@ function filterFiles(
   allFiles: FlatFileEntry[],
   query: string
 ): FlatFileEntry[] {
-  const trimmed = query.trim()
-  if (!trimmed) return allFiles.slice(0, 100)
-  const lower = trimmed.toLowerCase()
-  return allFiles
-    .filter((f) => f.lowerName.includes(lower) || f.lowerPath.includes(lower))
-    .slice(0, 100)
+  const trimmed = query.trim().toLowerCase()
+  const results: FlatFileEntry[] = []
+  for (const file of allFiles) {
+    if (results.length >= 100) break
+    if (!trimmed || fileMatchesQuery(file, trimmed)) results.push(file)
+  }
+  return results
+}
+
+/**
+ * Checks whether one flat file entry matches a lowercase filename query.
+ * @param file Flat file entry from the workspace tree.
+ * @param lowerQuery Trimmed lowercase query text.
+ * @returns True when the file name or relative path contains the query.
+ * @remarks The caller handles empty queries so this only checks real filters.
+ */
+function fileMatchesQuery(file: FlatFileEntry, lowerQuery: string): boolean {
+  return (
+    file.lowerName.includes(lowerQuery) || file.lowerPath.includes(lowerQuery)
+  )
 }
 
 /**
@@ -344,15 +359,18 @@ function useContentSearch(folderPath: string, query: string) {
   const [contentState, setContentState] = useState<ContentSearchState>(
     createEmptyContentState
   )
-  const resetContentSearch = useCallback(
-    () => setContentState(createEmptyContentState()),
-    []
-  )
+  const resetContentSearch = useCallback(() => {
+    setContentState((current) =>
+      isEmptyContentState(current) ? current : createEmptyContentState()
+    )
+  }, [])
+  const contentRequestRef = useRef(0)
   const runContentSearch = useContentSearchRunner(
     folderPath,
     query,
     contentSettings,
-    setContentState
+    setContentState,
+    contentRequestRef
   )
   const updateContentSettings = useUpdateContentSettings(setContentSettings)
   return {
@@ -377,11 +395,27 @@ function createEmptyContentState(): ContentSearchState {
 }
 
 /**
+ * Checks whether content-search state is already at its empty baseline.
+ * @param state Current content-search state from React state.
+ * @returns True when a reset would not change any visible content state.
+ * @remarks Used to avoid repeated state updates while the dialog is closed.
+ */
+function isEmptyContentState(state: ContentSearchState): boolean {
+  return (
+    state.results.length === 0 &&
+    !state.searching &&
+    state.error === null &&
+    !state.truncated
+  )
+}
+
+/**
  * Creates the manual backend content-search runner.
  * @param folderPath Workspace root sent to the backend.
  * @param query Current query text.
  * @param settings Current content search settings.
  * @param setState Setter for content-search state.
+ * @param requestRef Monotonic request id used to ignore stale responses.
  * @returns Function that executes one content search when the query is non-empty.
  * @remarks Blank queries reset results and never reach the backend.
  */
@@ -389,31 +423,58 @@ function useContentSearchRunner(
   folderPath: string,
   query: string,
   settings: ContentSearchSettings,
-  setState: (state: ContentSearchState) => void
+  setState: (state: ContentSearchState) => void,
+  requestRef: React.MutableRefObject<number>
 ) {
   return useCallback(async () => {
     const trimmed = query.trim()
+    const requestId = requestRef.current + 1
+    requestRef.current = requestId
     if (!trimmed || !folderPath) return setState(createEmptyContentState())
     setState({ results: [], searching: true, error: null, truncated: false })
     try {
       const response = await searchFiles(
         toSearchFilesRequest(folderPath, trimmed, settings)
       )
-      setState({
-        results: response.results,
-        searching: false,
-        error: null,
-        truncated: response.truncated,
-      })
+      if (requestRef.current !== requestId) return
+      setState(toContentSuccessState(response))
     } catch (error) {
-      setState({
-        results: [],
-        searching: false,
-        error: getErrorMessage(error),
-        truncated: false,
-      })
+      if (requestRef.current !== requestId) return
+      setState(toContentErrorState(error))
     }
-  }, [folderPath, query, settings, setState])
+  }, [folderPath, query, settings, setState, requestRef])
+}
+
+/**
+ * Converts a successful backend response into renderable content-search state.
+ * @param response Backend response containing matches and truncation metadata.
+ * @returns Non-loading state with results and no error message.
+ * @remarks scannedFiles and skippedFiles are intentionally not displayed here.
+ */
+function toContentSuccessState(
+  response: SearchFilesResponse
+): ContentSearchState {
+  return {
+    results: response.results,
+    searching: false,
+    error: null,
+    truncated: response.truncated,
+  }
+}
+
+/**
+ * Converts a failed backend request into renderable content-search state.
+ * @param error Unknown thrown value from the content search request.
+ * @returns Non-loading state with no results and a displayable error message.
+ * @remarks Stale request filtering happens before this helper is called.
+ */
+function toContentErrorState(error: unknown): ContentSearchState {
+  return {
+    results: [],
+    searching: false,
+    error: getErrorMessage(error),
+    truncated: false,
+  }
 }
 
 /**
@@ -568,7 +629,7 @@ function useSelectContentResult(
   revealInFileTree: (path: string) => void,
   openFilePreview: (
     path: string,
-    options?: { searchQuery?: string }
+    options?: { line?: number; searchQuery?: string }
   ) => Promise<void>,
   onOpenChange: (open: boolean) => void
 ) {
@@ -576,7 +637,10 @@ function useSelectContentResult(
     (match: SearchFileMatch, query: string) => {
       const parent = getParentPath(match.path)
       if (parent) revealInFileTree(parent)
-      void openFilePreview(match.path, { searchQuery: query.trim() })
+      void openFilePreview(match.path, {
+        line: match.lineNumber,
+        searchQuery: query.trim(),
+      })
       onOpenChange(false)
     },
     [revealInFileTree, openFilePreview, onOpenChange]
@@ -631,15 +695,30 @@ function useResetOnClose(
   files: ReturnType<typeof useFileSearch>,
   content: ReturnType<typeof useContentSearch>
 ): void {
+  const previousOpenRef = useRef(open)
+  const { setQuery, setActiveTab } = base
+  const { setAgentFilter, setResults } = conversations
+  const { resetFileTree } = files
+  const { resetContentSearch } = content
   useEffect(() => {
-    if (open) return
-    base.setQuery("")
-    conversations.setAgentFilter(null)
-    conversations.setResults([])
-    base.setActiveTab("conversations")
-    files.resetFileTree()
-    content.resetContentSearch()
-  }, [open, base, conversations, files, content])
+    const wasOpen = previousOpenRef.current
+    previousOpenRef.current = open
+    if (open || !wasOpen) return
+    setQuery("")
+    setAgentFilter(null)
+    setResults([])
+    setActiveTab("conversations")
+    resetFileTree()
+    resetContentSearch()
+  }, [
+    open,
+    setQuery,
+    setActiveTab,
+    setAgentFilter,
+    setResults,
+    resetFileTree,
+    resetContentSearch,
+  ])
 }
 
 /**
@@ -1266,7 +1345,10 @@ function ContentResultItem({
       onSelect={() => onSelect(match, query)}
     >
       <File className="w-4 h-4 shrink-0 text-muted-foreground" />
-      <span className="flex-1 truncate">{match.lineText}</span>
+      <span className="min-w-0 flex-1 truncate">{match.lineText}</span>
+      <span className="text-xs font-medium text-muted-foreground shrink-0 truncate max-w-24">
+        {match.name}
+      </span>
       <span className="text-xs text-muted-foreground shrink-0 truncate max-w-48">
         {match.path}:{match.lineNumber}
       </span>
