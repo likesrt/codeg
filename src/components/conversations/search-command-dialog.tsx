@@ -1683,11 +1683,16 @@ function ContentResultItem({
 }) {
   return (
     <CommandItem
-      value={`${match.path}:${match.lineNumber}:${match.lineText}`}
+      value={`${match.path}:${match.lineNumber}:${compactContentLine(match.lineText)}`}
       onSelect={() => onSelect(match, query)}
     >
       <File className="w-4 h-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{match.lineText}</span>
+      <span
+        className="min-w-0 flex-1 truncate"
+        data-testid="content-result-line"
+      >
+        {compactContentLine(match.lineText)}
+      </span>
       <span className="text-xs font-medium text-muted-foreground shrink-0 truncate max-w-24">
         {match.name}
       </span>
@@ -1696,4 +1701,16 @@ function ContentResultItem({
       </span>
     </CommandItem>
   )
+}
+
+/**
+ * Builds a short UI preview for one content-search line.
+ * @param lineText Backend line preview or raw matching line.
+ * @returns At most a small display string, with an ellipsis when trimmed.
+ * @remarks This is a defense-in-depth guard for older servers or custom APIs.
+ */
+function compactContentLine(lineText: string): string {
+  const maxLength = 240
+  if (lineText.length <= maxLength) return lineText
+  return `${lineText.slice(0, maxLength)}…`
 }

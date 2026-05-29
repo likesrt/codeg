@@ -322,6 +322,36 @@ describe("SearchCommandDialog content tab", () => {
     )
   })
 
+  it("renders long content result lines as compact previews", async () => {
+    const longLine = `${"a".repeat(50_000)}chrom${"b".repeat(50_000)}`
+    vi.mocked(searchFiles).mockResolvedValueOnce({
+      results: [
+        {
+          path: "public/vs/worker.js",
+          name: "worker.js",
+          lineNumber: 7,
+          lineText: longLine,
+        },
+      ],
+      truncated: false,
+      scannedFiles: 1,
+      skippedFiles: 0,
+    })
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "chrom"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+
+    const preview = await screen.findByTestId("content-result-line")
+    expect(preview.textContent?.length ?? 0).toBeLessThan(300)
+    expect(preview.textContent).not.toBe(longLine)
+  })
+
   it("searches content when Enter is pressed on the content tab", async () => {
     vi.mocked(searchFiles).mockResolvedValueOnce({
       results: [
