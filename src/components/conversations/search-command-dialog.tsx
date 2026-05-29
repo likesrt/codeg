@@ -68,7 +68,7 @@ interface ContentResultsProps {
   state: ContentSearchState
   query: string
   t: SearchTranslator
-  onSelect: (match: SearchFileMatch, query: string) => void
+  onSelect: (match: SearchFileMatch) => void
 }
 
 /**
@@ -1540,11 +1540,7 @@ function ContentResults({
         truncatedText={t("contentResultsTruncated")}
       />
       {submittedQuery && (
-        <ContentResultList
-          results={state.results}
-          query={submittedQuery}
-          onSelect={onSelect}
-        />
+        <ContentResultList results={state.results} onSelect={onSelect} />
       )}
     </>
   )
@@ -1600,18 +1596,16 @@ function ContentStatusMessages({
 
 /**
  * Renders visible content-search result rows for one submitted query.
- * @param props Search matches, owning submitted query, and selection callback.
+ * @param props Search matches and selection callback.
  * @returns Command group containing content result items.
- * @remarks The submitted query, not the mutable input, is passed to selection.
+ * @remarks Results are visible only after ContentResults validates the submitted query.
  */
 function ContentResultList({
   results,
-  query,
   onSelect,
 }: {
   results: SearchFileMatch[]
-  query: string
-  onSelect: (match: SearchFileMatch, query: string) => void
+  onSelect: (match: SearchFileMatch) => void
 }) {
   return (
     <CommandGroup>
@@ -1619,7 +1613,6 @@ function ContentResultList({
         <ContentResultItem
           key={`${match.path}:${match.lineNumber}`}
           match={match}
-          query={query}
           onSelect={onSelect}
         />
       ))}
@@ -1662,23 +1655,21 @@ function getContentErrorText(
 
 /**
  * Renders one content-search match row.
- * @param props Match data, current query, and selection callback.
+ * @param props Match data and selection callback.
  * @returns Command item JSX.
  * @remarks lineText is the primary row text to expose match context.
  */
 function ContentResultItem({
   match,
-  query,
   onSelect,
 }: {
   match: SearchFileMatch
-  query: string
-  onSelect: (match: SearchFileMatch, query: string) => void
+  onSelect: (match: SearchFileMatch) => void
 }) {
   return (
     <CommandItem
       value={`${match.path}:${match.lineNumber}:${compactContentLine(match.lineText)}`}
-      onSelect={() => onSelect(match, query)}
+      onSelect={() => onSelect(match)}
     >
       <File className="w-4 h-4 shrink-0 text-muted-foreground" />
       <span
