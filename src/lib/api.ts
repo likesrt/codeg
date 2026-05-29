@@ -56,6 +56,8 @@ import type {
   DirectoryItem,
   UploadAttachmentResult,
   FilePreviewContent,
+  SearchFilesRequest,
+  SearchFilesResponse,
   FileEditContent,
   FileSaveResult,
   WorkspaceSnapshotResponse,
@@ -770,6 +772,20 @@ export async function removeFolderFromHistory(path: string): Promise<void> {
 
 export async function createFolderDirectory(path: string): Promise<void> {
   return getTransport().call("create_folder_directory", { path })
+}
+
+/**
+ * Search text files under a workspace root through the active transport.
+ *
+ * `request` carries the root, query, optional search directories, filters, and
+ * limits. The backend enforces root containment and clamps limits; this wrapper
+ * returns matches plus truncation state without mutating the request.
+ */
+export async function searchFiles(
+  request: SearchFilesRequest
+): Promise<SearchFilesResponse> {
+  const args = isDesktop() && !isRemoteDesktopMode() ? { request } : request
+  return getTransport().call("search_files", args as Record<string, unknown>)
 }
 
 export async function cloneRepository(

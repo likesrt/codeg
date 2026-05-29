@@ -321,3 +321,15 @@ pub async fn create_folder_directory(
     folder_commands::create_folder_directory(params.path).await?;
     Ok(Json(()))
 }
+
+/// Search text files for matching lines from the web API.
+///
+/// The JSON request mirrors the Tauri command payload and is validated by the
+/// shared command implementation. It returns the collected matches plus a
+/// truncation flag and performs no additional filesystem access here.
+pub async fn search_files(
+    Json(params): Json<folder_commands::SearchFilesRequest>,
+) -> Result<Json<folder_commands::SearchFilesResponse>, AppCommandError> {
+    let result = folder_commands::search_files(params).await?;
+    Ok(Json(result))
+}

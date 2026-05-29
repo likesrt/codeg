@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use std::time::UNIX_EPOCH;
 
 use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use tokio::sync::Semaphore;
 use walkdir::WalkDir;
@@ -570,6 +570,417 @@ pub async fn update_folder_default_agent_core(
         .await
         .map_err(AppCommandError::from)?
         .ok_or_else(|| AppCommandError::not_found("Folder not found"))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFilesRequest {
+    pub root: String,
+    pub query: String,
+    pub search_dirs: Option<Vec<String>>,
+    pub include_extensions: Option<Vec<String>>,
+    pub exclude_extensions: Option<Vec<String>>,
+    pub exclude_dirs: Option<Vec<String>>,
+    pub max_results: Option<usize>,
+    pub max_file_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFileMatch {
+    pub path: String,
+    pub line_number: usize,
+    pub line: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFilesResponse {
+    pub matches: Vec<SearchFileMatch>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SearchConfig {
+    root: PathBuf,
+    query_lower: String,
+    include_extensions: HashSet<String>,
+    exclude_extensions: HashSet<String>,
+    exclude_dirs: HashSet<String>,
+    max_results: usize,
+    max_file_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchStep {
+    Continue,
+    Stop,
+}
+
+/// Return the default directory names skipped by file content search.
+///
+/// These filters are applied to directory basenames and common relative paths so
+/// generated dependencies, VCS metadata, and build outputs do not dominate
+/// results. It takes no parameters, returns normalized lowercase filters, and
+/// has no filesystem side effects.
+pub fn default_search_exclude_dirs() -> Vec<String> {
+    [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+        "coverage",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// Return the default file extensions skipped by file content search.
+///
+/// These extensions cover archives, media, images, and compiled artifacts that
+/// are usually binary or too noisy for text search. It takes no parameters,
+/// returns lowercase extension names without dots, and has no side effects.
+pub fn default_search_exclude_extensions() -> Vec<String> {
+    [
+        "png", "jpg", "jpeg", "gif", "webp", "ico", "pdf", "zip", "gz", "tar", "7z", "exe", "dll",
+        "so", "dylib", "class", "jar", "wasm", "pyc", "sqlite", "db",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// Normalize extension filters for case-insensitive suffix comparisons.
+///
+/// Each entry is trimmed, lowercased, and stripped of a leading dot. Empty
+/// entries are dropped, duplicates collapse in the returned set, and the input
+/// collection is otherwise not modified.
+pub fn normalize_extensions(values: Option<Vec<String>>) -> HashSet<String> {
+    values
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| {
+            let trimmed = value.trim().trim_start_matches('.').to_lowercase();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .collect()
+}
+
+/// Normalize directory filters for basename or relative-path matching.
+///
+/// Filters are trimmed, converted to forward-slash lowercase form, and stripped
+/// of leading `./` or `/` so callers may pass UI-friendly paths. Empty filters
+/// are ignored; the returned set is used read-only while walking directories.
+pub fn normalize_dir_filters(values: Option<Vec<String>>) -> HashSet<String> {
+    values
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| normalize_dir_filter(&value))
+        .collect()
+}
+
+/// Detect whether a byte buffer is likely binary content.
+///
+/// The check treats NUL bytes as binary and otherwise allows normal text bytes;
+/// callers should still validate UTF-8 separately. It reads only the provided
+/// bytes, returns false for empty buffers, and performs no I/O.
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().any(|byte| *byte == 0)
+}
+
+/// Search text files below a root directory using case-insensitive containment.
+///
+/// `request` supplies the root, query, optional search subdirectories, filters,
+/// and safety limits. Search dirs must stay inside `root`; binary, non-UTF-8, and
+/// oversized files are skipped. Results stop at the clamped limit and set
+/// `truncated` when more matches were available.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn search_files(
+    request: SearchFilesRequest,
+) -> Result<SearchFilesResponse, AppCommandError> {
+    let config = build_search_config(&request)?;
+    let search_dirs = resolve_search_dirs(&config.root, request.search_dirs)?;
+    let mut response = SearchFilesResponse {
+        matches: Vec::new(),
+        truncated: false,
+    };
+
+    for dir in search_dirs {
+        if search_dir(&dir, &config, &mut response)? == SearchStep::Stop {
+            break;
+        }
+    }
+    Ok(response)
+}
+
+/// Build normalized search settings from a user request.
+///
+/// This validates the root and non-empty query, clamps size/result limits, and
+/// merges default plus user-provided exclusion filters. It returns a reusable
+/// immutable config and only canonicalizes paths; it does not walk files.
+fn build_search_config(request: &SearchFilesRequest) -> Result<SearchConfig, AppCommandError> {
+    let root = canonicalize_existing_dir(&request.root)?;
+    let query = request.query.trim();
+    if query.is_empty() {
+        return Err(AppCommandError::invalid_input(
+            "Search query cannot be empty",
+        ));
+    }
+    let mut exclude_extensions = normalize_extensions(Some(default_search_exclude_extensions()));
+    exclude_extensions.extend(normalize_extensions(request.exclude_extensions.clone()));
+    let mut exclude_dirs = normalize_dir_filters(Some(default_search_exclude_dirs()));
+    exclude_dirs.extend(normalize_dir_filters(request.exclude_dirs.clone()));
+    Ok(SearchConfig {
+        root,
+        query_lower: query.to_lowercase(),
+        include_extensions: normalize_extensions(request.include_extensions.clone()),
+        exclude_extensions,
+        exclude_dirs,
+        max_results: request.max_results.unwrap_or(200).clamp(1, 1000),
+        max_file_bytes: request
+            .max_file_bytes
+            .unwrap_or(1024 * 1024)
+            .clamp(64 * 1024, 10 * 1024 * 1024),
+    })
+}
+
+/// Canonicalize an existing search root directory.
+///
+/// The path is trimmed and must resolve to a directory. The returned absolute
+/// path is used for containment checks, and errors are mapped to user-facing app
+/// errors without creating or modifying filesystem entries.
+fn canonicalize_existing_dir(path: &str) -> Result<PathBuf, AppCommandError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input(
+            "Search root cannot be empty",
+        ));
+    }
+    let root = std::fs::canonicalize(trimmed).map_err(AppCommandError::io)?;
+    if !root.is_dir() {
+        return Err(AppCommandError::invalid_input(
+            "Search root must be a directory",
+        ));
+    }
+    Ok(root)
+}
+
+/// Resolve requested search directories under the canonical root.
+///
+/// Relative entries are joined to `root`, absolute entries are used directly,
+/// and every resolved directory must remain inside `root`. Missing paths and
+/// escape attempts return errors; an empty list defaults to the root itself.
+fn resolve_search_dirs(
+    root: &Path,
+    search_dirs: Option<Vec<String>>,
+) -> Result<Vec<PathBuf>, AppCommandError> {
+    let dirs = search_dirs.unwrap_or_else(|| vec![".".to_string()]);
+    let mut resolved = Vec::new();
+    for dir in dirs {
+        let candidate = resolve_search_dir_candidate(root, &dir)?;
+        if !resolved.iter().any(|path| path == &candidate) {
+            resolved.push(candidate);
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolve one search directory candidate and enforce root containment.
+///
+/// The candidate may be relative to `root` or absolute; canonicalization follows
+/// existing filesystem state so symlinks cannot escape containment unnoticed.
+/// The returned directory is canonical and safe to walk.
+fn resolve_search_dir_candidate(root: &Path, dir: &str) -> Result<PathBuf, AppCommandError> {
+    let trimmed = dir.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input(
+            "Search directory cannot be empty",
+        ));
+    }
+    let candidate = if Path::new(trimmed).is_absolute() {
+        PathBuf::from(trimmed)
+    } else {
+        root.join(trimmed)
+    };
+    let canonical = std::fs::canonicalize(candidate).map_err(AppCommandError::io)?;
+    if !canonical.is_dir() || !canonical.starts_with(root) {
+        return Err(AppCommandError::invalid_input(
+            "Search directory must stay inside the root",
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Walk one directory tree and append matching lines to the response.
+///
+/// The walk applies directory, extension, binary, encoding, and size filters.
+/// It returns `Stop` as soon as the result limit is exceeded so callers can
+/// avoid unnecessary I/O after the response is known to be truncated.
+fn search_dir(
+    dir: &Path,
+    config: &SearchConfig,
+    response: &mut SearchFilesResponse,
+) -> Result<SearchStep, AppCommandError> {
+    for entry in WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| should_descend(e, config))
+    {
+        let entry = entry.map_err(|err| AppCommandError::io(std::io::Error::other(err)))?;
+        if !entry.file_type().is_file() || !should_search_file(entry.path(), config)? {
+            continue;
+        }
+        if search_file(entry.path(), config, response)? == SearchStep::Stop {
+            return Ok(SearchStep::Stop);
+        }
+    }
+    Ok(SearchStep::Continue)
+}
+
+/// Decide whether a directory walker should descend into an entry.
+///
+/// Non-directories are always kept for later file checks. Directory basenames
+/// and root-relative paths are matched against normalized exclusions, preventing
+/// noisy subtrees from being read while preserving sibling traversal.
+fn should_descend(entry: &walkdir::DirEntry, config: &SearchConfig) -> bool {
+    if !entry.file_type().is_dir() || entry.path() == config.root {
+        return true;
+    }
+    !is_excluded_dir(entry.path(), config)
+}
+
+/// Decide whether a file should be opened for text search.
+///
+/// The check enforces max byte size and include/exclude extension filters before
+/// reading content. Files without extensions are included unless an include list
+/// is present; metadata errors are propagated as I/O errors.
+fn should_search_file(path: &Path, config: &SearchConfig) -> Result<bool, AppCommandError> {
+    if std::fs::metadata(path).map_err(AppCommandError::io)?.len() > config.max_file_bytes {
+        return Ok(false);
+    }
+    let ext = file_extension(path);
+    if !config.include_extensions.is_empty()
+        && !ext
+            .as_ref()
+            .is_some_and(|e| config.include_extensions.contains(e))
+    {
+        return Ok(false);
+    }
+    if ext
+        .as_ref()
+        .is_some_and(|e| config.exclude_extensions.contains(e))
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Search a single UTF-8 text file and append matching lines.
+///
+/// The file is read as bytes to skip binary and non-UTF-8 content safely. Each
+/// matched line records a root-relative path, one-based line number, and original
+/// line text; reaching the limit marks the response as truncated.
+fn search_file(
+    path: &Path,
+    config: &SearchConfig,
+    response: &mut SearchFilesResponse,
+) -> Result<SearchStep, AppCommandError> {
+    let bytes = std::fs::read(path).map_err(AppCommandError::io)?;
+    if looks_binary(&bytes) {
+        return Ok(SearchStep::Continue);
+    }
+    let Ok(content) = std::str::from_utf8(&bytes) else {
+        return Ok(SearchStep::Continue);
+    };
+    append_line_matches(path, content, config, response)
+}
+
+/// Append matching lines from one file's text content.
+///
+/// Matching is ordinary case-insensitive substring search; no regex syntax is
+/// interpreted. The response is mutated in place and signals `Stop` when adding
+/// another match would exceed `max_results`.
+fn append_line_matches(
+    path: &Path,
+    content: &str,
+    config: &SearchConfig,
+    response: &mut SearchFilesResponse,
+) -> Result<SearchStep, AppCommandError> {
+    for (index, line) in content.lines().enumerate() {
+        if !line.to_lowercase().contains(&config.query_lower) {
+            continue;
+        }
+        if response.matches.len() >= config.max_results {
+            response.truncated = true;
+            return Ok(SearchStep::Stop);
+        }
+        response.matches.push(SearchFileMatch {
+            path: relative_path_string(&config.root, path)?,
+            line_number: index + 1,
+            line: line.to_string(),
+        });
+    }
+    Ok(SearchStep::Continue)
+}
+
+/// Normalize one directory filter value.
+///
+/// This helper is shared by public normalization and matching code. It accepts
+/// platform separators, trims leading relative markers, returns lowercase text,
+/// and drops empty values without touching the filesystem.
+fn normalize_dir_filter(value: &str) -> Option<String> {
+    let mut normalized = value.trim().replace('\\', "/").to_lowercase();
+    while let Some(stripped) = normalized.strip_prefix("./") {
+        normalized = stripped.to_string();
+    }
+    let normalized = normalized
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .to_string();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+/// Return a lowercase extension without the leading dot.
+///
+/// Paths without a valid Unicode extension return `None`. The result is used for
+/// case-insensitive include/exclude checks and does not inspect file contents or
+/// metadata.
+fn file_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_lowercase)
+        .filter(|ext| !ext.is_empty())
+}
+
+/// Check whether a directory is excluded by basename or relative path.
+///
+/// Basenames handle broad filters like `node_modules`; relative paths allow UI
+/// callers to exclude a specific subtree. The function reads only path strings
+/// and has no filesystem side effects.
+fn is_excluded_dir(path: &Path, config: &SearchConfig) -> bool {
+    let basename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if config.exclude_dirs.contains(&basename.to_lowercase()) {
+        return true;
+    }
+    relative_path_string(&config.root, path)
+        .ok()
+        .and_then(|relative| normalize_dir_filter(&relative))
+        .is_some_and(|relative| config.exclude_dirs.contains(&relative))
+}
+
+/// Convert a path under root into a forward-slash relative string.
+///
+/// The path must be contained by `root`; otherwise an invalid-input error is
+/// returned. The output is stable for frontend display across platforms and does
+/// not alter the filesystem.
+fn relative_path_string(root: &Path, path: &Path) -> Result<String, AppCommandError> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        AppCommandError::invalid_input("Search result path must stay inside the root")
+    })?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
 // ---------------------------------------------------------------------------
@@ -3946,6 +4357,121 @@ async fn get_unpushed_hashes(
         .collect::<HashSet<_>>();
 
     Ok((Some(hashes), has_upstream))
+}
+
+#[cfg(test)]
+mod search_files_tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+
+    /// Write one UTF-8 file for search command tests.
+    ///
+    /// The path must include an existing parent directory. It panics on I/O
+    /// failure because tests cannot proceed without deterministic fixtures, and
+    /// it returns no value or filesystem cleanup handle.
+    fn write_file(path: &Path, content: &str) {
+        std::fs::write(path, content).expect("write test file");
+    }
+
+    /// Build a minimal search request for a temporary root.
+    ///
+    /// The helper fills optional filters and limits with `None`, so individual
+    /// tests can override only the field under examination. It performs no I/O
+    /// and returns a request using the root's display path.
+    fn request(root: &Path, query: &str) -> SearchFilesRequest {
+        SearchFilesRequest {
+            root: root.to_string_lossy().to_string(),
+            query: query.to_string(),
+            search_dirs: None,
+            include_extensions: None,
+            exclude_extensions: None,
+            exclude_dirs: None,
+            max_results: None,
+            max_file_bytes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_files_returns_line_matches() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_file(
+            &temp.path().join("alpha.txt"),
+            "first line\nNeedle appears here\nlast needle\n",
+        );
+        write_file(&temp.path().join("beta.txt"), "no match\n");
+
+        let result = search_files(request(temp.path(), "needle"))
+            .await
+            .expect("search files");
+
+        assert!(!result.truncated);
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.matches[0].line_number, 2);
+        assert_eq!(result.matches[0].line, "Needle appears here");
+        assert!(result.matches[0].path.ends_with("alpha.txt"));
+        assert_eq!(result.matches[1].line_number, 3);
+    }
+
+    #[tokio::test]
+    async fn search_files_respects_excluded_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("src");
+        let vendor = temp.path().join("vendor");
+        std::fs::create_dir_all(&nested).expect("create src");
+        std::fs::create_dir_all(&vendor).expect("create vendor");
+        write_file(&nested.join("main.rs"), "needle\n");
+        write_file(&vendor.join("dep.rs"), "needle\n");
+        let mut req = request(temp.path(), "needle");
+        req.exclude_dirs = Some(vec!["vendor".to_string()]);
+
+        let result = search_files(req).await.expect("search files");
+
+        assert_eq!(result.matches.len(), 1);
+        assert!(result.matches[0].path.ends_with("src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn search_files_respects_include_and_exclude_extensions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_file(&temp.path().join("keep.rs"), "needle\n");
+        write_file(&temp.path().join("skip.txt"), "needle\n");
+        write_file(&temp.path().join("drop.md"), "needle\n");
+        let mut req = request(temp.path(), "needle");
+        req.include_extensions = Some(vec!["rs".to_string(), ".txt".to_string()]);
+        req.exclude_extensions = Some(vec!["txt".to_string()]);
+
+        let result = search_files(req).await.expect("search files");
+
+        assert_eq!(result.matches.len(), 1);
+        assert!(result.matches[0].path.ends_with("keep.rs"));
+    }
+
+    #[tokio::test]
+    async fn search_files_truncates_at_max_results() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_file(&temp.path().join("many.txt"), "needle\nneedle\nneedle\n");
+        let mut req = request(temp.path(), "needle");
+        req.max_results = Some(2);
+
+        let result = search_files(req).await.expect("search files");
+
+        assert!(result.truncated);
+        assert_eq!(result.matches.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_files_rejects_search_dir_escape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let mut req = request(temp.path(), "needle");
+        req.search_dirs = Some(vec![outside.path().to_string_lossy().to_string()]);
+
+        let err = search_files(req)
+            .await
+            .expect_err("escaped search dir should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
 }
 
 #[cfg(test)]

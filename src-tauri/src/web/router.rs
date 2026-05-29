@@ -164,6 +164,7 @@ pub fn build_router(
             post(handlers::folders::list_directory_with_files),
         )
         .route("/get_file_tree", post(handlers::folders::get_file_tree))
+        .route("/search_files", post(handlers::folders::search_files))
         .route(
             "/start_workspace_state_stream",
             post(handlers::workspace_state::start_workspace_state_stream),

@@ -40,6 +40,8 @@ import type {
   FileTreeNode,
   DirectoryEntry,
   FilePreviewContent,
+  SearchFilesRequest,
+  SearchFilesResponse,
   FileEditContent,
   FileSaveResult,
   WorkspaceSnapshotResponse,
@@ -580,6 +582,19 @@ export async function removeFolderFromHistory(path: string): Promise<void> {
 
 export async function createFolderDirectory(path: string): Promise<void> {
   return invoke("create_folder_directory", { path })
+}
+
+/**
+ * Search text files under a workspace root through the Tauri command bridge.
+ *
+ * `request` carries the root, query, optional search directories, filters, and
+ * limits. The backend enforces root containment and clamps limits; this wrapper
+ * returns matches plus truncation state without mutating the request.
+ */
+export async function searchFiles(
+  request: SearchFilesRequest
+): Promise<SearchFilesResponse> {
+  return invoke("search_files", { request })
 }
 
 export async function cloneRepository(

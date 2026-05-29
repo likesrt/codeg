@@ -684,6 +684,7 @@ mod tauri_app {
                 folders::add_folder_to_history,
                 folders::remove_folder_from_history,
                 folders::create_folder_directory,
+                folders::search_files,
                 folders::clone_repository,
                 folders::get_git_branch,
                 folders::git_init,

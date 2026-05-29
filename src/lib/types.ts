@@ -1135,6 +1135,28 @@ export interface UploadAttachmentResult {
   mimeType: string | null
 }
 
+export interface SearchFilesRequest {
+  root: string
+  query: string
+  searchDirs?: string[] | null
+  includeExtensions?: string[] | null
+  excludeExtensions?: string[] | null
+  excludeDirs?: string[] | null
+  maxResults?: number | null
+  maxFileBytes?: number | null
+}
+
+export interface SearchFileMatch {
+  path: string
+  lineNumber: number
+  line: string
+}
+
+export interface SearchFilesResponse {
+  matches: SearchFileMatch[]
+  truncated: boolean
+}
+
 export interface FilePreviewContent {
   path: string
   content: string
