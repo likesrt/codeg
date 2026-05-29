@@ -218,6 +218,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
         </ResizablePanel>
         <ResizableHandle
           withHandle
+          disabled={mode !== "fusion"}
           className={
             mode === "fusion"
               ? ""
@@ -685,6 +686,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
 
         <ResizableHandle
           withHandle
+          disabled={!sidebarOpen}
           className={
             sidebarOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
           }
@@ -717,6 +719,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
 
               <ResizableHandle
                 withHandle
+                disabled={!terminalOpen}
                 className={
                   terminalOpen
                     ? ""
@@ -741,6 +744,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
 
         <ResizableHandle
           withHandle
+          disabled={!auxOpen}
           className={
             auxOpen ? "" : "pointer-events-none w-0 opacity-0 after:w-0"
           }
