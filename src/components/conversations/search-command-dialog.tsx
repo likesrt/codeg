@@ -41,6 +41,8 @@ import {
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
+type SearchTranslator = (key: string, values?: Record<string, string>) => string
+
 type SearchTab = "conversations" | "files" | "content"
 
 interface SearchCommandDialogProps {
@@ -65,7 +67,7 @@ interface ContentResultsProps {
   activeTab: SearchTab
   state: ContentSearchState
   query: string
-  t: ReturnType<typeof useTranslations>
+  t: SearchTranslator
   onSelect: (match: SearchFileMatch, query: string) => void
 }
 
@@ -98,7 +100,7 @@ function useSearchDialogModel(
   const conversations = useConversationSearch(base, open)
   const files = useFileSearch(base.activeTab, base.folderPath, base.query)
   const content = useContentSearch(base.folderPath, base.query)
-  const actions = useSearchActions(base, conversations, content, onOpenChange)
+  const actions = useSearchActions(base, content, onOpenChange)
   useResetOnClose(open, base, conversations, files, content)
   return {
     ...base,
@@ -117,7 +119,7 @@ function useSearchDialogModel(
  * @remarks Locale selection only affects date formatting in conversation rows.
  */
 function useBaseSearchState() {
-  const t = useTranslations("Folder.search")
+  const t = useTranslations("Folder.search") as SearchTranslator
   const locale = useLocale()
   const dateFnsLocale =
     locale === "zh-CN" ? zhCN : locale === "zh-TW" ? zhTW : enUS
@@ -693,7 +695,6 @@ function useUpdateContentSettings(
 /**
  * Builds selection and keyboard callbacks for all tabs.
  * @param base Shared dialog state.
- * @param conversations Conversation search state.
  * @param content Content search state.
  * @param onOpenChange Dialog open-state callback.
  * @returns Action callbacks consumed by the view.
@@ -701,7 +702,6 @@ function useUpdateContentSettings(
  */
 function useSearchActions(
   base: ReturnType<typeof useBaseSearchState>,
-  conversations: ReturnType<typeof useConversationSearch>,
   content: ReturnType<typeof useContentSearch>,
   onOpenChange: (open: boolean) => void
 ) {
@@ -1002,7 +1002,7 @@ function getDialogTitle(
  */
 function getSearchPlaceholder(
   activeTab: SearchTab,
-  t: ReturnType<typeof useTranslations>
+  t: SearchTranslator
 ): string {
   if (activeTab === "conversations") return t("placeholder")
   return activeTab === "files" ? t("filePlaceholder") : t("contentPlaceholder")
@@ -1019,7 +1019,7 @@ function FolderHeader({
   t,
 }: {
   folder: { name: string } | null | undefined
-  t: ReturnType<typeof useTranslations>
+  t: SearchTranslator
 }) {
   if (!folder) return null
   return (
@@ -1045,7 +1045,7 @@ function SearchTabs({
 }: {
   activeTab: SearchTab
   setActiveTab: (tab: SearchTab) => void
-  t: ReturnType<typeof useTranslations>
+  t: SearchTranslator
 }) {
   return (
     <div className="flex items-center gap-0 border-b px-3">
@@ -1539,7 +1539,12 @@ function ContentResults({
   const submittedQuery = getVisibleSubmittedQuery(state, query)
   return (
     <>
-      <ContentStatusMessages state={state} query={query} t={t} />
+      <ContentStatusMessages
+        state={state}
+        emptyText={getContentEmptyText(state, query, t)}
+        errorText={getContentErrorText(state.error, t)}
+        truncatedText={t("contentResultsTruncated")}
+      />
       {submittedQuery && (
         <ContentResultList
           results={state.results}
@@ -1569,30 +1574,30 @@ function getVisibleSubmittedQuery(
 
 /**
  * Renders content-search empty, error, and truncation messages.
- * @param props Content state, current input query, and translations.
+ * @param props Precomputed status labels and content state.
  * @returns Status message JSX for the content tab.
- * @remarks Result rows are rendered separately so stale rows can be hidden cleanly.
+ * @remarks Translated strings are passed in to avoid deep next-intl generics here.
  */
 function ContentStatusMessages({
   state,
-  query,
-  t,
+  emptyText,
+  errorText,
+  truncatedText,
 }: {
   state: ContentSearchState
-  query: string
-  t: ReturnType<typeof useTranslations>
+  emptyText: string
+  errorText: string | null
+  truncatedText: string
 }) {
   return (
     <>
-      <CommandEmpty>{getContentEmptyText(state, query, t)}</CommandEmpty>
-      {state.error && (
-        <div className="px-4 py-2 text-sm text-destructive">
-          {t("contentSearchError", { message: state.error })}
-        </div>
+      <CommandEmpty>{emptyText}</CommandEmpty>
+      {errorText && (
+        <div className="px-4 py-2 text-sm text-destructive">{errorText}</div>
       )}
       {state.truncated && (
         <div className="px-4 py-2 text-sm text-muted-foreground">
-          {t("contentResultsTruncated")}
+          {truncatedText}
         </div>
       )}
     </>
@@ -1639,11 +1644,26 @@ function ContentResultList({
 function getContentEmptyText(
   state: ContentSearchState,
   query: string,
-  t: ReturnType<typeof useTranslations>
+  t: SearchTranslator
 ): string {
   if (state.searching) return t("searching")
   if (!query.trim()) return t("typeToSearchContent")
   return t("noResults")
+}
+
+/**
+ * Formats a content-search error message when one exists.
+ * @param error Backend error text stored in content-search state.
+ * @param t Translation function for Folder.search.
+ * @returns Localized error text, or null when there is no error.
+ * @remarks Keeping interpolation outside ContentStatusMessages limits generic depth.
+ */
+function getContentErrorText(
+  error: string | null,
+  t: SearchTranslator
+): string | null {
+  if (!error) return null
+  return t("contentSearchError", { message: error })
 }
 
 /**
