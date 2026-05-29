@@ -65,6 +65,7 @@ interface ContentResultsProps {
   activeTab: SearchTab
   state: ContentSearchState
   query: string
+  t: ReturnType<typeof useTranslations>
   onSelect: (match: SearchFileMatch, query: string) => void
 }
 
@@ -353,6 +354,25 @@ function fileMatchesQuery(file: FlatFileEntry, lowerQuery: string): boolean {
  * @remarks Backend search is only triggered by Enter or the search button.
  */
 function useContentSearch(folderPath: string, query: string) {
+  const store = useContentSearchStore()
+  const runContentSearch = useContentSearchRunner(
+    folderPath,
+    query,
+    store.contentSettings,
+    store.contentState.searching,
+    store.setContentState,
+    store.contentRequestRef
+  )
+  useInvalidateContentSearchOnQueryChange(query, store.invalidateContentSearch)
+  return { ...store, runContentSearch }
+}
+
+/**
+ * Creates state holders and reset helpers for manual content search.
+ * @returns Content-search state, settings state, and invalidation callbacks.
+ * @remarks The request id lives with state so all callbacks cancel stale responses.
+ */
+function useContentSearchStore() {
   const [contentSettings, setContentSettings] = useState(
     loadContentSearchSettings
   )
@@ -361,26 +381,14 @@ function useContentSearch(folderPath: string, query: string) {
     createEmptyContentState
   )
   const contentRequestRef = useRef(0)
-  const resetContentSearch = useCallback(() => {
-    contentRequestRef.current += 1
-    setContentState((current) =>
-      isEmptyContentState(current) ? current : createEmptyContentState()
-    )
-  }, [])
-  const invalidateContentSearch = useCallback(() => {
-    contentRequestRef.current += 1
-    setContentState((current) =>
-      isIdleEmptyContentState(current) ? current : createEmptyContentState()
-    )
-  }, [])
-  const runContentSearch = useContentSearchRunner(
-    folderPath,
-    query,
-    contentSettings,
+  const resetContentSearch = useResetContentSearch(
     setContentState,
     contentRequestRef
   )
-  useInvalidateContentSearchOnQueryChange(query, invalidateContentSearch)
+  const invalidateContentSearch = useInvalidateContentSearch(
+    setContentState,
+    contentRequestRef
+  )
   const updateContentSettings = useUpdateContentSettings(setContentSettings)
   return {
     contentSettings,
@@ -389,9 +397,48 @@ function useContentSearch(folderPath: string, query: string) {
     setShowContentSettings,
     contentState,
     setContentState,
+    contentRequestRef,
     resetContentSearch,
-    runContentSearch,
+    invalidateContentSearch,
   }
+}
+
+/**
+ * Creates a reset callback that cancels and clears content search state.
+ * @param setState Setter for content-search state.
+ * @param requestRef Monotonic request id used to invalidate pending responses.
+ * @returns Callback that resets visible and pending content-search data.
+ * @remarks Incrementing the id prevents late backend responses from committing.
+ */
+function useResetContentSearch(
+  setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
+  requestRef: React.MutableRefObject<number>
+) {
+  return useCallback(() => {
+    requestRef.current += 1
+    setState((current) =>
+      isEmptyContentState(current) ? current : createEmptyContentState()
+    )
+  }, [setState, requestRef])
+}
+
+/**
+ * Creates a query-change invalidation callback for content search state.
+ * @param setState Setter for content-search state.
+ * @param requestRef Monotonic request id used to invalidate pending responses.
+ * @returns Callback that clears stale content results for edited queries.
+ * @remarks Idle empty state is preserved to avoid unnecessary renders.
+ */
+function useInvalidateContentSearch(
+  setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
+  requestRef: React.MutableRefObject<number>
+) {
+  return useCallback(() => {
+    requestRef.current += 1
+    setState((current) =>
+      isIdleEmptyContentState(current) ? current : createEmptyContentState()
+    )
+  }, [setState, requestRef])
 }
 
 /**
@@ -440,23 +487,26 @@ function isIdleEmptyContentState(state: ContentSearchState): boolean {
  * @param folderPath Workspace root sent to the backend.
  * @param query Current query text.
  * @param settings Current content search settings.
+ * @param searching Whether another content request is currently in flight.
  * @param setState Setter for content-search state.
  * @param requestRef Monotonic request id used to ignore stale responses.
  * @returns Function that executes one content search when the query is non-empty.
- * @remarks Blank queries reset results and never reach the backend.
+ * @remarks Blank, folderless, or already-pending searches never reach the backend.
  */
 function useContentSearchRunner(
   folderPath: string,
   query: string,
   settings: ContentSearchSettings,
+  searching: boolean,
   setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
   requestRef: React.MutableRefObject<number>
 ) {
   return useCallback(async () => {
     const trimmed = query.trim()
+    if (searching) return
+    if (!trimmed || !folderPath) return setState(createEmptyContentState())
     const requestId = requestRef.current + 1
     requestRef.current = requestId
-    if (!trimmed || !folderPath) return setState(createEmptyContentState())
     setState(createSearchingContentState(trimmed))
     try {
       const response = await searchFiles(
@@ -472,7 +522,7 @@ function useContentSearchRunner(
     } catch (error) {
       setContentSearchError(setState, requestRef, requestId, trimmed, error)
     }
-  }, [folderPath, query, settings, setState, requestRef])
+  }, [folderPath, query, settings, searching, setState, requestRef])
 }
 
 /**
@@ -831,14 +881,40 @@ function useResetOnClose(
   content: ReturnType<typeof useContentSearch>
 ): void {
   const previousOpenRef = useRef(open)
-  const { setQuery, setActiveTab } = base
-  const { setAgentFilter, setResults } = conversations
-  const { resetFileTree } = files
-  const { resetContentSearch } = content
+  const resetDialogState = useResetDialogState(
+    base,
+    conversations,
+    files,
+    content
+  )
   useEffect(() => {
     const wasOpen = previousOpenRef.current
     previousOpenRef.current = open
     if (open || !wasOpen) return
+    resetDialogState()
+  }, [open, resetDialogState])
+}
+
+/**
+ * Creates a callback that restores dialog state to its closed baseline.
+ * @param base Shared tab and query state.
+ * @param conversations Conversation search state setters.
+ * @param files File-search reset helper.
+ * @param content Content-search reset helper.
+ * @returns Callback used once when the dialog transitions from open to closed.
+ * @remarks The callback is shared by the close effect to keep dependency lists small.
+ */
+function useResetDialogState(
+  base: ReturnType<typeof useBaseSearchState>,
+  conversations: ReturnType<typeof useConversationSearch>,
+  files: ReturnType<typeof useFileSearch>,
+  content: ReturnType<typeof useContentSearch>
+) {
+  const { setQuery, setActiveTab } = base
+  const { setAgentFilter, setResults } = conversations
+  const { resetFileTree } = files
+  const { resetContentSearch } = content
+  return useCallback(() => {
     setQuery("")
     setAgentFilter(null)
     setResults([])
@@ -846,11 +922,10 @@ function useResetOnClose(
     resetFileTree()
     resetContentSearch()
   }, [
-    open,
     setQuery,
-    setActiveTab,
     setAgentFilter,
     setResults,
+    setActiveTab,
     resetFileTree,
     resetContentSearch,
   ])
@@ -896,6 +971,7 @@ function SearchCommandDialogView({
           activeTab={model.activeTab}
           state={model.contentState}
           query={model.query}
+          t={model.t}
           onSelect={model.handleSelectContentResult}
         />
       </CommandList>
@@ -1111,26 +1187,7 @@ function ContentToolbar({
   if (model.activeTab !== "content") return null
   return (
     <div className="space-y-2 border-b px-3 py-2">
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          disabled={isContentSearchButtonDisabled(model)}
-          onClick={() => void model.runContentSearch()}
-        >
-          {model.t("searchContent")}
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() =>
-            model.setShowContentSettings(!model.showContentSettings)
-          }
-        >
-          {model.showContentSettings
-            ? model.t("hideContentSettings")
-            : model.t("showContentSettings")}
-        </Button>
-      </div>
+      <ContentToolbarButtons model={model} />
       {model.showContentSettings && (
         <ContentSettingsPanel
           settings={model.contentSettings}
@@ -1138,6 +1195,55 @@ function ContentToolbar({
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Renders content-search action buttons.
+ * @param props Search dialog view model with labels and content actions.
+ * @returns Button row for search execution and settings visibility.
+ * @remarks The search button mirrors runner guards for pending and invalid input.
+ */
+function ContentToolbarButtons({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Button
+        size="sm"
+        disabled={isContentSearchButtonDisabled(model)}
+        onClick={() => void model.runContentSearch()}
+      >
+        {model.t("searchContent")}
+      </Button>
+      <ContentSettingsToggle model={model} />
+    </div>
+  )
+}
+
+/**
+ * Renders the settings-panel visibility toggle.
+ * @param props Search dialog view model with settings visibility state.
+ * @returns Ghost button that toggles content-search settings.
+ * @remarks State lives in the parent hook so closing the dialog can reset it later.
+ */
+function ContentSettingsToggle({
+  model,
+}: {
+  model: ReturnType<typeof useSearchDialogModel>
+}) {
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      onClick={() => model.setShowContentSettings(!model.showContentSettings)}
+    >
+      {model.showContentSettings
+        ? model.t("hideContentSettings")
+        : model.t("showContentSettings")}
+    </Button>
   )
 }
 
@@ -1426,10 +1532,56 @@ function ContentResults({
   activeTab,
   state,
   query,
+  t,
   onSelect,
 }: ContentResultsProps) {
-  const t = useTranslations("Folder.search")
   if (activeTab !== "content") return null
+  const submittedQuery = getVisibleSubmittedQuery(state, query)
+  return (
+    <>
+      <ContentStatusMessages state={state} query={query} t={t} />
+      {submittedQuery && (
+        <ContentResultList
+          results={state.results}
+          query={submittedQuery}
+          onSelect={onSelect}
+        />
+      )}
+    </>
+  )
+}
+
+/**
+ * Returns the submitted query that may safely own visible results.
+ * @param state Current content-search state with submitted query metadata.
+ * @param query Current command input value.
+ * @returns Submitted query when it still matches the input, otherwise null.
+ * @remarks Hides completed results after edits so rows cannot open with stale queries.
+ */
+function getVisibleSubmittedQuery(
+  state: ContentSearchState,
+  query: string
+): string | null {
+  const submittedQuery = state.submittedQuery?.trim()
+  if (!submittedQuery || submittedQuery !== query.trim()) return null
+  return state.results.length > 0 ? submittedQuery : null
+}
+
+/**
+ * Renders content-search empty, error, and truncation messages.
+ * @param props Content state, current input query, and translations.
+ * @returns Status message JSX for the content tab.
+ * @remarks Result rows are rendered separately so stale rows can be hidden cleanly.
+ */
+function ContentStatusMessages({
+  state,
+  query,
+  t,
+}: {
+  state: ContentSearchState
+  query: string
+  t: ReturnType<typeof useTranslations>
+}) {
   return (
     <>
       <CommandEmpty>{getContentEmptyText(state, query, t)}</CommandEmpty>
@@ -1443,19 +1595,36 @@ function ContentResults({
           {t("contentResultsTruncated")}
         </div>
       )}
-      {state.results.length > 0 && (
-        <CommandGroup>
-          {state.results.map((match) => (
-            <ContentResultItem
-              key={`${match.path}:${match.lineNumber}`}
-              match={match}
-              query={query}
-              onSelect={onSelect}
-            />
-          ))}
-        </CommandGroup>
-      )}
     </>
+  )
+}
+
+/**
+ * Renders visible content-search result rows for one submitted query.
+ * @param props Search matches, owning submitted query, and selection callback.
+ * @returns Command group containing content result items.
+ * @remarks The submitted query, not the mutable input, is passed to selection.
+ */
+function ContentResultList({
+  results,
+  query,
+  onSelect,
+}: {
+  results: SearchFileMatch[]
+  query: string
+  onSelect: (match: SearchFileMatch, query: string) => void
+}) {
+  return (
+    <CommandGroup>
+      {results.map((match) => (
+        <ContentResultItem
+          key={`${match.path}:${match.lineNumber}`}
+          match={match}
+          query={query}
+          onSelect={onSelect}
+        />
+      ))}
+    </CommandGroup>
   )
 }
 

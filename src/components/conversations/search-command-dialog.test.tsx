@@ -236,6 +236,61 @@ describe("SearchCommandDialog content tab", () => {
     expect(searchFiles).toHaveBeenCalledTimes(1)
   })
 
+  it("does not repeat content search from Enter while a request is pending", async () => {
+    const pending = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    vi.mocked(searchFiles).mockReturnValueOnce(pending.promise)
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    const input = screen.getByPlaceholderText("Search file contents...")
+    fireEvent.keyDown(input, { key: "Enter" })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    expect(searchFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("hides completed content results after the query changes", async () => {
+    vi.mocked(searchFiles).mockResolvedValueOnce({
+      results: [
+        {
+          path: "src/foo.ts",
+          name: "foo.ts",
+          lineNumber: 1,
+          lineText: "foo result",
+        },
+      ],
+      truncated: false,
+      scannedFiles: 1,
+      skippedFiles: 0,
+    })
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+    await screen.findByText("foo result")
+    await user.clear(screen.getByPlaceholderText("Search file contents..."))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "bar"
+    )
+
+    expect(screen.queryByText("foo result")).toBeNull()
+    expect(mockOpenFilePreview).not.toHaveBeenCalledWith("src/foo.ts", {
+      line: 1,
+      searchQuery: "bar",
+    })
+  })
+
   it("searches content on button click and shows file name with line text", async () => {
     vi.mocked(searchFiles).mockResolvedValueOnce({
       results: [

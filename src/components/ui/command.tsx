@@ -3,7 +3,12 @@
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
 import { Search } from "lucide-react"
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { VisuallyHidden } from "radix-ui"
 
@@ -40,6 +45,7 @@ function CommandDialog({
       >
         <VisuallyHidden.Root>
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{title}</DialogDescription>
         </VisuallyHidden.Root>
         <Command
           shouldFilter={shouldFilter}
