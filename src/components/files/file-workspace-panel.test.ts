@@ -15,4 +15,30 @@ describe("runEditorFindAction", () => {
     expect(editor.getAction).toHaveBeenCalledWith("actions.find")
     expect(run).toHaveBeenCalledTimes(1)
   })
+
+  it("resolves when the find action rejects", async () => {
+    const run = vi.fn().mockRejectedValue(new Error("Monaco action failed"))
+    const editor = {
+      focus: vi.fn(),
+      getAction: vi.fn(() => ({ run })),
+    }
+
+    await expect(runEditorFindAction(editor, "needle")).resolves.toBeUndefined()
+
+    expect(editor.focus).toHaveBeenCalledTimes(1)
+    expect(editor.getAction).toHaveBeenCalledWith("actions.find")
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it("resolves when the find action is unavailable", async () => {
+    const editor = {
+      focus: vi.fn(),
+      getAction: vi.fn(() => null),
+    }
+
+    await expect(runEditorFindAction(editor, "needle")).resolves.toBeUndefined()
+
+    expect(editor.focus).toHaveBeenCalledTimes(1)
+    expect(editor.getAction).toHaveBeenCalledWith("actions.find")
+  })
 })

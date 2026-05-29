@@ -207,8 +207,10 @@ type FindCapableEditor = Pick<MonacoEditorNs.IStandaloneCodeEditor, "focus"> & {
  * @param editor - Monaco editor instance that should receive the find command.
  * @param query - Search text requested by the caller; whitespace is ignored.
  * @returns A promise that settles after the best-effort find action completes.
- * @remarks The current Monaco command API only opens the widget here; missing
- * actions are tolerated so file opening is never blocked by find integration.
+ * @remarks The current Monaco command API only opens the widget here; the
+ * query currently gates the handoff and is not written through unstable
+ * Monaco internals. Missing or rejected actions are tolerated so file opening
+ * is never blocked by find integration.
  */
 export async function runEditorFindAction(
   editor: FindCapableEditor,
@@ -216,7 +218,12 @@ export async function runEditorFindAction(
 ): Promise<void> {
   if (!query?.trim()) return
   editor.focus()
-  await editor.getAction("actions.find")?.run()
+
+  try {
+    await editor.getAction("actions.find")?.run()
+  } catch {
+    // Monaco actions are best-effort UI hints; failures must not block preview.
+  }
 }
 
 const AUTO_SAVE_DELAY_MS = 5000
