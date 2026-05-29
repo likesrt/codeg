@@ -53,6 +53,7 @@ interface ContentSearchState {
   searching: boolean
   error: string | null
   truncated: boolean
+  submittedQuery: string | null
 }
 
 interface ContentSettingsPanelProps {
@@ -359,12 +360,19 @@ function useContentSearch(folderPath: string, query: string) {
   const [contentState, setContentState] = useState<ContentSearchState>(
     createEmptyContentState
   )
+  const contentRequestRef = useRef(0)
   const resetContentSearch = useCallback(() => {
+    contentRequestRef.current += 1
     setContentState((current) =>
       isEmptyContentState(current) ? current : createEmptyContentState()
     )
   }, [])
-  const contentRequestRef = useRef(0)
+  const invalidateContentSearch = useCallback(() => {
+    contentRequestRef.current += 1
+    setContentState((current) =>
+      isIdleEmptyContentState(current) ? current : createEmptyContentState()
+    )
+  }, [])
   const runContentSearch = useContentSearchRunner(
     folderPath,
     query,
@@ -372,6 +380,7 @@ function useContentSearch(folderPath: string, query: string) {
     setContentState,
     contentRequestRef
   )
+  useInvalidateContentSearchOnQueryChange(query, invalidateContentSearch)
   const updateContentSettings = useUpdateContentSettings(setContentSettings)
   return {
     contentSettings,
@@ -391,7 +400,13 @@ function useContentSearch(folderPath: string, query: string) {
  * @remarks A fresh object avoids accidental state sharing between resets.
  */
 function createEmptyContentState(): ContentSearchState {
-  return { results: [], searching: false, error: null, truncated: false }
+  return {
+    results: [],
+    searching: false,
+    error: null,
+    truncated: false,
+    submittedQuery: null,
+  }
 }
 
 /**
@@ -405,8 +420,19 @@ function isEmptyContentState(state: ContentSearchState): boolean {
     state.results.length === 0 &&
     !state.searching &&
     state.error === null &&
-    !state.truncated
+    !state.truncated &&
+    state.submittedQuery === null
   )
+}
+
+/**
+ * Checks whether content-search state has no visible idle data.
+ * @param state Current content-search state from React state.
+ * @returns True when invalidating the current query would not alter visible output.
+ * @remarks In-flight searches are not idle and must still be cancelled visibly.
+ */
+function isIdleEmptyContentState(state: ContentSearchState): boolean {
+  return isEmptyContentState(state) && !state.searching
 }
 
 /**
@@ -423,7 +449,7 @@ function useContentSearchRunner(
   folderPath: string,
   query: string,
   settings: ContentSearchSettings,
-  setState: (state: ContentSearchState) => void,
+  setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
   requestRef: React.MutableRefObject<number>
 ) {
   return useCallback(async () => {
@@ -431,18 +457,121 @@ function useContentSearchRunner(
     const requestId = requestRef.current + 1
     requestRef.current = requestId
     if (!trimmed || !folderPath) return setState(createEmptyContentState())
-    setState({ results: [], searching: true, error: null, truncated: false })
+    setState(createSearchingContentState(trimmed))
     try {
       const response = await searchFiles(
         toSearchFilesRequest(folderPath, trimmed, settings)
       )
-      if (requestRef.current !== requestId) return
-      setState(toContentSuccessState(response))
+      setContentSearchSuccess(
+        setState,
+        requestRef,
+        requestId,
+        trimmed,
+        response
+      )
     } catch (error) {
-      if (requestRef.current !== requestId) return
-      setState(toContentErrorState(error))
+      setContentSearchError(setState, requestRef, requestId, trimmed, error)
     }
   }, [folderPath, query, settings, setState, requestRef])
+}
+
+/**
+ * Creates the loading state for a submitted content query.
+ * @param submittedQuery Trimmed query passed to the backend.
+ * @returns Loading state that records the query owning future results.
+ * @remarks The submitted query is used to prevent display under edited input.
+ */
+function createSearchingContentState(
+  submittedQuery: string
+): ContentSearchState {
+  return {
+    results: [],
+    searching: true,
+    error: null,
+    truncated: false,
+    submittedQuery,
+  }
+}
+
+/**
+ * Commits a successful content-search response when it is still current.
+ * @param setState Setter for content-search state.
+ * @param requestRef Monotonic request id used to ignore stale responses.
+ * @param requestId Request id captured when the backend call started.
+ * @param submittedQuery Trimmed query that produced the response.
+ * @param response Backend response containing matches and metadata.
+ * @returns Nothing.
+ */
+function setContentSearchSuccess(
+  setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
+  requestRef: React.MutableRefObject<number>,
+  requestId: number,
+  submittedQuery: string,
+  response: SearchFilesResponse
+): void {
+  if (requestRef.current !== requestId) return
+  setState((current) =>
+    shouldCommitContentResponse(current, submittedQuery)
+      ? toContentSuccessState(response, submittedQuery)
+      : current
+  )
+}
+
+/**
+ * Commits a failed content-search response when it is still current.
+ * @param setState Setter for content-search state.
+ * @param requestRef Monotonic request id used to ignore stale responses.
+ * @param requestId Request id captured when the backend call started.
+ * @param submittedQuery Trimmed query that produced the error.
+ * @param error Unknown thrown value from the content search request.
+ * @returns Nothing.
+ */
+function setContentSearchError(
+  setState: React.Dispatch<React.SetStateAction<ContentSearchState>>,
+  requestRef: React.MutableRefObject<number>,
+  requestId: number,
+  submittedQuery: string,
+  error: unknown
+): void {
+  if (requestRef.current !== requestId) return
+  setState((current) =>
+    shouldCommitContentResponse(current, submittedQuery)
+      ? toContentErrorState(error, submittedQuery)
+      : current
+  )
+}
+
+/**
+ * Checks whether a content response still belongs to the visible state.
+ * @param current Current content-search state before committing async data.
+ * @param submittedQuery Query captured when the request started.
+ * @returns True when the state still represents the same in-flight query.
+ * @remarks Query edits and resets clear submittedQuery before stale responses land.
+ */
+function shouldCommitContentResponse(
+  current: ContentSearchState,
+  submittedQuery: string
+): boolean {
+  return current.searching && current.submittedQuery === submittedQuery
+}
+
+/**
+ * Invalidates content search results whenever the input query changes.
+ * @param query Current command input value.
+ * @param invalidateContentSearch Callback that cancels pending and visible results.
+ * @returns Nothing.
+ * @remarks Content search stays manual; this only prevents stale query/result pairing.
+ */
+function useInvalidateContentSearchOnQueryChange(
+  query: string,
+  invalidateContentSearch: () => void
+): void {
+  const previousQueryRef = useRef(query)
+  useEffect(() => {
+    const previous = previousQueryRef.current
+    previousQueryRef.current = query
+    if (previous !== query) invalidateContentSearch()
+  }, [query, invalidateContentSearch])
 }
 
 /**
@@ -452,13 +581,15 @@ function useContentSearchRunner(
  * @remarks scannedFiles and skippedFiles are intentionally not displayed here.
  */
 function toContentSuccessState(
-  response: SearchFilesResponse
+  response: SearchFilesResponse,
+  submittedQuery: string
 ): ContentSearchState {
   return {
     results: response.results,
     searching: false,
     error: null,
     truncated: response.truncated,
+    submittedQuery,
   }
 }
 
@@ -468,12 +599,16 @@ function toContentSuccessState(
  * @returns Non-loading state with no results and a displayable error message.
  * @remarks Stale request filtering happens before this helper is called.
  */
-function toContentErrorState(error: unknown): ContentSearchState {
+function toContentErrorState(
+  error: unknown,
+  submittedQuery: string
+): ContentSearchState {
   return {
     results: [],
     searching: false,
     error: getErrorMessage(error),
     truncated: false,
+    submittedQuery,
   }
 }
 
@@ -977,7 +1112,11 @@ function ContentToolbar({
   return (
     <div className="space-y-2 border-b px-3 py-2">
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={() => void model.runContentSearch()}>
+        <Button
+          size="sm"
+          disabled={isContentSearchButtonDisabled(model)}
+          onClick={() => void model.runContentSearch()}
+        >
           {model.t("searchContent")}
         </Button>
         <Button
@@ -999,6 +1138,20 @@ function ContentToolbar({
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Determines whether the manual content search button can be triggered.
+ * @param model Search dialog view model with query, folder, and loading state.
+ * @returns True when clicking would be duplicate or invalid.
+ * @remarks Disabled states prevent repeated in-flight backend scans.
+ */
+function isContentSearchButtonDisabled(
+  model: ReturnType<typeof useSearchDialogModel>
+): boolean {
+  return (
+    model.contentState.searching || !model.query.trim() || !model.folderPath
   )
 }
 

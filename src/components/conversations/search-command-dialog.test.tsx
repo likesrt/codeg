@@ -10,6 +10,7 @@ import { searchFiles } from "@/lib/api"
 const mockOpenTab = vi.fn()
 const mockOpenFilePreview = vi.fn()
 const mockRevealInFileTree = vi.fn()
+const mockResetFileTree = vi.fn()
 
 class MockResizeObserver {
   observe = vi.fn()
@@ -53,7 +54,11 @@ vi.mock("@/contexts/aux-panel-context", () => ({
 }))
 
 vi.mock("@/hooks/use-file-tree", () => ({
-  useFileTree: () => ({ allFiles: [], loading: false, reset: vi.fn() }),
+  useFileTree: () => ({
+    allFiles: [],
+    loading: false,
+    reset: mockResetFileTree,
+  }),
 }))
 
 /**
@@ -114,11 +119,121 @@ describe("SearchCommandDialog content tab", () => {
 
   it("does not repeatedly reset while already closed", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    const { rerender } = renderDialog(true)
 
-    expect(() => renderDialog(false)).not.toThrow()
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SearchCommandDialog open={false} onOpenChange={vi.fn()} />
+      </NextIntlClientProvider>
+    )
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SearchCommandDialog open={false} onOpenChange={vi.fn()} />
+      </NextIntlClientProvider>
+    )
+
+    expect(mockResetFileTree).toHaveBeenCalledTimes(1)
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Maximum update depth exceeded")
     )
+  })
+
+  it("disables content search while a request is pending", async () => {
+    const pending = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    vi.mocked(searchFiles).mockReturnValueOnce(pending.promise)
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+
+    const button = screen.getByRole("button", { name: "Search content" })
+    expect(button).toBeDisabled()
+    await user.click(button)
+    expect(searchFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it("ignores content search results resolved after the dialog closes", async () => {
+    const pending = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    vi.mocked(searchFiles).mockReturnValueOnce(pending.promise)
+    const user = userEvent.setup()
+    const { rerender } = renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SearchCommandDialog open={false} onOpenChange={vi.fn()} />
+      </NextIntlClientProvider>
+    )
+    await act(async () => {
+      pending.resolve({
+        results: [
+          {
+            path: "src/foo.ts",
+            name: "foo.ts",
+            lineNumber: 1,
+            lineText: "foo",
+          },
+        ],
+        truncated: false,
+        scannedFiles: 1,
+        skippedFiles: 0,
+      })
+    })
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SearchCommandDialog open={true} onOpenChange={vi.fn()} />
+      </NextIntlClientProvider>
+    )
+    await user.click(screen.getByRole("button", { name: "Content" }))
+
+    expect(screen.queryByText("foo")).toBeNull()
+  })
+
+  it("ignores content search results when the query changes before resolve", async () => {
+    const pending = createDeferred<Awaited<ReturnType<typeof searchFiles>>>()
+    vi.mocked(searchFiles).mockReturnValueOnce(pending.promise)
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "foo"
+    )
+    await user.click(screen.getByRole("button", { name: "Search content" }))
+    await user.clear(screen.getByPlaceholderText("Search file contents..."))
+    await user.type(
+      screen.getByPlaceholderText("Search file contents..."),
+      "bar"
+    )
+    await act(async () => {
+      pending.resolve({
+        results: [
+          {
+            path: "src/foo.ts",
+            name: "foo.ts",
+            lineNumber: 1,
+            lineText: "foo",
+          },
+        ],
+        truncated: false,
+        scannedFiles: 1,
+        skippedFiles: 0,
+      })
+    })
+
+    await waitFor(() => expect(screen.queryByText("foo")).toBeNull())
+    expect(searchFiles).toHaveBeenCalledTimes(1)
   })
 
   it("searches content on button click and shows file name with line text", async () => {
