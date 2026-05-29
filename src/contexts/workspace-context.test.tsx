@@ -286,8 +286,17 @@ interface CapturedTab {
   content: string
   loading: boolean
   saveState?: string
+  pendingSearchQuery?: string | null
 }
 
+/**
+ * Exposes file preview state transitions to tests through rendered controls.
+ *
+ * @param onCapture - Optional observer for the active tab snapshot.
+ * @returns A small test harness for opening and reloading file previews.
+ * @remarks The snapshot includes nullable pending search state so tests can
+ * assert cache-hit handoff without depending on internal React state objects.
+ */
 function FilePreviewProbe({
   onCapture,
 }: {
@@ -299,6 +308,7 @@ function FilePreviewProbe({
         content: activeFileTab.content,
         loading: activeFileTab.loading,
         saveState: activeFileTab.saveState,
+        pendingSearchQuery: activeFileTab.pendingSearchQuery,
       }
     : null
   onCapture?.(snapshot)
@@ -311,9 +321,17 @@ function FilePreviewProbe({
       <output data-testid="save-state">
         {activeFileTab?.saveState ?? "none"}
       </output>
+      <output data-testid="pending-search-query">
+        {activeFileTab?.pendingSearchQuery ?? "none"}
+      </output>
       <button onClick={() => void openFilePreview("a.ts")}>open</button>
       <button onClick={() => void openFilePreview("a.ts", { reload: true })}>
         reload
+      </button>
+      <button
+        onClick={() => void openFilePreview("a.ts", { searchQuery: "needle" })}
+      >
+        open-search
       </button>
     </div>
   )
@@ -325,6 +343,31 @@ describe("openFilePreview cache semantics", () => {
     mockedApi.gitIsTracked.mockReset()
     mockedApi.gitShowFile.mockReset()
     mockedApi.gitIsTracked.mockResolvedValue(false)
+  })
+
+  it("stores pending search query on openFilePreview", async () => {
+    mockedApi.readFileForEdit.mockResolvedValueOnce({
+      path: "a.ts",
+      content: "hello needle",
+      etag: "e1",
+      mtime_ms: 1,
+      readonly: false,
+      line_ending: "lf",
+    })
+
+    render(
+      <WorkspaceProvider>
+        <FilePreviewProbe />
+      </WorkspaceProvider>
+    )
+
+    await act(async () => {
+      screen.getByText("open-search").click()
+    })
+
+    expect(screen.getByTestId("pending-search-query")).toHaveTextContent(
+      "needle"
+    )
   })
 
   it("activates an already-loaded tab without refetching", async () => {

@@ -8,7 +8,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -54,6 +56,7 @@ export interface FileWorkspaceTab {
   lineEnding?: LineEnding
   saveState?: FileSaveState
   saveError?: string | null
+  pendingSearchQuery?: string | null
   // True iff an external change to this tab's path was observed by the
   // workspace watcher while the tab was inactive or otherwise not yet
   // resolved against disk. Cleared by any successful content reload.
@@ -153,6 +156,41 @@ function isDirtyFileTab(tab: FileWorkspaceTab): boolean {
   return tab.kind === "file" && Boolean(tab.isDirty)
 }
 
+/**
+ * Normalizes preview search input for storage on file tabs.
+ *
+ * @param query - Optional raw search text from preview callers.
+ * @returns Trimmed query text, or null when the handoff should be inactive.
+ * @remarks Whitespace-only values are collapsed so the editor find widget is
+ * not opened for an effectively empty query.
+ */
+function normalizePendingSearchQuery(query?: string): string | null {
+  const trimmed = query?.trim() ?? ""
+  return trimmed || null
+}
+
+/**
+ * Stores the pending search handoff on an already-open file tab.
+ *
+ * @param setFileTabs - React state setter for file workspace tabs.
+ * @param tabId - File tab id that should receive the handoff value.
+ * @param query - Normalized query to store, or null to clear the handoff.
+ * @returns Nothing; React applies the update asynchronously.
+ * @remarks This is intentionally independent of loading so cache-hit opens and
+ * reloads both refresh the best-effort Monaco find request.
+ */
+function updatePendingSearchQuery(
+  setFileTabs: Dispatch<SetStateAction<FileWorkspaceTab[]>>,
+  tabId: string,
+  query: string | null
+): void {
+  setFileTabs((prev) =>
+    prev.map((tab) =>
+      tab.id === tabId ? { ...tab, pendingSearchQuery: query } : tab
+    )
+  )
+}
+
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -180,6 +218,19 @@ export function isImageFile(path: string): boolean {
   return IMAGE_EXTENSIONS.has(ext)
 }
 
+/**
+ * Creates the initial workspace tab record before preview content is loaded.
+ *
+ * @param id - Stable tab id used for activation and in-flight tracking.
+ * @param kind - Workspace tab kind that determines editability defaults.
+ * @param title - Short label shown in the tab strip.
+ * @param description - Optional secondary path or context text.
+ * @param path - Workspace-relative path for file-backed tabs.
+ * @param language - Monaco or preview language identifier for rendering.
+ * @returns A loading tab with clean save state and no pending search handoff.
+ * @remarks Non-file tabs start readonly; content-specific fields are filled by
+ * the later resolve path so failed loads can still render a stable tab shell.
+ */
 function loadingTab(
   id: string,
   kind: FileWorkspaceTabKind,
@@ -205,6 +256,7 @@ function loadingTab(
     lineEnding: "none",
     saveState: "idle",
     saveError: null,
+    pendingSearchQuery: null,
   }
 }
 
@@ -857,18 +909,25 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       } else {
         setPendingFileReveal(null)
       }
+      const requestedSearchQuery = normalizePendingSearchQuery(
+        options?.searchQuery
+      )
       const tabId = `file:${path}`
       const image = isImageFile(path)
-      const seed = loadingTab(
-        tabId,
-        "file",
-        fileName(path),
-        path,
-        path,
-        image ? "image" : languageFromPath(path)
-      )
+      const seed = {
+        ...loadingTab(
+          tabId,
+          "file",
+          fileName(path),
+          path,
+          path,
+          image ? "image" : languageFromPath(path)
+        ),
+        pendingSearchQuery: requestedSearchQuery,
+      }
 
       const decision = decideLoad(seed, options?.reload ?? false)
+      updatePendingSearchQuery(setFileTabs, tabId, requestedSearchQuery)
       if (decision.kind === "skip") return
       const { gen } = decision
 
