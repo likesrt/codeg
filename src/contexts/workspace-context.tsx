@@ -189,7 +189,7 @@ export function isImageFile(path: string): boolean {
  * @param description - Optional secondary path or context text.
  * @param path - Workspace-relative path for file-backed tabs.
  * @param language - Monaco or preview language identifier for rendering.
- * @returns A loading tab with clean save state and no pending search handoff.
+ * @returns A loading tab with clean save and reload state.
  * @remarks Non-file tabs start readonly; content-specific fields are filled by
  * the later resolve path so failed loads can still render a stable tab shell.
  */
