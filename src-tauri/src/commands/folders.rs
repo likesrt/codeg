@@ -683,9 +683,34 @@ pub async fn update_folder_default_agent(
     update_folder_default_agent_core(&db, folder_id, default_agent_type).await
 }
 
+/// Create one new directory for the in-app directory browser.
+///
+/// `path` is trimmed before use, must point at a missing target, and must have
+/// an existing parent directory. This intentionally calls `create_dir` instead
+/// of `create_dir_all` so duplicate names and missing parents surface as user
+/// visible errors instead of being silently accepted.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_folder_directory(path: String) -> Result<(), AppCommandError> {
-    std::fs::create_dir_all(&path).map_err(AppCommandError::io)
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(AppCommandError::invalid_input("Path cannot be empty"));
+    }
+
+    let target = PathBuf::from(trimmed);
+    if target.exists() {
+        return Err(AppCommandError::already_exists("Directory already exists"));
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppCommandError::invalid_input("Directory must have a parent"))?;
+    if !parent.is_dir() {
+        return Err(AppCommandError::not_found(
+            "Parent directory does not exist",
+        ));
+    }
+
+    std::fs::create_dir(&target).map_err(AppCommandError::io)
 }
 
 pub(crate) async fn clone_repository_core(
@@ -3921,6 +3946,49 @@ async fn get_unpushed_hashes(
         .collect::<HashSet<_>>();
 
     Ok((Some(hashes), has_upstream))
+}
+
+#[cfg(test)]
+mod directory_browser_tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+
+    #[tokio::test]
+    async fn create_folder_directory_creates_missing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("new-child");
+
+        create_folder_directory(target.to_string_lossy().to_string())
+            .await
+            .expect("create directory");
+
+        assert!(target.is_dir());
+    }
+
+    #[tokio::test]
+    async fn create_folder_directory_rejects_existing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("existing");
+        std::fs::create_dir(&target).expect("seed existing dir");
+
+        let err = create_folder_directory(target.to_string_lossy().to_string())
+            .await
+            .expect_err("existing directory should fail");
+
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+    }
+
+    #[tokio::test]
+    async fn create_folder_directory_rejects_missing_parent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("missing-parent").join("child");
+
+        let err = create_folder_directory(target.to_string_lossy().to_string())
+            .await
+            .expect_err("missing parent should fail");
+
+        assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
 }
 
 #[cfg(test)]

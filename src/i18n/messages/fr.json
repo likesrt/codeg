@@ -2151,7 +2151,14 @@
     "loading": "Chargement...",
     "emptyDirectory": "Ce répertoire est vide",
     "errorLoadingDir": "Échec du chargement du répertoire",
-    "permissionDenied": "Permission refusée"
+    "permissionDenied": "Permission refusée",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ChatChannelSettings": {
     "loading": "Chargement...",

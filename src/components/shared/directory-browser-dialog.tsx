@@ -21,8 +21,18 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { getHomeDirectory, listDirectoryEntries } from "@/lib/api"
+import {
+  createFolderDirectory,
+  getHomeDirectory,
+  listDirectoryEntries,
+} from "@/lib/api"
 import type { DirectoryEntry } from "@/lib/types"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 
 interface DirectoryBrowserDialogProps {
   open: boolean
@@ -32,6 +42,162 @@ interface DirectoryBrowserDialogProps {
   initialPath?: string
 }
 
+interface DirectoryBrowserEntryRowProps {
+  depth: number
+  entry: DirectoryEntry
+  isExpanded: boolean
+  isSelected: boolean
+  isLoading: boolean
+  onSelect: (path: string) => void
+  onDoubleClick: (path: string) => void
+  onToggleExpand: (path: string) => void
+  onBeginCreateChildDirectory: (path: string) => void
+  translate: (key: string) => string
+}
+
+/**
+ * Join a parent directory path and a child name without assuming local OS paths.
+ *
+ * The in-app browser may point at remote Unix or Windows paths, so the returned
+ * path preserves the separator style already present in `parent`. Empty trailing
+ * separators are removed before appending `child`.
+ */
+function joinChildDirectory(parent: string, child: string): string {
+  const separator = parent.includes("\\") && !parent.includes("/") ? "\\" : "/"
+  return `${parent.replace(/[\\/]+$/, "")}${separator}${child}`
+}
+
+/**
+ * Validate a new child folder name before sending the final path to the backend.
+ *
+ * `translate` returns localized validation text. The backend still validates the
+ * complete path; this only catches empty names and path separators immediately.
+ */
+function validateNewFolderName(
+  name: string,
+  translate: (key: string) => string
+): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return translate("newFolderNameRequired")
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return translate("newFolderNameInvalid")
+  }
+  return null
+}
+
+/**
+ * Render one directory row plus its context-menu commands.
+ *
+ * The row delegates selection, expansion, double-click confirmation, and child
+ * creation to callbacks so the parent keeps ownership of tree and dialog state.
+ */
+function DirectoryBrowserEntryRow({
+  depth,
+  entry,
+  isExpanded,
+  isSelected,
+  isLoading,
+  onSelect,
+  onDoubleClick,
+  onToggleExpand,
+  onBeginCreateChildDirectory,
+  translate,
+}: DirectoryBrowserEntryRowProps) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          className={cn(
+            "flex w-full items-center gap-1 rounded px-2 py-1 text-left text-sm transition-colors hover:bg-muted/50",
+            isSelected && "bg-accent text-accent-foreground"
+          )}
+          style={{ paddingLeft: `${depth * 20 + 8}px` }}
+          onClick={() => onSelect(entry.path)}
+          onDoubleClick={() => onDoubleClick(entry.path)}
+          type="button"
+        >
+          <DirectoryExpandToggle
+            entry={entry}
+            isExpanded={isExpanded}
+            isLoading={isLoading}
+            onToggleExpand={onToggleExpand}
+          />
+          {isExpanded ? (
+            <FolderOpenIcon className="size-4 shrink-0 text-blue-500" />
+          ) : (
+            <FolderIcon className="size-4 shrink-0 text-blue-500" />
+          )}
+          <span className="truncate">{entry.name}</span>
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onDoubleClick(entry.path)}>
+          {translate("selectThisFolder")}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => onBeginCreateChildDirectory(entry.path)}
+        >
+          {translate("newChildFolder")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
+/**
+ * Render the disclosure affordance for a directory row.
+ *
+ * The toggle stops event propagation so expanding a directory does not also
+ * select the row. Entries without children keep layout width via invisibility.
+ */
+function DirectoryExpandToggle({
+  entry,
+  isExpanded,
+  isLoading,
+  onToggleExpand,
+}: {
+  entry: DirectoryEntry
+  isExpanded: boolean
+  isLoading: boolean
+  onToggleExpand: (path: string) => void
+}) {
+  const toggle = () => {
+    if (!isLoading && entry.hasChildren) onToggleExpand(entry.path)
+  }
+
+  return (
+    <span
+      className="shrink-0 p-0.5"
+      onClick={(e) => {
+        e.stopPropagation()
+        toggle()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.stopPropagation()
+          toggle()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <ChevronRight
+        className={cn(
+          "size-3.5 text-muted-foreground transition-transform",
+          isExpanded && "rotate-90",
+          !entry.hasChildren && "invisible"
+        )}
+      />
+    </span>
+  )
+}
+
+/**
+ * Render an in-app directory chooser with expandable folders and create actions.
+ *
+ * The dialog browses server-side paths via API calls, reports selection through
+ * `onSelect`, and only closes itself after explicit selection or double-click.
+ */
 export function DirectoryBrowserDialog({
   open,
   onOpenChange,
@@ -50,13 +216,24 @@ export function DirectoryBrowserDialog({
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [createParentPath, setCreateParentPath] = useState<string | null>(null)
+  const [newFolderName, setNewFolderName] = useState("")
 
   const initialized = useRef(false)
 
+  /**
+   * Load directory entries with optional cache bypass for refreshes.
+   *
+   * `options.force` skips the current `entries` cache, updates loading/error
+   * state around the API call, and returns `null` when the directory cannot be
+   * read so navigation callers can avoid changing roots after failures.
+   */
   const loadEntries = useCallback(
-    async (path: string): Promise<DirectoryEntry[] | null> => {
-      // Already cached
-      if (entries.has(path)) return entries.get(path)!
+    async (
+      path: string,
+      options: { force?: boolean } = {}
+    ): Promise<DirectoryEntry[] | null> => {
+      if (!options.force && entries.has(path)) return entries.get(path)!
 
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
@@ -186,6 +363,49 @@ export function DirectoryBrowserDialog({
     [onSelect, onOpenChange]
   )
 
+  /**
+   * Start inline creation for a child folder under `parentPath`.
+   *
+   * This also selects the parent so users can see which directory receives the
+   * new child; existing input is cleared to avoid reusing stale names.
+   */
+  const beginCreateChildDirectory = useCallback((parentPath: string) => {
+    setCreateParentPath(parentPath)
+    setNewFolderName("")
+    setSelectedPath(parentPath)
+    setError(null)
+  }, [])
+
+  /**
+   * Create the requested child directory and refresh only the affected parent.
+   *
+   * Validation errors stay in the dialog. On success, the new directory becomes
+   * selected and the parent cache is force-refreshed so new contents appear.
+   */
+  const handleCreateChildDirectory = useCallback(async () => {
+    if (!createParentPath) return
+    const validationError = validateNewFolderName(newFolderName, t)
+    if (validationError) return setError(validationError)
+
+    const target = joinChildDirectory(createParentPath, newFolderName.trim())
+    setError(null)
+    try {
+      await createFolderDirectory(target)
+      await loadEntries(createParentPath, { force: true })
+      setSelectedPath(target)
+      setCreateParentPath(null)
+      setNewFolderName("")
+    } catch {
+      setError(t("errorCreatingDir"))
+    }
+  }, [createParentPath, loadEntries, newFolderName, t])
+
+  /**
+   * Render cached child directories for `parentPath` at the requested tree depth.
+   *
+   * Loading and empty states are rendered in-place, while each real directory row
+   * exposes selection, expansion, double-click selection, and context-menu actions.
+   */
   const renderEntries = (parentPath: string, depth: number) => {
     const children = entries.get(parentPath)
     const isLoading = loading.has(parentPath)
@@ -221,50 +441,18 @@ export function DirectoryBrowserDialog({
 
       return (
         <div key={entry.path}>
-          <button
-            className={cn(
-              "flex w-full items-center gap-1 rounded px-2 py-1 text-left text-sm transition-colors hover:bg-muted/50",
-              isSelected && "bg-accent text-accent-foreground"
-            )}
-            style={{ paddingLeft: `${depth * 20 + 8}px` }}
-            onClick={() => handleSelect(entry.path)}
-            onDoubleClick={() => handleDoubleClick(entry.path)}
-            type="button"
-          >
-            <span
-              className="shrink-0 p-0.5"
-              onClick={(e) => {
-                e.stopPropagation()
-                if (entry.hasChildren) {
-                  handleToggleExpand(entry.path)
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.stopPropagation()
-                  if (entry.hasChildren) {
-                    handleToggleExpand(entry.path)
-                  }
-                }
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              <ChevronRight
-                className={cn(
-                  "size-3.5 text-muted-foreground transition-transform",
-                  isExpanded && "rotate-90",
-                  !entry.hasChildren && "invisible"
-                )}
-              />
-            </span>
-            {isExpanded ? (
-              <FolderOpenIcon className="size-4 shrink-0 text-blue-500" />
-            ) : (
-              <FolderIcon className="size-4 shrink-0 text-blue-500" />
-            )}
-            <span className="truncate">{entry.name}</span>
-          </button>
+          <DirectoryBrowserEntryRow
+            depth={depth}
+            entry={entry}
+            isExpanded={isExpanded}
+            isSelected={isSelected}
+            isLoading={loading.has(entry.path)}
+            onSelect={handleSelect}
+            onDoubleClick={handleDoubleClick}
+            onToggleExpand={handleToggleExpand}
+            onBeginCreateChildDirectory={beginCreateChildDirectory}
+            translate={t}
+          />
           {isExpanded && renderEntries(entry.path, depth + 1)}
         </div>
       )
@@ -324,6 +512,36 @@ export function DirectoryBrowserDialog({
             <p className="truncate text-xs text-muted-foreground">
               {selectedPath}
             </p>
+          )}
+
+          {createParentPath && (
+            <div className="flex items-center gap-2 rounded-md border p-2">
+              <Input
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleCreateChildDirectory()
+                  if (e.key === "Escape") setCreateParentPath(null)
+                }}
+                placeholder={t("newFolderNamePlaceholder")}
+                className="h-8 text-sm"
+              />
+              <Button
+                size="sm"
+                onClick={handleCreateChildDirectory}
+                type="button"
+              >
+                {t("create")}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCreateParentPath(null)}
+                type="button"
+              >
+                {t("cancel")}
+              </Button>
+            </div>
           )}
         </div>
 

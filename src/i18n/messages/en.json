@@ -2151,7 +2151,14 @@
     "loading": "Loading...",
     "emptyDirectory": "This directory is empty",
     "errorLoadingDir": "Failed to load directory",
-    "permissionDenied": "Permission denied"
+    "permissionDenied": "Permission denied",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ServerFileBrowser": {
     "title": "Pick server file",

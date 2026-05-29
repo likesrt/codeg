@@ -2151,7 +2151,14 @@
     "loading": "جاري التحميل...",
     "emptyDirectory": "هذا المجلد فارغ",
     "errorLoadingDir": "فشل في تحميل المجلد",
-    "permissionDenied": "تم رفض الإذن"
+    "permissionDenied": "تم رفض الإذن",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ChatChannelSettings": {
     "loading": "جاري التحميل...",

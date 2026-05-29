@@ -2151,7 +2151,14 @@
     "loading": "加载中...",
     "emptyDirectory": "此目录为空",
     "errorLoadingDir": "加载目录失败",
-    "permissionDenied": "权限不足"
+    "permissionDenied": "权限不足",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ServerFileBrowser": {
     "title": "选择服务端文件",

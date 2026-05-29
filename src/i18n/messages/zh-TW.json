@@ -2151,7 +2151,14 @@
     "loading": "載入中...",
     "emptyDirectory": "此目錄為空",
     "errorLoadingDir": "載入目錄失敗",
-    "permissionDenied": "權限不足"
+    "permissionDenied": "權限不足",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ChatChannelSettings": {
     "loading": "載入中...",

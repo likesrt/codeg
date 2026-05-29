@@ -2151,7 +2151,14 @@
     "loading": "Wird geladen...",
     "emptyDirectory": "Dieses Verzeichnis ist leer",
     "errorLoadingDir": "Verzeichnis konnte nicht geladen werden",
-    "permissionDenied": "Zugriff verweigert"
+    "permissionDenied": "Zugriff verweigert",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ChatChannelSettings": {
     "loading": "Wird geladen...",

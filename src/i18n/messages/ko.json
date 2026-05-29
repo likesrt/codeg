@@ -2151,7 +2151,14 @@
     "loading": "로딩 중...",
     "emptyDirectory": "이 디렉토리는 비어 있습니다",
     "errorLoadingDir": "디렉토리 로딩 실패",
-    "permissionDenied": "권한이 없습니다"
+    "permissionDenied": "권한이 없습니다",
+    "selectThisFolder": "Select this folder",
+    "newChildFolder": "New child folder",
+    "newFolderNamePlaceholder": "Folder name",
+    "newFolderNameRequired": "Folder name is required",
+    "newFolderNameInvalid": "Folder name cannot contain path separators",
+    "errorCreatingDir": "Failed to create folder",
+    "create": "Create"
   },
   "ChatChannelSettings": {
     "loading": "로딩 중...",
