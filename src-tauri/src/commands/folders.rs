@@ -809,7 +809,9 @@ fn resolve_search_dirs(
     root: &Path,
     search_dirs: Option<Vec<String>>,
 ) -> Result<Vec<PathBuf>, AppCommandError> {
-    let dirs = search_dirs.unwrap_or_else(|| vec![".".to_string()]);
+    let dirs = search_dirs
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| vec![".".to_string()]);
     let mut resolved = Vec::new();
     for dir in dirs {
         let candidate = resolve_search_dir_candidate(root, &dir)?;
@@ -849,6 +851,7 @@ fn resolve_search_dir_candidate(root: &Path, dir: &str) -> Result<PathBuf, AppCo
 /// Walk one directory tree and append matching lines to the response.
 ///
 /// The walk applies directory, extension, binary, encoding, and size filters.
+/// Unreadable entries are counted as skipped and do not abort sibling files.
 /// It returns `Stop` as soon as the result limit is exceeded so callers can
 /// avoid unnecessary I/O after the response is known to be truncated.
 fn search_dir(
@@ -860,7 +863,10 @@ fn search_dir(
         .into_iter()
         .filter_entry(|e| should_descend(e, config))
     {
-        let entry = entry.map_err(|err| AppCommandError::io(std::io::Error::other(err)))?;
+        let Ok(entry) = entry else {
+            response.skipped_files += 1;
+            continue;
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -889,14 +895,18 @@ fn should_descend(entry: &walkdir::DirEntry, config: &SearchConfig) -> bool {
 /// Decide whether a file should be opened for text search.
 ///
 /// The check enforces max byte size and include/exclude extension filters before
-/// reading content. Filtered files increment `skipped_files`; metadata errors are
-/// propagated as I/O errors and no file content is read here.
+/// reading content. Filtered or unreadable files increment `skipped_files`; no
+/// file content is read here, and sibling files keep being searched.
 fn should_search_file(
     path: &Path,
     config: &SearchConfig,
     response: &mut SearchFilesResponse,
 ) -> Result<bool, AppCommandError> {
-    if std::fs::metadata(path).map_err(AppCommandError::io)?.len() > config.max_file_bytes {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        response.skipped_files += 1;
+        return Ok(false);
+    };
+    if metadata.len() > config.max_file_bytes {
         response.skipped_files += 1;
         return Ok(false);
     }
@@ -923,13 +933,17 @@ fn should_search_file(
 ///
 /// The file is read as bytes to skip binary and non-UTF-8 content safely. Binary
 /// detection is limited to the first 8192 bytes for predictable overhead. Scanned
-/// and skipped counters are updated according to whether text search runs.
+/// and skipped counters are updated according to whether text search runs; read
+/// errors count as skipped so one volatile file cannot abort the whole search.
 fn search_file(
     path: &Path,
     config: &SearchConfig,
     response: &mut SearchFilesResponse,
 ) -> Result<SearchStep, AppCommandError> {
-    let bytes = std::fs::read(path).map_err(AppCommandError::io)?;
+    let Ok(bytes) = std::fs::read(path) else {
+        response.skipped_files += 1;
+        return Ok(SearchStep::Continue);
+    };
     if looks_binary(&bytes[..bytes.len().min(8192)]) {
         response.skipped_files += 1;
         return Ok(SearchStep::Continue);
@@ -4463,6 +4477,21 @@ mod search_files_tests {
         assert_eq!(result.skipped_files, 0);
     }
 
+    /// Verify an explicit empty search-dir list falls back to searching the root.
+    #[tokio::test]
+    async fn search_files_treats_empty_search_dirs_as_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_file(&temp.path().join("alpha.txt"), "needle\n");
+        let mut req = request(temp.path(), "needle");
+        req.search_dirs = Some(Vec::new());
+
+        let result = search_files(req).await.expect("search files");
+
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("alpha.txt"));
+        assert_eq!(result.scanned_files, 1);
+    }
+
     #[tokio::test]
     async fn search_files_returns_line_matches() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -4485,6 +4514,33 @@ mod search_files_tests {
         assert_eq!(result.results[1].line_number, 3);
         assert_eq!(result.scanned_files, 2);
         assert_eq!(result.skipped_files, 0);
+    }
+
+    /// Verify an unreadable file is skipped without hiding readable matches.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_files_skips_unreadable_file_and_continues() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let unreadable = temp.path().join("unreadable.txt");
+        write_file(&temp.path().join("readable.txt"), "needle\n");
+        write_file(&unreadable, "needle\n");
+        let original_permissions = std::fs::metadata(&unreadable)
+            .expect("unreadable metadata")
+            .permissions();
+        std::fs::set_permissions(&unreadable, PermissionsExt::from_mode(0o000))
+            .expect("make unreadable");
+
+        let result = search_files(request(temp.path(), "needle"))
+            .await
+            .expect("search files should continue after unreadable file");
+
+        std::fs::set_permissions(&unreadable, original_permissions).expect("restore permissions");
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("readable.txt"));
+        assert_eq!(result.scanned_files, 1);
+        assert_eq!(result.skipped_files, 1);
     }
 
     #[tokio::test]
