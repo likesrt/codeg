@@ -27,17 +27,26 @@ ensure_bash_login_profile() {
 }
 
 # Starts the optional full toolchain initializer without blocking Codeg Web startup.
-# Arguments: none. Returns immediately after launching the background job. Side effect: writes initialization logs under /home/codeg/.codeg.
+# Arguments: none. Returns immediately after launching the background job.
+# Side effect: writes initialization logs under /home/codeg/.codeg and refreshes browser registration after install.
 start_toolchain_init_if_enabled() {
   [ "${CODEG_INIT_TOOL_ON_START:-false}" = "true" ] || return 0
 
   mkdir -p /home/codeg/.codeg
   chown codeg:codeg /home/codeg/.codeg 2>/dev/null || true
-  run_as_codeg bash -lc 'codeg init tool >>/home/codeg/.codeg/toolchains-init.log 2>&1' &
+  (run_as_codeg bash -lc 'codeg init tool >>/home/codeg/.codeg/toolchains-init.log 2>&1' && register_system_browsers) &
 }
 
-ensure_bash_login_profile
-start_toolchain_init_if_enabled
+# Registers all installed browsers that should be visible to desktop apps and
+# CLI tools. It can run before or after the optional background tool installer;
+# missing browsers are skipped so first boot and later refreshes both work.
+# Arguments: none. Returns success unless filesystem writes fail.
+# Side effect: refreshes browser wrappers, desktop entries, compatibility paths,
+# and update-alternatives entries for installed browsers.
+register_system_browsers() {
+  register_camoufox_system_browser
+  register_chromium_system_browser
+}
 
 # Registers the Camoufox browser binary (installed via `codeg init tool`) as a
 # system-level desktop application so it appears in the XFCE application menu
@@ -85,11 +94,13 @@ DESKTOP_EOF
 # has been installed via `python -m playwright install chromium`.
 # Arguments: none. Returns success unless filesystem writes fail.
 # Side effect: creates /usr/local/bin/chromium-browser,
-# /usr/local/share/applications/chromium.desktop, and update-alternatives entries.
+# /usr/local/bin/google-chrome, /usr/local/share/applications/chromium.desktop,
+# /opt/google/chrome/chrome, and update-alternatives entries.
 register_chromium_system_browser() {
   local playwright_cache=/home/codeg/.cache/ms-playwright
-  local chromium_dir chromium_bin wrapper desktop_dir desktop_file
+  local chromium_dir chromium_bin wrapper desktop_dir desktop_file chrome_compat
 
+  [ -d "$playwright_cache" ] || return 0
   chromium_dir=$(find "$playwright_cache" -maxdepth 1 -type d -name 'chromium-*' 2>/dev/null | sort -V | tail -1)
   [ -n "$chromium_dir" ] || return 0
   chromium_bin=$chromium_dir/chrome-linux/chrome
@@ -98,13 +109,22 @@ register_chromium_system_browser() {
   wrapper=/usr/local/bin/chromium-browser
   desktop_dir=/usr/local/share/applications
   desktop_file=$desktop_dir/chromium.desktop
-  mkdir -p "$desktop_dir"
+  chrome_compat=/opt/google/chrome/chrome
+  mkdir -p "$desktop_dir" "$(dirname "$chrome_compat")"
 
   cat >"$wrapper" <<WRAPPER_EOF
 #!/usr/bin/env bash
 exec "$chromium_bin" "\$@"
 WRAPPER_EOF
   chmod 755 "$wrapper"
+
+  # Some tools hard-code Google Chrome's Debian path instead of using PATH.
+  if [ ! -e "$chrome_compat" ] || [ -L "$chrome_compat" ]; then
+    ln -sfnT "$wrapper" "$chrome_compat"
+  fi
+  if [ ! -e /usr/local/bin/google-chrome ] || [ -L /usr/local/bin/google-chrome ]; then
+    ln -sfnT "$wrapper" /usr/local/bin/google-chrome
+  fi
 
   cat >"$desktop_file" <<DESKTOP_EOF
 [Desktop Entry]
@@ -125,8 +145,9 @@ DESKTOP_EOF
   update-alternatives --install /usr/bin/www-browser www-browser "$wrapper" 40 2>/dev/null || true
 }
 
-register_camoufox_system_browser
-register_chromium_system_browser
+ensure_bash_login_profile
+start_toolchain_init_if_enabled
+register_system_browsers
 
 # 修复已持久化 home 中旧镜像留下的 Node 路径，确保 npm/pnpm 可被默认 PATH 找到。
 if [ -s /home/codeg/.nvm/nvm.sh ]; then
