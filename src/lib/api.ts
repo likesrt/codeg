@@ -777,9 +777,10 @@ export async function createFolderDirectory(path: string): Promise<void> {
 /**
  * Search text files under a workspace root through the active transport.
  *
- * `request` carries the root, query, optional search directories, filters, and
- * limits. The backend enforces root containment and clamps limits; this wrapper
- * returns matches plus truncation state without mutating the request.
+ * `request` carries the rootPath, query, optional search directories, filters,
+ * and limits. The backend enforces root containment and clamps limits; this
+ * wrapper returns results, truncation state, and scan counters without mutating
+ * the request.
  */
 export async function searchFiles(
   request: SearchFilesRequest

@@ -1136,7 +1136,7 @@ export interface UploadAttachmentResult {
 }
 
 export interface SearchFilesRequest {
-  root: string
+  rootPath: string
   query: string
   searchDirs?: string[] | null
   includeExtensions?: string[] | null
@@ -1148,13 +1148,16 @@ export interface SearchFilesRequest {
 
 export interface SearchFileMatch {
   path: string
+  name: string
   lineNumber: number
-  line: string
+  lineText: string
 }
 
 export interface SearchFilesResponse {
-  matches: SearchFileMatch[]
+  results: SearchFileMatch[]
   truncated: boolean
+  scannedFiles: number
+  skippedFiles: number
 }
 
 export interface FilePreviewContent {

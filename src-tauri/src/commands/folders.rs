@@ -575,7 +575,7 @@ pub async fn update_folder_default_agent_core(
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilesRequest {
-    pub root: String,
+    pub root_path: String,
     pub query: String,
     pub search_dirs: Option<Vec<String>>,
     pub include_extensions: Option<Vec<String>>,
@@ -589,15 +589,18 @@ pub struct SearchFilesRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SearchFileMatch {
     pub path: String,
+    pub name: String,
     pub line_number: usize,
-    pub line: String,
+    pub line_text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilesResponse {
-    pub matches: Vec<SearchFileMatch>,
+    pub results: Vec<SearchFileMatch>,
     pub truncated: bool,
+    pub scanned_files: usize,
+    pub skipped_files: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -633,6 +636,9 @@ pub fn default_search_exclude_dirs() -> Vec<String> {
         ".next",
         ".turbo",
         "coverage",
+        "__pycache__",
+        ".venv",
+        "venv",
     ]
     .into_iter()
     .map(str::to_string)
@@ -646,8 +652,8 @@ pub fn default_search_exclude_dirs() -> Vec<String> {
 /// returns lowercase extension names without dots, and has no side effects.
 pub fn default_search_exclude_extensions() -> Vec<String> {
     [
-        "png", "jpg", "jpeg", "gif", "webp", "ico", "pdf", "zip", "gz", "tar", "7z", "exe", "dll",
-        "so", "dylib", "class", "jar", "wasm", "pyc", "sqlite", "db",
+        "png", "jpg", "jpeg", "gif", "webp", "ico", "pdf", "zip", "tar", "gz", "7z", "rar", "exe",
+        "dll", "so", "dylib", "bin", "lock",
     ]
     .into_iter()
     .map(str::to_string)
@@ -689,7 +695,7 @@ pub fn normalize_dir_filters(values: Option<Vec<String>>) -> HashSet<String> {
 /// callers should still validate UTF-8 separately. It reads only the provided
 /// bytes, returns false for empty buffers, and performs no I/O.
 pub fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.iter().any(|byte| *byte == 0)
+    bytes.iter().take(8192).any(|byte| *byte == 0)
 }
 
 /// Search text files below a root directory using case-insensitive containment.
@@ -702,12 +708,37 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
 pub async fn search_files(
     request: SearchFilesRequest,
 ) -> Result<SearchFilesResponse, AppCommandError> {
+    if request.query.trim().is_empty() {
+        return Ok(empty_search_response());
+    }
+    run_file_io(move || search_files_blocking(request)).await
+}
+
+/// Return an empty file-search response without touching the filesystem.
+///
+/// Empty queries are treated as a valid no-op so callers can clear UI search
+/// boxes without surfacing validation errors. The response contains no results,
+/// is not truncated, and reports zero scanned or skipped files.
+fn empty_search_response() -> SearchFilesResponse {
+    SearchFilesResponse {
+        results: Vec::new(),
+        truncated: false,
+        scanned_files: 0,
+        skipped_files: 0,
+    }
+}
+
+/// Execute file content search on a blocking worker thread.
+///
+/// `request` is consumed so all filesystem path validation, directory walking,
+/// metadata reads, and file reads happen away from the async runtime. It returns
+/// the complete response or the first validation/I/O error encountered.
+fn search_files_blocking(
+    request: SearchFilesRequest,
+) -> Result<SearchFilesResponse, AppCommandError> {
     let config = build_search_config(&request)?;
     let search_dirs = resolve_search_dirs(&config.root, request.search_dirs)?;
-    let mut response = SearchFilesResponse {
-        matches: Vec::new(),
-        truncated: false,
-    };
+    let mut response = empty_search_response();
 
     for dir in search_dirs {
         if search_dir(&dir, &config, &mut response)? == SearchStep::Stop {
@@ -723,7 +754,7 @@ pub async fn search_files(
 /// merges default plus user-provided exclusion filters. It returns a reusable
 /// immutable config and only canonicalizes paths; it does not walk files.
 fn build_search_config(request: &SearchFilesRequest) -> Result<SearchConfig, AppCommandError> {
-    let root = canonicalize_existing_dir(&request.root)?;
+    let root = canonicalize_existing_dir(&request.root_path)?;
     let query = request.query.trim();
     if query.is_empty() {
         return Err(AppCommandError::invalid_input(
@@ -740,10 +771,10 @@ fn build_search_config(request: &SearchFilesRequest) -> Result<SearchConfig, App
         include_extensions: normalize_extensions(request.include_extensions.clone()),
         exclude_extensions,
         exclude_dirs,
-        max_results: request.max_results.unwrap_or(200).clamp(1, 1000),
+        max_results: request.max_results.unwrap_or(100).clamp(1, 1000),
         max_file_bytes: request
             .max_file_bytes
-            .unwrap_or(1024 * 1024)
+            .unwrap_or(2 * 1024 * 1024)
             .clamp(64 * 1024, 10 * 1024 * 1024),
     })
 }
@@ -830,7 +861,10 @@ fn search_dir(
         .filter_entry(|e| should_descend(e, config))
     {
         let entry = entry.map_err(|err| AppCommandError::io(std::io::Error::other(err)))?;
-        if !entry.file_type().is_file() || !should_search_file(entry.path(), config)? {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if !should_search_file(entry.path(), config, response)? {
             continue;
         }
         if search_file(entry.path(), config, response)? == SearchStep::Stop {
@@ -855,10 +889,15 @@ fn should_descend(entry: &walkdir::DirEntry, config: &SearchConfig) -> bool {
 /// Decide whether a file should be opened for text search.
 ///
 /// The check enforces max byte size and include/exclude extension filters before
-/// reading content. Files without extensions are included unless an include list
-/// is present; metadata errors are propagated as I/O errors.
-fn should_search_file(path: &Path, config: &SearchConfig) -> Result<bool, AppCommandError> {
+/// reading content. Filtered files increment `skipped_files`; metadata errors are
+/// propagated as I/O errors and no file content is read here.
+fn should_search_file(
+    path: &Path,
+    config: &SearchConfig,
+    response: &mut SearchFilesResponse,
+) -> Result<bool, AppCommandError> {
     if std::fs::metadata(path).map_err(AppCommandError::io)?.len() > config.max_file_bytes {
+        response.skipped_files += 1;
         return Ok(false);
     }
     let ext = file_extension(path);
@@ -867,12 +906,14 @@ fn should_search_file(path: &Path, config: &SearchConfig) -> Result<bool, AppCom
             .as_ref()
             .is_some_and(|e| config.include_extensions.contains(e))
     {
+        response.skipped_files += 1;
         return Ok(false);
     }
     if ext
         .as_ref()
         .is_some_and(|e| config.exclude_extensions.contains(e))
     {
+        response.skipped_files += 1;
         return Ok(false);
     }
     Ok(true)
@@ -880,21 +921,24 @@ fn should_search_file(path: &Path, config: &SearchConfig) -> Result<bool, AppCom
 
 /// Search a single UTF-8 text file and append matching lines.
 ///
-/// The file is read as bytes to skip binary and non-UTF-8 content safely. Each
-/// matched line records a root-relative path, one-based line number, and original
-/// line text; reaching the limit marks the response as truncated.
+/// The file is read as bytes to skip binary and non-UTF-8 content safely. Binary
+/// detection is limited to the first 8192 bytes for predictable overhead. Scanned
+/// and skipped counters are updated according to whether text search runs.
 fn search_file(
     path: &Path,
     config: &SearchConfig,
     response: &mut SearchFilesResponse,
 ) -> Result<SearchStep, AppCommandError> {
     let bytes = std::fs::read(path).map_err(AppCommandError::io)?;
-    if looks_binary(&bytes) {
+    if looks_binary(&bytes[..bytes.len().min(8192)]) {
+        response.skipped_files += 1;
         return Ok(SearchStep::Continue);
     }
     let Ok(content) = std::str::from_utf8(&bytes) else {
+        response.skipped_files += 1;
         return Ok(SearchStep::Continue);
     };
+    response.scanned_files += 1;
     append_line_matches(path, content, config, response)
 }
 
@@ -913,17 +957,30 @@ fn append_line_matches(
         if !line.to_lowercase().contains(&config.query_lower) {
             continue;
         }
-        if response.matches.len() >= config.max_results {
+        if response.results.len() >= config.max_results {
             response.truncated = true;
             return Ok(SearchStep::Stop);
         }
-        response.matches.push(SearchFileMatch {
+        response.results.push(SearchFileMatch {
             path: relative_path_string(&config.root, path)?,
+            name: file_name_string(path),
             line_number: index + 1,
-            line: line.to_string(),
+            line_text: line.to_string(),
         });
     }
     Ok(SearchStep::Continue)
+}
+
+/// Return a displayable file basename for a search result.
+///
+/// The basename comes from the path's final component and falls back to the full
+/// path string for unusual paths without a Unicode filename. It performs no I/O
+/// and is used only for response serialization.
+fn file_name_string(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
 /// Normalize one directory filter value.
@@ -4380,7 +4437,7 @@ mod search_files_tests {
     /// and returns a request using the root's display path.
     fn request(root: &Path, query: &str) -> SearchFilesRequest {
         SearchFilesRequest {
-            root: root.to_string_lossy().to_string(),
+            root_path: root.to_string_lossy().to_string(),
             query: query.to_string(),
             search_dirs: None,
             include_extensions: None,
@@ -4389,6 +4446,21 @@ mod search_files_tests {
             max_results: None,
             max_file_bytes: None,
         }
+    }
+
+    #[tokio::test]
+    async fn search_files_returns_empty_response_for_empty_query() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_file(&temp.path().join("alpha.txt"), "needle\n");
+
+        let result = search_files(request(temp.path(), "   "))
+            .await
+            .expect("empty query returns empty response");
+
+        assert!(!result.truncated);
+        assert!(result.results.is_empty());
+        assert_eq!(result.scanned_files, 0);
+        assert_eq!(result.skipped_files, 0);
     }
 
     #[tokio::test]
@@ -4405,11 +4477,14 @@ mod search_files_tests {
             .expect("search files");
 
         assert!(!result.truncated);
-        assert_eq!(result.matches.len(), 2);
-        assert_eq!(result.matches[0].line_number, 2);
-        assert_eq!(result.matches[0].line, "Needle appears here");
-        assert!(result.matches[0].path.ends_with("alpha.txt"));
-        assert_eq!(result.matches[1].line_number, 3);
+        assert_eq!(result.results.len(), 2);
+        assert_eq!(result.results[0].name, "alpha.txt");
+        assert_eq!(result.results[0].line_number, 2);
+        assert_eq!(result.results[0].line_text, "Needle appears here");
+        assert!(result.results[0].path.ends_with("alpha.txt"));
+        assert_eq!(result.results[1].line_number, 3);
+        assert_eq!(result.scanned_files, 2);
+        assert_eq!(result.skipped_files, 0);
     }
 
     #[tokio::test]
@@ -4426,8 +4501,8 @@ mod search_files_tests {
 
         let result = search_files(req).await.expect("search files");
 
-        assert_eq!(result.matches.len(), 1);
-        assert!(result.matches[0].path.ends_with("src/main.rs"));
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("src/main.rs"));
     }
 
     #[tokio::test]
@@ -4442,8 +4517,29 @@ mod search_files_tests {
 
         let result = search_files(req).await.expect("search files");
 
-        assert_eq!(result.matches.len(), 1);
-        assert!(result.matches[0].path.ends_with("keep.rs"));
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("keep.rs"));
+    }
+
+    #[tokio::test]
+    async fn search_files_respects_default_exclusions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for dir in ["__pycache__", ".venv", "venv"] {
+            let nested = temp.path().join(dir);
+            std::fs::create_dir_all(&nested).expect("create excluded dir");
+            write_file(&nested.join("ignored.txt"), "needle\n");
+        }
+        write_file(&temp.path().join("Cargo.lock"), "needle\n");
+        write_file(&temp.path().join("visible.txt"), "needle\n");
+
+        let result = search_files(request(temp.path(), "needle"))
+            .await
+            .expect("search files");
+
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].path.ends_with("visible.txt"));
+        assert_eq!(result.scanned_files, 1);
+        assert_eq!(result.skipped_files, 1);
     }
 
     #[tokio::test]
@@ -4456,7 +4552,7 @@ mod search_files_tests {
         let result = search_files(req).await.expect("search files");
 
         assert!(result.truncated);
-        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.results.len(), 2);
     }
 
     #[tokio::test]
