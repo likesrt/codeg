@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "El nombre de la carpeta es obligatorio",
     "newFolderNameInvalid": "El nombre de la carpeta no puede contener separadores de ruta",
     "errorCreatingDir": "No se pudo crear la carpeta",
-    "create": "Crear"
+    "create": "Crear",
+    "deleteDirectory": "Eliminar directorio",
+    "deleteConfirmTitle": "¿Eliminar directorio?",
+    "deleteConfirmDescription": "Esto eliminará permanentemente el directorio seleccionado y su contenido. Esta acción no se puede deshacer.",
+    "cancelDelete": "Cancelar eliminación",
+    "confirmDelete": "Eliminar directorio",
+    "errorDeletingDir": "No se pudo eliminar el directorio"
   },
   "ChatChannelSettings": {
     "loading": "Cargando...",

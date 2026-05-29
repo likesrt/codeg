@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "Le nom du dossier est requis",
     "newFolderNameInvalid": "Le nom du dossier ne peut pas contenir de séparateurs de chemin",
     "errorCreatingDir": "Échec de la création du dossier",
-    "create": "Créer"
+    "create": "Créer",
+    "deleteDirectory": "Supprimer le répertoire",
+    "deleteConfirmTitle": "Supprimer le répertoire ?",
+    "deleteConfirmDescription": "Cela supprimera définitivement le répertoire sélectionné et son contenu. Cette action est irréversible.",
+    "cancelDelete": "Annuler la suppression",
+    "confirmDelete": "Supprimer le répertoire",
+    "errorDeletingDir": "Échec de la suppression du répertoire"
   },
   "ChatChannelSettings": {
     "loading": "Chargement...",

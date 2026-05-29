@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "اسم المجلد مطلوب",
     "newFolderNameInvalid": "لا يمكن أن يحتوي اسم المجلد على فواصل المسار",
     "errorCreatingDir": "فشل إنشاء المجلد",
-    "create": "إنشاء"
+    "create": "إنشاء",
+    "deleteDirectory": "حذف المجلد",
+    "deleteConfirmTitle": "حذف المجلد؟",
+    "deleteConfirmDescription": "سيؤدي هذا إلى حذف المجلد المحدد ومحتوياته بشكل دائم. لا يمكن التراجع عن هذا الإجراء.",
+    "cancelDelete": "إلغاء الحذف",
+    "confirmDelete": "حذف المجلد",
+    "errorDeletingDir": "فشل حذف المجلد"
   },
   "ChatChannelSettings": {
     "loading": "جاري التحميل...",

@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "Ordnername ist erforderlich",
     "newFolderNameInvalid": "Ordnername darf keine Pfadtrenner enthalten",
     "errorCreatingDir": "Ordner konnte nicht erstellt werden",
-    "create": "Erstellen"
+    "create": "Erstellen",
+    "deleteDirectory": "Verzeichnis löschen",
+    "deleteConfirmTitle": "Verzeichnis löschen?",
+    "deleteConfirmDescription": "Dadurch wird das ausgewählte Verzeichnis und sein gesamter Inhalt dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
+    "cancelDelete": "Löschen abbrechen",
+    "confirmDelete": "Verzeichnis löschen",
+    "errorDeletingDir": "Verzeichnis konnte nicht gelöscht werden"
   },
   "ChatChannelSettings": {
     "loading": "Wird geladen...",

@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "O nome da pasta é obrigatório",
     "newFolderNameInvalid": "O nome da pasta não pode conter separadores de caminho",
     "errorCreatingDir": "Falha ao criar a pasta",
-    "create": "Criar"
+    "create": "Criar",
+    "deleteDirectory": "Excluir diretório",
+    "deleteConfirmTitle": "Excluir diretório?",
+    "deleteConfirmDescription": "Isso excluirá permanentemente o diretório selecionado e seu conteúdo. Esta ação não pode ser desfeita.",
+    "cancelDelete": "Cancelar exclusão",
+    "confirmDelete": "Excluir diretório",
+    "errorDeletingDir": "Falha ao excluir diretório"
   },
   "ChatChannelSettings": {
     "loading": "Carregando...",

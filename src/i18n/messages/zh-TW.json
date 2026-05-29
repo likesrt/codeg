@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "請輸入資料夾名稱",
     "newFolderNameInvalid": "資料夾名稱不能包含路徑分隔符",
     "errorCreatingDir": "建立資料夾失敗",
-    "create": "建立"
+    "create": "建立",
+    "deleteDirectory": "刪除目錄",
+    "deleteConfirmTitle": "刪除目錄？",
+    "deleteConfirmDescription": "這會永久刪除所選目錄及其中的所有內容，此操作無法撤銷。",
+    "cancelDelete": "取消刪除",
+    "confirmDelete": "刪除目錄",
+    "errorDeletingDir": "刪除目錄失敗"
   },
   "ChatChannelSettings": {
     "loading": "載入中...",
