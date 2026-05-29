@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "Folder name is required",
     "newFolderNameInvalid": "Folder name cannot contain path separators",
     "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "create": "Create",
+    "deleteDirectory": "Delete directory",
+    "deleteConfirmTitle": "Delete directory?",
+    "deleteConfirmDescription": "This will permanently delete the selected directory and its contents. This action cannot be undone.",
+    "cancelDelete": "Cancel delete",
+    "confirmDelete": "Delete directory",
+    "errorDeletingDir": "Failed to delete directory"
   },
   "ServerFileBrowser": {
     "title": "Pick server file",

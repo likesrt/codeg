@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "请输入文件夹名称",
     "newFolderNameInvalid": "文件夹名称不能包含路径分隔符",
     "errorCreatingDir": "创建文件夹失败",
-    "create": "创建"
+    "create": "创建",
+    "deleteDirectory": "删除目录",
+    "deleteConfirmTitle": "删除目录？",
+    "deleteConfirmDescription": "这会永久删除所选目录及其中所有内容，此操作无法撤销。",
+    "cancelDelete": "取消删除",
+    "confirmDelete": "删除目录",
+    "errorDeletingDir": "删除目录失败"
   },
   "ServerFileBrowser": {
     "title": "选择服务端文件",

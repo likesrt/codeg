@@ -2178,7 +2178,13 @@
     "newFolderNameRequired": "폴더 이름을 입력하세요",
     "newFolderNameInvalid": "폴더 이름에는 경로 구분자를 포함할 수 없습니다",
     "errorCreatingDir": "폴더를 만들지 못했습니다",
-    "create": "만들기"
+    "create": "만들기",
+    "deleteDirectory": "디렉토리 삭제",
+    "deleteConfirmTitle": "디렉토리를 삭제하시겠습니까?",
+    "deleteConfirmDescription": "선택한 디렉토리와 그 안의 모든 내용이 영구적으로 삭제됩니다. 이 작업은 취소할 수 없습니다.",
+    "cancelDelete": "삭제 취소",
+    "confirmDelete": "디렉토리 삭제",
+    "errorDeletingDir": "디렉토리 삭제 실패"
   },
   "ChatChannelSettings": {
     "loading": "로딩 중...",
