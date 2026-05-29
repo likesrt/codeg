@@ -2152,13 +2152,13 @@
     "emptyDirectory": "هذا المجلد فارغ",
     "errorLoadingDir": "فشل في تحميل المجلد",
     "permissionDenied": "تم رفض الإذن",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "اختيار هذا المجلد",
+    "newChildFolder": "مجلد فرعي جديد",
+    "newFolderNamePlaceholder": "اسم المجلد",
+    "newFolderNameRequired": "اسم المجلد مطلوب",
+    "newFolderNameInvalid": "لا يمكن أن يحتوي اسم المجلد على فواصل المسار",
+    "errorCreatingDir": "فشل إنشاء المجلد",
+    "create": "إنشاء"
   },
   "ChatChannelSettings": {
     "loading": "جاري التحميل...",

@@ -2152,13 +2152,13 @@
     "emptyDirectory": "이 디렉토리는 비어 있습니다",
     "errorLoadingDir": "디렉토리 로딩 실패",
     "permissionDenied": "권한이 없습니다",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "이 폴더 선택",
+    "newChildFolder": "하위 폴더 만들기",
+    "newFolderNamePlaceholder": "폴더 이름",
+    "newFolderNameRequired": "폴더 이름을 입력하세요",
+    "newFolderNameInvalid": "폴더 이름에는 경로 구분자를 포함할 수 없습니다",
+    "errorCreatingDir": "폴더를 만들지 못했습니다",
+    "create": "만들기"
   },
   "ChatChannelSettings": {
     "loading": "로딩 중...",

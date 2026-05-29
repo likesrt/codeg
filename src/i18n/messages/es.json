@@ -2152,13 +2152,13 @@
     "emptyDirectory": "Este directorio está vacío",
     "errorLoadingDir": "Error al cargar el directorio",
     "permissionDenied": "Permiso denegado",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "Seleccionar esta carpeta",
+    "newChildFolder": "Nueva subcarpeta",
+    "newFolderNamePlaceholder": "Nombre de la carpeta",
+    "newFolderNameRequired": "El nombre de la carpeta es obligatorio",
+    "newFolderNameInvalid": "El nombre de la carpeta no puede contener separadores de ruta",
+    "errorCreatingDir": "No se pudo crear la carpeta",
+    "create": "Crear"
   },
   "ChatChannelSettings": {
     "loading": "Cargando...",

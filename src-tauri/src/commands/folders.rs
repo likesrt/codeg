@@ -3953,6 +3953,16 @@ mod directory_browser_tests {
     use super::*;
     use crate::app_error::AppErrorCode;
 
+    /// Verify empty browser create paths are rejected before filesystem access.
+    #[tokio::test]
+    async fn create_folder_directory_rejects_empty_path() {
+        let err = create_folder_directory("   ".to_string())
+            .await
+            .expect_err("empty path should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
     #[tokio::test]
     async fn create_folder_directory_creates_missing_directory() {
         let temp = tempfile::tempdir().expect("tempdir");

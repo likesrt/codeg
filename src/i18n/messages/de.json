@@ -2152,13 +2152,13 @@
     "emptyDirectory": "Dieses Verzeichnis ist leer",
     "errorLoadingDir": "Verzeichnis konnte nicht geladen werden",
     "permissionDenied": "Zugriff verweigert",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "Diesen Ordner auswählen",
+    "newChildFolder": "Neuen Unterordner erstellen",
+    "newFolderNamePlaceholder": "Ordnername",
+    "newFolderNameRequired": "Ordnername ist erforderlich",
+    "newFolderNameInvalid": "Ordnername darf keine Pfadtrenner enthalten",
+    "errorCreatingDir": "Ordner konnte nicht erstellt werden",
+    "create": "Erstellen"
   },
   "ChatChannelSettings": {
     "loading": "Wird geladen...",

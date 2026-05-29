@@ -2152,13 +2152,13 @@
     "emptyDirectory": "此目錄為空",
     "errorLoadingDir": "載入目錄失敗",
     "permissionDenied": "權限不足",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "選擇此資料夾",
+    "newChildFolder": "新增子資料夾",
+    "newFolderNamePlaceholder": "資料夾名稱",
+    "newFolderNameRequired": "請輸入資料夾名稱",
+    "newFolderNameInvalid": "資料夾名稱不能包含路徑分隔符",
+    "errorCreatingDir": "建立資料夾失敗",
+    "create": "建立"
   },
   "ChatChannelSettings": {
     "loading": "載入中...",

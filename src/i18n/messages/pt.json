@@ -2152,13 +2152,13 @@
     "emptyDirectory": "Este diretório está vazio",
     "errorLoadingDir": "Falha ao carregar o diretório",
     "permissionDenied": "Permissão negada",
-    "selectThisFolder": "Select this folder",
-    "newChildFolder": "New child folder",
-    "newFolderNamePlaceholder": "Folder name",
-    "newFolderNameRequired": "Folder name is required",
-    "newFolderNameInvalid": "Folder name cannot contain path separators",
-    "errorCreatingDir": "Failed to create folder",
-    "create": "Create"
+    "selectThisFolder": "Selecionar esta pasta",
+    "newChildFolder": "Nova subpasta",
+    "newFolderNamePlaceholder": "Nome da pasta",
+    "newFolderNameRequired": "O nome da pasta é obrigatório",
+    "newFolderNameInvalid": "O nome da pasta não pode conter separadores de caminho",
+    "errorCreatingDir": "Falha ao criar a pasta",
+    "create": "Criar"
   },
   "ChatChannelSettings": {
     "loading": "Carregando...",

@@ -81,4 +81,32 @@ describe("DirectoryBrowserDialog", () => {
     })
     expect(mockedListDirectoryEntries).toHaveBeenCalledWith("/home/me/project")
   })
+
+  it("ignores repeated create submissions while creation is pending", async () => {
+    mockedCreateFolderDirectory.mockImplementation(
+      () => new Promise(() => undefined)
+    )
+
+    render(
+      <DirectoryBrowserDialog
+        open
+        onOpenChange={vi.fn()}
+        onSelect={vi.fn()}
+        initialPath="/home/me"
+      />
+    )
+
+    await screen.findByText("project")
+    fireEvent.click(screen.getByRole("button", { name: "newChildFolder" }))
+    const nameInput = screen.getByPlaceholderText("newFolderNamePlaceholder")
+    fireEvent.change(nameInput, { target: { value: "src" } })
+    fireEvent.click(screen.getByRole("button", { name: "create" }))
+    fireEvent.keyDown(nameInput, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(mockedCreateFolderDirectory).toHaveBeenCalledTimes(1)
+    })
+    expect(nameInput).toBeDisabled()
+    expect(screen.getByRole("button", { name: "loading" })).toBeDisabled()
+  })
 })

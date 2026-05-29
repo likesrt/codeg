@@ -34,6 +34,10 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 
+type DirectoryBrowserTranslator = ReturnType<
+  typeof useTranslations<"DirectoryBrowser">
+>
+
 interface DirectoryBrowserDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -52,7 +56,7 @@ interface DirectoryBrowserEntryRowProps {
   onDoubleClick: (path: string) => void
   onToggleExpand: (path: string) => void
   onBeginCreateChildDirectory: (path: string) => void
-  translate: (key: string) => string
+  translate: DirectoryBrowserTranslator
 }
 
 /**
@@ -75,7 +79,7 @@ function joinChildDirectory(parent: string, child: string): string {
  */
 function validateNewFolderName(
   name: string,
-  translate: (key: string) => string
+  translate: DirectoryBrowserTranslator
 ): string | null {
   const trimmed = name.trim()
   if (!trimmed) return translate("newFolderNameRequired")
@@ -218,8 +222,10 @@ export function DirectoryBrowserDialog({
   const [error, setError] = useState<string | null>(null)
   const [createParentPath, setCreateParentPath] = useState<string | null>(null)
   const [newFolderName, setNewFolderName] = useState("")
+  const [creating, setCreating] = useState(false)
 
   const initialized = useRef(false)
+  const creatingRef = useRef(false)
 
   /**
    * Load directory entries with optional cache bypass for refreshes.
@@ -379,15 +385,18 @@ export function DirectoryBrowserDialog({
   /**
    * Create the requested child directory and refresh only the affected parent.
    *
-   * Validation errors stay in the dialog. On success, the new directory becomes
+   * Validation errors stay in the dialog. A ref blocks repeat submissions before
+   * React can commit disabled UI state. On success, the new directory becomes
    * selected and the parent cache is force-refreshed so new contents appear.
    */
   const handleCreateChildDirectory = useCallback(async () => {
-    if (!createParentPath) return
+    if (!createParentPath || creatingRef.current) return
     const validationError = validateNewFolderName(newFolderName, t)
     if (validationError) return setError(validationError)
 
     const target = joinChildDirectory(createParentPath, newFolderName.trim())
+    creatingRef.current = true
+    setCreating(true)
     setError(null)
     try {
       await createFolderDirectory(target)
@@ -397,6 +406,9 @@ export function DirectoryBrowserDialog({
       setNewFolderName("")
     } catch {
       setError(t("errorCreatingDir"))
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
     }
   }, [createParentPath, loadEntries, newFolderName, t])
 
@@ -518,8 +530,10 @@ export function DirectoryBrowserDialog({
             <div className="flex items-center gap-2 rounded-md border p-2">
               <Input
                 value={newFolderName}
+                disabled={creating}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 onKeyDown={(e) => {
+                  if (creating) return
                   if (e.key === "Enter") void handleCreateChildDirectory()
                   if (e.key === "Escape") setCreateParentPath(null)
                 }}
@@ -529,14 +543,16 @@ export function DirectoryBrowserDialog({
               <Button
                 size="sm"
                 onClick={handleCreateChildDirectory}
+                disabled={creating}
                 type="button"
               >
-                {t("create")}
+                {creating ? t("loading") : t("create")}
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => setCreateParentPath(null)}
+                disabled={creating}
                 type="button"
               >
                 {t("cancel")}
