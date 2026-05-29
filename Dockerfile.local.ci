@@ -55,6 +55,8 @@ RUN apt-get update \
     g++ \
     make \
     pkg-config \
+    libglib2.0-0 \
+    libglib2.0-dev \
     openjdk-17-jdk \
     libsqlite3-0 \
     libssl-dev \
