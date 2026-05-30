@@ -239,11 +239,16 @@ impl DelegationListener {
                 }
             }
         };
-        let working_dir = req
+        // The `working_dir` the LLM explicitly passed (before defaulting),
+        // used by the broker's correlation key. `None` when omitted —
+        // symmetric with the ACP `raw_input`, which also omits it then.
+        let requested_working_dir = req
             .input
             .get("working_dir")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_string());
+        let working_dir = requested_working_dir
+            .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
 
         let delegation_req = DelegationRequest {
@@ -253,6 +258,7 @@ impl DelegationListener {
             agent_type,
             task,
             working_dir,
+            requested_working_dir,
             external_handle: req.external_handle,
         };
         self.broker.handle_request(delegation_req).await
@@ -559,6 +565,7 @@ mod tests {
                     agent_type: AgentType::Codex,
                     task: "do x".into(),
                     working_dir: None,
+                    requested_working_dir: None,
                     external_handle: Some("h-1".into()),
                 };
                 broker.handle_request(req).await

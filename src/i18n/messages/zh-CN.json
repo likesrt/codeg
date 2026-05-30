@@ -1902,6 +1902,7 @@
         "detailTitle": "子智能体会话",
         "detailDescription": "只读查看委托给子智能体的会话内容。",
         "status": {
+          "starting": "启动中",
           "running": "运行中",
           "ok": "完成",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "创建项目失败",
-      "createSuccess": "项目创建成功"
+      "createSuccess": "项目创建成功",
+      "openWorkspaceFailed": "项目已创建，但无法在工作区中打开"
     },
     "errors": {
       "directoryExists": "目标目录已存在",

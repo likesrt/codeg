@@ -477,7 +477,7 @@ mod tauri_app {
                     let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
                         .title("Codeg")
                         .inner_size(1260.0, 860.0)
-                        .min_inner_size(900.0, 600.0);
+                        .min_inner_size(400.0, 600.0);
                     if let Ok(w) = windows::apply_platform_window_style(builder).build() {
                         windows::post_window_setup(&w);
                     }
@@ -676,6 +676,7 @@ mod tauri_app {
                 folders::list_open_folder_details,
                 folders::list_all_folder_details,
                 folders::open_folder,
+                folders::open_folder_in_workspace,
                 folders::open_folder_by_id,
                 folders::remove_folder_from_workspace,
                 folders::reorder_folders,

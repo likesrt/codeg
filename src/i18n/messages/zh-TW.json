@@ -1902,6 +1902,7 @@
         "detailTitle": "子智慧體會話",
         "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
         "status": {
+          "starting": "啟動中",
           "running": "執行中",
           "ok": "完成",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "建立專案失敗",
-      "createSuccess": "專案建立成功"
+      "createSuccess": "專案建立成功",
+      "openWorkspaceFailed": "專案已建立，但無法在工作區中開啟"
     },
     "errors": {
       "directoryExists": "目標目錄已存在",

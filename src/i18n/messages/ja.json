@@ -1902,6 +1902,7 @@
         "detailTitle": "サブエージェントの会話",
         "detailDescription": "委任されたサブエージェントの会話を読み取り専用で表示します。",
         "status": {
+          "starting": "起動中",
           "running": "実行中",
           "ok": "完了",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "プロジェクトの作成に失敗しました",
-      "createSuccess": "プロジェクトが正常に作成されました"
+      "createSuccess": "プロジェクトが正常に作成されました",
+      "openWorkspaceFailed": "プロジェクトは作成されましたが、ワークスペースで開けませんでした"
     },
     "errors": {
       "directoryExists": "対象ディレクトリは既に存在します",

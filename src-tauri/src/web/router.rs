@@ -122,6 +122,10 @@ pub fn build_router(
         .route("/get_folder", post(handlers::folders::get_folder))
         .route("/open_folder", post(handlers::folders::open_folder))
         .route(
+            "/open_folder_in_workspace",
+            post(handlers::folders::open_folder_in_workspace),
+        )
+        .route(
             "/open_folder_by_id",
             post(handlers::folders::open_folder_by_id),
         )

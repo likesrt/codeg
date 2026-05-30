@@ -1,6 +1,11 @@
 "use client"
 
-import { CheckCircleIcon, Loader2, XCircleIcon } from "lucide-react"
+import {
+  CheckCircleIcon,
+  CircleDashed,
+  Loader2,
+  XCircleIcon,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { Badge } from "@/components/ui/badge"
@@ -9,10 +14,18 @@ export function StatusBadge({
   status,
   errorCode,
 }: {
-  status: "running" | "ok" | "err"
+  status: "starting" | "running" | "ok" | "err"
   errorCode?: string
 }) {
   const t = useTranslations("Folder.chat.delegation.status")
+  if (status === "starting") {
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <CircleDashed className="animate-spin text-muted-foreground" />
+        {t("starting")}
+      </Badge>
+    )
+  }
   if (status === "running") {
     return (
       <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">

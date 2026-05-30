@@ -58,6 +58,17 @@ pub struct DelegationRequest {
     pub agent_type: AgentType,
     pub task: String,
     pub working_dir: Option<String>,
+    /// The `working_dir` exactly as the LLM passed it in the
+    /// `delegate_to_agent` arguments, BEFORE the listener defaults a missing
+    /// value to the parent's launch directory. Used only as part of the
+    /// `(agent_type, task, requested_working_dir)` correlation key so two
+    /// parallel calls sharing an agent and task but targeting different
+    /// explicit directories don't bind to each other's `tool_call_id`.
+    /// `None` when the LLM omitted it — symmetric with the ACP `raw_input`,
+    /// which also omits it then. Distinct from `working_dir` above, which is
+    /// the defaulted value the child is actually spawned in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_handle: Option<String>,
 }

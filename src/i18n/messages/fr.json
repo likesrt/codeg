@@ -1902,6 +1902,7 @@
         "detailTitle": "Conversation du sous-agent",
         "detailDescription": "Vue en lecture seule de la conversation du sous-agent délégué.",
         "status": {
+          "starting": "démarrage",
           "running": "en cours",
           "ok": "terminé",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "Échec de la création du projet",
-      "createSuccess": "Projet créé avec succès"
+      "createSuccess": "Projet créé avec succès",
+      "openWorkspaceFailed": "Projet créé, mais impossible de l'ouvrir dans l'espace de travail"
     },
     "errors": {
       "directoryExists": "Le répertoire cible existe déjà",

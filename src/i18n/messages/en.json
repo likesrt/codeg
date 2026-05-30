@@ -1902,6 +1902,7 @@
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
         "status": {
+          "starting": "starting",
           "running": "running",
           "ok": "done",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "Failed to create project",
-      "createSuccess": "Project created successfully"
+      "createSuccess": "Project created successfully",
+      "openWorkspaceFailed": "Project created, but couldn't open it in the workspace"
     },
     "errors": {
       "directoryExists": "Target directory already exists",

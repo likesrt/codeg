@@ -1902,6 +1902,7 @@
         "detailTitle": "서브에이전트 대화",
         "detailDescription": "위임된 서브에이전트 대화를 읽기 전용으로 봅니다.",
         "status": {
+          "starting": "시작 중",
           "running": "실행 중",
           "ok": "완료",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "프로젝트 생성에 실패했습니다",
-      "createSuccess": "프로젝트가 성공적으로 생성되었습니다"
+      "createSuccess": "프로젝트가 성공적으로 생성되었습니다",
+      "openWorkspaceFailed": "프로젝트가 생성되었지만 작업 공간에서 열지 못했습니다"
     },
     "errors": {
       "directoryExists": "대상 디렉터리가 이미 존재합니다",

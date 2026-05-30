@@ -298,13 +298,23 @@ function extractEmbeddedJsonObject(
  * of `parseDelegationOutcome` so the MCP `CallToolResult` envelope path
  * can reuse it on the inner `structuredContent` object.
  */
-function interpretBrokerEnvelope(
-  obj: Record<string, unknown>
-): { text: string; isError: boolean } | null {
+function interpretBrokerEnvelope(obj: Record<string, unknown>): {
+  text: string
+  isError: boolean
+  childConversationId: number | null
+} | null {
   const kind = typeof obj.kind === "string" ? obj.kind : null
+  // Both broker variants carry `child_conversation_id` (Ok always; Err
+  // best-effort once the child row exists). Surface it so a synthetic-fallback
+  // card — one whose `parent_tool_use_id` never bound to a live
+  // binding/meta — can still offer "Open conversation" off the tool output.
+  const childConversationId =
+    typeof obj.child_conversation_id === "number"
+      ? obj.child_conversation_id
+      : null
   if (kind === "ok") {
     const text = typeof obj.text === "string" ? obj.text : ""
-    return { text, isError: false }
+    return { text, isError: false, childConversationId }
   }
   if (kind === "err") {
     const message = typeof obj.message === "string" ? obj.message : ""
@@ -312,6 +322,7 @@ function interpretBrokerEnvelope(
     return {
       text: message || code || "Delegation failed.",
       isError: true,
+      childConversationId,
     }
   }
   return null
@@ -336,6 +347,7 @@ function interpretBrokerEnvelope(
 function parseDelegationOutcome(raw: string | null | undefined): {
   text: string
   isError: boolean
+  childConversationId: number | null
 } | null {
   if (!raw || typeof raw !== "string") return null
   const trimmed = raw.trim()
@@ -348,14 +360,14 @@ function parseDelegationOutcome(raw: string | null | undefined): {
       obj = v as Record<string, unknown>
     } else {
       // Top-level primitive (string/number/bool): render directly.
-      return { text: String(v), isError: false }
+      return { text: String(v), isError: false, childConversationId: null }
     }
   } catch {
     obj = extractEmbeddedJsonObject(trimmed)
   }
 
   if (!obj) {
-    return { text: trimmed, isError: false }
+    return { text: trimmed, isError: false, childConversationId: null }
   }
 
   // MCP `CallToolResult` envelope: produced by
@@ -387,7 +399,16 @@ function parseDelegationOutcome(raw: string | null | undefined): {
     if (first && typeof first === "object" && !Array.isArray(first)) {
       const text = (first as Record<string, unknown>).text
       if (typeof text === "string") {
-        return { text, isError: obj.isError === true }
+        // `structuredContent` lacked a recognizable `kind`, but it may still
+        // carry the child conversation id — surface it for the fallback link.
+        return {
+          text,
+          isError: obj.isError === true,
+          childConversationId:
+            typeof inner.child_conversation_id === "number"
+              ? inner.child_conversation_id
+              : null,
+        }
       }
     }
   }
@@ -399,6 +420,7 @@ function parseDelegationOutcome(raw: string | null | undefined): {
   return {
     text: "```json\n" + JSON.stringify(obj, null, 2) + "\n```",
     isError: false,
+    childConversationId: null,
   }
 }
 
@@ -513,14 +535,27 @@ export function DelegatedSubThread({
   // refresh recovery), then the parent ToolCall's own state/output as a
   // last resort.
   const agentType: AgentType | null = binding?.agentType ?? parsed.agentType
-  const status: "running" | "ok" | "err" = (() => {
+  const status: "starting" | "running" | "ok" | "err" = (() => {
     if (binding) return binding.status
     if (parsedMeta) return parsedMeta.status
     if (state === "output-error" || errorText) return "err"
     if (state === "output-available") return "ok"
-    return "running"
+    // No live binding, no persisted meta, and the parent tool call hasn't
+    // reached a terminal state yet: the sub-agent connection is still being
+    // set up (the broker is correlating the tool_call, spawning the agent,
+    // handshaking, and creating the child conversation) and the
+    // `delegation_started` event hasn't bound this card to a child session.
+    // Kept distinct from "running" so the card neither claims the sub-agent
+    // is already working nor offers an expand that could only show a spinner.
+    // Flips to "running"/"ok"/"err" the instant a binding, meta, or terminal
+    // output arrives.
+    return "starting"
   })()
   const errorCode = binding?.errorCode ?? parsedMeta?.errorCode ?? undefined
+  // The child session isn't bound yet in the "starting" state, so there is
+  // nothing meaningful to expand into — keep the header non-interactive
+  // (no toggle, no chevron) until a child session exists.
+  const expandable = status !== "starting"
 
   // Parse the broker's structured outcome out of the raw tool output so
   // the expanded body can render markdown text instead of `{"kind":"ok",
@@ -590,8 +625,44 @@ export function DelegatedSubThread({
     return null
   }
 
+  // Final fallback: the broker's tool output carries `child_conversation_id`
+  // even when neither a live binding nor persisted meta exists — the
+  // synthetic-fallback case (the broker minted a `delegation-*` tool_use_id, so
+  // it skipped meta/event emits). Reading it from the outcome keeps the "Open
+  // conversation" affordance working for those cards.
   const childConversationId =
-    binding?.childConversationId ?? parsedMeta?.childConversationId ?? null
+    binding?.childConversationId ??
+    parsedMeta?.childConversationId ??
+    outcome?.childConversationId ??
+    null
+
+  // Header content (icon + agent name + status badge + task), shared between
+  // the interactive toggle (expandable card) and the static, non-interactive
+  // row shown in the "starting" state.
+  const headerContent = (
+    <>
+      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
+        {agentType ? (
+          <AgentIcon agentType={agentType} className="h-5 w-5" />
+        ) : (
+          <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
+        )}
+      </span>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-foreground">
+            {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
+          </span>
+          <StatusBadge status={status} errorCode={errorCode} />
+        </div>
+        {parsed.task && (
+          <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
+            {parsed.task}
+          </div>
+        )}
+      </div>
+    </>
+  )
 
   return (
     <div
@@ -599,40 +670,27 @@ export function DelegatedSubThread({
       className="rounded-lg border border-border bg-card"
     >
       <div className="flex w-full items-stretch rounded-t-lg overflow-hidden">
-        <button
-          type="button"
-          onClick={() => dispatchExpand("toggle")}
-          className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
-          aria-expanded={expanded}
-        >
-          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
-            {agentType ? (
-              <AgentIcon agentType={agentType} className="h-5 w-5" />
-            ) : (
-              <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
-            )}
-          </span>
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">
-                {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
-              </span>
-              <StatusBadge status={status} errorCode={errorCode} />
-            </div>
-            {parsed.task && (
-              <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
-                {parsed.task}
-              </div>
-            )}
+        {expandable ? (
+          <button
+            type="button"
+            onClick={() => dispatchExpand("toggle")}
+            className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
+            aria-expanded={expanded}
+          >
+            {headerContent}
+            <span className="shrink-0 text-muted-foreground">
+              {expanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </span>
+          </button>
+        ) : (
+          <div className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left">
+            {headerContent}
           </div>
-          <span className="shrink-0 text-muted-foreground">
-            {expanded ? (
-              <ChevronDown className="h-4 w-4" />
-            ) : (
-              <ChevronRight className="h-4 w-4" />
-            )}
-          </span>
-        </button>
+        )}
         {childConversationId != null && (
           <button
             type="button"
@@ -646,7 +704,7 @@ export function DelegatedSubThread({
           </button>
         )}
       </div>
-      {expanded && (
+      {expandable && expanded && (
         <div className="border-t border-border px-3 py-3 max-h-96 overflow-auto text-xs space-y-3">
           <ExpandedBody
             status={status}
@@ -681,7 +739,7 @@ function ExpandedBody({
   tSubAgentRunning,
   tNoDetail,
 }: {
-  status: "running" | "ok" | "err"
+  status: "starting" | "running" | "ok" | "err"
   outcome: { text: string; isError: boolean } | null
   liveStreamText: string | null
   childPendingPermission: ChildPendingPermission | null

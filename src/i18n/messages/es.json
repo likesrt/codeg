@@ -1902,6 +1902,7 @@
         "detailTitle": "Conversación del subagente",
         "detailDescription": "Vista de solo lectura de la conversación del subagente delegado.",
         "status": {
+          "starting": "iniciando",
           "running": "en curso",
           "ok": "completado",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "Error al crear el proyecto",
-      "createSuccess": "Proyecto creado exitosamente"
+      "createSuccess": "Proyecto creado exitosamente",
+      "openWorkspaceFailed": "Proyecto creado, pero no se pudo abrir en el espacio de trabajo"
     },
     "errors": {
       "directoryExists": "El directorio de destino ya existe",

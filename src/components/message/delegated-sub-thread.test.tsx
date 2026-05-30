@@ -224,6 +224,76 @@ describe("DelegatedSubThread", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("recovers the open-conversation link from the broker output when no binding/meta exists (synthetic fallback)", () => {
+    // Synthetic-fallback case: the broker minted a `delegation-*` tool_use_id
+    // (couldn't correlate the round-trip to a real tool_call), so it skipped
+    // the meta write + DelegationCompleted emit — no live binding, no persisted
+    // meta. The tool output still carries `child_conversation_id`, so the card
+    // must recover it and keep "Open conversation" working.
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({ agent_type: "codex", task: "run the audit" })
+    const output = JSON.stringify({
+      kind: "ok",
+      text: "Audit complete.",
+      child_conversation_id: 1234,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="delegation-abc"
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+    const openButton = screen.getByRole("button", { name: "Open conversation" })
+    fireEvent.click(openButton)
+    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+      "data-conversation-id",
+      "1234"
+    )
+  })
+
+  it("recovers the open-conversation link from a wrapped MCP CallToolResult output (synthetic fallback)", () => {
+    // Same recovery, but the broker outcome is wrapped in the MCP
+    // `CallToolResult` envelope — the id lives in `structuredContent`.
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({ agent_type: "codex", task: "ship it" })
+    const structured = {
+      kind: "ok",
+      text: "Shipped.",
+      child_conversation_id: 4321,
+      turn_count: 1,
+    }
+    const output = JSON.stringify({
+      content: [{ type: "text", text: structured.text }],
+      isError: false,
+      structuredContent: structured,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="delegation-xyz"
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
+    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+      "data-conversation-id",
+      "4321"
+    )
+  })
+
   it("renders agent label + running badge when delegation is in-flight", () => {
     mockedHook.mockReturnValue({
       binding: bindingOf({ status: "running" }),
@@ -254,6 +324,37 @@ describe("DelegatedSubThread", () => {
     })
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input={input} />)
     expect(screen.getByText("summarize the failing tests")).toBeInTheDocument()
+    expect(screen.getAllByText("Codex").length).toBeGreaterThan(0)
+  })
+
+  it("shows the 'starting' state (not 'running') and is not expandable before the child session binds", () => {
+    // Before the broker's delegation_started binding lands — no live binding,
+    // no persisted meta, and the parent tool call still in flight — the
+    // sub-agent isn't established yet. The card must show the distinct
+    // "starting" badge (not "running") and offer no expand control, since
+    // there is nothing to expand into (the child session doesn't exist).
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({
+      agent_type: "codex",
+      task: "set things up",
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input={input} />)
+    // Starting badge, not the running one.
+    expect(screen.getByText("starting")).toBeInTheDocument()
+    expect(screen.queryByText("running")).not.toBeInTheDocument()
+    // Not expandable: there is no toggle button at all (the open-conversation
+    // Eye button is also absent because no child conversation exists yet).
+    expect(screen.queryByRole("button")).not.toBeInTheDocument()
+    // No expanded body / running indicator even though the tool call is still
+    // in flight.
+    expect(screen.queryByText(/Sub-agent running/)).not.toBeInTheDocument()
+    // The task + agent are still surfaced in the (static) header.
+    expect(screen.getByText("set things up")).toBeInTheDocument()
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0)
   })
 

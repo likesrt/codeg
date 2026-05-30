@@ -1902,6 +1902,7 @@
         "detailTitle": "محادثة الوكيل الفرعي",
         "detailDescription": "عرض للقراءة فقط لمحادثة الوكيل الفرعي المُفوَّض.",
         "status": {
+          "starting": "قيد البدء",
           "running": "قيد التشغيل",
           "ok": "اكتمل",
           "err": {
@@ -2119,7 +2120,8 @@
     },
     "toasts": {
       "createFailed": "فشل إنشاء المشروع",
-      "createSuccess": "تم إنشاء المشروع بنجاح"
+      "createSuccess": "تم إنشاء المشروع بنجاح",
+      "openWorkspaceFailed": "تم إنشاء المشروع، ولكن تعذّر فتحه في مساحة العمل"
     },
     "errors": {
       "directoryExists": "الدليل الهدف موجود بالفعل",

@@ -1283,6 +1283,22 @@ export async function openProjectBootWindow(source?: string): Promise<void> {
   }
 }
 
+// Cross-window handoff for the project launcher, which lives in its own
+// window/tab and can't reach the workspace's React state directly. The
+// backend upserts the folder and emits `folder://open-in-workspace` carrying
+// the FolderDetail through the shared EventEmitter; the transport layer routes
+// that to the right workspace window in every runtime (local Tauri bus, the
+// server's WebSocket broadcaster for web, and the remote server's broadcaster
+// for remote desktop), so only windows talking to this backend react. The
+// workspace subscribes via WorkspaceOpenFolderListener.
+export const FOLDER_OPEN_IN_WORKSPACE_EVENT = "folder://open-in-workspace"
+
+export async function openFolderInWorkspace(
+  path: string
+): Promise<FolderDetail> {
+  return getTransport().call("open_folder_in_workspace", { path })
+}
+
 export async function detectPackageManager(
   name: string
 ): Promise<PackageManagerInfo> {
