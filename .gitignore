@@ -38,7 +38,9 @@ coverage/
 .vitest-cache/
 
 # Agent
-.claude
+.claude/*
+!.claude/
+!.claude/CLAUDE.md
 .docs
 docs/superpowers
 

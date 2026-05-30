@@ -65,6 +65,9 @@ RUN apt-get update \
     libreadline-dev \
     libsqlite3-dev \
     llvm \
+    lld \
+    clang \
+    nsis \
     libncursesw5-dev \
     tk-dev \
     libxml2-dev \
@@ -82,6 +85,9 @@ RUN apt-get update \
     fonts-dejavu \
     fonts-noto-cjk \
     libgtk-3-0 \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    patchelf \
     libdbus-glib-1-2 \
     libasound2 \
     libnss3 \

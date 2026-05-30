@@ -178,13 +178,18 @@ install_bun() {
 }
 
 install_rust() {
-  # rustup 安装稳定版 Rust，并把 cargo/rustup 状态保存在挂载的 HOME 中。
+  # 安装稳定版 Rust、Windows MSVC target 和 cargo-xwin。
+  # 参数：无。返回：所有工具可用时返回成功。副作用：把 rustup、target 和 cargo-xwin 写入持久化 HOME。
   if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
   fi
 
   . "$CARGO_HOME/env"
   rustup default stable
+  rustup target add x86_64-pc-windows-msvc
+  if ! command -v cargo-xwin >/dev/null 2>&1; then
+    cargo install --locked cargo-xwin
+  fi
 }
 
 # Installs the requested Go release into the persistent home directory.
