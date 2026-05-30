@@ -104,6 +104,21 @@ describe("SearchCommandDialog content tab", () => {
     expect(screen.getByRole("button", { name: "Content" })).toBeTruthy()
   })
 
+  it("shows a local-storage note inside the expanded content settings", async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(screen.getByRole("button", { name: "Content" }))
+    await user.click(
+      screen.getByRole("button", { name: "Show search settings" })
+    )
+
+    expect(
+      screen.getByText("Content search settings are saved on this device.")
+    ).toBeTruthy()
+    expect(screen.getByLabelText("Search dirs")).toBeTruthy()
+  })
+
   it("does not search content automatically while typing", async () => {
     const user = userEvent.setup()
     renderDialog()

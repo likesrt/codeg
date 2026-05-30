@@ -1256,53 +1256,57 @@ function isContentSearchButtonDisabled(
 }
 
 /**
- * Renders editable content-search settings.
- * @param props Current settings and complete-settings change callback.
- * @returns Settings form JSX.
- * @remarks Comma text is kept raw until converted by toSearchFilesRequest.
+ * 渲染可编辑的内容搜索设置面板和本地保存提示。
+ * @param props 当前设置值和完整设置更新回调。
+ * @returns 包含提示与设置表单的 JSX。
+ * @remarks 只展示保存位置说明；逗号分隔文本仍延迟到 toSearchFilesRequest 中转换。
  */
 function ContentSettingsPanel({
   settings,
   onChange,
 }: ContentSettingsPanelProps) {
+  const t = useTranslations("Folder.search")
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <SettingInput
-        labelKey="searchDirs"
-        field="searchDirsText"
-        settings={settings}
-        onChange={onChange}
-      />
-      <SettingInput
-        labelKey="includeExtensions"
-        field="includeExtensionsText"
-        settings={settings}
-        onChange={onChange}
-      />
-      <SettingInput
-        labelKey="excludeDirs"
-        field="excludeDirsText"
-        settings={settings}
-        onChange={onChange}
-      />
-      <SettingInput
-        labelKey="excludeExtensions"
-        field="excludeExtensionsText"
-        settings={settings}
-        onChange={onChange}
-      />
-      <NumericSettingInput
-        labelKey="maxResults"
-        field="maxResults"
-        settings={settings}
-        onChange={onChange}
-      />
-      <NumericSettingInput
-        labelKey="maxFileBytesMb"
-        field="maxFileBytesMb"
-        settings={settings}
-        onChange={onChange}
-      />
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">{t("settingStorageNote")}</p>
+      <div className="grid grid-cols-2 gap-2">
+        <SettingInput
+          labelKey="searchDirs"
+          field="searchDirsText"
+          settings={settings}
+          onChange={onChange}
+        />
+        <SettingInput
+          labelKey="includeExtensions"
+          field="includeExtensionsText"
+          settings={settings}
+          onChange={onChange}
+        />
+        <SettingInput
+          labelKey="excludeDirs"
+          field="excludeDirsText"
+          settings={settings}
+          onChange={onChange}
+        />
+        <SettingInput
+          labelKey="excludeExtensions"
+          field="excludeExtensionsText"
+          settings={settings}
+          onChange={onChange}
+        />
+        <NumericSettingInput
+          labelKey="maxResults"
+          field="maxResults"
+          settings={settings}
+          onChange={onChange}
+        />
+        <NumericSettingInput
+          labelKey="maxFileBytesMb"
+          field="maxFileBytesMb"
+          settings={settings}
+          onChange={onChange}
+        />
+      </div>
     </div>
   )
 }
@@ -1377,6 +1381,7 @@ function NumericSettingInput({
 }
 
 interface ContentSearchLabels {
+  settingStorageNote: string
   searchDirs: string
   includeExtensions: string
   excludeDirs: string
