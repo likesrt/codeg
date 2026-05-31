@@ -2074,7 +2074,21 @@
   "ProjectBoot": {
     "title": "مُنشئ المشروع",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "مشروع فيديو HyperFrames",
+      "subtitle": "أنشئ مشروعًا لتحويل HTML إلى فيديو. يمكن لوكيل مساحة العمل بعد ذلك كتابته وعرضه.",
+      "resolution": "الدقة",
+      "skillsTitle": "مهارات الوكلاء",
+      "skillsDesc": "ثبّت مهارات HyperFrames عامًّا (رابط رمزي) للوكلاء المحددين حتى يتمكنوا من إنشاء الفيديو وعرضه.",
+      "recheck": "إعادة الفحص",
+      "installedBadge": "مثبّت",
+      "skillsInstall": "تثبيت / تحديث المهارات",
+      "skillsInstalling": "جارٍ تثبيت المهارات…",
+      "skillsInstalled": "تم تثبيت مهارات HyperFrames",
+      "skillsInstallFailed": "تعذّر تثبيت مهارات HyperFrames"
     },
     "config": {
       "base": "الأساس",

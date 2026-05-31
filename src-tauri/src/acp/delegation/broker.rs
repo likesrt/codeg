@@ -1,39 +1,59 @@
 //! `DelegationBroker` — the coordination unit for multi-agent delegation.
 //!
-//! Lifecycle of a single call:
+//! Delegation is **asynchronous**: `delegate_to_agent` returns a `task_id`
+//! ack as soon as setup finishes; the LLM collects the result later with
+//! `get_delegation_status` (optionally long-polling) or stops it with
+//! `cancel_delegation`. There is no blocking `oneshot` — a running task is just
+//! an entry in the `running` map, and a terminal event migrates it into the
+//! `completed` cache (atomically, under one lock) and wakes any long-poll via
+//! `result_notify`.
 //!
-//! 1. `handle_request` is the broker's only entry point. The MCP listener
-//!    feeds it the LLM-issued `delegate_to_agent` payload.
-//! 2. Pre-checks: feature enabled? depth limit ok? Both failures return
-//!    immediately, no child session created.
+//! Lifecycle of a single task:
+//!
+//! 1. [`DelegationBroker::start_delegation`] is the broker's entry point. The
+//!    MCP listener feeds it the LLM-issued `delegate_to_agent` payload.
+//! 2. Pre-checks: feature enabled? depth limit ok? Both failures return a
+//!    terminal report immediately, no child session created.
 //! 3. Spawn the child via [`ConnectionSpawner::spawn`].
 //! 4. Send the delegation task as the first prompt via
 //!    [`ConnectionSpawner::send_prompt_linked_for_delegation`]. The trailing
 //!    [`DelegationLink`] carries the parent's `tool_use_id` and a
-//!    broker-internal `call_id` (UUID) — these get persisted onto the new
-//!    conversation row.
-//! 5. Park a `oneshot::Sender` keyed by `call_id`. Resolution comes from
-//!    one of:
-//!       - the listener calling [`DelegationBroker::complete_call`] on
+//!    broker-internal `call_id` (UUID = `task_id`) — persisted onto the new
+//!    conversation row so the lifecycle resolver can find it.
+//! 5. Register a [`RunningTask`] keyed by `call_id` and return a `Running` ack
+//!    [`DelegationTaskReport`] (or a terminal report when the child finished
+//!    during setup / a cancel reached it mid-setup / setup itself failed).
+//! 6. Later, a terminal event resolves the task — migrating it `running` →
+//!    `completed` and tearing the child down:
+//!       - the lifecycle calling [`DelegationBroker::complete_call`] on
 //!         `TurnComplete` (happy path), or
-//!       - a cancel — either MCP-side
-//!         (`notifications/cancelled` → `cancel_by_external_handle`),
-//!         child-side ([`DelegationBroker::cancel_by_child_connection`]),
-//!         or parent-side ([`DelegationBroker::cancel_by_parent`]).
-//! 6. On any resolution, the child connection is disconnected. v1 is
-//!    explicitly one-shot — no session reuse.
+//!       - a cancel — MCP-side (`notifications/cancelled` →
+//!         [`DelegationBroker::cancel_by_external_handle`]), child-side
+//!         ([`DelegationBroker::cancel_by_child_connection`]), parent-side
+//!         ([`DelegationBroker::cancel_by_parent`] /
+//!         [`DelegationBroker::cancel_by_parent_turn`]), or the LLM's own
+//!         [`DelegationBroker::cancel_task_by_id`].
+//!
+//! v1 is explicitly one-shot — no session reuse.
+//!
+//! Result durability: child output is NOT stored in codeg's DB, so the broker
+//! caches the completed text in `completed` (parent-scoped, FIFO-capped). Once
+//! evicted, [`DelegationBroker::get_task_status`] falls back to the DB for the
+//! task's terminal STATUS (via [`ChildStatusLookup`]); the full output is always
+//! viewable in the child's own session.
 //!
 //! Cancellation cascade: when a parent session goes away (user-initiated
 //! cancel, parent disconnect), the lifecycle subscriber calls
 //! [`DelegationBroker::cancel_by_parent`] which fans out cancel + disconnect
-//! to every pending child of that parent.
+//! to every running child of that parent. A normal `end_turn` does NOT cancel
+//! children — they keep running in the background (the whole point of async).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, Notify};
 
 use crate::acp::delegation::event_emitter::{DelegationEventEmitter, NoopEventEmitter};
 use crate::acp::delegation::meta_writer::{
@@ -42,15 +62,71 @@ use crate::acp::delegation::meta_writer::{
 use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
 use crate::acp::delegation::types::{
     AgentDelegationDefaults, DelegationError, DelegationOutcome, DelegationRequest,
+    DelegationTaskReport, TaskStatus,
 };
 use crate::acp::types::DelegationResultSummary;
 use crate::models::AgentType;
+
+/// Per-parent cap on cached completed-task results. The completed-cache lets
+/// `get_delegation_status` / `cancel_delegation` return a finished task's
+/// result after the lifecycle resolved it; FIFO-evicted past this many tasks
+/// per parent (evicted tasks fall back to the DB status lookup). 128 covers
+/// realistic high-fan-out parents while bounding memory.
+const COMPLETED_CAP_PER_PARENT: usize = 128;
+
+/// Per-result cap on cached completed text. The full child output always lives
+/// in the child's own session (viewable via the frontend's child-session
+/// sheet); this only bounds the broker's in-memory copy so a pathological
+/// multi-MB result can't blow up memory × `COMPLETED_CAP_PER_PARENT`.
+const COMPLETED_TEXT_CAP: usize = 256 * 1024;
+
+/// Cap on the inline `text_preview` carried by the `DelegationCompleted` event
+/// and the terminal meta, so the parent card can render the result inline
+/// without re-fetching the child session.
+const STATUS_PREVIEW_CAP: usize = 2 * 1024;
 
 /// Lookup the `parent_id` for a conversation. Abstracted so the broker can be
 /// unit-tested against an in-memory chain without touching SeaORM.
 #[async_trait]
 pub trait ConversationDepthLookup: Send + Sync {
     async fn parent_of(&self, conversation_id: i32) -> Result<Option<i32>, DelegationError>;
+}
+
+/// Status-level facts the broker recovers from a child conversation row when a
+/// task's in-memory completed-cache entry was evicted. Carries NO result text —
+/// child output isn't stored in codeg's DB; the full result lives in the
+/// child's own session (viewable via the frontend's child-session sheet).
+#[derive(Debug, Clone)]
+pub struct ChildStatusRecord {
+    pub child_conversation_id: i32,
+    pub status: TaskStatus,
+    pub agent_type: AgentType,
+    /// The parent conversation id this child was spawned under. Used to scope
+    /// the DB fallback to the calling parent so one parent can't read another's
+    /// task by guessing a UUID.
+    pub parent_id: Option<i32>,
+}
+
+/// DB fallback for `get_delegation_status` / `cancel_delegation` once a task's
+/// result has aged out of the broker's in-memory completed-cache. Abstracted
+/// so broker unit tests can run without SeaORM; production wires
+/// [`DbChildStatusLookup`] via [`DelegationBroker::with_status_lookup`].
+#[async_trait]
+pub trait ChildStatusLookup: Send + Sync {
+    async fn find_by_call_id(&self, call_id: &str) -> Option<ChildStatusRecord>;
+}
+
+/// Default lookup — always "unknown". Used by `DelegationBroker::new` /
+/// `with_writers` (tests that don't exercise the DB-fallback path); production
+/// replaces it via `with_status_lookup`.
+#[derive(Default, Clone)]
+pub struct NoopChildStatusLookup;
+
+#[async_trait]
+impl ChildStatusLookup for NoopChildStatusLookup {
+    async fn find_by_call_id(&self, _call_id: &str) -> Option<ChildStatusRecord> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,18 +153,46 @@ impl Default for DelegationConfig {
     }
 }
 
-struct PendingCall {
+/// A delegation task running in the background after `start_delegation`
+/// returned its `Running` ack. The async redesign drops the parked
+/// `oneshot::Sender` the old `PendingCall` carried: the parent's
+/// `delegate_to_agent` no longer blocks on a channel, so there is nothing to
+/// signal. A terminal event instead migrates the entry into `completed` (same
+/// lock) and wakes any `get_delegation_status` long-poll via the broker's
+/// `result_notify`.
+struct RunningTask {
     child_connection_id: String,
     child_conversation_id: i32,
     parent_connection_id: String,
-    #[allow(dead_code)] // surfaced via accessors and listener payloads in later phases
     parent_tool_use_id: String,
+    /// Target agent — surfaced in status reports.
+    agent_type: AgentType,
     /// MCP-side opaque handle minted by the companion per `tools/call`. The
     /// listener forwards it through `DelegationRequest`; we keep it here so
     /// `cancel_by_external_handle` can find the entry. `None` for delegations
     /// that didn't come through MCP (tests, future internal callers).
     external_handle: Option<String>,
-    tx: oneshot::Sender<DelegationOutcome>,
+    /// When the child started running (after `send_prompt` succeeded). Used to
+    /// compute a real `duration_ms` at terminal time.
+    started_at: Instant,
+}
+
+/// A terminal delegation result retained so `get_delegation_status` /
+/// `cancel_delegation` can answer after the lifecycle resolved the task.
+/// Parent-scoped, FIFO-evicted at [`COMPLETED_CAP_PER_PARENT`], and dropped
+/// wholesale when the parent connection tears down.
+#[derive(Clone)]
+struct CompletedTask {
+    parent_connection_id: String,
+    child_conversation_id: i32,
+    agent_type: AgentType,
+    status: TaskStatus,
+    /// Result text for `Completed` (capped at [`COMPLETED_TEXT_CAP`]). `None`
+    /// for failures/cancels.
+    text: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+    duration_ms: u64,
 }
 
 #[derive(Default)]
@@ -128,8 +232,22 @@ struct PendingCalls {
 /// `handle_request` drains both buffers at park.
 #[derive(Default)]
 struct PendingInner {
-    /// Parked delegation calls awaiting resolution, keyed by broker `call_id`.
-    calls: HashMap<String, PendingCall>,
+    /// Tasks running in the background after their `Running` ack, keyed by
+    /// broker `call_id` (= `task_id`). A terminal event migrates an entry from
+    /// here into `completed` under THIS lock (atomic `running` → `completed`
+    /// transition), so a concurrent `get_delegation_status` never observes a
+    /// task as neither running nor completed.
+    running: HashMap<String, RunningTask>,
+    /// Terminal results retained for `get_delegation_status` / `cancel_delegation`,
+    /// keyed by `task_id`. Bounded by `completed_order` FIFO eviction
+    /// (`COMPLETED_CAP_PER_PARENT` per parent) and dropped per-parent on
+    /// connection teardown. Evicted/unknown tasks fall back to the DB status
+    /// lookup.
+    completed: HashMap<String, CompletedTask>,
+    /// Per-parent FIFO index over `completed` for capped eviction. Keyed by
+    /// `parent_connection_id`; each deque holds that parent's completed
+    /// `task_id`s oldest-first.
+    completed_order: HashMap<String, VecDeque<String>>,
     /// In-setup delegations (spawned + id minted, not yet parked), mapping
     /// `call_id` → `child_connection_id`. Gating the early buffers on membership
     /// here distinguishes a genuine pre-registration race (still reserved →
@@ -210,7 +328,9 @@ impl PendingInner {
     /// over `setups`, but n is the (tiny) count of concurrently-in-setup
     /// delegations.
     fn is_child_reserved(&self, child_connection_id: &str) -> bool {
-        self.setups.values().any(|child| child == child_connection_id)
+        self.setups
+            .values()
+            .any(|child| child == child_connection_id)
     }
 
     /// Buffer a completion for a still-reserved delegation, stamped with the
@@ -320,6 +440,323 @@ impl PendingInner {
                 setup.canceled_at = Some(stamp);
             }
         }
+    }
+
+    /// Insert a terminal result into the completed-cache, FIFO-evicting the
+    /// parent's oldest entry past [`COMPLETED_CAP_PER_PARENT`]. The caller does
+    /// the atomic `running.remove` + this insert under one lock, then notifies
+    /// long-poll waiters AFTER releasing the lock.
+    fn insert_completed(&mut self, call_id: &str, task: CompletedTask) {
+        let parent = task.parent_connection_id.clone();
+        self.completed.insert(call_id.to_string(), task);
+        let order = self.completed_order.entry(parent).or_default();
+        order.push_back(call_id.to_string());
+        while order.len() > COMPLETED_CAP_PER_PARENT {
+            if let Some(evicted) = order.pop_front() {
+                self.completed.remove(&evicted);
+            }
+        }
+    }
+
+    /// Forget every completed result for a parent. Called on connection
+    /// teardown (the parent is gone — nothing left to query). A turn cancel
+    /// deliberately does NOT call this: the connection stays alive and the LLM
+    /// may still query its just-canceled tasks.
+    fn drop_completed_for_parent(&mut self, parent_connection_id: &str) {
+        if let Some(ids) = self.completed_order.remove(parent_connection_id) {
+            for id in ids {
+                self.completed.remove(&id);
+            }
+        }
+    }
+}
+
+/// Cap result text retained in the completed-cache. The full output always
+/// lives in the child session; this only bounds the broker's copy.
+fn cap_completed_text(text: &str) -> String {
+    truncate_on_char_boundary(text, COMPLETED_TEXT_CAP)
+}
+
+/// Build the bounded inline preview carried by the `DelegationCompleted` event
+/// and terminal meta. `None` for empty text.
+fn build_text_preview(text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(truncate_on_char_boundary(text, STATUS_PREVIEW_CAP))
+}
+
+/// Truncate `s` so the RESULT (including the appended ellipsis) is at most `cap`
+/// bytes, cut on a UTF-8 char boundary. Reserving the ellipsis bytes keeps the
+/// output within the advertised cap rather than `cap + 3`.
+fn truncate_on_char_boundary(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    const ELLIPSIS: &str = "…";
+    // Leave room for the ellipsis; clamp at 0 for pathologically small caps.
+    let budget = cap.saturating_sub(ELLIPSIS.len());
+    let mut end = budget.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ELLIPSIS}", &s[..end])
+}
+
+/// Derive the completed-cache fields (status / text / error_code / message)
+/// from a resolved [`DelegationOutcome`]. `Canceled`-coded errors map to
+/// [`TaskStatus::Canceled`]; every other error maps to [`TaskStatus::Failed`].
+fn terminal_fields(
+    outcome: &DelegationOutcome,
+) -> (TaskStatus, Option<String>, Option<String>, Option<String>) {
+    match outcome {
+        DelegationOutcome::Ok(ok) => (
+            TaskStatus::Completed,
+            Some(cap_completed_text(&ok.text)),
+            None,
+            None,
+        ),
+        DelegationOutcome::Err { code, message, .. } => {
+            let status = if code == "canceled" {
+                TaskStatus::Canceled
+            } else {
+                TaskStatus::Failed
+            };
+            (status, None, Some(code.clone()), Some(message.clone()))
+        }
+    }
+}
+
+/// Build a [`CompletedTask`] from a resolved outcome for the completed-cache.
+fn build_completed(
+    parent_connection_id: &str,
+    child_conversation_id: i32,
+    agent_type: AgentType,
+    duration_ms: u64,
+    outcome: &DelegationOutcome,
+) -> CompletedTask {
+    let (status, text, error_code, message) = terminal_fields(outcome);
+    CompletedTask {
+        parent_connection_id: parent_connection_id.to_string(),
+        child_conversation_id,
+        agent_type,
+        status,
+        text,
+        error_code,
+        message,
+        duration_ms,
+    }
+}
+
+/// A `canceled`-coded [`DelegationOutcome`] carrying the child conversation id.
+fn canceled_outcome(child_conversation_id: i32, reason: &str) -> DelegationOutcome {
+    DelegationOutcome::from_err(
+        DelegationError::Canceled {
+            reason: reason.to_string(),
+        },
+        Some(child_conversation_id),
+    )
+}
+
+/// Remove `keys` from `running`, recording each as a `Canceled` completed entry
+/// (so a `get_delegation_status` still answers) and returning the drained tasks
+/// for I/O teardown. MUST be called with the pending lock held so the running →
+/// completed migration is atomic.
+fn drain_and_record_canceled(
+    inner: &mut PendingInner,
+    keys: Vec<String>,
+    reason: &str,
+) -> Vec<RunningTask> {
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        let task = inner.running.remove(&k).expect("key just observed");
+        let outcome = canceled_outcome(task.child_conversation_id, reason);
+        let duration_ms = task.started_at.elapsed().as_millis() as u64;
+        inner.insert_completed(
+            &k,
+            build_completed(
+                &task.parent_connection_id,
+                task.child_conversation_id,
+                task.agent_type,
+                duration_ms,
+                &outcome,
+            ),
+        );
+        out.push(task);
+    }
+    out
+}
+
+/// Project a `DelegationOutcome` + broker-measured `duration_ms` onto the
+/// wire-stable `DelegationResultSummary` carried by `DelegationCompleted`.
+/// Keeps the mapping (and the bounded `text_preview`) in one place.
+fn outcome_to_summary(outcome: &DelegationOutcome, duration_ms: u64) -> DelegationResultSummary {
+    match outcome {
+        DelegationOutcome::Ok(ok) => DelegationResultSummary::Ok {
+            duration_ms,
+            text_preview: build_text_preview(&ok.text),
+        },
+        DelegationOutcome::Err { code, .. } => DelegationResultSummary::Err {
+            error_code: code.clone(),
+        },
+    }
+}
+
+/// Project a resolved outcome onto a terminal [`DelegationTaskReport`] (used by
+/// the setup-window terminal dispositions and the test shim).
+fn report_from_outcome(
+    task_id: Option<String>,
+    agent_type: Option<AgentType>,
+    outcome: &DelegationOutcome,
+    duration_ms: Option<u64>,
+) -> DelegationTaskReport {
+    let (status, text, error_code, message) = terminal_fields(outcome);
+    let child_conversation_id = match outcome {
+        DelegationOutcome::Ok(ok) => Some(ok.child_conversation_id),
+        DelegationOutcome::Err {
+            child_conversation_id,
+            ..
+        } => *child_conversation_id,
+    };
+    DelegationTaskReport {
+        task_id,
+        status,
+        child_conversation_id,
+        agent_type,
+        text,
+        error_code,
+        message,
+        duration_ms,
+    }
+}
+
+/// Build a `Failed`/`Canceled` report for a setup error (no task id — setup
+/// failed before/around registration, so the LLM has no task to track).
+fn report_err(
+    agent_type: AgentType,
+    err: DelegationError,
+    child_conversation_id: Option<i32>,
+) -> DelegationTaskReport {
+    let outcome = DelegationOutcome::from_err(err, child_conversation_id);
+    report_from_outcome(None, Some(agent_type), &outcome, None)
+}
+
+/// The `Running` ack returned by `start_delegation` for a backgrounded task.
+fn running_ack(
+    call_id: String,
+    child_conversation_id: i32,
+    agent_type: AgentType,
+) -> DelegationTaskReport {
+    // Embed the literal task_id in the message so it survives clients that only
+    // surface the MCP `content` text (not `structuredContent`) — without it the
+    // LLM couldn't call get_delegation_status / cancel_delegation.
+    let message = format!(
+        "Delegated; the sub-agent is running in the background. task_id={call_id}. \
+         Call get_delegation_status with this task_id (optionally wait_ms) to \
+         collect the result, or cancel_delegation to stop it."
+    );
+    DelegationTaskReport {
+        task_id: Some(call_id),
+        status: TaskStatus::Running,
+        child_conversation_id: Some(child_conversation_id),
+        agent_type: Some(agent_type),
+        text: None,
+        error_code: None,
+        message: Some(message),
+        duration_ms: None,
+    }
+}
+
+/// Status report for a still-running task.
+fn running_report(task_id: &str, task: &RunningTask) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status: TaskStatus::Running,
+        child_conversation_id: Some(task.child_conversation_id),
+        agent_type: Some(task.agent_type),
+        text: None,
+        error_code: None,
+        message: Some("Sub-agent is still running in the background.".to_string()),
+        duration_ms: None,
+    }
+}
+
+/// Status report from a cached completed result.
+fn completed_report(task_id: &str, c: &CompletedTask) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status: c.status,
+        child_conversation_id: Some(c.child_conversation_id),
+        agent_type: Some(c.agent_type),
+        text: c.text.clone(),
+        error_code: c.error_code.clone(),
+        message: c.message.clone(),
+        duration_ms: Some(c.duration_ms),
+    }
+}
+
+/// Status report when a task id isn't known to the caller (never existed,
+/// owned by a different parent, or evicted with no DB record).
+fn unknown_report(task_id: &str) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status: TaskStatus::Unknown,
+        child_conversation_id: None,
+        agent_type: None,
+        text: None,
+        error_code: None,
+        message: Some(
+            "Unknown task id — it never existed, isn't owned by this session, \
+             or its result was evicted with no stored record."
+                .to_string(),
+        ),
+        duration_ms: None,
+    }
+}
+
+/// Status report recovered from the DB after the in-memory result was evicted.
+/// Carries status only — the full output lives in the child session.
+fn db_report(task_id: &str, rec: &ChildStatusRecord) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status: rec.status,
+        child_conversation_id: Some(rec.child_conversation_id),
+        agent_type: Some(rec.agent_type),
+        text: None,
+        error_code: (rec.status == TaskStatus::Canceled).then(|| "canceled".to_string()),
+        message: Some(format!(
+            "Result no longer cached; open child session {} for the full output.",
+            rec.child_conversation_id
+        )),
+        duration_ms: None,
+    }
+}
+
+/// Map a terminal [`DelegationTaskReport`] back to a [`DelegationOutcome`] for
+/// the test-only `handle_request` shim (so pre-async tests keep asserting on
+/// the old outcome shape).
+#[cfg(any(test, feature = "test-utils"))]
+fn report_to_outcome(report: &DelegationTaskReport) -> DelegationOutcome {
+    use crate::acp::delegation::types::DelegationSuccess;
+    match report.status {
+        TaskStatus::Completed => DelegationOutcome::Ok(DelegationSuccess {
+            text: report.text.clone().unwrap_or_default(),
+            child_conversation_id: report.child_conversation_id.unwrap_or(0),
+            child_agent_type: report.agent_type.unwrap_or(AgentType::ClaudeCode),
+            turn_count: 1,
+            duration_ms: report.duration_ms.unwrap_or(0),
+            token_usage: None,
+        }),
+        // Running never reaches here (the shim loops until terminal); the other
+        // states all project onto Err.
+        _ => DelegationOutcome::Err {
+            code: report
+                .error_code
+                .clone()
+                .unwrap_or_else(|| "canceled".to_string()),
+            message: report.message.clone().unwrap_or_default(),
+            child_conversation_id: report.child_conversation_id,
+        },
     }
 }
 
@@ -527,10 +964,18 @@ pub struct DelegationBroker {
     /// via `with_writers`; tests that don't observe the event lifecycle
     /// take the default Noop.
     event_emitter: Arc<dyn DelegationEventEmitter>,
+    /// DB fallback for `get_delegation_status` / `cancel_delegation` once a
+    /// task's result aged out of the in-memory completed-cache. Defaults to a
+    /// no-op ("unknown"); production wires `DbChildStatusLookup` via
+    /// `with_status_lookup`.
+    status_lookup: Arc<dyn ChildStatusLookup>,
     pending: Arc<PendingCalls>,
     tool_calls: Arc<ToolCallTracker>,
     pre_canceled_handles: Arc<PreCanceledHandles>,
     config: Arc<Mutex<DelegationConfig>>,
+    /// Woken after every terminal `record_completed` so a `get_delegation_status`
+    /// long-poll wakes the instant its task finishes instead of busy-polling.
+    result_notify: Arc<Notify>,
 }
 
 impl DelegationBroker {
@@ -579,11 +1024,22 @@ impl DelegationBroker {
             depth_lookup,
             meta_writer,
             event_emitter,
+            status_lookup: Arc::new(NoopChildStatusLookup),
             pending: Arc::new(PendingCalls::default()),
             tool_calls: Arc::new(ToolCallTracker::default()),
             pre_canceled_handles: Arc::new(PreCanceledHandles::default()),
             config: Arc::new(Mutex::new(DelegationConfig::default())),
+            result_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Replace the DB status fallback used by `get_delegation_status` /
+    /// `cancel_delegation` for tasks evicted from the in-memory completed-cache.
+    /// Builder-style so the production wiring can layer it onto `with_writers`
+    /// without growing that constructor's arity, and tests can opt in.
+    pub fn with_status_lookup(mut self, status_lookup: Arc<dyn ChildStatusLookup>) -> Self {
+        self.status_lookup = status_lookup;
+        self
     }
 
     /// Record a parent ACP `tool_call_id` whose title indicates the LLM is
@@ -964,6 +1420,59 @@ impl DelegationBroker {
         }
     }
 
+    /// Tombstone a parent `tool_call_id` whose `delegate_to_agent` reached a
+    /// TERMINAL ACP status (`completed`/`failed`) so a stale keyed pending entry
+    /// can't mis-bind a later delegation. The lifecycle dispatcher calls this
+    /// from its terminal-`ToolCallUpdate` branch, keyed on `tool_call_id`
+    /// (a bare terminal update carries no parseable key).
+    ///
+    /// The hazard: keyed pending entries are retained regardless of age (see the
+    /// retain block in `take_matching_tool_call_at`), so if a `delegate_to_agent`
+    /// tool call goes terminal without its MCP round-trip ever reaching the
+    /// broker (the call failed, the turn was interrupted, the companion never
+    /// dispatched), its entry would linger forever and a LATER delegation sharing
+    /// the same `(agent_type, task, working_dir)` key would claim this dead id,
+    /// retargeting its writes/events at the wrong card. Same hazard
+    /// `consume_explicit_tool_call` guards on the explicit-id path; this is its
+    /// terminal-status sibling.
+    ///
+    /// Safe synchronously, no grace window: a terminal `completed` can only
+    /// arrive AFTER the round-trip's claim already removed the entry (the ack
+    /// that claim produces is what lets the parent's tool call return), and a
+    /// serialized sibling still awaiting its (observed 77s-late) round-trip is
+    /// NON-terminal while it waits — so this never evicts a live entry.
+    ///
+    /// Records `consumed` ONLY when an entry was actually removed: this runs for
+    /// EVERY terminal tool-call update (the vast majority are non-delegations),
+    /// and `consumed` has no TTL/cap, so recording unconditionally would grow it
+    /// with every completed tool call. Recording on a real removal still drops an
+    /// out-of-order re-registration of the same id via the Tier-1 consumed check
+    /// in `register_pending_tool_call_with_key_at`. Returns whether an entry was
+    /// removed (for the dispatcher's gated log).
+    pub async fn tombstone_pending_tool_call(
+        &self,
+        parent_connection_id: &str,
+        tool_call_id: &str,
+    ) -> bool {
+        let mut map = self.tool_calls.inner.lock().await;
+        // No bucket → nothing registered for this parent; nothing to tombstone
+        // and nothing to record (unlike `consume_explicit_tool_call`, no
+        // MCP-before-ACP race can land a terminal status before registration on
+        // the single ordered ACP stream, so we never pre-create a bucket here).
+        let Some(bucket) = map.get_mut(parent_connection_id) else {
+            return false;
+        };
+        let before = bucket.pending.len();
+        bucket.pending.retain(|p| p.tool_call_id != tool_call_id);
+        let removed = bucket.pending.len() != before;
+        if removed && !bucket.consumed.iter().any(|(id, _)| id == tool_call_id) {
+            bucket
+                .consumed
+                .push_back((tool_call_id.to_string(), Instant::now()));
+        }
+        removed
+    }
+
     /// Correlate an MCP `delegate_to_agent` round-trip to the parent's
     /// real ACP `tool_call_id`, polling briefly to absorb the race between
     /// two independent arrival paths for the same invocation:
@@ -1156,12 +1665,30 @@ impl DelegationBroker {
     /// early-return that isn't a park hand-off (the park region deregisters
     /// inline, atomically with `calls.insert`).
     async fn drop_inflight(&self, inflight_id: u64) {
-        self.pending.inner.lock().await.deregister_inflight(inflight_id);
+        self.pending
+            .inner
+            .lock()
+            .await
+            .deregister_inflight(inflight_id);
     }
 
-    /// Entry point. Drives the full lifecycle and returns whatever the parent
-    /// LLM should see as the `delegate_to_agent` tool_result.
-    pub async fn handle_request(&self, mut req: DelegationRequest) -> DelegationOutcome {
+    /// Async entry point for `delegate_to_agent`. Does the bounded setup
+    /// (claim/depth checks → spawn → send first prompt), registers the task in
+    /// `running`, and returns a `Running` ack [`DelegationTaskReport`] WITHOUT
+    /// waiting for the child to finish. The child resolves later via the
+    /// lifecycle → [`complete_call`] (or a cancel path), which migrates the task
+    /// into `completed` and wakes any `get_delegation_status` long-poll.
+    ///
+    /// Returns a terminal report instead of a `Running` ack in three cases: the
+    /// child finished during setup (fast/empty turn), a parent cancel reached it
+    /// mid-setup, or setup itself failed (disabled / depth / spawn / send).
+    ///
+    /// All the setup-window race machinery (`setups` / `early_*` / `inflight`)
+    /// is unchanged — it governs terminals that beat registration, which is
+    /// orthogonal to whether the caller then blocks. The only change vs. the old
+    /// `handle_request` is that "park a `oneshot` and await it" becomes "insert a
+    /// [`RunningTask`] and return the ack."
+    pub async fn start_delegation(&self, mut req: DelegationRequest) -> DelegationTaskReport {
         // Register this setup as the VERY FIRST thing — before the pre-cancel
         // check's `.await` and the (possibly multi-second) claim poll — so a
         // parent cancel landing ANYWHERE from here to park reaches it, not just
@@ -1187,7 +1714,31 @@ impl DelegationBroker {
         if let Some(handle) = req.external_handle.as_deref() {
             if self.take_pre_canceled_handle(handle).await {
                 self.drop_inflight(inflight_id).await;
-                return DelegationOutcome::from_err(
+                // Bailing here BEFORE the claim path means this delegation never
+                // consumes the ACP `tool_call_id` the lifecycle keyed for it. As
+                // keyed entries are retained indefinitely, a leftover would let a
+                // *later* same-`(agent_type, task, working_dir)` delegation claim
+                // this canceled call's id and bind its writes/events to the wrong
+                // card. Drain it now (idempotent; the turn-end tombstone is the
+                // backstop if the ACP event hasn't registered yet).
+                if req.parent_tool_use_id.is_empty() {
+                    let key = DelegationMatchKey {
+                        agent_type: req.agent_type,
+                        task: req.task.clone(),
+                        working_dir: req.requested_working_dir.clone(),
+                    };
+                    let _ = self
+                        .take_matching_tool_call(&req.parent_connection_id, &key)
+                        .await;
+                } else {
+                    self.consume_explicit_tool_call(
+                        &req.parent_connection_id,
+                        &req.parent_tool_use_id,
+                    )
+                    .await;
+                }
+                return report_err(
+                    req.agent_type,
                     DelegationError::Canceled {
                         reason: "canceled before spawn".into(),
                     },
@@ -1231,7 +1782,8 @@ impl DelegationBroker {
         let cfg = self.config_snapshot().await;
         if !cfg.enabled {
             self.drop_inflight(inflight_id).await;
-            return DelegationOutcome::from_err(
+            return report_err(
+                req.agent_type,
                 DelegationError::Canceled {
                     reason: "delegation disabled".into(),
                 },
@@ -1256,7 +1808,7 @@ impl DelegationBroker {
             Ok(d) => d,
             Err(e) => {
                 self.drop_inflight(inflight_id).await;
-                return DelegationOutcome::from_err(e, None);
+                return report_err(req.agent_type, e, None);
             }
         };
         // The child the broker is about to create would sit at `parent_depth + 1`.
@@ -1264,7 +1816,8 @@ impl DelegationBroker {
         // a child sitting exactly at `depth_limit` is allowed.
         if parent_depth + 1 > cfg.depth_limit {
             self.drop_inflight(inflight_id).await;
-            return DelegationOutcome::from_err(
+            return report_err(
+                req.agent_type,
                 DelegationError::DepthLimitExceeded {
                     current_depth: parent_depth,
                     limit: cfg.depth_limit,
@@ -1286,7 +1839,8 @@ impl DelegationBroker {
         // during the claim/depth phase, bail before spawning a child the parent
         // has abandoned. No child exists yet, so there's nothing to tear down.
         if self.take_inflight_cancel(inflight_id).await {
-            return DelegationOutcome::from_err(
+            return report_err(
+                req.agent_type,
                 DelegationError::Canceled {
                     reason: "parent canceled".into(),
                 },
@@ -1307,7 +1861,8 @@ impl DelegationBroker {
             Ok(id) => id,
             Err(e) => {
                 self.drop_inflight(inflight_id).await;
-                return DelegationOutcome::from_err(
+                return report_err(
+                    req.agent_type,
                     DelegationError::SpawnFailed(e.to_string()),
                     None,
                 );
@@ -1321,7 +1876,8 @@ impl DelegationBroker {
         // agent process starts up.
         if self.take_inflight_cancel(inflight_id).await {
             let _ = self.spawner.disconnect(&child_connection_id).await;
-            return DelegationOutcome::from_err(
+            return report_err(
+                req.agent_type,
                 DelegationError::Canceled {
                     reason: "parent canceled".into(),
                 },
@@ -1374,12 +1930,17 @@ impl DelegationBroker {
                     inner.deregister_inflight(inflight_id);
                 }
                 let _ = self.spawner.disconnect(&child_connection_id).await;
-                return DelegationOutcome::from_err(
+                return report_err(
+                    req.agent_type,
                     DelegationError::SpawnFailed(e.to_string()),
                     None,
                 );
             }
         };
+
+        // The child is now running. Stamp the start so terminal paths can
+        // report a real `duration_ms`.
+        let started_at = Instant::now();
 
         // --- Mark the parent's tool call as in-flight -------------------------
         // The frontend's DelegationContext seeds its `parent_tool_use_id`-keyed
@@ -1395,7 +1956,23 @@ impl DelegationBroker {
                 Some(&child_connection_id),
                 Some(child_conversation_id),
                 None,
+                None,
             ),
+        )
+        .await;
+
+        // Announce the live delegation on the PARENT's event stream so the
+        // frontend `DelegationContext` binds the child inline and attaches its
+        // live sub-thread. Symmetric with the terminal `emit_completed_if_real`,
+        // and — unlike the removed child-stream emit in `send_prompt_linked` —
+        // delivered on a stream the parent is already attached to in web/server
+        // mode, carrying the real `parent_connection_id`.
+        self.emit_started_if_real(
+            &req.parent_connection_id,
+            &req.parent_tool_use_id,
+            &child_connection_id,
+            child_conversation_id,
+            req.agent_type,
         )
         .await;
 
@@ -1426,9 +2003,11 @@ impl DelegationBroker {
         enum Disposition {
             ChildTerminal(DelegationOutcome),
             ParentCanceled,
-            Parked,
+            Running,
         }
-        let (tx, rx) = oneshot::channel();
+        // Near-zero elapsed for these setup-window races, but measured for
+        // consistency with the normal terminal paths.
+        let setup_duration_ms = started_at.elapsed().as_millis() as u64;
         let disposition = {
             let mut inner = self.pending.inner.lock().await;
             // Each buffered child terminal carries (arrival_stamp, outcome).
@@ -1450,69 +2029,104 @@ impl DelegationBroker {
                 };
             let parent_canceled_at = inner.inflight_canceled_at(inflight_id);
             inner.unreserve(&call_id, &child_connection_id);
+            // For both terminal dispositions we record the completed result
+            // INSIDE this lock (atomically with unreserve/deregister) so a
+            // concurrent `get_delegation_status` can never observe the task as
+            // neither running nor completed. The `Running` arm inserts the live
+            // task instead of parking a `oneshot` — the caller returns the ack.
+            let record = |inner: &mut PendingInner, outcome: &DelegationOutcome| {
+                inner.insert_completed(
+                    &call_id,
+                    build_completed(
+                        &req.parent_connection_id,
+                        child_conversation_id,
+                        req.agent_type,
+                        setup_duration_ms,
+                        outcome,
+                    ),
+                );
+            };
             match (child_terminal, parent_canceled_at) {
                 // Both raced in the setup window: the earlier arrival stamp wins.
                 (Some((child_stamp, outcome)), Some(cancel_stamp)) => {
                     inner.deregister_inflight(inflight_id);
                     if child_stamp < cancel_stamp {
+                        record(&mut inner, &outcome);
                         Disposition::ChildTerminal(outcome)
                     } else {
+                        record(
+                            &mut inner,
+                            &canceled_outcome(child_conversation_id, "parent canceled"),
+                        );
                         Disposition::ParentCanceled
                     }
                 }
                 // Only a child terminal fired.
                 (Some((_, outcome)), None) => {
                     inner.deregister_inflight(inflight_id);
+                    record(&mut inner, &outcome);
                     Disposition::ChildTerminal(outcome)
                 }
                 // Only a parent cancel fired.
                 (None, Some(_)) => {
                     inner.deregister_inflight(inflight_id);
+                    record(
+                        &mut inner,
+                        &canceled_outcome(child_conversation_id, "parent canceled"),
+                    );
                     Disposition::ParentCanceled
                 }
-                // Nothing beat us — park for a future resolver.
+                // Nothing beat us — register the running task for a future
+                // resolver, deregistering the in-flight record adjacent to the
+                // insert with no `.await` between (so a parent cancel serialized
+                // AFTER us finds it in `running` and drains it).
                 (None, None) => {
-                    inner.calls.insert(
+                    inner.running.insert(
                         call_id.clone(),
-                        PendingCall {
+                        RunningTask {
                             child_connection_id: child_connection_id.clone(),
                             child_conversation_id,
                             parent_connection_id: req.parent_connection_id.clone(),
                             parent_tool_use_id: req.parent_tool_use_id.clone(),
+                            agent_type: req.agent_type,
                             external_handle: req.external_handle.clone(),
-                            tx,
+                            started_at,
                         },
                     );
-                    // Adjacent to the insert, no `.await` between (see above).
                     inner.deregister_inflight(inflight_id);
-                    Disposition::Parked
+                    Disposition::Running
                 }
             }
         };
 
         match disposition {
-            // A child terminal event (completion or failure) beat our
-            // registration. Finish here so the parent's `delegate_to_agent`
-            // resolves instead of hanging on `rx.await` (the resolver no-oped
-            // because no entry existed when it fired). The `running` meta is
-            // correctly superseded by the terminal meta `finalize_delegation`
-            // writes.
+            // A child terminal beat registration. Finalize (terminal meta +
+            // DelegationCompleted event + child teardown) and return the
+            // terminal report directly. The completed entry was recorded under
+            // the disposition lock above; wake any long-poll waiter.
             Disposition::ChildTerminal(outcome) => {
                 self.finalize_delegation(
                     &req.parent_connection_id,
                     &req.parent_tool_use_id,
                     &child_connection_id,
                     child_conversation_id,
+                    req.agent_type,
+                    setup_duration_ms,
                     &outcome,
                 )
                 .await;
-                return outcome;
+                self.result_notify.notify_waiters();
+                return report_from_outcome(
+                    Some(call_id),
+                    Some(req.agent_type),
+                    &outcome,
+                    Some(setup_duration_ms),
+                );
             }
             // A parent cancel reached this delegation mid-setup — after the
-            // prompt was sent, before we parked. The child would otherwise run
-            // orphaned, so tear it down ourselves (cancel + disconnect, since a
-            // turn is in flight) and resolve as canceled, mirroring the teardown
-            // `finalize_parent_cancel` performs for parked entries.
+            // prompt was sent, before we registered. Tear the child down
+            // ourselves (cancel + disconnect, since a turn is in flight) and
+            // return a canceled report. The canceled result was recorded above.
             Disposition::ParentCanceled => {
                 self.write_meta_if_real(
                     &req.parent_connection_id,
@@ -1522,6 +2136,7 @@ impl DelegationBroker {
                         Some(&child_connection_id),
                         Some(child_conversation_id),
                         Some("canceled"),
+                        None,
                     ),
                 )
                 .await;
@@ -1530,6 +2145,7 @@ impl DelegationBroker {
                     &req.parent_tool_use_id,
                     &child_connection_id,
                     child_conversation_id,
+                    req.agent_type,
                     DelegationResultSummary::Err {
                         error_code: "canceled".to_string(),
                     },
@@ -1537,26 +2153,47 @@ impl DelegationBroker {
                 .await;
                 let _ = self.spawner.cancel(&child_connection_id).await;
                 let _ = self.spawner.disconnect(&child_connection_id).await;
-                return DelegationOutcome::from_err(
-                    DelegationError::Canceled {
-                        reason: "parent canceled".into(),
-                    },
-                    Some(child_conversation_id),
+                self.result_notify.notify_waiters();
+                return report_from_outcome(
+                    Some(call_id),
+                    Some(req.agent_type),
+                    &canceled_outcome(child_conversation_id, "parent canceled"),
+                    Some(setup_duration_ms),
                 );
             }
-            // Nothing beat us — the entry is parked; fall through to the second
-            // pre-cancel check and `rx.await`.
-            Disposition::Parked => {}
+            // Registered in `running` — fall through to the second pre-cancel
+            // check, then return the ack.
+            Disposition::Running => {}
         }
 
-        // Second pre-cancel check: a `notifications/cancelled` may have
-        // landed between the entry-side check and the pending registration
-        // above. If so, drain the entry ourselves (so cancel_by_external_handle
-        // racing us doesn't double-emit) and surface the canceled outcome.
+        // Second pre-cancel check: a `notifications/cancelled` may have landed
+        // between the entry-side check and the `running` registration above. If
+        // so, drain the task ourselves (so a racing `cancel_by_external_handle`
+        // doesn't double-finalize), record the canceled result, and return a
+        // canceled report instead of the Running ack.
         if let Some(handle) = req.external_handle.as_deref() {
             if self.take_pre_canceled_handle(handle).await {
-                let entry = self.pending.inner.lock().await.calls.remove(&call_id);
-                if let Some(PendingCall { tx, .. }) = entry {
+                let canceled = {
+                    let mut inner = self.pending.inner.lock().await;
+                    if inner.running.remove(&call_id).is_some() {
+                        let outcome =
+                            canceled_outcome(child_conversation_id, "canceled before await");
+                        inner.insert_completed(
+                            &call_id,
+                            build_completed(
+                                &req.parent_connection_id,
+                                child_conversation_id,
+                                req.agent_type,
+                                started_at.elapsed().as_millis() as u64,
+                                &outcome,
+                            ),
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if canceled {
                     self.write_meta_if_real(
                         &req.parent_connection_id,
                         &req.parent_tool_use_id,
@@ -1565,6 +2202,7 @@ impl DelegationBroker {
                             Some(&child_connection_id),
                             Some(child_conversation_id),
                             Some("canceled"),
+                            None,
                         ),
                     )
                     .await;
@@ -1573,6 +2211,7 @@ impl DelegationBroker {
                         &req.parent_tool_use_id,
                         &child_connection_id,
                         child_conversation_id,
+                        req.agent_type,
                         DelegationResultSummary::Err {
                             error_code: "canceled".to_string(),
                         },
@@ -1580,86 +2219,60 @@ impl DelegationBroker {
                     .await;
                     let _ = self.spawner.cancel(&child_connection_id).await;
                     let _ = self.spawner.disconnect(&child_connection_id).await;
-                    let outcome = DelegationOutcome::from_err(
-                        DelegationError::Canceled {
-                            reason: "canceled before await".into(),
-                        },
-                        Some(child_conversation_id),
+                    self.result_notify.notify_waiters();
+                    return report_from_outcome(
+                        Some(call_id),
+                        Some(req.agent_type),
+                        &canceled_outcome(child_conversation_id, "canceled before await"),
+                        Some(started_at.elapsed().as_millis() as u64),
                     );
-                    let _ = tx.send(outcome.clone());
-                    return outcome;
                 }
             }
         }
 
-        match rx.await {
-            Ok(outcome) => {
-                // complete_call (or cancel_*) already removed from `pending`,
-                // wrote meta, emitted DelegationCompleted, and disconnected;
-                // this is a belt-and-braces idempotent prune in case the
-                // resolver path didn't drain it (it always does in production,
-                // but the prune is cheap).
-                self.pending.inner.lock().await.calls.remove(&call_id);
-                outcome
-            }
-            Err(_) => {
-                // The sender was dropped before sending — should not happen in
-                // practice (complete_call / cancel_* always send before drop),
-                // but be defensive. Drain pending FIRST so a racing resolver
-                // (from a late lifecycle TurnComplete) finds no entry and
-                // silently no-ops instead of double-emitting DelegationCompleted.
-                let _ = self.pending.inner.lock().await.calls.remove(&call_id);
-                self.write_meta_if_real(
-                    &req.parent_connection_id,
-                    &req.parent_tool_use_id,
-                    build_delegation_meta(
-                        "failed",
-                        Some(&child_connection_id),
-                        Some(child_conversation_id),
-                        Some("canceled"),
-                    ),
-                )
-                .await;
-                self.emit_completed_if_real(
-                    &req.parent_connection_id,
-                    &req.parent_tool_use_id,
-                    &child_connection_id,
-                    child_conversation_id,
-                    DelegationResultSummary::Err {
-                        error_code: "canceled".to_string(),
-                    },
-                )
-                .await;
-                let _ = self.spawner.disconnect(&child_connection_id).await;
-                DelegationOutcome::from_err(
-                    DelegationError::Canceled {
-                        reason: "completion channel dropped".into(),
-                    },
-                    Some(child_conversation_id),
-                )
-            }
-        }
+        // Registered and running in the background — return the ack. The child
+        // resolves later via the lifecycle → `complete_call` (or a cancel path).
+        running_ack(call_id, child_conversation_id, req.agent_type)
     }
 
     /// Called by the child-session lifecycle subscriber on `TurnComplete`
     /// (success path) or by error mappers (failure path).
     ///
-    /// If no entry is parked under `call_id`, the outcome is buffered for a
-    /// racing `handle_request` to drain at park — but ONLY while the delegation
-    /// is still reserved (mid-setup). This closes the window where a fast/empty
-    /// turn's `TurnComplete` propagates through the lifecycle while
-    /// `handle_request` is still between `send_prompt` and the park: the prompt
-    /// is only *enqueued* by `send_prompt`, and the child loop emits
-    /// `TurnComplete` independently, so a completion CAN beat the park. When the
-    /// `call_id` is no longer reserved the call was already resolved by another
-    /// terminal path, so the buffer is skipped (silent no-op).
+    /// Migrates the task from `running` into `completed` (atomically, under one
+    /// lock) and then finalizes (terminal meta + `DelegationCompleted` event +
+    /// child teardown) and wakes any `get_delegation_status` long-poll.
+    ///
+    /// If no entry is in `running` under `call_id`, the outcome is buffered for
+    /// a racing `start_delegation` to drain at registration — but ONLY while the
+    /// delegation is still reserved (mid-setup). This closes the window where a
+    /// fast/empty turn's `TurnComplete` propagates through the lifecycle while
+    /// `start_delegation` is still between `send_prompt` and the `running`
+    /// insert: the prompt is only *enqueued* by `send_prompt`, and the child
+    /// loop emits `TurnComplete` independently, so a completion CAN beat it. When
+    /// the `call_id` is no longer reserved the call was already resolved by
+    /// another terminal path, so the buffer is skipped (silent no-op).
     pub async fn complete_call(&self, call_id: &str, outcome: DelegationOutcome) {
-        let entry = {
+        let task = {
             let mut inner = self.pending.inner.lock().await;
-            match inner.calls.remove(call_id) {
-                Some(entry) => Some(entry),
+            match inner.running.remove(call_id) {
+                Some(task) => {
+                    // Atomic running → completed so a concurrent status query
+                    // never sees the task as neither running nor completed.
+                    let duration_ms = task.started_at.elapsed().as_millis() as u64;
+                    inner.insert_completed(
+                        call_id,
+                        build_completed(
+                            &task.parent_connection_id,
+                            task.child_conversation_id,
+                            task.agent_type,
+                            duration_ms,
+                            &outcome,
+                        ),
+                    );
+                    Some((task, duration_ms))
+                }
                 None => {
-                    // Buffer for the racing `handle_request` to drain iff still
+                    // Buffer for the racing `start_delegation` to drain iff still
                     // reserved (mid-setup); a no-op otherwise, so the clone only
                     // materializes on the genuine pre-registration race.
                     inner.buffer_early_complete(call_id, outcome.clone());
@@ -1667,47 +2280,57 @@ impl DelegationBroker {
                 }
             }
         };
-        if let Some(entry) = entry {
+        if let Some((task, duration_ms)) = task {
             self.finalize_delegation(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                &entry.child_connection_id,
-                entry.child_conversation_id,
+                &task.parent_connection_id,
+                &task.parent_tool_use_id,
+                &task.child_connection_id,
+                task.child_conversation_id,
+                task.agent_type,
+                duration_ms,
                 &outcome,
             )
             .await;
-            let _ = entry.tx.send(outcome);
+            self.result_notify.notify_waiters();
         }
     }
 
     /// Write the terminal meta, emit `DelegationCompleted`, and tear down the
-    /// child for a resolved delegation. Shared by `complete_call` (which then
-    /// sends `outcome` via the parked `tx`) and `handle_request`'s
-    /// early-terminal pickup (which returns `outcome` directly). Mirrors the
-    /// resolution onto the parent's `delegate_to_agent` ToolCallState meta so
-    /// snapshot recovery after a refresh shows the final state without
-    /// depending on the live `delegation_completed` event. Does not touch the
-    /// pending map or the oneshot — the caller owns those.
+    /// child for a resolved delegation. Shared by `complete_call` and
+    /// `start_delegation`'s early-terminal pickup. Mirrors the resolution onto
+    /// the parent's `delegate_to_agent` ToolCallState meta (including a bounded
+    /// `text_preview` on the completed path so a post-refresh snapshot renders
+    /// the result inline) so snapshot recovery shows the final state without the
+    /// live `delegation_completed` event. Does not touch the pending maps — the
+    /// caller owns the `running` → `completed` migration.
+    ///
+    /// `duration_ms` is the broker-measured elapsed time (from `started_at`),
+    /// carried onto the event summary so the parent UI shows a real duration.
+    #[allow(clippy::too_many_arguments)]
     async fn finalize_delegation(
         &self,
         parent_connection_id: &str,
         parent_tool_use_id: &str,
         child_connection_id: &str,
         child_conversation_id: i32,
+        agent_type: AgentType,
+        duration_ms: u64,
         outcome: &DelegationOutcome,
     ) {
         let meta = match outcome {
-            DelegationOutcome::Ok(_) => build_delegation_meta(
+            DelegationOutcome::Ok(ok) => build_delegation_meta(
                 "completed",
                 Some(child_connection_id),
                 Some(child_conversation_id),
                 None,
+                build_text_preview(&ok.text).as_deref(),
             ),
             DelegationOutcome::Err { code, .. } => build_delegation_meta(
                 "failed",
                 Some(child_connection_id),
                 Some(child_conversation_id),
                 Some(code),
+                None,
             ),
         };
         self.write_meta_if_real(parent_connection_id, parent_tool_use_id, meta)
@@ -1717,25 +2340,12 @@ impl DelegationBroker {
             parent_tool_use_id,
             child_connection_id,
             child_conversation_id,
-            Self::outcome_to_summary(outcome),
+            agent_type,
+            outcome_to_summary(outcome, duration_ms),
         )
         .await;
         // v1 one-shot: always tear down the child.
         let _ = self.spawner.disconnect(child_connection_id).await;
-    }
-
-    /// Project a `DelegationOutcome` onto the wire-stable
-    /// `DelegationResultSummary` carried by `AcpEvent::DelegationCompleted`.
-    /// Keeps the mapping (and the `error_code` choice) in one place.
-    fn outcome_to_summary(outcome: &DelegationOutcome) -> DelegationResultSummary {
-        match outcome {
-            DelegationOutcome::Ok(ok) => DelegationResultSummary::Ok {
-                duration_ms: ok.duration_ms,
-            },
-            DelegationOutcome::Err { code, .. } => DelegationResultSummary::Err {
-                error_code: code.clone(),
-            },
-        }
     }
 
     /// Internal helper — apply the meta write iff the parent's
@@ -1758,6 +2368,34 @@ impl DelegationBroker {
             .await;
     }
 
+    /// Internal helper — emit `AcpEvent::DelegationStarted` on the parent's
+    /// stream iff the `parent_tool_use_id` refers to a real ACP tool_call.
+    /// Mirror of `emit_completed_if_real`: same synthetic-id skip, and the
+    /// event rides the parent's stream so the frontend `DelegationContext`
+    /// receives it via the parent's per-connection attach stream in
+    /// web/server mode (not only via the desktop firehose).
+    async fn emit_started_if_real(
+        &self,
+        parent_connection_id: &str,
+        parent_tool_use_id: &str,
+        child_connection_id: &str,
+        child_conversation_id: i32,
+        agent_type: AgentType,
+    ) {
+        if is_synthetic_parent_tool_use_id(parent_tool_use_id) {
+            return;
+        }
+        self.event_emitter
+            .emit_started(
+                parent_connection_id,
+                parent_tool_use_id,
+                child_connection_id,
+                child_conversation_id,
+                agent_type,
+            )
+            .await;
+    }
+
     /// Internal helper — emit `AcpEvent::DelegationCompleted` on the parent's
     /// stream iff the `parent_tool_use_id` refers to a real ACP tool_call.
     /// Synthetic ids (the `"delegation-<uuid>"` UUID fallback) map to no
@@ -1769,6 +2407,7 @@ impl DelegationBroker {
         parent_tool_use_id: &str,
         child_connection_id: &str,
         child_conversation_id: i32,
+        agent_type: AgentType,
         result: DelegationResultSummary,
     ) {
         if is_synthetic_parent_tool_use_id(parent_tool_use_id) {
@@ -1780,6 +2419,7 @@ impl DelegationBroker {
                 parent_tool_use_id,
                 child_connection_id,
                 child_conversation_id,
+                agent_type,
                 result,
             )
             .await;
@@ -1793,66 +2433,29 @@ impl DelegationBroker {
     /// `pre_canceled_handles` so the in-flight request can drain itself
     /// when it tries to register or shortly after.
     pub async fn cancel_by_external_handle(&self, external_handle: &str, reason: String) {
-        let drained: Vec<(String, PendingCall)> = {
+        let drained = {
             let mut inner = self.pending.inner.lock().await;
             let keys: Vec<String> = inner
-                .calls
+                .running
                 .iter()
-                .filter(|(_, v)| {
-                    v.external_handle
-                        .as_deref()
-                        .map(|h| h == external_handle)
-                        .unwrap_or(false)
-                })
+                .filter(|(_, v)| v.external_handle.as_deref() == Some(external_handle))
                 .map(|(k, _)| k.clone())
                 .collect();
-            keys.into_iter()
-                .map(|k| {
-                    let entry = inner.calls.remove(&k).expect("key just observed");
-                    (k, entry)
-                })
-                .collect()
+            drain_and_record_canceled(&mut inner, keys, &reason)
         };
         if drained.is_empty() {
-            // Race: the cancel beat the handle's pending registration.
-            // Buffer it (capped, FIFO-evicted) so `handle_request` can
-            // drain itself on the next checkpoint instead of merrily
-            // proceeding to spawn the child.
+            // Race: the cancel beat the handle's `running` registration. Buffer
+            // it (capped, FIFO-evicted) so `start_delegation` can drain itself on
+            // the next checkpoint instead of proceeding to spawn the child.
             self.buffer_pre_canceled_handle(external_handle.to_string())
                 .await;
             return;
         }
-        for (_call_id, entry) in drained {
-            self.write_meta_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                build_delegation_meta(
-                    "failed",
-                    Some(&entry.child_connection_id),
-                    Some(entry.child_conversation_id),
-                    Some("canceled"),
-                ),
-            )
-            .await;
-            self.emit_completed_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                &entry.child_connection_id,
-                entry.child_conversation_id,
-                DelegationResultSummary::Err {
-                    error_code: "canceled".to_string(),
-                },
-            )
-            .await;
-            let _ = self.spawner.cancel(&entry.child_connection_id).await;
-            let _ = self.spawner.disconnect(&entry.child_connection_id).await;
-            let _ = entry.tx.send(DelegationOutcome::from_err(
-                DelegationError::Canceled {
-                    reason: reason.clone(),
-                },
-                Some(entry.child_conversation_id),
-            ));
+        for task in drained {
+            // A turn is in flight, so cancel + disconnect.
+            self.teardown_canceled_child(&task, true).await;
         }
+        self.result_notify.notify_waiters();
     }
 
     /// Resolve the pending delegation whose child matches
@@ -1873,63 +2476,37 @@ impl DelegationBroker {
         child_connection_id: &str,
         terminal_error: Option<&str>,
     ) {
-        let drained: Vec<PendingCall> = {
+        let reason = child_canceled_reason(terminal_error);
+        let drained = {
             let mut inner = self.pending.inner.lock().await;
             let keys: Vec<String> = inner
-                .calls
+                .running
                 .iter()
                 .filter(|(_, v)| v.child_connection_id == child_connection_id)
                 .map(|(k, _)| k.clone())
                 .collect();
             if keys.is_empty() {
-                // No parked entry. If the child is still reserved,
-                // `handle_request` is mid-setup and this failure beat the park —
-                // buffer its detail for the park to drain instead of no-oping
-                // and stranding `rx.await`. `buffer_child_failure` is a no-op
-                // when the child isn't reserved, so a normal post-resolution
-                // child teardown accumulates nothing.
+                // No running entry. If the child is still reserved,
+                // `start_delegation` is mid-setup and this failure beat the
+                // `running` insert — buffer its detail for it to drain at
+                // registration instead of no-oping. `buffer_child_failure` is a
+                // no-op when the child isn't reserved, so a normal
+                // post-resolution child teardown accumulates nothing.
                 inner.buffer_child_failure(
                     child_connection_id,
                     terminal_error.map(|s| s.to_string()),
                 );
                 Vec::new()
             } else {
-                keys.into_iter()
-                    .map(|k| inner.calls.remove(&k).expect("key just observed"))
-                    .collect()
+                drain_and_record_canceled(&mut inner, keys, &reason)
             }
         };
-        let reason = child_canceled_reason(terminal_error);
-        for entry in drained {
-            self.write_meta_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                build_delegation_meta(
-                    "failed",
-                    Some(&entry.child_connection_id),
-                    Some(entry.child_conversation_id),
-                    Some("canceled"),
-                ),
-            )
-            .await;
-            self.emit_completed_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                &entry.child_connection_id,
-                entry.child_conversation_id,
-                DelegationResultSummary::Err {
-                    error_code: "canceled".to_string(),
-                },
-            )
-            .await;
-            let _ = self.spawner.disconnect(&entry.child_connection_id).await;
-            let _ = entry.tx.send(DelegationOutcome::from_err(
-                DelegationError::Canceled {
-                    reason: reason.clone(),
-                },
-                Some(entry.child_conversation_id),
-            ));
+        for task in drained {
+            // The child already disconnected/errored — disconnect-only teardown
+            // (no spawner `cancel`, there's no live turn to interrupt).
+            self.teardown_canceled_child(&task, false).await;
         }
+        self.result_notify.notify_waiters();
     }
 
     /// Cascade-cancel every pending delegation owned by `parent_connection_id`
@@ -1976,91 +2553,290 @@ impl DelegationBroker {
 
     /// Fast, lock-guarded part of a parent cancel: drop/tombstone this parent's
     /// tool_call tracker (per `keep_consumed`, see `drop_tool_calls_for_parent`)
-    /// and remove every parked `PendingCall` it owns, returning them for the
-    /// (slow) child teardown. Touches only the two broker mutexes — no spawner
-    /// I/O — so it is safe to await inline in the connection loop before the
-    /// next prompt is accepted.
+    /// and remove every running task it owns, returning them for the (slow)
+    /// child teardown. Touches only the two broker mutexes — no spawner I/O — so
+    /// it is safe to await inline in the connection loop before the next prompt
+    /// is accepted.
+    ///
+    /// `keep_consumed` also governs the completed-cache: a **turn** cancel
+    /// (`true`) records each drained task as `Canceled` so the still-alive
+    /// connection's LLM can still query it; a **connection teardown** (`false`)
+    /// drops the parent's whole completed-cache instead — the parent is gone, so
+    /// nothing will query it.
     async fn drain_for_parent_cancel(
         &self,
         parent_connection_id: &str,
         keep_consumed: bool,
-    ) -> Vec<PendingCall> {
+    ) -> Vec<RunningTask> {
         // Also drain any tool_call ids captured ahead of an MCP round-trip that
         // never arrived — keeps the map bounded across parent reconnects.
         // Teardown drops the whole bucket; a turn cancel keeps `consumed` so a
         // later re-emit can't mis-bind the next delegation.
         self.drop_tool_calls_for_parent(parent_connection_id, keep_consumed)
             .await;
-        let mut inner = self.pending.inner.lock().await;
-        // Flag every still-in-flight setup this parent owns in the SAME lock
-        // acquisition that drains its parked `calls`: a delegation is then
-        // caught either here (mid-setup → `handle_request` tears its child down
-        // at the next checkpoint / at park) or by the parked-call drain below
-        // (already parked) — there is no interleaving where both miss it. A
-        // separate lock for the flag would reopen that gap.
-        inner.mark_inflight_canceled_for_parent(parent_connection_id);
-        let keys: Vec<String> = inner
-            .calls
-            .iter()
-            .filter(|(_, v)| v.parent_connection_id == parent_connection_id)
-            .map(|(k, _)| k.clone())
-            .collect();
-        keys.into_iter()
-            .map(|k| inner.calls.remove(&k).expect("key just observed"))
-            .collect()
+        let drained = {
+            let mut inner = self.pending.inner.lock().await;
+            // Flag every still-in-flight setup this parent owns in the SAME lock
+            // acquisition that drains its running tasks: a delegation is then
+            // caught either here (mid-setup → `start_delegation` tears its child
+            // down at the next checkpoint) or by the running drain below (already
+            // registered) — there is no interleaving where both miss it.
+            inner.mark_inflight_canceled_for_parent(parent_connection_id);
+            let keys: Vec<String> = inner
+                .running
+                .iter()
+                .filter(|(_, v)| v.parent_connection_id == parent_connection_id)
+                .map(|(k, _)| k.clone())
+                .collect();
+            if keep_consumed {
+                // Turn cancel: connection stays alive → keep each canceled
+                // result queryable.
+                drain_and_record_canceled(&mut inner, keys, "parent canceled")
+            } else {
+                // Connection teardown: just remove the running tasks and drop the
+                // whole completed-cache for this parent.
+                let drained: Vec<RunningTask> = keys
+                    .into_iter()
+                    .map(|k| inner.running.remove(&k).expect("key just observed"))
+                    .collect();
+                inner.drop_completed_for_parent(parent_connection_id);
+                drained
+            }
+        };
+        self.result_notify.notify_waiters();
+        drained
     }
 
-    /// Slow part of a parent cancel: for each drained `PendingCall`, patch the
-    /// parent meta, emit `DelegationCompleted`, tear down the child, and resolve
-    /// the awaiting `handle_request` with a canceled outcome (sent last, after
-    /// teardown, so a caller awaiting that outcome observes the child fully torn
-    /// down). Split from `drain_for_parent_cancel` so a turn cancel can
-    /// background it without delaying the fast, turn-scoped drain.
-    async fn finalize_parent_cancel(&self, drained: Vec<PendingCall>) {
-        for entry in drained {
-            // Best-effort meta patch so a parent-side snapshot post-cancel
-            // shows the delegation as failed/canceled rather than stuck
-            // on the prior "running" mark.
-            self.write_meta_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                build_delegation_meta(
-                    "failed",
-                    Some(&entry.child_connection_id),
-                    Some(entry.child_conversation_id),
-                    Some("canceled"),
-                ),
-            )
-            .await;
-            self.emit_completed_if_real(
-                &entry.parent_connection_id,
-                &entry.parent_tool_use_id,
-                &entry.child_connection_id,
-                entry.child_conversation_id,
-                DelegationResultSummary::Err {
-                    error_code: "canceled".to_string(),
-                },
-            )
-            .await;
-            let _ = self.spawner.cancel(&entry.child_connection_id).await;
-            let _ = self.spawner.disconnect(&entry.child_connection_id).await;
-            let _ = entry.tx.send(DelegationOutcome::from_err(
-                DelegationError::Canceled {
-                    reason: "parent canceled".into(),
-                },
-                Some(entry.child_conversation_id),
-            ));
+    /// Slow part of a parent cancel: for each drained task, patch the parent
+    /// meta, emit `DelegationCompleted`, and tear the child down. The canceled
+    /// result was already recorded into `completed` (turn cancel) by
+    /// `drain_for_parent_cancel` under the lock, so this is pure I/O. Split out
+    /// so a turn cancel can background it without delaying the fast, turn-scoped
+    /// drain.
+    async fn finalize_parent_cancel(&self, drained: Vec<RunningTask>) {
+        for task in drained {
+            // A turn was in flight → cancel + disconnect.
+            self.teardown_canceled_child(&task, true).await;
+        }
+    }
+
+    /// Shared canceled-child teardown: best-effort `failed`/`canceled` meta
+    /// patch (so a parent-side snapshot post-cancel shows the delegation as
+    /// canceled rather than stuck on "running"), a `DelegationCompleted` err
+    /// event, then child teardown. `cancel_turn` is `true` when a turn is in
+    /// flight (cancel + disconnect) and `false` when the child already
+    /// disconnected/errored (disconnect only). Does NOT touch the pending maps —
+    /// the caller already migrated the task into `completed`.
+    async fn teardown_canceled_child(&self, task: &RunningTask, cancel_turn: bool) {
+        self.write_meta_if_real(
+            &task.parent_connection_id,
+            &task.parent_tool_use_id,
+            build_delegation_meta(
+                "failed",
+                Some(&task.child_connection_id),
+                Some(task.child_conversation_id),
+                Some("canceled"),
+                None,
+            ),
+        )
+        .await;
+        self.emit_completed_if_real(
+            &task.parent_connection_id,
+            &task.parent_tool_use_id,
+            &task.child_connection_id,
+            task.child_conversation_id,
+            task.agent_type,
+            DelegationResultSummary::Err {
+                error_code: "canceled".to_string(),
+            },
+        )
+        .await;
+        if cancel_turn {
+            let _ = self.spawner.cancel(&task.child_connection_id).await;
+        }
+        let _ = self.spawner.disconnect(&task.child_connection_id).await;
+    }
+
+    /// Backs the `get_delegation_status` tool. Resolves a task's status from the
+    /// completed-cache, then the running set (optionally blocking up to
+    /// `wait_ms` for it to finish), then the DB fallback. Scoped to the calling
+    /// parent: a task owned by a different parent reports `Unknown` rather than
+    /// leaking its existence. `parent_conversation_id` is the caller's current
+    /// conversation, used only to scope the DB fallback.
+    pub async fn get_task_status(
+        &self,
+        parent_connection_id: &str,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+        wait_ms: u64,
+    ) -> DelegationTaskReport {
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
+        loop {
+            // Arm the notify BEFORE the check so a completion landing between the
+            // check and the await isn't lost (enable() registers the waiter now).
+            let notified = self.result_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let running = {
+                let inner = self.pending.inner.lock().await;
+                if let Some(c) = inner.completed.get(task_id) {
+                    if c.parent_connection_id == parent_connection_id {
+                        return completed_report(task_id, c);
+                    }
+                    return unknown_report(task_id);
+                }
+                match inner.running.get(task_id) {
+                    Some(r) if r.parent_connection_id == parent_connection_id => {
+                        Some(running_report(task_id, r))
+                    }
+                    Some(_) => return unknown_report(task_id),
+                    None => None,
+                }
+            };
+            let Some(running_report) = running else {
+                // Neither running nor completed in memory → DB status fallback.
+                return self.status_from_db(parent_conversation_id, task_id).await;
+            };
+            // Running and owned. Decide whether to keep waiting.
+            let now = Instant::now();
+            if wait_ms == 0 || now >= deadline {
+                return running_report;
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep(remaining) => {}
+            }
+            // Loop: re-read (the task likely just completed, or the deadline
+            // passed and the next pass returns the running snapshot).
+        }
+    }
+
+    /// Backs the `cancel_delegation` tool. Cancels a running task owned by the
+    /// caller (recording it `Canceled` + tearing the child down) and returns the
+    /// resulting report. A task that already finished returns its terminal
+    /// report; one not in memory falls back to the DB status (a finished task
+    /// can't be canceled). Parent-scoped like `get_task_status`.
+    pub async fn cancel_task_by_id(
+        &self,
+        parent_connection_id: &str,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+    ) -> DelegationTaskReport {
+        let drained = {
+            let mut inner = self.pending.inner.lock().await;
+            if let Some(c) = inner.completed.get(task_id) {
+                if c.parent_connection_id == parent_connection_id {
+                    return completed_report(task_id, c);
+                }
+                return unknown_report(task_id);
+            }
+            match inner.running.get(task_id) {
+                Some(r) if r.parent_connection_id == parent_connection_id => {
+                    drain_and_record_canceled(
+                        &mut inner,
+                        vec![task_id.to_string()],
+                        "canceled by request",
+                    )
+                    .pop()
+                }
+                Some(_) => return unknown_report(task_id),
+                None => None,
+            }
+        };
+        match drained {
+            Some(task) => {
+                // A turn is in flight → cancel + disconnect.
+                self.teardown_canceled_child(&task, true).await;
+                self.result_notify.notify_waiters();
+                report_from_outcome(
+                    Some(task_id.to_string()),
+                    Some(task.agent_type),
+                    &canceled_outcome(task.child_conversation_id, "canceled by request"),
+                    Some(task.started_at.elapsed().as_millis() as u64),
+                )
+            }
+            None => self.status_from_db(parent_conversation_id, task_id).await,
+        }
+    }
+
+    /// DB status fallback for a task evicted from / never in the in-memory maps.
+    /// Scopes to the caller's conversation: a child whose `parent_id` doesn't
+    /// match (or when the caller has no active conversation) reports `Unknown`.
+    async fn status_from_db(
+        &self,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+    ) -> DelegationTaskReport {
+        match self.status_lookup.find_by_call_id(task_id).await {
+            Some(rec)
+                if parent_conversation_id.is_some() && rec.parent_id == parent_conversation_id =>
+            {
+                db_report(task_id, &rec)
+            }
+            _ => unknown_report(task_id),
+        }
+    }
+
+    /// Test-only shim preserving the old blocking `handle_request` contract over
+    /// the async path: start the delegation, then block until it reaches a
+    /// terminal state (driven by the test's `complete_call` / cancel), mapping
+    /// the terminal report back to a `DelegationOutcome`. Keeps the broker's
+    /// extensive setup-window race tests exercising the same lifecycle without
+    /// each rewriting to the start/poll/collect shape.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn handle_request(&self, req: DelegationRequest) -> DelegationOutcome {
+        let parent_connection_id = req.parent_connection_id.clone();
+        let parent_conversation_id = Some(req.parent_conversation_id);
+        let ack = self.start_delegation(req).await;
+        let task_id = match ack.task_id.clone() {
+            Some(id) => id,
+            // Setup failed before a task existed — the ack itself is terminal.
+            None => return report_to_outcome(&ack),
+        };
+        if ack.status != TaskStatus::Running {
+            return report_to_outcome(&ack);
+        }
+        // Block until terminal via the long-poll path (re-issued so an
+        // indefinitely-pending task in a test simply parks here, mirroring the
+        // old unbounded `rx.await`).
+        loop {
+            let report = self
+                .get_task_status(
+                    &parent_connection_id,
+                    parent_conversation_id,
+                    &task_id,
+                    3_600_000,
+                )
+                .await;
+            if report.status != TaskStatus::Running {
+                return report_to_outcome(&report);
+            }
         }
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn peek_first_pending_call_id(&self) -> Option<String> {
-        self.pending.inner.lock().await.calls.keys().next().cloned()
+        self.pending
+            .inner
+            .lock()
+            .await
+            .running
+            .keys()
+            .next()
+            .cloned()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn pending_count(&self) -> usize {
-        self.pending.inner.lock().await.calls.len()
+        self.pending.inner.lock().await.running.len()
+    }
+
+    /// Count of cached completed results across all parents.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub async fn completed_count(&self) -> usize {
+        self.pending.inner.lock().await.completed.len()
     }
 
     /// Count of in-flight (registered-at-entry, not-yet-parked / not-yet-exited)
@@ -2127,6 +2903,39 @@ impl ConversationDepthLookup for DbDepthLookup {
     }
 }
 
+/// `ChildStatusLookup` over the live `AppDatabase`. Recovers a delegation
+/// task's terminal status (NOT its text — child output isn't in codeg's DB)
+/// from the child conversation row once its in-memory result was evicted.
+pub struct DbChildStatusLookup {
+    pub db: Arc<crate::db::AppDatabase>,
+}
+
+#[async_trait]
+impl ChildStatusLookup for DbChildStatusLookup {
+    async fn find_by_call_id(&self, call_id: &str) -> Option<ChildStatusRecord> {
+        let summary = crate::db::service::conversation_service::get_by_delegation_call_id(
+            &self.db.conn,
+            call_id,
+        )
+        .await
+        .ok()
+        .flatten()?;
+        // `summary.status` is the serialized `ConversationStatus` string.
+        let status = match summary.status.as_str() {
+            "in_progress" => TaskStatus::Running,
+            "pending_review" | "completed" => TaskStatus::Completed,
+            "cancelled" => TaskStatus::Canceled,
+            _ => TaskStatus::Unknown,
+        };
+        Some(ChildStatusRecord {
+            child_conversation_id: summary.id,
+            status,
+            agent_type: summary.agent_type,
+            parent_id: summary.parent_id,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2164,11 +2973,7 @@ mod tests {
         }
     }
 
-    fn request_with_handle(
-        parent_conv: i32,
-        tool_use: &str,
-        handle: &str,
-    ) -> DelegationRequest {
+    fn request_with_handle(parent_conv: i32, tool_use: &str, handle: &str) -> DelegationRequest {
         let mut r = request(parent_conv, tool_use);
         r.external_handle = Some(handle.to_string());
         r
@@ -2771,9 +3576,13 @@ mod tests {
             shallow_lookup(),
         );
         let t0 = Instant::now();
-        broker.register_pending_tool_call("p1", "stale".into()).await;
+        broker
+            .register_pending_tool_call("p1", "stale".into())
+            .await;
         // Fresh id registered "just before" the future `now`.
-        broker.register_pending_tool_call("p1", "fresh".into()).await;
+        broker
+            .register_pending_tool_call("p1", "fresh".into())
+            .await;
         let future_now = t0 + PENDING_TOOL_CALL_TTL + Duration::from_millis(50);
         // Forge "fresh" so it survives the TTL: rewrite its timestamp to
         // ~now-relative-to-future-now. Direct field access is OK — we're
@@ -3251,7 +4060,11 @@ mod tests {
             shallow_lookup(),
         );
         broker
-            .register_pending_tool_call_with_key("p1", "tc-late".into(), Some(task_key("slow task")))
+            .register_pending_tool_call_with_key(
+                "p1",
+                "tc-late".into(),
+                Some(task_key("slow task")),
+            )
             .await;
         // Claim "as of" long past the TTL — simulates the round-trip arriving
         // after a many-times-TTL wait behind a serialized sibling.
@@ -3276,7 +4089,9 @@ mod tests {
             Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
             shallow_lookup(),
         );
-        broker.register_pending_tool_call("p1", "tc-stale".into()).await;
+        broker
+            .register_pending_tool_call("p1", "tc-stale".into())
+            .await;
         let way_past_ttl = Instant::now() + PENDING_TOOL_CALL_TTL * 10;
         // Unkeyed + stale → evicted by the match path's GC → nothing to claim.
         assert!(broker
@@ -3343,6 +4158,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tombstone_removes_stale_keyed_entry() {
+        // A `delegate_to_agent` tool call registered a keyed entry but its MCP
+        // round-trip never reached the broker (the call failed / the turn was
+        // interrupted). A terminal `ToolCallUpdate` tombstones the entry so it
+        // can't linger indefinitely (keyed entries are never aged out).
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-stale".into(), Some(task_key("task A")))
+            .await;
+        assert!(broker.tombstone_pending_tool_call("p1", "tc-stale").await);
+        assert!(broker
+            .take_matching_tool_call("p1", &task_key("task A"))
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn tombstone_prevents_same_key_misbind() {
+        // The High regression: without the tombstone, a stale keyed entry is
+        // retained forever and a LATER identical-key delegation claims its dead
+        // id (the exact-key scan returns the oldest match). After tombstoning the
+        // stale entry, a fresh registration for the same key binds to the FRESH
+        // id instead.
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-stale".into(), Some(task_key("task A")))
+            .await;
+        broker.tombstone_pending_tool_call("p1", "tc-stale").await;
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-fresh".into(), Some(task_key("task A")))
+            .await;
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task A"))
+                .await
+                .as_deref(),
+            Some("tc-fresh"),
+            "a later same-key delegation must claim the fresh id, not the tombstoned one"
+        );
+    }
+
+    #[tokio::test]
+    async fn tombstone_leaves_other_entries_intact() {
+        // A terminal update for an unrelated (non-delegation) id no-ops and must
+        // leave a registered delegation untouched.
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-keep".into(), Some(task_key("task A")))
+            .await;
+        assert!(
+            !broker
+                .tombstone_pending_tool_call("p1", "tc-bash-123")
+                .await
+        );
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task A"))
+                .await
+                .as_deref(),
+            Some("tc-keep")
+        );
+    }
+
+    #[tokio::test]
+    async fn tombstone_then_reregister_same_id_stays_dropped() {
+        // After tombstoning a real entry, an out-of-order re-registration of the
+        // same id is dropped by the Tier-1 consumed check — mirrors
+        // `explicit_tool_use_id_consumes_pending_entry_acp_first`.
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-stale".into(), Some(task_key("task A")))
+            .await;
+        assert!(broker.tombstone_pending_tool_call("p1", "tc-stale").await);
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-stale".into(), Some(task_key("task A")))
+            .await;
+        assert!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task A"))
+                .await
+                .is_none(),
+            "a re-registration after tombstone must stay dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn tombstone_noop_does_not_record_consumed() {
+        // The tombstone runs for EVERY terminal tool-call update, most of them
+        // non-delegations. A no-op tombstone (id not pending) must NOT record
+        // `consumed` — otherwise `consumed` (no TTL/cap) would grow with every
+        // completed tool call, and a later legitimate registration of that id
+        // would be wrongly dropped.
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        assert!(!broker.tombstone_pending_tool_call("p1", "tc-x").await);
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-x".into(), Some(task_key("task A")))
+            .await;
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task A"))
+                .await
+                .as_deref(),
+            Some("tc-x"),
+            "a no-op tombstone must not record consumed and drop a later registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn tombstone_removes_only_the_matching_entry_from_a_multi_entry_bucket() {
+        // Tombstoning a MIDDLE entry removes only that id (retain is by exact
+        // tool_call_id, position-independent) and leaves the siblings claimable
+        // by their own keys.
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-a".into(), Some(task_key("task A")))
+            .await;
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-b".into(), Some(task_key("task B")))
+            .await;
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-c".into(), Some(task_key("task C")))
+            .await;
+        assert!(broker.tombstone_pending_tool_call("p1", "tc-b").await);
+        assert!(broker
+            .take_matching_tool_call("p1", &task_key("task B"))
+            .await
+            .is_none());
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task A"))
+                .await
+                .as_deref(),
+            Some("tc-a")
+        );
+        assert_eq!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task C"))
+                .await
+                .as_deref(),
+            Some("tc-c")
+        );
+    }
+
+    #[tokio::test]
     async fn cap_overflow_evicts_unkeyed_before_keyed() {
         // Codex review fix: when the pending queue is full, the eviction victim
         // is an UNKEYED entry — even one NEWER than an existing keyed entry — so
@@ -3355,7 +4332,11 @@ mod tests {
         // keyed entries. The unkeyed one is NOT the oldest — proving the victim
         // is chosen by keyed-ness, not position.
         broker
-            .register_pending_tool_call_with_key("p1", "tc-keyed-oldest".into(), Some(task_key("oldest")))
+            .register_pending_tool_call_with_key(
+                "p1",
+                "tc-keyed-oldest".into(),
+                Some(task_key("oldest")),
+            )
             .await;
         broker
             .register_pending_tool_call("p1", "tc-unkeyed".into())
@@ -3371,20 +4352,33 @@ mod tests {
         }
         // Queue is now full. One more keyed entry overflows.
         broker
-            .register_pending_tool_call_with_key("p1", "tc-overflow".into(), Some(task_key("overflow")))
+            .register_pending_tool_call_with_key(
+                "p1",
+                "tc-overflow".into(),
+                Some(task_key("overflow")),
+            )
             .await;
         let map = broker.tool_calls.inner.lock().await;
         let bucket = map.get("p1").expect("bucket present");
         assert_eq!(bucket.pending.len(), PENDING_QUEUE_CAP);
         assert!(
-            !bucket.pending.iter().any(|p| p.tool_call_id == "tc-unkeyed"),
+            !bucket
+                .pending
+                .iter()
+                .any(|p| p.tool_call_id == "tc-unkeyed"),
             "the unkeyed entry must be the eviction victim"
         );
         assert!(
-            bucket.pending.iter().any(|p| p.tool_call_id == "tc-keyed-oldest"),
+            bucket
+                .pending
+                .iter()
+                .any(|p| p.tool_call_id == "tc-keyed-oldest"),
             "the older keyed entry must be preserved over the newer unkeyed one"
         );
-        assert!(bucket.pending.iter().any(|p| p.tool_call_id == "tc-overflow"));
+        assert!(bucket
+            .pending
+            .iter()
+            .any(|p| p.tool_call_id == "tc-overflow"));
     }
 
     #[tokio::test]
@@ -4089,7 +5083,11 @@ mod tests {
                 }),
             )
             .await;
-        assert_eq!(broker.early_complete_count().await, 1, "completion buffered");
+        assert_eq!(
+            broker.early_complete_count().await,
+            1,
+            "completion buffered"
+        );
 
         // Release send_prompt → handle_request parks, drains the buffered
         // completion, and resolves inline instead of hanging.
@@ -4599,7 +5597,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
         // Parked → the in-flight record was handed off (deregistered) at park.
-        assert_eq!(broker.inflight_count().await, 0, "park deregisters in-flight");
+        assert_eq!(
+            broker.inflight_count().await,
+            0,
+            "park deregisters in-flight"
+        );
         broker
             .complete_call(
                 &call_id,
@@ -4828,10 +5830,120 @@ mod tests {
         assert_eq!(call.parent_tool_use_id, "pt-ok");
         assert_eq!(call.child_connection_id, "child-conn-1");
         assert_eq!(call.child_conversation_id, 42);
+        // The completed event carries the child agent_type (from the running
+        // task), so a frontend that missed `DelegationStarted` still binds the
+        // correct agent. `request()` delegates to ClaudeCode.
+        assert_eq!(call.agent_type, AgentType::ClaudeCode);
+        // duration_ms is now broker-measured (not the outcome's value); assert
+        // the Ok variant + the enriched text_preview instead.
         assert!(
-            matches!(call.result, DelegationResultSummary::Ok { duration_ms: 73 }),
-            "expected Ok{{73}}, got {:?}",
+            matches!(
+                &call.result,
+                DelegationResultSummary::Ok { text_preview, .. }
+                    if text_preview.as_deref() == Some("done")
+            ),
+            "expected Ok with preview, got {:?}",
             call.result
+        );
+    }
+
+    #[tokio::test]
+    async fn emitter_records_started_on_start_delegation_happy_path() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-start".into())).await;
+        mock.queue_send(Ok(55)).await;
+        let writer = Arc::new(MockMetaWriter::new());
+        let emitter = Arc::new(MockEventEmitter::new());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-start")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+
+        // `started` fires during setup, BEFORE the task parks — so it is already
+        // recorded by the time a pending entry is visible, and it must not be
+        // conflated with the (not-yet-emitted) terminal.
+        let started = emitter.started_snapshot().await;
+        assert_eq!(started.len(), 1, "exactly one DelegationStarted per task");
+        let s = &started[0];
+        assert_eq!(s.parent_connection_id, "parent-conn");
+        assert_eq!(s.parent_tool_use_id, "pt-start");
+        assert_eq!(s.child_connection_id, "child-conn-start");
+        assert_eq!(s.child_conversation_id, 55);
+        assert_eq!(s.agent_type, AgentType::ClaudeCode);
+        assert_eq!(
+            emitter.count().await,
+            0,
+            "no terminal emit before completion"
+        );
+
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 55,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 10,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        driver.await.unwrap();
+
+        // Completion adds exactly one terminal emit; started stays at 1.
+        assert_eq!(emitter.started_count().await, 1);
+        assert_eq!(emitter.count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn emitter_skips_started_for_synthetic_parent_tool_use_id() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("c-synth-start".into())).await;
+        mock.queue_send(Ok(9)).await;
+        let writer = Arc::new(MockMetaWriter::new());
+        let emitter = Arc::new(MockEventEmitter::new());
+        let broker = broker_with_emitter(mock.clone(), writer.clone(), emitter.clone()).await;
+
+        // Empty parent_tool_use_id → broker falls back to a synthetic
+        // `delegation-<uuid>` id (no ACP tool_call to claim in a mock harness).
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "ok".into(),
+                    child_conversation_id: 9,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        driver.await.unwrap();
+
+        assert_eq!(
+            emitter.started_count().await,
+            0,
+            "started emit must skip synthetic parent_tool_use_id (same rule as the meta writer / completed emit)"
         );
     }
 
@@ -5361,10 +6473,18 @@ mod tests {
 
         // Per-connection stream (WS attach delivery path) must receive the
         // envelope tagged with the right connection + payload shape.
-        let envelope = tokio::time::timeout(Duration::from_millis(500), stream_rx.recv())
-            .await
-            .expect("per-connection stream should receive DelegationCompleted within 500ms")
-            .expect("envelope recv must not error");
+        // The parent stream now also carries the setup-time DelegationStarted;
+        // skip past it to the terminal DelegationCompleted.
+        let envelope = loop {
+            let env = tokio::time::timeout(Duration::from_millis(500), stream_rx.recv())
+                .await
+                .expect("per-connection stream should receive DelegationCompleted within 500ms")
+                .expect("envelope recv must not error");
+            if matches!(env.payload, AcpEvent::DelegationStarted { .. }) {
+                continue;
+            }
+            break env;
+        };
         assert_eq!(envelope.connection_id, "parent-conn");
         match &envelope.payload {
             AcpEvent::DelegationCompleted {
@@ -5390,15 +6510,118 @@ mod tests {
         // InternalEventBus (lifecycle/pet/chat-channel subscriber path) must
         // also receive the same envelope — proves the WebOnly emitter's bus
         // arm in `emit_with_state` is reached.
-        let bus_envelope = tokio::time::timeout(Duration::from_millis(500), bus_rx.recv())
-            .await
-            .expect("InternalEventBus should receive DelegationCompleted within 500ms")
-            .expect("bus recv must not error");
+        let bus_envelope = loop {
+            let env = tokio::time::timeout(Duration::from_millis(500), bus_rx.recv())
+                .await
+                .expect("InternalEventBus should receive DelegationCompleted within 500ms")
+                .expect("bus recv must not error");
+            if matches!(env.payload, AcpEvent::DelegationStarted { .. }) {
+                continue;
+            }
+            break env;
+        };
         assert_eq!(bus_envelope.connection_id, "parent-conn");
         assert!(matches!(
             bus_envelope.payload,
             AcpEvent::DelegationCompleted { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn real_emitter_fans_out_delegation_started_to_parent_stream_and_bus() {
+        use crate::acp::delegation::event_emitter::ConnectionManagerEventEmitter;
+        use crate::acp::manager::ConnectionManager;
+        use crate::acp::types::AcpEvent;
+        use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
+
+        // Web/server delivery shape: a real ConnectionManager + a fake parent on
+        // a WebOnly emitter. `DelegationStarted` must land on the PARENT's
+        // per-connection stream (the WS attach path the frontend subscribes to
+        // in web/server mode) AND the InternalEventBus — mirroring the
+        // completed-path invariant. This is the regression lock for the
+        // web-mode live-delegation gap: before moving the emit to the parent
+        // stream, started rode the (un-attached) child stream and was lost here.
+        let manager = ConnectionManager::new();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let parent_emitter = EventEmitter::test_web_only(broadcaster);
+        let bus = parent_emitter
+            .acp_event_bus()
+            .expect("WebOnly emitter must expose an InternalEventBus");
+        manager
+            .insert_test_connection("parent-conn", AgentType::ClaudeCode, None, parent_emitter)
+            .await;
+
+        // Subscribe BEFORE triggering events — broadcast channels drop sends
+        // that happen with no receivers registered.
+        let mut bus_rx = bus.subscribe();
+        let (parent_state, _) = manager
+            .get_state_and_emitter("parent-conn")
+            .await
+            .expect("parent just inserted");
+        let mut stream_rx = parent_state.read().await.event_stream().subscribe();
+
+        let mock_spawner = Arc::new(MockSpawner::new());
+        mock_spawner
+            .queue_spawn(Ok("child-conn-started".into()))
+            .await;
+        mock_spawner.queue_send(Ok(88)).await;
+        let real_emitter = Arc::new(ConnectionManagerEventEmitter {
+            manager: Arc::new(manager.clone_ref()),
+        });
+        let broker = DelegationBroker::with_writers(
+            mock_spawner.clone() as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+            Arc::new(crate::acp::delegation::meta_writer::NoopMetaWriter)
+                as Arc<dyn crate::acp::delegation::meta_writer::DelegationMetaWriter>,
+            real_emitter as Arc<dyn crate::acp::delegation::event_emitter::DelegationEventEmitter>,
+        );
+        enable_delegation(&broker).await;
+
+        // `started` fires during setup, before park — drive the request, wait
+        // for it to park, then assert the envelope already arrived.
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-started")).await })
+        };
+        while broker.pending_count().await == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let envelope = tokio::time::timeout(Duration::from_millis(500), stream_rx.recv())
+            .await
+            .expect("per-connection stream should receive DelegationStarted within 500ms")
+            .expect("envelope recv must not error");
+        assert_eq!(envelope.connection_id, "parent-conn");
+        match &envelope.payload {
+            AcpEvent::DelegationStarted {
+                parent_connection_id,
+                parent_tool_use_id,
+                child_connection_id,
+                child_conversation_id,
+                agent_type,
+            } => {
+                assert_eq!(parent_connection_id, "parent-conn");
+                assert_eq!(parent_tool_use_id, "pt-started");
+                assert_eq!(child_connection_id, "child-conn-started");
+                assert_eq!(*child_conversation_id, 88);
+                assert_eq!(*agent_type, AgentType::ClaudeCode);
+            }
+            other => panic!("expected DelegationStarted, got {other:?}"),
+        }
+
+        let bus_envelope = tokio::time::timeout(Duration::from_millis(500), bus_rx.recv())
+            .await
+            .expect("InternalEventBus should receive DelegationStarted within 500ms")
+            .expect("bus recv must not error");
+        assert_eq!(bus_envelope.connection_id, "parent-conn");
+        assert!(matches!(
+            bus_envelope.payload,
+            AcpEvent::DelegationStarted { .. }
+        ));
+
+        // Drain the parked driver so the test doesn't leak the spawned task.
+        broker.cancel_by_parent("parent-conn").await;
+        let _ = driver.await.unwrap();
     }
 
     #[tokio::test]
@@ -5447,5 +6670,74 @@ mod tests {
             0,
             "broker must drain pending even when no parent exists to receive the emit"
         );
+    }
+
+    // -- Async-cutover review regressions -----------------------------------
+
+    /// A pre-cancel that bails `start_delegation` before the claim path must
+    /// still drain the keyed ACP tool_call, so a later same-key delegation
+    /// can't claim the canceled call's id and mis-bind to the wrong card.
+    #[tokio::test]
+    async fn pre_cancel_drains_keyed_tool_call_to_avoid_misbinding() {
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        enable_delegation(&broker).await;
+        let key = DelegationMatchKey {
+            agent_type: AgentType::ClaudeCode,
+            task: "do x".into(),
+            working_dir: None,
+        };
+        // The lifecycle registered the keyed tool_call for this delegation.
+        broker
+            .register_pending_tool_call_with_key("parent-conn", "tc-1".into(), Some(key.clone()))
+            .await;
+        // notifications/cancelled lands before the round-trip → buffered (no
+        // running task yet).
+        broker.cancel_by_external_handle("h-1", "user".into()).await;
+        // The MCP round-trip arrives (empty parent_tool_use_id, same key) and
+        // bails at the first pre-cancel check.
+        let report = broker
+            .start_delegation(request_with_handle(1, "", "h-1"))
+            .await;
+        assert_eq!(report.status, TaskStatus::Canceled);
+        // The keyed entry must have been drained — not claimable afterward.
+        assert_eq!(
+            broker.take_matching_tool_call("parent-conn", &key).await,
+            None
+        );
+    }
+
+    /// The running ack must carry the literal task_id in its message, so a
+    /// client that only surfaces MCP `content` text (not `structuredContent`)
+    /// can still call get_delegation_status / cancel_delegation.
+    #[test]
+    fn running_ack_message_embeds_task_id() {
+        let report = running_ack("task-xyz".into(), 42, AgentType::Codex);
+        assert_eq!(report.task_id.as_deref(), Some("task-xyz"));
+        assert!(
+            report.message.as_deref().unwrap().contains("task-xyz"),
+            "ack message must embed the literal task_id, got {:?}",
+            report.message
+        );
+    }
+
+    /// Previews and cached text must stay within their advertised BYTE caps
+    /// (including the appended ellipsis), and truncate on UTF-8 boundaries.
+    #[test]
+    fn previews_and_cached_text_respect_byte_caps() {
+        let preview = build_text_preview(&"x".repeat(STATUS_PREVIEW_CAP * 2)).unwrap();
+        assert!(
+            preview.len() <= STATUS_PREVIEW_CAP,
+            "preview {} > cap {STATUS_PREVIEW_CAP}",
+            preview.len()
+        );
+        let cached = cap_completed_text(&"y".repeat(COMPLETED_TEXT_CAP * 2));
+        assert!(cached.len() <= COMPLETED_TEXT_CAP);
+        // Multibyte safety: 3-byte chars must not be split, and the cap holds.
+        let multibyte = build_text_preview(&"€".repeat(STATUS_PREVIEW_CAP)).unwrap();
+        assert!(multibyte.len() <= STATUS_PREVIEW_CAP);
+        assert!(std::str::from_utf8(multibyte.as_bytes()).is_ok());
     }
 }

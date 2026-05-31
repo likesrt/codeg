@@ -620,6 +620,18 @@ pub fn build_router(
             "/create_shadcn_project",
             post(handlers::project_boot::create_shadcn_project),
         )
+        .route(
+            "/detect_hyperframes_skills",
+            post(handlers::project_boot::detect_hyperframes_skills),
+        )
+        .route(
+            "/install_hyperframes_skills",
+            post(handlers::project_boot::install_hyperframes_skills),
+        )
+        .route(
+            "/create_hyperframes_project",
+            post(handlers::project_boot::create_hyperframes_project),
+        )
         // ─── Web Server ───
         .route(
             "/get_web_server_status",

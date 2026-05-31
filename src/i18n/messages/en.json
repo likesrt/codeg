@@ -2074,7 +2074,21 @@
   "ProjectBoot": {
     "title": "Project Boot",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "HyperFrames Video Project",
+      "subtitle": "Scaffold an HTML-to-video project. Your workspace agent can then write and render it.",
+      "resolution": "Resolution",
+      "skillsTitle": "Agent Skills",
+      "skillsDesc": "Globally install the HyperFrames skills (symlinked) for the selected agents so they can author and render video.",
+      "recheck": "Re-check",
+      "installedBadge": "Installed",
+      "skillsInstall": "Install / update skills",
+      "skillsInstalling": "Installing skills…",
+      "skillsInstalled": "HyperFrames skills installed",
+      "skillsInstallFailed": "Couldn't install HyperFrames skills"
     },
     "config": {
       "base": "Base",

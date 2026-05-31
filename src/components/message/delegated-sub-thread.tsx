@@ -117,6 +117,10 @@ type ParsedMeta = {
   childConnectionId: string | null
   childConversationId: number | null
   errorCode: string | null
+  /** Inline result preview written by the broker on the terminal `completed`
+   *  meta, so a post-refresh snapshot can render the result without the live
+   *  event. `null` for running/failed metas. */
+  resultPreview: string | null
 }
 
 /**
@@ -156,6 +160,7 @@ function parseDelegationMeta(
   const child_connection_id = obj["child_connection_id"]
   const child_conversation_id = obj["child_conversation_id"]
   const error_code = obj["error_code"]
+  const text_preview = obj["text_preview"]
   return {
     status,
     childConnectionId:
@@ -163,6 +168,7 @@ function parseDelegationMeta(
     childConversationId:
       typeof child_conversation_id === "number" ? child_conversation_id : null,
     errorCode: typeof error_code === "string" ? error_code : null,
+    resultPreview: typeof text_preview === "string" ? text_preview : null,
   }
 }
 
@@ -292,34 +298,89 @@ function extractEmbeddedJsonObject(
 }
 
 /**
- * Read the broker's `{ kind: "ok"|"err", text|message|code, ... }` shape
- * straight off `obj`. Returns null when `kind` is missing or unknown so
- * the caller can fall through to other unwrapping strategies. Split out
- * of `parseDelegationOutcome` so the MCP `CallToolResult` envelope path
- * can reuse it on the inner `structuredContent` object.
+ * Parsed form of the parent `delegate_to_agent` tool output.
+ *
+ * Under ASYNC delegation the tool output is a *running ack* — the result
+ * arrives later via the `delegation_completed` event / meta, NOT on the tool
+ * output. So we must distinguish:
+ *   - `ack`     — a running (or otherwise non-terminal) task: there is NO
+ *                 result to render on the card yet.
+ *   - `outcome` — a terminal result to render (a fast-complete ack where the
+ *                 child finished during setup, or a legacy pre-async
+ *                 synchronous result).
+ * Returning `ack` — rather than letting the raw ack JSON fall through as an
+ * "outcome" — is what stops the card from painting the ack as the result and
+ * from prematurely flipping the status badge to "ok".
  */
-function interpretBrokerEnvelope(obj: Record<string, unknown>): {
-  text: string
-  isError: boolean
-  childConversationId: number | null
-} | null {
+type ParsedToolOutput =
+  | { kind: "ack"; childConversationId: number | null }
+  | {
+      kind: "outcome"
+      text: string
+      isError: boolean
+      childConversationId: number | null
+    }
+
+function readChildConversationId(obj: Record<string, unknown>): number | null {
+  return typeof obj.child_conversation_id === "number"
+    ? obj.child_conversation_id
+    : null
+}
+
+/**
+ * Interpret the broker's inner shape — the async `DelegationTaskReport`
+ * (discriminated by `status`) or the legacy synchronous `DelegationOutcome`
+ * (discriminated by `kind`). Returns null when neither discriminator is present
+ * so the caller can fall through to other unwrapping strategies.
+ */
+function interpretReport(
+  obj: Record<string, unknown>
+): ParsedToolOutput | null {
+  const childConversationId = readChildConversationId(obj)
+  const status = typeof obj.status === "string" ? obj.status : null
+  if (status) {
+    switch (status) {
+      case "running":
+      case "unknown":
+        // No terminal result to show on the card — it's an ack.
+        return { kind: "ack", childConversationId }
+      case "completed":
+        return {
+          kind: "outcome",
+          text: typeof obj.text === "string" ? obj.text : "",
+          isError: false,
+          childConversationId,
+        }
+      case "failed":
+      case "canceled": {
+        const message = typeof obj.message === "string" ? obj.message : ""
+        const code = typeof obj.error_code === "string" ? obj.error_code : ""
+        return {
+          kind: "outcome",
+          text: message || code || "Delegation failed.",
+          isError: true,
+          childConversationId,
+        }
+      }
+      default:
+        return { kind: "ack", childConversationId }
+    }
+  }
+  // Legacy synchronous outcome shape.
   const kind = typeof obj.kind === "string" ? obj.kind : null
-  // Both broker variants carry `child_conversation_id` (Ok always; Err
-  // best-effort once the child row exists). Surface it so a synthetic-fallback
-  // card — one whose `parent_tool_use_id` never bound to a live
-  // binding/meta — can still offer "Open conversation" off the tool output.
-  const childConversationId =
-    typeof obj.child_conversation_id === "number"
-      ? obj.child_conversation_id
-      : null
   if (kind === "ok") {
-    const text = typeof obj.text === "string" ? obj.text : ""
-    return { text, isError: false, childConversationId }
+    return {
+      kind: "outcome",
+      text: typeof obj.text === "string" ? obj.text : "",
+      isError: false,
+      childConversationId,
+    }
   }
   if (kind === "err") {
     const message = typeof obj.message === "string" ? obj.message : ""
     const code = typeof obj.code === "string" ? obj.code : ""
     return {
+      kind: "outcome",
       text: message || code || "Delegation failed.",
       isError: true,
       childConversationId,
@@ -329,26 +390,17 @@ function interpretBrokerEnvelope(obj: Record<string, unknown>): {
 }
 
 /**
- * Best-effort extraction of human-readable result text from the
- * `delegate_to_agent` MCP tool's output. The broker's wire shape is
- *   { kind: "ok", text: "...", child_conversation_id, ... }
- *   { kind: "err", code: "...", message: "..." }
- * but the surrounding tool-call layer may JSON-stringify it, pass it
- * through verbatim, OR wrap it in host-specific text (Codex prepends
- * `Wall time: X seconds\nOutput:\n` and may trail a terminal-cursor
- * character). On top of that, the MCP host (Claude Code / Codex MCP
- * client) ALSO wraps the broker outcome in the standard `CallToolResult`
- * envelope produced by `companion.rs::render_tool_result`:
- *   { content: [{ type: "text", text }], isError, structuredContent }
- * Try direct parse first, then embedded-object scanning; unwrap the MCP
- * envelope when present, then read the broker shape; finally fall back
- * to the raw string for plain-text outputs.
+ * Best-effort parse of the `delegate_to_agent` tool output into a
+ * `ParsedToolOutput`. Mirrors the old unwrapping chain (direct JSON →
+ * embedded-object scan → MCP `CallToolResult` envelope from
+ * `companion.rs::render_task_report`) but yields the ack/outcome tagged union
+ * so a running ack is never rendered as a result. `forceError` is set when
+ * parsing the tool's `errorText` channel.
  */
-function parseDelegationOutcome(raw: string | null | undefined): {
-  text: string
-  isError: boolean
-  childConversationId: number | null
-} | null {
+function parseToolOutput(
+  raw: string | null | undefined,
+  forceError = false
+): ParsedToolOutput | null {
   if (!raw || typeof raw !== "string") return null
   const trimmed = raw.trim()
   if (!trimmed) return null
@@ -360,25 +412,28 @@ function parseDelegationOutcome(raw: string | null | undefined): {
       obj = v as Record<string, unknown>
     } else {
       // Top-level primitive (string/number/bool): render directly.
-      return { text: String(v), isError: false, childConversationId: null }
+      return {
+        kind: "outcome",
+        text: String(v),
+        isError: forceError,
+        childConversationId: null,
+      }
     }
   } catch {
     obj = extractEmbeddedJsonObject(trimmed)
   }
 
   if (!obj) {
-    return { text: trimmed, isError: false, childConversationId: null }
+    return {
+      kind: "outcome",
+      text: trimmed,
+      isError: forceError,
+      childConversationId: null,
+    }
   }
 
-  // MCP `CallToolResult` envelope: produced by
-  // `src-tauri/src/acp/delegation/companion.rs::render_tool_result`.
-  // Claude Code's MCP client serializes the whole envelope as the
-  // tool-call output (verified against live Claude Code sub-agent runs;
-  // before this branch the inner `structuredContent` leaked through as
-  // a JSON code block). Prefer the inner `structuredContent` because it
-  // carries the broker's full `kind`/`text`/`code`/`message` fields;
-  // fall back to `content[0].text` (which the companion already
-  // extracted) when `structuredContent` is missing or malformed.
+  // MCP `CallToolResult` envelope. Prefer the inner `structuredContent` (the
+  // full report); fall back to `content[0].text` when it's missing/malformed.
   if (
     Array.isArray(obj.content) &&
     obj.structuredContent &&
@@ -386,40 +441,41 @@ function parseDelegationOutcome(raw: string | null | undefined): {
     !Array.isArray(obj.structuredContent)
   ) {
     const inner = obj.structuredContent as Record<string, unknown>
-    const interpretedInner = interpretBrokerEnvelope(inner)
-    if (interpretedInner) {
-      // Trust outer `isError: true` even when the inner shape didn't
-      // explicitly set kind:"err" — the host has already decided.
-      if (obj.isError === true && !interpretedInner.isError) {
-        return { ...interpretedInner, isError: true }
+    const interpreted = interpretReport(inner)
+    if (interpreted) {
+      // Honor an outer `isError: true` the host already decided.
+      if (interpreted.kind === "outcome" && obj.isError === true) {
+        return { ...interpreted, isError: true }
       }
-      return interpretedInner
+      return interpreted
     }
     const first = (obj.content as unknown[])[0]
     if (first && typeof first === "object" && !Array.isArray(first)) {
       const text = (first as Record<string, unknown>).text
       if (typeof text === "string") {
-        // `structuredContent` lacked a recognizable `kind`, but it may still
-        // carry the child conversation id — surface it for the fallback link.
         return {
+          kind: "outcome",
           text,
-          isError: obj.isError === true,
-          childConversationId:
-            typeof inner.child_conversation_id === "number"
-              ? inner.child_conversation_id
-              : null,
+          isError: obj.isError === true || forceError,
+          childConversationId: readChildConversationId(inner),
         }
       }
     }
   }
 
-  const interpreted = interpretBrokerEnvelope(obj)
-  if (interpreted) return interpreted
+  const interpreted = interpretReport(obj)
+  if (interpreted) {
+    if (interpreted.kind === "outcome" && forceError) {
+      return { ...interpreted, isError: true }
+    }
+    return interpreted
+  }
 
-  // Other JSON shapes — pretty-print so we don't surface raw braces.
+  // Unrecognized JSON — pretty-print so we don't surface raw braces.
   return {
+    kind: "outcome",
     text: "```json\n" + JSON.stringify(obj, null, 2) + "\n```",
-    isError: false,
+    isError: forceError,
     childConversationId: null,
   }
 }
@@ -534,11 +590,31 @@ export function DelegatedSubThread({
   // the persisted `meta["codeg.delegation"]` from the snapshot (page
   // refresh recovery), then the parent ToolCall's own state/output as a
   // last resort.
+  // Parse the parent `delegate_to_agent` tool output once. Under async this is
+  // a running *ack* (kind:"ack") while the child runs; a terminal kind:"outcome"
+  // only for a fast-complete (child finished during setup) or a legacy
+  // synchronous result. `errorText` (tool errored) is forced to an error
+  // outcome.
+  const toolOutput = useMemo<ParsedToolOutput | null>(() => {
+    if (errorText) {
+      const parsed = parseToolOutput(errorText, true)
+      if (parsed) return parsed
+    }
+    return parseToolOutput(output)
+  }, [output, errorText])
+
   const agentType: AgentType | null = binding?.agentType ?? parsed.agentType
   const status: "starting" | "running" | "ok" | "err" = (() => {
     if (binding) return binding.status
     if (parsedMeta) return parsedMeta.status
     if (state === "output-error" || errorText) return "err"
+    // Async: the parent output is a running ack while the child runs in the
+    // background — keep showing "running" rather than letting output-available
+    // prematurely flip the badge to "ok" (the result lands later via the
+    // event/meta). A terminal report (fast-complete / legacy sync) maps to
+    // ok/err directly.
+    if (toolOutput?.kind === "ack") return "running"
+    if (toolOutput?.kind === "outcome") return toolOutput.isError ? "err" : "ok"
     if (state === "output-available") return "ok"
     // No live binding, no persisted meta, and the parent tool call hasn't
     // reached a terminal state yet: the sub-agent connection is still being
@@ -552,21 +628,20 @@ export function DelegatedSubThread({
     return "starting"
   })()
   const errorCode = binding?.errorCode ?? parsedMeta?.errorCode ?? undefined
+  // Inline result preview: live event binding first, then the persisted
+  // terminal meta (post-refresh recovery). Rendered by the expanded body when
+  // there's no live child stream to show.
+  const resultPreview =
+    binding?.resultPreview ?? parsedMeta?.resultPreview ?? null
   // The child session isn't bound yet in the "starting" state, so there is
   // nothing meaningful to expand into — keep the header non-interactive
   // (no toggle, no chevron) until a child session exists.
   const expandable = status !== "starting"
 
-  // Parse the broker's structured outcome out of the raw tool output so
-  // the expanded body can render markdown text instead of `{"kind":"ok",
-  // "text":"..."}` JSON. Falls back to errorText when the tool errored.
-  const outcome = useMemo(() => {
-    if (errorText) {
-      const parsed = parseDelegationOutcome(errorText)
-      if (parsed) return { ...parsed, isError: true }
-    }
-    return parseDelegationOutcome(output)
-  }, [output, errorText])
+  // A terminal result to render in the expanded body. Only a kind:"outcome"
+  // tool output is a result; a running ack yields no inline outcome (the body
+  // falls back to the live child stream / preview instead).
+  const outcome = toolOutput?.kind === "outcome" ? toolOutput : null
 
   // Real-time view of the child's assistant text — *all* text segments
   // concatenated in arrival order, ACROSS turns. We deliberately strip:
@@ -628,12 +703,14 @@ export function DelegatedSubThread({
   // Final fallback: the broker's tool output carries `child_conversation_id`
   // even when neither a live binding nor persisted meta exists — the
   // synthetic-fallback case (the broker minted a `delegation-*` tool_use_id, so
-  // it skipped meta/event emits). Reading it from the outcome keeps the "Open
-  // conversation" affordance working for those cards.
+  // it skipped meta/event emits). Under async this id rides on the running ack,
+  // so reading it from `toolOutput` keeps the "Open detail" affordance working
+  // for those cards (their inline status can't auto-resolve, but the child
+  // session shows the true terminal result).
   const childConversationId =
     binding?.childConversationId ??
     parsedMeta?.childConversationId ??
-    outcome?.childConversationId ??
+    toolOutput?.childConversationId ??
     null
 
   // Header content (icon + agent name + status badge + task), shared between
@@ -710,6 +787,7 @@ export function DelegatedSubThread({
             status={status}
             outcome={outcome}
             liveStreamText={liveStreamText}
+            resultPreview={resultPreview}
             childPendingPermission={childPendingPermission}
             onRespondPermission={onRespondPermission}
             tSubAgentRunning={t("subAgentRunning")}
@@ -734,6 +812,7 @@ function ExpandedBody({
   status,
   outcome,
   liveStreamText,
+  resultPreview,
   childPendingPermission,
   onRespondPermission,
   tSubAgentRunning,
@@ -742,22 +821,26 @@ function ExpandedBody({
   status: "starting" | "running" | "ok" | "err"
   outcome: { text: string; isError: boolean } | null
   liveStreamText: string | null
+  resultPreview: string | null
   childPendingPermission: ChildPendingPermission | null
   onRespondPermission: (requestId: string, optionId: string) => void
   tSubAgentRunning: string
   tNoDetail: string
 }) {
   const hasOutcome = !!outcome && outcome.text.length > 0
+  // The body text: the live child stream (accumulated across turns, and
+  // retained after the child detaches) takes priority; the recovered terminal
+  // preview backs the post-refresh case where no live stream exists.
+  const body = liveStreamText ?? resultPreview ?? null
 
   // Priority:
   //   1. pending permission — child can't progress until the user acts.
-  //   2. broker outcome (authoritative final) — replaces any live preview.
-  //   3. running: show whatever text we have (latest segment, persisted
-  //      across tool_call gaps) PLUS a trailing "sub-agent running…"
-  //      indicator below. The indicator is appended, never substituted —
-  //      previously shown text stays in view so the user has a continuous
-  //      surface even while the child is mid-tool.
-  //   4. noDetail — terminal state with nothing to display.
+  //   2. terminal outcome on the tool output (fast-complete / legacy sync).
+  //   3. running: show whatever text we have PLUS a trailing "sub-agent
+  //      running…" indicator. The indicator is appended, never substituted.
+  //   4. terminal (ok/err) with body text — the result (live full text, or the
+  //      recovered preview).
+  //   5. noDetail — terminal state with nothing to display.
   if (childPendingPermission) {
     return (
       <PermissionDialog
@@ -774,15 +857,16 @@ function ExpandedBody({
   if (status === "running") {
     return (
       <div className="space-y-2">
-        {liveStreamText && (
-          <DelegationOutcomeText text={liveStreamText} isError={false} />
-        )}
+        {body && <DelegationOutcomeText text={body} isError={false} />}
         <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />
           <span>{tSubAgentRunning}</span>
         </div>
       </div>
     )
+  }
+  if (body) {
+    return <DelegationOutcomeText text={body} isError={status === "err"} />
   }
   return <div className="text-muted-foreground">{tNoDetail}</div>
 }
