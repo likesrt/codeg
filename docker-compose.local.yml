@@ -35,6 +35,12 @@ services:
       - ./home/codeg:/home/codeg
       # Codeg 数据目录：持久化 SQLite 数据库、tokens.json、uploads、pets、凭据 helper 等
       - ./data:/data
+    # 子代理会用到 bubblewrap / namespace / unshare；这里放宽容器限制以保证本地开发可用
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     environment:
       # 容器时区
       - TZ=Asia/Shanghai
@@ -49,7 +55,7 @@ services:
       - CODEG_DATA_DIR=/data
       # Codeg 前端静态文件目录；Dockerfile 会把 Next.js 构建产物复制到这里
       - CODEG_STATIC_DIR=/app/web
-      # 启动容器时是否在后台自动执行 `codeg init tool`；首次部署想自动补齐工具链时改为 true
+      # 启动容器时是否在后台自动执行 `codeg init tool`；首次部署想自动补齐工具链时改成 true
       - CODEG_INIT_TOOL_ON_START=false
       # codeg-mcp 是多智能体委托/协作的伴生进程；显式指定路径可避免自动发现失败导致委托能力不可用
       - CODEG_MCP_BIN=/usr/local/bin/codeg-mcp

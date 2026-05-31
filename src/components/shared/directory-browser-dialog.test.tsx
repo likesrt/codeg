@@ -29,11 +29,13 @@ vi.mock("@/components/ui/context-menu", () => ({
   ContextMenuItem: ({
     children,
     onSelect,
+    variant = "default",
   }: {
     children: ReactNode
     onSelect?: () => void
+    variant?: "default" | "destructive"
   }) => (
-    <button onClick={onSelect} type="button">
+    <button data-variant={variant} onClick={onSelect} type="button">
       {children}
     </button>
   ),
@@ -124,6 +126,24 @@ describe("DirectoryBrowserDialog", () => {
     })
     expect(nameInput).toBeDisabled()
     expect(screen.getByRole("button", { name: "loading" })).toBeDisabled()
+  })
+
+  it("marks directory deletion context menu item as destructive", async () => {
+    render(
+      <DirectoryBrowserDialog
+        open
+        onOpenChange={vi.fn()}
+        onSelect={vi.fn()}
+        initialPath="/home/me"
+      />
+    )
+
+    await screen.findByText("project")
+    const deleteButtons = screen.getAllByRole("button", {
+      name: "deleteDirectory",
+    })
+
+    expect(deleteButtons[0]).toHaveAttribute("data-variant", "destructive")
   })
 
   it("opens a confirmation dialog before deleting a directory", async () => {

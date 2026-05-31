@@ -223,7 +223,10 @@ function DirectoryBrowserEntryRow({
         >
           {translate("newChildFolder")}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => onBeginDeleteDirectory(entry)}>
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={() => onBeginDeleteDirectory(entry)}
+        >
           {translate("deleteDirectory")}
         </ContextMenuItem>
       </ContextMenuContent>
