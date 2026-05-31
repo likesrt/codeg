@@ -143,6 +143,67 @@ pub enum DelegationOutcome {
     },
 }
 
+/// Lifecycle status of an asynchronous delegation task. Surfaced by the
+/// three delegation tools — `delegate_to_agent` (returns a `Running` ack, or
+/// a terminal status when the child finished during setup / setup failed),
+/// `get_delegation_status`, and `cancel_delegation`. Wire-stable snake_case
+/// strings: they ship to LLM context and to the frontend, so don't rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Child is running in the background; no terminal result yet.
+    Running,
+    /// Child ended its turn cleanly; `text` carries the result (possibly
+    /// truncated — open the child session for the full output).
+    Completed,
+    /// Child ended in a non-cancel failure; `error_code` / `message` describe it.
+    Failed,
+    /// Task was canceled (by `cancel_delegation`, parent teardown, or a
+    /// non-`end_turn` parent turn end).
+    Canceled,
+    /// Task id is not known to this parent — never existed, belonged to a
+    /// different parent, or its result was evicted from the cache and no DB
+    /// row backs it.
+    Unknown,
+}
+
+/// Unified response the broker hands the listener for every delegation tool
+/// (`delegate_to_agent` / `get_delegation_status` / `cancel_delegation`). The
+/// listener serializes it into `BrokerResponse.outcome`; the companion renders
+/// it into the MCP `CallToolResult` (with `structuredContent` carrying this
+/// whole shape so the frontend can read `status` and distinguish a running ack
+/// from a terminal outcome).
+///
+/// Fields are all optional except `status` so one type can describe a running
+/// ack (ids + `Running`), a completed result (`text` + `duration_ms`), a
+/// failure (`error_code` + `message`), and a setup failure (`task_id: None`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationTaskReport {
+    /// Broker `call_id` (UUID) identifying the task. `None` only when setup
+    /// failed before a task was registered (no id to track).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_conversation_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<AgentType>,
+    /// Completed result text (capped; open the child session for the full
+    /// output). Only set for `Completed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Wire-stable error code for `Failed` / `Canceled` (mirrors
+    /// `DelegationOutcome::Err.code`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// Human-readable note: the failure message, or a hint like
+    /// "running in background" / "result not cached; open child session N".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 impl DelegationOutcome {
     /// Project a `DelegationError` onto the wire-stable `code` string used by
     /// the frontend and MCP companion. Keep these strings stable — they ship

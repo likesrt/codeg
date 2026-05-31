@@ -70,6 +70,7 @@ import type {
   GitCredentials,
   GitDetectResult,
   PackageManagerInfo,
+  HyperframesSkillAgent,
   GitSettings,
   GitHubAccountsSettings,
   GitHubTokenValidation,
@@ -1319,6 +1320,55 @@ export async function createShadcnProject(params: {
     packageManager: params.packageManager,
     targetDir: params.targetDir,
   })
+}
+
+/**
+ * Detect, per codeg-supported agent, whether the HyperFrames skills are already
+ * installed globally. Cheap filesystem check, so no long timeout is needed.
+ */
+export async function detectHyperframesSkills(): Promise<
+  HyperframesSkillAgent[]
+> {
+  return getTransport().call(
+    "detect_hyperframes_skills",
+    {},
+    { timeoutMs: 30_000 }
+  )
+}
+
+/**
+ * Install the HyperFrames agent skills globally (symlinked) for the given
+ * agents. Clones from GitHub, so allow a few minutes. Re-running is idempotent
+ * (acts as an update for agents that already have the skills).
+ */
+export async function installHyperframesSkills(
+  agents: string[]
+): Promise<void> {
+  await getTransport().call(
+    "install_hyperframes_skills",
+    { agents },
+    { timeoutMs: 600_000 }
+  )
+}
+
+export async function createHyperframesProject(params: {
+  projectName: string
+  example: string
+  resolution: string
+  packageManager: string
+  targetDir: string
+}): Promise<string> {
+  return getTransport().call(
+    "create_hyperframes_project",
+    {
+      projectName: params.projectName,
+      example: params.example,
+      resolution: params.resolution,
+      packageManager: params.packageManager,
+      targetDir: params.targetDir,
+    },
+    { timeoutMs: 600_000 }
+  )
 }
 
 // Conversation CRUD commands

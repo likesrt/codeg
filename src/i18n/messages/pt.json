@@ -2074,7 +2074,21 @@
   "ProjectBoot": {
     "title": "Inicializador de Projeto",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "Projeto de vídeo HyperFrames",
+      "subtitle": "Crie um projeto de HTML para vídeo. O agente do espaço de trabalho pode então escrevê-lo e renderizá-lo.",
+      "resolution": "Resolução",
+      "skillsTitle": "Skills dos agentes",
+      "skillsDesc": "Instala globalmente as skills do HyperFrames (link simbólico) para os agentes selecionados, para que possam criar e renderizar vídeo.",
+      "recheck": "Verificar novamente",
+      "installedBadge": "Instalado",
+      "skillsInstall": "Instalar / atualizar skills",
+      "skillsInstalling": "Instalando skills…",
+      "skillsInstalled": "Skills do HyperFrames instaladas",
+      "skillsInstallFailed": "Não foi possível instalar as skills do HyperFrames"
     },
     "config": {
       "base": "Base",

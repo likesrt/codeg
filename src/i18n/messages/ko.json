@@ -2074,7 +2074,21 @@
   "ProjectBoot": {
     "title": "프로젝트 부트",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "HyperFrames 비디오 프로젝트",
+      "subtitle": "HTML을 비디오로 만드는 프로젝트를 생성합니다. 이후 워크스페이스 에이전트가 작성하고 렌더링할 수 있습니다.",
+      "resolution": "해상도",
+      "skillsTitle": "에이전트 스킬",
+      "skillsDesc": "선택한 에이전트에 HyperFrames 스킬을 전역(심볼릭 링크)으로 설치하여 영상 작성·렌더링을 지원합니다.",
+      "recheck": "다시 확인",
+      "installedBadge": "설치됨",
+      "skillsInstall": "스킬 설치 / 업데이트",
+      "skillsInstalling": "스킬 설치 중…",
+      "skillsInstalled": "HyperFrames 스킬 설치 완료",
+      "skillsInstallFailed": "HyperFrames 스킬 설치 실패"
     },
     "config": {
       "base": "베이스",

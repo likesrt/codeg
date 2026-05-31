@@ -1072,3 +1072,121 @@ describe("DelegatedSubThread", () => {
     expect(screen.getByText(/now reporting the result/)).toBeInTheDocument()
   })
 })
+
+// Async delegation: the parent `delegate_to_agent` output is a *running ack*
+// (the result arrives later via the event/meta). These lock in the three
+// status-display fixes the async cutover required.
+describe("DelegatedSubThread (async ack semantics)", () => {
+  beforeEach(() => {
+    mockFindByParentToolUseId.mockReset()
+    mockAttachDelegationChild.mockReset()
+    mockDetachDelegationChild.mockReset()
+    mockRespondPermission.mockReset()
+    mockChildConnection = undefined
+    storeCallbacks = []
+    mockFindByParentToolUseId.mockReturnValue(undefined)
+  })
+
+  // The companion's CallToolResult envelope for a Running ack.
+  const ackOutput = JSON.stringify({
+    content: [{ type: "text", text: "Delegated; running in background" }],
+    isError: false,
+    structuredContent: {
+      task_id: "t1",
+      status: "running",
+      child_conversation_id: 99,
+    },
+  })
+
+  it("Break #1: a running ack with no binding/meta shows 'running', never a premature 'done'", () => {
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({ agent_type: "codex", task: "do x" })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={input}
+        output={ackOutput}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("running")).toBeInTheDocument()
+    // "done" is the i18n label for the ok badge — it must NOT appear.
+    expect(screen.queryByText("done")).not.toBeInTheDocument()
+  })
+
+  it("Break #2: a running binding + ack output shows the running indicator, not the ack text", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "running" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        output={ackOutput}
+        state="output-available"
+      />
+    )
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
+    expect(screen.getByText(/Sub-agent running/)).toBeInTheDocument()
+    // The ack envelope text must never be surfaced as the result.
+    expect(
+      screen.queryByText(/Delegated; running in background/)
+    ).not.toBeInTheDocument()
+  })
+
+  it("Break #3 (live): a completed binding renders its resultPreview inline even though the output is only an ack", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "ok", resultPreview: "The audit passed." }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        output={ackOutput}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("done")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
+    expect(screen.getByText("The audit passed.")).toBeInTheDocument()
+  })
+
+  it("Break #3 (refresh): recovers the completed result preview from meta when there's no live binding", () => {
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const input = JSON.stringify({ agent_type: "codex", task: "do x" })
+    const meta = {
+      "codeg.delegation": {
+        status: "completed",
+        child_connection_id: "c1",
+        child_conversation_id: 99,
+        text_preview: "Refreshed result preview.",
+      },
+    }
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={input}
+        output={ackOutput}
+        meta={meta}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("done")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
+    expect(screen.getByText("Refreshed result preview.")).toBeInTheDocument()
+  })
+})

@@ -2074,7 +2074,21 @@
   "ProjectBoot": {
     "title": "プロジェクトブート",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "HyperFrames 動画プロジェクト",
+      "subtitle": "HTML から動画を生成するプロジェクトを作成します。ワークスペースのエージェントがそれを記述・レンダリングできます。",
+      "resolution": "解像度",
+      "skillsTitle": "エージェントスキル",
+      "skillsDesc": "選択したエージェント向けに HyperFrames スキルをグローバル(シンボリックリンク)でインストールし、動画の作成・レンダリングを可能にします。",
+      "recheck": "再チェック",
+      "installedBadge": "インストール済み",
+      "skillsInstall": "スキルをインストール / 更新",
+      "skillsInstalling": "スキルをインストール中…",
+      "skillsInstalled": "HyperFrames スキルをインストールしました",
+      "skillsInstallFailed": "HyperFrames スキルのインストールに失敗しました"
     },
     "config": {
       "base": "ベース",
