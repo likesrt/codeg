@@ -4114,7 +4114,7 @@ pub enum PasteConflictStrategy {
 
 /// 判断 candidate_child 是否为 candidate_parent 的子孙路径。
 ///
-/// 用于检测剪切目录到自身子目录的危险操作。
+/// 用于检测目录粘贴到自身子树的危险操作，复制和剪切都要复用这层防护。
 fn is_descendant(candidate_parent: &Path, candidate_child: &Path) -> bool {
     candidate_child.starts_with(candidate_parent)
 }
@@ -4132,9 +4132,17 @@ fn build_duplicate_name(name: &str, attempt: usize) -> String {
 
 /// 同步递归复制文件或目录。
 ///
-/// 在 `run_file_io` 闭包内调用，不直接涉及 async。
+/// 在 `run_file_io` 闭包内调用，不直接涉及 async；会拒绝任何层级的符号链接，
+/// 避免把工作区外内容卷入复制结果。
 fn copy_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppCommandError> {
-    if source.is_file() {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+
+    if meta.is_file() {
         std::fs::copy(source, destination).map_err(AppCommandError::io)?;
         return Ok(());
     }
@@ -4150,8 +4158,29 @@ fn copy_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
     Ok(())
 }
 
+/// 同步删除文件或目录。
+///
+/// 供覆盖和清理临时粘贴产物复用；路径不存在时视为已清理完成。
+fn remove_tree_entry_sync(path: &Path) -> Result<(), AppCommandError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path).map_err(AppCommandError::io)
+        }
+        Ok(_) => std::fs::remove_file(path).map_err(AppCommandError::io),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(AppCommandError::io(err)),
+    }
+}
+
 /// 同步移动文件或目录（跨文件系统时回退到复制+删除）。
 fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppCommandError> {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+
     // 先尝试 rename，同文件系统内 O(1) 操作。
     match std::fs::rename(source, destination) {
         Ok(()) => return Ok(()),
@@ -4162,7 +4191,7 @@ fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
     }
 
     copy_tree_entry_sync(source, destination)?;
-    if source.is_dir() {
+    if meta.is_dir() {
         std::fs::remove_dir_all(source).map_err(AppCommandError::io)?;
     } else {
         std::fs::remove_file(source).map_err(AppCommandError::io)?;
@@ -4173,12 +4202,12 @@ fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
 /// 根据冲突策略，若目标存在则返回实际应使用的目标路径。
 ///
 /// `Abort` 策略下目标存在时返回 `AlreadyExists` 错误；
-/// `Overwrite` 策略下先删除已存在目标再返回原路径；
+/// `Overwrite` 策略由调用方分阶段处理，因此这里防御性拒绝；
 /// `Duplicate` 策略下递增序号生成不冲突的副本名。
 fn resolve_conflict(
     target: &Path,
     conflict: PasteConflictStrategy,
-    source_is_file: bool,
+    source_meta: &std::fs::Metadata,
 ) -> Result<PathBuf, AppCommandError> {
     if !target.exists() {
         return Ok(target.to_path_buf());
@@ -4188,14 +4217,9 @@ fn resolve_conflict(
         PasteConflictStrategy::Abort => Err(AppCommandError::already_exists(
             "A file or directory with this name already exists in the target location",
         )),
-        PasteConflictStrategy::Overwrite => {
-            if target.is_dir() {
-                std::fs::remove_dir_all(target).map_err(AppCommandError::io)?;
-            } else {
-                std::fs::remove_file(target).map_err(AppCommandError::io)?;
-            }
-            Ok(target.to_path_buf())
-        }
+        PasteConflictStrategy::Overwrite => Err(AppCommandError::already_exists(
+            "Overwrite must be handled by the paste operation after staging succeeds",
+        )),
         PasteConflictStrategy::Duplicate => {
             let parent = target.parent().ok_or_else(|| {
                 AppCommandError::invalid_input("Cannot determine parent directory")
@@ -4203,7 +4227,7 @@ fn resolve_conflict(
             let target_name = target.file_name().and_then(|s| s.to_str()).unwrap_or("file");
 
             // 目录直接在名字后追加副本后缀；文件则保留扩展名，避免副本失去类型信息。
-            let (stem, ext) = if source_is_file {
+            let (stem, ext) = if source_meta.is_file() {
                 let stem = target
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -4229,6 +4253,84 @@ fn resolve_conflict(
             ))
         }
     }
+}
+
+/// 执行已解析路径的复制或剪切，并返回实际目标路径。
+///
+/// 当冲突策略为覆盖且目标已存在时，先把源条目写入同级临时路径，再把旧目标
+/// 改名为备份，最后将临时条目改回目标路径；这样即使最终替换失败，旧目标也
+/// 还在备份里，不会提前丢失。
+fn copy_paste_entry_sync(
+    source: &Path,
+    initial_target: &Path,
+    mode: PasteFileTreeEntryMode,
+    conflict: PasteConflictStrategy,
+    source_meta: &std::fs::Metadata,
+) -> Result<PathBuf, AppCommandError> {
+    if conflict == PasteConflictStrategy::Overwrite && initial_target.exists() {
+        let parent = initial_target.parent().ok_or_else(|| {
+            AppCommandError::invalid_input("Cannot determine parent directory")
+        })?;
+        let stage_path = parent.join(format!(
+            ".codeg-paste-{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backup_path = parent.join(format!(
+            ".codeg-paste-backup-{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        let staged = match mode {
+            PasteFileTreeEntryMode::Copy => copy_tree_entry_sync(source, &stage_path),
+            PasteFileTreeEntryMode::Cut => move_tree_entry_sync(source, &stage_path),
+        };
+        if let Err(err) = staged {
+            let _ = remove_tree_entry_sync(&stage_path);
+            return Err(err);
+        }
+
+        if let Err(err) = std::fs::rename(initial_target, &backup_path).map_err(AppCommandError::io) {
+            if mode == PasteFileTreeEntryMode::Cut {
+                let restore_err = std::fs::rename(&stage_path, source).map_err(AppCommandError::io);
+                if let Err(restore_err) = restore_err {
+                    let backup_detail = err.detail.clone().unwrap_or_else(|| err.message.clone());
+                    let restore_detail = restore_err
+                        .detail
+                        .unwrap_or_else(|| restore_err.message.clone());
+                    return Err(err.with_detail(format!(
+                        "backup rename failed: {}; restore of staged source also failed: {}",
+                        backup_detail, restore_detail
+                    )));
+                }
+            } else {
+                let _ = remove_tree_entry_sync(&stage_path);
+            }
+            return Err(err);
+        }
+
+        if let Err(err) = std::fs::rename(&stage_path, initial_target).map_err(AppCommandError::io) {
+            let _ = std::fs::rename(&backup_path, initial_target);
+            if mode == PasteFileTreeEntryMode::Cut {
+                let _ = std::fs::rename(&stage_path, source);
+            } else {
+                let _ = remove_tree_entry_sync(&stage_path);
+            }
+            let _ = remove_tree_entry_sync(&backup_path);
+            return Err(err);
+        }
+
+        let _ = remove_tree_entry_sync(&backup_path);
+        return Ok(initial_target.to_path_buf());
+    }
+
+    let actual_target = resolve_conflict(initial_target, conflict, source_meta)?;
+    match mode {
+        PasteFileTreeEntryMode::Copy => copy_tree_entry_sync(source, &actual_target)?,
+        PasteFileTreeEntryMode::Cut => move_tree_entry_sync(source, &actual_target)?,
+    }
+    Ok(actual_target)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -4277,7 +4379,6 @@ pub async fn paste_file_tree_entry(
         }
     }
 
-    let source_is_file = source_meta.is_file();
     let source_name = source
         .file_name()
         .and_then(|n| n.to_str())
@@ -4312,16 +4413,8 @@ pub async fn paste_file_tree_entry(
         ensure_path_in_workspace(&root, &source)?;
         ensure_path_in_workspace(&root, &target_dir)?;
 
-        let actual_target = resolve_conflict(&initial_target, conflict, source_is_file)?;
-
-        match mode {
-            PasteFileTreeEntryMode::Copy => {
-                copy_tree_entry_sync(&source, &actual_target)?;
-            }
-            PasteFileTreeEntryMode::Cut => {
-                move_tree_entry_sync(&source, &actual_target)?;
-            }
-        }
+        let actual_target =
+            copy_paste_entry_sync(&source, &initial_target, mode, conflict, &source_meta)?;
 
         let rel = actual_target
             .strip_prefix(&root)
