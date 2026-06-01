@@ -4201,6 +4201,10 @@ fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
         ensure_tree_has_no_symlinks(source)?;
     }
 
+    if meta.is_dir() {
+        ensure_tree_has_no_symlinks(source)?;
+    }
+
     // 先尝试 rename，同文件系统内 O(1) 操作。
     match std::fs::rename(source, destination) {
         Ok(()) => return Ok(()),
@@ -4229,7 +4233,7 @@ fn resolve_conflict(
     conflict: PasteConflictStrategy,
     source_meta: &std::fs::Metadata,
 ) -> Result<PathBuf, AppCommandError> {
-    if !target.exists() {
+    if std::fs::symlink_metadata(target).is_err() {
         return Ok(target.to_path_buf());
     }
 
