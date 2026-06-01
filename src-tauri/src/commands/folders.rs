@@ -4219,6 +4219,18 @@ fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
     Ok(())
 }
 
+/// 判断路径是否可以作为新粘贴目标。
+///
+/// 只有确认路径不存在时才允许写入；权限或其它元数据错误必须返回，避免把
+/// 不可确认状态误判为空闲路径。
+fn ensure_paste_destination_available(path: &Path) -> Result<bool, AppCommandError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(AppCommandError::io(err)),
+    }
+}
+
 /// 根据冲突策略，若目标存在则返回实际应使用的目标路径。
 ///
 /// `Abort` 策略下目标存在时返回 `AlreadyExists` 错误；
@@ -4229,7 +4241,7 @@ fn resolve_conflict(
     conflict: PasteConflictStrategy,
     source_meta: &std::fs::Metadata,
 ) -> Result<PathBuf, AppCommandError> {
-    if std::fs::symlink_metadata(target).is_err() {
+    if ensure_paste_destination_available(target)? {
         return Ok(target.to_path_buf());
     }
 
@@ -4264,7 +4276,7 @@ fn resolve_conflict(
                     build_duplicate_name(stem, attempt)
                 };
                 let candidate = parent.join(&candidate_name);
-                if std::fs::symlink_metadata(&candidate).is_err() {
+                if ensure_paste_destination_available(&candidate)? {
                     return Ok(candidate);
                 }
             }
@@ -5415,6 +5427,32 @@ mod paste_file_tree_entry_tests {
         assert!(root.join("dst/a/1.txt").exists());
     }
 
+    /// 剪切目录时拒绝子级符号链接，避免同文件系统 rename 绕过递归复制检查。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn paste_cut_directory_with_nested_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/a/real.txt", "content");
+        create_dir(&root, "dst");
+        symlink(root.join("src/a/real.txt"), root.join("src/a/link.txt")).expect("create symlink");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/a".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("nested symlink should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert!(root.join("src/a/real.txt").exists());
+        assert!(!root.join("dst/a").exists());
+    }
+
     // ── 冲突策略 ──
 
     /// Abort 策略下同名时报错。
@@ -5460,10 +5498,7 @@ mod paste_file_tree_entry_tests {
         .expect("overwrite should succeed");
 
         assert_eq!(result, "dst/file.txt");
-        assert_eq!(
-            std::fs::read_to_string(root.join("dst/file.txt")).unwrap(),
-            "new content"
-        );
+        assert_eq!(std::fs::read_to_string(root.join("dst/file.txt")).unwrap(), "new content");
     }
 
     /// Duplicate 策略下同名时自动生成副本名。
