@@ -481,6 +481,8 @@
       "enableHint": "Lorsque cette option est désactivée, l’outil delegate_to_agent est masqué du catalogue d’outils MCP de l’agent.",
       "depthLimit": "Profondeur maximale de délégation",
       "depthHint": "Plage autorisée : {min}–{max}. Limite la profondeur de récursion d’une chaîne de délégation (racine → enfant → petit-enfant …).",
+      "completedCacheLabel": "Cache des résultats terminés (MB)",
+      "completedCacheHint": "Cache en mémoire des résultats terminés des sous-agents, conservé uniquement tant que la session de délégation est en cours et libéré automatiquement à la fin de cette session. Au-delà de ce budget, les résultats les plus anciens sont supprimés de la mémoire en premier (toujours consultables dans la session du sous-agent) ; 0 = illimité (libéré quand même à la fin de la session).",
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "saved": "Paramètres de délégation enregistrés",
@@ -1904,6 +1906,7 @@
         "status": {
           "starting": "démarrage",
           "running": "en cours",
+          "waiting": "en attente d'approbation",
           "ok": "terminé",
           "err": {
             "default": "échec",

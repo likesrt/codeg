@@ -67,17 +67,22 @@ use crate::acp::delegation::types::{
 use crate::acp::types::DelegationResultSummary;
 use crate::models::AgentType;
 
-/// Per-parent cap on cached completed-task results. The completed-cache lets
-/// `get_delegation_status` / `cancel_delegation` return a finished task's
-/// result after the lifecycle resolved it; FIFO-evicted past this many tasks
-/// per parent (evicted tasks fall back to the DB status lookup). 128 covers
-/// realistic high-fan-out parents while bounding memory.
-const COMPLETED_CAP_PER_PARENT: usize = 128;
+/// Default per-parent byte budget for cached completed-task result text. The
+/// completed-cache lets `get_delegation_status` / `cancel_delegation` return a
+/// finished task's result after the lifecycle resolved it; once a parent's
+/// retained result text exceeds this budget the OLDEST results are FIFO-evicted
+/// (evicted tasks fall back to the DB status lookup, which carries status only).
+/// This is the seed value baked into `DelegationConfig::default()`; the live
+/// value is user-configurable from the settings page (in MB) and `0` disables
+/// eviction entirely. See `PendingInner::completed_cap_bytes`.
+const DEFAULT_COMPLETED_CACHE_CAP_BYTES: usize = 512 * 1024 * 1024;
 
 /// Per-result cap on cached completed text. The full child output always lives
 /// in the child's own session (viewable via the frontend's child-session
-/// sheet); this only bounds the broker's in-memory copy so a pathological
-/// multi-MB result can't blow up memory × `COMPLETED_CAP_PER_PARENT`.
+/// sheet); this only bounds the broker's in-memory copy of a SINGLE result.
+/// Because it is far below the per-parent byte budget
+/// (`DEFAULT_COMPLETED_CACHE_CAP_BYTES`), the newest result always fits and is
+/// never the eviction victim in `insert_completed`.
 const COMPLETED_TEXT_CAP: usize = 256 * 1024;
 
 /// Cap on the inline `text_preview` carried by the `DelegationCompleted` event
@@ -141,6 +146,11 @@ pub struct DelegationConfig {
     /// to `ConnectionSpawner::spawn` as `preferred_mode_id` /
     /// `preferred_config_values`.
     pub agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults>,
+    /// Per-parent byte budget for cached completed-task result text. `0`
+    /// disables eviction (unlimited). Surfaced from the settings page in MB and
+    /// converted to bytes in `into_broker_config`. Pushed into the pending-calls
+    /// bucket by `set_config` so `insert_completed` reads it lock-free.
+    pub completed_cache_cap_bytes: usize,
 }
 
 impl Default for DelegationConfig {
@@ -149,6 +159,7 @@ impl Default for DelegationConfig {
             enabled: false,
             depth_limit: 1,
             agent_defaults: BTreeMap::new(),
+            completed_cache_cap_bytes: DEFAULT_COMPLETED_CACHE_CAP_BYTES,
         }
     }
 }
@@ -179,8 +190,9 @@ struct RunningTask {
 
 /// A terminal delegation result retained so `get_delegation_status` /
 /// `cancel_delegation` can answer after the lifecycle resolved the task.
-/// Parent-scoped, FIFO-evicted at [`COMPLETED_CAP_PER_PARENT`], and dropped
-/// wholesale when the parent connection tears down.
+/// Parent-scoped, FIFO-evicted once the parent's retained result text exceeds
+/// `PendingInner::completed_cap_bytes`, and dropped wholesale when the parent
+/// connection tears down.
 #[derive(Clone)]
 struct CompletedTask {
     parent_connection_id: String,
@@ -239,15 +251,27 @@ struct PendingInner {
     /// task as neither running nor completed.
     running: HashMap<String, RunningTask>,
     /// Terminal results retained for `get_delegation_status` / `cancel_delegation`,
-    /// keyed by `task_id`. Bounded by `completed_order` FIFO eviction
-    /// (`COMPLETED_CAP_PER_PARENT` per parent) and dropped per-parent on
-    /// connection teardown. Evicted/unknown tasks fall back to the DB status
-    /// lookup.
+    /// keyed by `task_id`. Bounded by the per-parent byte valve
+    /// (`completed_cap_bytes` over `completed_bytes`, FIFO-evicted via
+    /// `completed_order`) and dropped per-parent on connection teardown.
+    /// Evicted/unknown tasks fall back to the DB status lookup.
     completed: HashMap<String, CompletedTask>,
-    /// Per-parent FIFO index over `completed` for capped eviction. Keyed by
-    /// `parent_connection_id`; each deque holds that parent's completed
-    /// `task_id`s oldest-first.
+    /// Per-parent FIFO index over `completed` for byte-valve eviction and
+    /// per-parent teardown. Keyed by `parent_connection_id`; each deque holds
+    /// that parent's completed `task_id`s oldest-first.
     completed_order: HashMap<String, VecDeque<String>>,
+    /// Per-parent running total of retained completed result-text bytes (the
+    /// `CompletedTask::text` lengths). Drives the `completed_cap_bytes` valve in
+    /// `insert_completed`; kept in sync on insert/evict and cleared per-parent
+    /// on teardown.
+    completed_bytes: HashMap<String, usize>,
+    /// Per-parent byte budget for retained completed result text. `0` =
+    /// unlimited (no eviction). Seeded by `set_config` from the live
+    /// `DelegationConfig` (default until then: `0`, but `set_config` always runs
+    /// at startup via `apply_persisted_config`). Read lock-free by
+    /// `insert_completed`, which already holds THIS mutex — so the cap is
+    /// consulted WITHOUT nesting the `config` lock under the pending lock.
+    completed_cap_bytes: usize,
     /// In-setup delegations (spawned + id minted, not yet parked), mapping
     /// `call_id` → `child_connection_id`. Gating the early buffers on membership
     /// here distinguishes a genuine pre-registration race (still reserved →
@@ -442,19 +466,71 @@ impl PendingInner {
         }
     }
 
-    /// Insert a terminal result into the completed-cache, FIFO-evicting the
-    /// parent's oldest entry past [`COMPLETED_CAP_PER_PARENT`]. The caller does
-    /// the atomic `running.remove` + this insert under one lock, then notifies
-    /// long-poll waiters AFTER releasing the lock.
+    /// Insert a terminal result into the completed-cache, then FIFO-evict this
+    /// parent's OLDEST results until its retained result-text bytes fit
+    /// `completed_cap_bytes` (`0` = unlimited). Evicted tasks fall back to the
+    /// DB status lookup (status only — child text lives in the child session).
+    /// The just-inserted entry is never the victim: a single result is capped
+    /// at [`COMPLETED_TEXT_CAP`] (256 KiB), far below any MB-scale budget, so
+    /// the newest result always survives for the LLM's immediate
+    /// `get_delegation_status`. The caller does the atomic `running.remove` +
+    /// this insert under one lock, then notifies long-poll waiters AFTER
+    /// releasing the lock.
     fn insert_completed(&mut self, call_id: &str, task: CompletedTask) {
         let parent = task.parent_connection_id.clone();
+        let task_bytes = task.text.as_ref().map_or(0, |t| t.len());
         self.completed.insert(call_id.to_string(), task);
-        let order = self.completed_order.entry(parent).or_default();
-        order.push_back(call_id.to_string());
-        while order.len() > COMPLETED_CAP_PER_PARENT {
-            if let Some(evicted) = order.pop_front() {
-                self.completed.remove(&evicted);
+        *self.completed_bytes.entry(parent.clone()).or_insert(0) += task_bytes;
+        self.completed_order
+            .entry(parent.clone())
+            .or_default()
+            .push_back(call_id.to_string());
+        self.evict_completed_over_cap(&parent);
+    }
+
+    /// Evict `parent`'s OLDEST completed results until its retained result-text
+    /// bytes fit `completed_cap_bytes` (`0` = unlimited). Evicted tasks fall
+    /// back to the DB status lookup (status only — child text lives in the child
+    /// session). The newest entry is never evicted: a single result is capped at
+    /// [`COMPLETED_TEXT_CAP`] (256 KiB), far below any MB-scale budget, so the
+    /// LLM's immediate `get_delegation_status` always hits.
+    fn evict_completed_over_cap(&mut self, parent: &str) {
+        let cap = self.completed_cap_bytes;
+        if cap == 0 {
+            return;
+        }
+        loop {
+            if self.completed_bytes.get(parent).copied().unwrap_or(0) <= cap {
+                break;
             }
+            let evicted = match self.completed_order.get_mut(parent) {
+                Some(order) if order.len() > 1 => order.pop_front(),
+                _ => None,
+            };
+            let Some(evicted) = evicted else {
+                break;
+            };
+            if let Some(removed) = self.completed.remove(&evicted) {
+                let freed = removed.text.as_ref().map_or(0, |t| t.len());
+                if let Some(slot) = self.completed_bytes.get_mut(parent) {
+                    *slot = slot.saturating_sub(freed);
+                }
+            }
+        }
+    }
+
+    /// Re-apply the current `completed_cap_bytes` to EVERY parent. Called by
+    /// `set_config` when the cap may have been LOWERED at runtime, so
+    /// already-retained results are pruned promptly — insert-time eviction alone
+    /// would otherwise strand them until a parent's next completion (which may
+    /// never arrive).
+    fn enforce_completed_cap_all_parents(&mut self) {
+        if self.completed_cap_bytes == 0 {
+            return;
+        }
+        let parents: Vec<String> = self.completed_bytes.keys().cloned().collect();
+        for parent in parents {
+            self.evict_completed_over_cap(&parent);
         }
     }
 
@@ -463,6 +539,7 @@ impl PendingInner {
     /// deliberately does NOT call this: the connection stays alive and the LLM
     /// may still query its just-canceled tasks.
     fn drop_completed_for_parent(&mut self, parent_connection_id: &str) {
+        self.completed_bytes.remove(parent_connection_id);
         if let Some(ids) = self.completed_order.remove(parent_connection_id) {
             for id in ids {
                 self.completed.remove(&id);
@@ -811,10 +888,15 @@ const PRE_CANCELED_CAP: usize = 256;
 /// Each bucket holds two FIFOs under the SAME mutex:
 ///
 /// * `pending` — ids the lifecycle has registered but the matching
-///   broker round-trip has not yet claimed. Subject to
-///   [`PENDING_TOOL_CALL_TTL`] eviction so an ACP id whose MCP
-///   round-trip never arrives doesn't linger forever, and bounded by
-///   [`PENDING_QUEUE_CAP`] FIFO eviction as a defensive memory cap.
+///   broker round-trip has not yet claimed. UNKEYED entries are subject
+///   to [`PENDING_TOOL_CALL_TTL`] eviction so an anonymous ACP id whose
+///   MCP round-trip never arrives can't linger and FIFO-mis-bind a later
+///   delegation. KEYED entries carry no count cap: they are drained only
+///   by their exact-match claim, by terminal tombstoning
+///   (`tombstone_pending_tool_call`), or by per-parent teardown — because
+///   the host may serialize a delegation's round-trip arbitrarily far
+///   behind earlier long-running ones, so a count cap would drop a
+///   still-pending keyed id and orphan its card.
 /// * `consumed` — ids that were already claimed by a prior
 ///   round-trip. NEITHER subject to TTL eviction NOR to a per-bucket
 ///   cap: a delegated child agent may run for minutes to hours, and
@@ -900,18 +982,6 @@ struct ToolCallTrackerBucket {
 /// long-running delegations can re-emit the parent-side `tool_call` well past
 /// this window.
 const PENDING_TOOL_CALL_TTL: Duration = Duration::from_secs(60);
-
-/// Hard cap on the `pending` half of a bucket. Defends against a parent that
-/// fires many delegations without ever round-tripping. On overflow the oldest
-/// UNKEYED entry is evicted first (a keyed entry identifies a specific
-/// in-flight delegation awaiting its round-trip and must be preserved); only
-/// when every slot is keyed is the oldest keyed entry dropped — an unavoidable
-/// hard bound at >= 32 concurrent unclaimed keyed delegations, far beyond any
-/// real fan-out. The `consumed` half deliberately has NO cap because evicting
-/// an older consumed id risks the exact bug this machinery exists to prevent
-/// (a late re-emit slipping through and mis-binding the next delegation);
-/// growth there is bounded by the parent connection's lifetime instead.
-const PENDING_QUEUE_CAP: usize = 32;
 
 /// Poll cadence and budget used by `claim_pending_tool_call_with_brief_wait`
 /// to correlate an MCP `delegate_to_agent` round-trip to its parent-side
@@ -1169,31 +1239,6 @@ impl DelegationBroker {
             }
             return;
         }
-        if bucket.pending.len() >= PENDING_QUEUE_CAP {
-            // Make room. Prefer evicting the oldest UNKEYED (anonymous) entry:
-            // a keyed entry identifies a specific delegation still awaiting its
-            // (possibly long-serialized) MCP round-trip and dropping it would
-            // reintroduce the synthetic-id orphan. Only when EVERY slot is
-            // keyed — i.e. >= PENDING_QUEUE_CAP concurrent unclaimed keyed
-            // delegations, far beyond any real fan-out — do we drop the oldest
-            // keyed entry as an unavoidable hard bound.
-            let victim = bucket
-                .pending
-                .iter()
-                .position(|p| p.match_key.is_none())
-                .unwrap_or(0);
-            if let Some(dropped) = bucket.pending.remove(victim) {
-                eprintln!(
-                    "[delegation] pending queue full (cap={PENDING_QUEUE_CAP}), evicting {} ACP tool_call_id={} on conn={parent_connection_id}",
-                    if dropped.match_key.is_some() {
-                        "KEYED"
-                    } else {
-                        "unkeyed"
-                    },
-                    dropped.tool_call_id
-                );
-            }
-        }
         bucket.pending.push_back(PendingToolCall {
             tool_call_id,
             match_key,
@@ -1335,9 +1380,10 @@ impl DelegationBroker {
             // it to a synthetic id and left the parent card stuck on
             // "sub-agent running…". Only UNKEYED (anonymous, arrival-order
             // correlated) entries keep the age-based GC, since a stale one
-            // could be mis-claimed via the FIFO path. Memory stays bounded by
-            // `PENDING_QUEUE_CAP` and `drop_pending_tool_calls_for_parent` on
-            // connection teardown — not by this TTL.
+            // could be mis-claimed via the FIFO path. Keyed memory stays bounded
+            // by exact-match claim, terminal tombstoning, and
+            // `drop_pending_tool_calls_for_parent` on connection teardown — not
+            // by this TTL.
             if p.match_key.is_some() {
                 return true;
             }
@@ -1641,7 +1687,18 @@ impl DelegationBroker {
     }
 
     pub async fn set_config(&self, cfg: DelegationConfig) {
+        let cap_bytes = cfg.completed_cache_cap_bytes;
         *self.config.lock().await = cfg;
+        // Seed the byte cap into the pending-calls bucket so `insert_completed`
+        // reads it lock-free (it already holds the pending lock). Acquired AFTER
+        // the config guard above is dropped — sequential, never nested — so no
+        // path locks `config` under `pending` or vice-versa (deadlock-free).
+        // Then prune existing per-parent caches: a LOWERED cap must free memory
+        // now, not lazily on each parent's next completion (which may never
+        // arrive for an idle parent).
+        let mut inner = self.pending.inner.lock().await;
+        inner.completed_cap_bytes = cap_bytes;
+        inner.enforce_completed_cap_all_parents();
     }
 
     pub async fn config_snapshot(&self) -> DelegationConfig {
@@ -3128,6 +3185,7 @@ mod tests {
                 enabled: true,
                 depth_limit: 8,
                 agent_defaults,
+                ..DelegationConfig::default()
             })
             .await;
 
@@ -3165,6 +3223,7 @@ mod tests {
                 enabled: true,
                 depth_limit: 8,
                 agent_defaults,
+                ..DelegationConfig::default()
             })
             .await;
 
@@ -3498,7 +3557,7 @@ mod tests {
     #[tokio::test]
     async fn consumed_memory_unbounded_across_high_fan_out() {
         // Regression for the cap removal: a parent session with many
-        // delegations (well past PENDING_QUEUE_CAP=32) must still
+        // delegations (well past any prior per-bucket cap) must still
         // reject a late re-emit of the very first delegation's id,
         // because the consumed half has no cap. A bounded consumed
         // set with FIFO eviction would silently re-enable the
@@ -3515,10 +3574,10 @@ mod tests {
             broker.take_pending_tool_call("p1").await.as_deref(),
             Some(first_id.as_str())
         );
-        // Issue many more delegations to overflow the old per-bucket
-        // cap. With no cap on consumed, the first id must remain
-        // remembered for the lifetime of the parent connection.
-        for i in 0..(PENDING_QUEUE_CAP * 4) {
+        // Issue many more delegations than any prior per-bucket cap. With
+        // no cap on consumed, the first id must remain remembered for the
+        // lifetime of the parent connection.
+        for i in 0..128 {
             let id = format!("tc-{i}");
             broker.register_pending_tool_call("p1", id.clone()).await;
             assert_eq!(
@@ -4320,78 +4379,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cap_overflow_evicts_unkeyed_before_keyed() {
-        // Codex review fix: when the pending queue is full, the eviction victim
-        // is an UNKEYED entry — even one NEWER than an existing keyed entry — so
-        // a keyed delegation awaiting its serialized round-trip is preserved.
+    async fn keyed_pending_entries_have_no_count_cap() {
+        // Regression for the PENDING_QUEUE_CAP removal: a high-fan-out parent
+        // can register hundreds of keyed pending tool_calls — each awaiting its
+        // own serialized MCP round-trip — and EVERY one is retained. The old
+        // hard cap evicted the oldest keyed entry past 32, orphaning its card to
+        // a synthetic id. Keyed entries are now bounded only by claim, terminal
+        // tombstoning, and per-parent teardown.
         let broker = DelegationBroker::new(
             Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
             shallow_lookup(),
         );
-        // Oldest entry is KEYED, then one UNKEYED, then fill to the cap with
-        // keyed entries. The unkeyed one is NOT the oldest — proving the victim
-        // is chosen by keyed-ness, not position.
-        broker
-            .register_pending_tool_call_with_key(
-                "p1",
-                "tc-keyed-oldest".into(),
-                Some(task_key("oldest")),
-            )
-            .await;
-        broker
-            .register_pending_tool_call("p1", "tc-unkeyed".into())
-            .await;
-        for i in 0..(PENDING_QUEUE_CAP - 2) {
-            broker
-                .register_pending_tool_call_with_key(
-                    "p1",
-                    format!("tc-k{i}"),
-                    Some(task_key(&format!("task {i}"))),
-                )
-                .await;
-        }
-        // Queue is now full. One more keyed entry overflows.
-        broker
-            .register_pending_tool_call_with_key(
-                "p1",
-                "tc-overflow".into(),
-                Some(task_key("overflow")),
-            )
-            .await;
-        let map = broker.tool_calls.inner.lock().await;
-        let bucket = map.get("p1").expect("bucket present");
-        assert_eq!(bucket.pending.len(), PENDING_QUEUE_CAP);
-        assert!(
-            !bucket
-                .pending
-                .iter()
-                .any(|p| p.tool_call_id == "tc-unkeyed"),
-            "the unkeyed entry must be the eviction victim"
-        );
-        assert!(
-            bucket
-                .pending
-                .iter()
-                .any(|p| p.tool_call_id == "tc-keyed-oldest"),
-            "the older keyed entry must be preserved over the newer unkeyed one"
-        );
-        assert!(bucket
-            .pending
-            .iter()
-            .any(|p| p.tool_call_id == "tc-overflow"));
-    }
-
-    #[tokio::test]
-    async fn cap_overflow_drops_oldest_keyed_only_when_all_keyed() {
-        // Degenerate hard bound: every slot is keyed (>= PENDING_QUEUE_CAP
-        // concurrent unclaimed keyed delegations, far beyond any real fan-out).
-        // Overflow then drops the OLDEST keyed entry — explicitly tested so the
-        // unavoidable degradation is intentional, not accidental.
-        let broker = DelegationBroker::new(
-            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
-            shallow_lookup(),
-        );
-        for i in 0..PENDING_QUEUE_CAP {
+        const N: usize = 256;
+        for i in 0..N {
             broker
                 .register_pending_tool_call_with_key(
                     "p1",
@@ -4400,17 +4400,62 @@ mod tests {
                 )
                 .await;
         }
-        broker
-            .register_pending_tool_call_with_key("p1", "tc-new".into(), Some(task_key("task new")))
-            .await;
-        let map = broker.tool_calls.inner.lock().await;
-        let bucket = map.get("p1").expect("bucket present");
-        assert_eq!(bucket.pending.len(), PENDING_QUEUE_CAP);
-        assert!(
-            !bucket.pending.iter().any(|p| p.tool_call_id == "tc-0"),
-            "oldest keyed entry should be evicted when all entries are keyed"
+        {
+            let map = broker.tool_calls.inner.lock().await;
+            let bucket = map.get("p1").expect("bucket present");
+            assert_eq!(
+                bucket.pending.len(),
+                N,
+                "all keyed pending entries must be retained — no count cap"
+            );
+        }
+        // Each entry stays individually claimable by its exact key, in any
+        // order — proving none were dropped or mis-bound by fan-out.
+        for i in [0usize, N / 2, N - 1] {
+            let claimed = broker
+                .take_matching_tool_call("p1", &task_key(&format!("task {i}")))
+                .await;
+            assert_eq!(claimed.as_deref(), Some(format!("tc-{i}").as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn keyed_pending_entry_drains_via_tombstone() {
+        // The drain path the no-cap design relies on: when the parent-side ACP
+        // tool_call goes terminal before its MCP round-trip ever claims it,
+        // `tombstone_pending_tool_call` removes the keyed entry (so it can't
+        // linger) AND records it consumed (so a late re-emit can't mis-bind a
+        // later delegation sharing the same key).
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
         );
-        assert!(bucket.pending.iter().any(|p| p.tool_call_id == "tc-new"));
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-x".into(), Some(task_key("task x")))
+            .await;
+        assert!(
+            broker.tombstone_pending_tool_call("p1", "tc-x").await,
+            "tombstone must report it removed the pending entry"
+        );
+        assert!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task x"))
+                .await
+                .is_none(),
+            "a tombstoned entry must be drained from pending"
+        );
+        // Re-register of the same id after tombstoning is dropped by the
+        // Tier-1 consumed check, so it can never be claimed.
+        broker
+            .register_pending_tool_call_with_key("p1", "tc-x".into(), Some(task_key("task x")))
+            .await;
+        assert!(
+            broker
+                .take_matching_tool_call("p1", &task_key("task x"))
+                .await
+                .is_none(),
+            "consumed memory must reject a re-emit of a tombstoned id"
+        );
     }
 
     #[tokio::test]
@@ -6739,5 +6784,152 @@ mod tests {
         let multibyte = build_text_preview(&"€".repeat(STATUS_PREVIEW_CAP)).unwrap();
         assert!(multibyte.len() <= STATUS_PREVIEW_CAP);
         assert!(std::str::from_utf8(multibyte.as_bytes()).is_ok());
+    }
+
+    // -- completed-cache byte valve ----------------------------------------
+
+    fn completed_with_text(parent: &str, text_len: usize) -> CompletedTask {
+        CompletedTask {
+            parent_connection_id: parent.to_string(),
+            child_conversation_id: 1,
+            agent_type: AgentType::ClaudeCode,
+            status: TaskStatus::Completed,
+            text: Some("x".repeat(text_len)),
+            error_code: None,
+            message: None,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn completed_cache_valve_evicts_oldest_over_byte_budget() {
+        let mut inner = PendingInner {
+            completed_cap_bytes: 1000,
+            ..Default::default()
+        };
+        // Three 400-byte results = 1200 bytes > 1000 cap. Oldest must evict.
+        inner.insert_completed("a", completed_with_text("p1", 400));
+        inner.insert_completed("b", completed_with_text("p1", 400));
+        inner.insert_completed("c", completed_with_text("p1", 400));
+        assert!(!inner.completed.contains_key("a"), "oldest must be evicted");
+        assert!(inner.completed.contains_key("b"));
+        assert!(
+            inner.completed.contains_key("c"),
+            "newest must be retained"
+        );
+        // Counter + order reflect only the two retained entries.
+        assert_eq!(inner.completed_bytes.get("p1").copied(), Some(800));
+        assert_eq!(inner.completed_order.get("p1").map(|o| o.len()), Some(2));
+        // Survivors keep their FULL text — the valve drops whole entries, it
+        // never truncates a survivor.
+        assert_eq!(
+            inner.completed.get("c").unwrap().text.as_deref().map(str::len),
+            Some(400)
+        );
+    }
+
+    #[test]
+    fn completed_cache_valve_keeps_newest_even_if_alone_over_budget() {
+        // A single result larger than the whole budget is still retained — the
+        // valve never evicts the entry just inserted (the LLM's immediate
+        // get_delegation_status must hit). Per-result text is independently
+        // bounded by COMPLETED_TEXT_CAP.
+        let mut inner = PendingInner {
+            completed_cap_bytes: 100,
+            ..Default::default()
+        };
+        inner.insert_completed("solo", completed_with_text("p1", 500));
+        assert!(inner.completed.contains_key("solo"));
+        assert_eq!(inner.completed_bytes.get("p1").copied(), Some(500));
+    }
+
+    #[test]
+    fn completed_cache_unlimited_when_cap_zero() {
+        let mut inner = PendingInner::default(); // completed_cap_bytes == 0
+        for i in 0..50 {
+            inner.insert_completed(&format!("t{i}"), completed_with_text("p1", 10_000));
+        }
+        assert_eq!(inner.completed.len(), 50, "cap 0 disables eviction");
+        assert_eq!(inner.completed_bytes.get("p1").copied(), Some(500_000));
+    }
+
+    #[test]
+    fn completed_cache_valve_is_per_parent() {
+        let mut inner = PendingInner {
+            completed_cap_bytes: 1000,
+            ..Default::default()
+        };
+        // p1 overflows; p2 stays under its own independent budget.
+        inner.insert_completed("a1", completed_with_text("p1", 600));
+        inner.insert_completed("a2", completed_with_text("p1", 600)); // evicts a1
+        inner.insert_completed("b1", completed_with_text("p2", 600));
+        assert!(!inner.completed.contains_key("a1"));
+        assert!(inner.completed.contains_key("a2"));
+        assert!(
+            inner.completed.contains_key("b1"),
+            "p2 must be untouched by p1 overflow"
+        );
+        assert_eq!(inner.completed_bytes.get("p1").copied(), Some(600));
+        assert_eq!(inner.completed_bytes.get("p2").copied(), Some(600));
+    }
+
+    #[test]
+    fn drop_completed_for_parent_clears_byte_counter() {
+        let mut inner = PendingInner::default(); // unlimited; teardown still clears
+        inner.insert_completed("a", completed_with_text("p1", 100));
+        inner.insert_completed("b", completed_with_text("p2", 100));
+        inner.drop_completed_for_parent("p1");
+        assert!(!inner.completed.contains_key("a"));
+        assert!(inner.completed.contains_key("b"));
+        assert_eq!(
+            inner.completed_bytes.get("p1"),
+            None,
+            "byte counter must be cleared on teardown"
+        );
+        assert_eq!(inner.completed_bytes.get("p2").copied(), Some(100));
+    }
+
+    #[tokio::test]
+    async fn lowering_cap_prunes_existing_completed_results() {
+        let broker = DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            shallow_lookup(),
+        );
+        // Start unlimited and retain several results for one parent.
+        broker
+            .set_config(DelegationConfig {
+                completed_cache_cap_bytes: 0,
+                ..DelegationConfig::default()
+            })
+            .await;
+        {
+            let mut inner = broker.pending.inner.lock().await;
+            for i in 0..5 {
+                inner.insert_completed(&format!("t{i}"), completed_with_text("p1", 400));
+            }
+            assert_eq!(inner.completed.len(), 5);
+            assert_eq!(inner.completed_bytes.get("p1").copied(), Some(2000));
+        }
+        // Lower the cap to 1000 bytes — existing results must be pruned NOW,
+        // not only on the next completion (which may never arrive).
+        broker
+            .set_config(DelegationConfig {
+                completed_cache_cap_bytes: 1000,
+                ..DelegationConfig::default()
+            })
+            .await;
+        let inner = broker.pending.inner.lock().await;
+        assert!(
+            inner.completed_bytes.get("p1").copied().unwrap_or(0) <= 1000,
+            "retained bytes must fit the lowered cap"
+        );
+        assert!(
+            inner.completed.contains_key("t4"),
+            "newest result must survive pruning"
+        );
+        assert!(
+            !inner.completed.contains_key("t0"),
+            "oldest result must be pruned"
+        );
     }
 }

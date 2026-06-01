@@ -481,6 +481,8 @@
       "enableHint": "When off, the delegate_to_agent tool is hidden from the agent's MCP catalog.",
       "depthLimit": "Maximum delegation depth",
       "depthHint": "Allowed range: {min}–{max}. Caps how deep a chain (root → child → grandchild …) can recurse.",
+      "completedCacheLabel": "Completed-result cache (MB)",
+      "completedCacheHint": "In-memory cache of finished sub-agent results, held only while the delegating session is running and cleared automatically when it ends. Over this budget the oldest results are dropped from memory first (still viewable in the sub-agent's own session); 0 = unlimited (still cleared when the session ends).",
       "save": "Save",
       "saving": "Saving…",
       "saved": "Delegation settings saved",
@@ -1904,6 +1906,7 @@
         "status": {
           "starting": "starting",
           "running": "running",
+          "waiting": "awaiting approval",
           "ok": "done",
           "err": {
             "default": "failed",

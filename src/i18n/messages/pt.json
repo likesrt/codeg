@@ -481,6 +481,8 @@
       "enableHint": "Quando desativado, a ferramenta delegate_to_agent fica oculta no catálogo de ferramentas MCP do agente.",
       "depthLimit": "Profundidade máxima de delegação",
       "depthHint": "Intervalo permitido: {min}–{max}. Limita a profundidade de recursão de uma cadeia de delegação (raiz → filho → neto …).",
+      "completedCacheLabel": "Cache de resultados concluídos (MB)",
+      "completedCacheHint": "Cache em memória dos resultados concluídos de subagentes, mantido apenas enquanto a sessão de delegação está em execução e liberado automaticamente quando essa sessão termina. Acima deste limite, os resultados mais antigos são descartados da memória primeiro (ainda visíveis na sessão do próprio subagente); 0 = ilimitado (ainda assim liberado ao terminar a sessão).",
       "save": "Salvar",
       "saving": "Salvando…",
       "saved": "Configurações de delegação salvas",
@@ -1904,6 +1906,7 @@
         "status": {
           "starting": "iniciando",
           "running": "em execução",
+          "waiting": "aguardando aprovação",
           "ok": "concluído",
           "err": {
             "default": "falhou",
