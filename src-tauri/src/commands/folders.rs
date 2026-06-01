@@ -4158,6 +4158,28 @@ fn copy_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
     Ok(())
 }
 
+/// 递归确认目录树内没有符号链接。
+///
+/// 剪切同一文件系统内会优先使用 `rename`，不会逐项复制；因此移动目录前必须先扫描
+/// 子树，避免把含有符号链接的目录绕过复制阶段的安全检查。
+fn ensure_tree_has_no_symlinks(source: &Path) -> Result<(), AppCommandError> {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+    if !meta.is_dir() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(source).map_err(AppCommandError::io)? {
+        let entry = entry.map_err(AppCommandError::io)?;
+        ensure_tree_has_no_symlinks(&entry.path())?;
+    }
+    Ok(())
+}
+
 /// 同步删除文件或目录。
 ///
 /// 供覆盖和清理临时粘贴产物复用；路径不存在时视为已清理完成。
@@ -4175,10 +4197,8 @@ fn remove_tree_entry_sync(path: &Path) -> Result<(), AppCommandError> {
 /// 同步移动文件或目录（跨文件系统时回退到复制+删除）。
 fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppCommandError> {
     let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
-    if meta.file_type().is_symlink() {
-        return Err(AppCommandError::invalid_input(
-            "Symbolic links are not supported for paste operations",
-        ));
+    if meta.is_dir() {
+        ensure_tree_has_no_symlinks(source)?;
     }
 
     // 先尝试 rename，同文件系统内 O(1) 操作。
@@ -4311,7 +4331,14 @@ fn copy_paste_entry_sync(
         }
 
         if let Err(err) = std::fs::rename(&stage_path, initial_target).map_err(AppCommandError::io) {
-            let _ = std::fs::rename(&backup_path, initial_target);
+            if let Err(_restore_err) = std::fs::rename(&backup_path, initial_target) {
+                if mode == PasteFileTreeEntryMode::Cut {
+                    let _ = std::fs::rename(&stage_path, source);
+                } else {
+                    let _ = remove_tree_entry_sync(&stage_path);
+                }
+                return Err(err);
+            }
             if mode == PasteFileTreeEntryMode::Cut {
                 let _ = std::fs::rename(&stage_path, source);
             } else {
