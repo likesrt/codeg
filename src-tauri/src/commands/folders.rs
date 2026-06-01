@@ -4201,10 +4201,6 @@ fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppComm
         ensure_tree_has_no_symlinks(source)?;
     }
 
-    if meta.is_dir() {
-        ensure_tree_has_no_symlinks(source)?;
-    }
-
     // 先尝试 rename，同文件系统内 O(1) 操作。
     match std::fs::rename(source, destination) {
         Ok(()) => return Ok(()),
@@ -4268,7 +4264,7 @@ fn resolve_conflict(
                     build_duplicate_name(stem, attempt)
                 };
                 let candidate = parent.join(&candidate_name);
-                if !candidate.exists() {
+                if std::fs::symlink_metadata(&candidate).is_err() {
                     return Ok(candidate);
                 }
             }
@@ -4306,7 +4302,7 @@ fn copy_paste_entry_sync(
             uuid::Uuid::new_v4().simple()
         ));
 
-        let staged = match mode {
+    let staged = match mode {
             PasteFileTreeEntryMode::Copy => copy_tree_entry_sync(source, &stage_path),
             PasteFileTreeEntryMode::Cut => move_tree_entry_sync(source, &stage_path),
         };
