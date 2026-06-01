@@ -4252,6 +4252,13 @@ pub async fn paste_file_tree_entry(
         return Err(AppCommandError::invalid_input("Cannot copy workspace root"));
     }
 
+    let source_meta = std::fs::symlink_metadata(&source).map_err(AppCommandError::io)?;
+    if source_meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+
     let target_dir = resolve_tree_path(&root, &target_dir_path)?;
     if !target_dir.exists() {
         return Err(AppCommandError::not_found("Target directory does not exist"));
@@ -4260,16 +4267,17 @@ pub async fn paste_file_tree_entry(
         return Err(AppCommandError::invalid_input("Target must be a directory"));
     }
 
-    if mode == PasteFileTreeEntryMode::Cut && source.is_dir() {
+    if source_meta.is_dir() {
         let canonical_source = std::fs::canonicalize(&source).map_err(AppCommandError::io)?;
         let canonical_target = std::fs::canonicalize(&target_dir).map_err(AppCommandError::io)?;
         if is_descendant(&canonical_source, &canonical_target) {
             return Err(AppCommandError::invalid_input(
-                "Cannot move a directory into itself or one of its descendants",
+                "Cannot paste a directory into itself or one of its descendants",
             ));
         }
     }
 
+    let source_is_file = source_meta.is_file();
     let source_name = source
         .file_name()
         .and_then(|n| n.to_str())
@@ -4304,7 +4312,7 @@ pub async fn paste_file_tree_entry(
         ensure_path_in_workspace(&root, &source)?;
         ensure_path_in_workspace(&root, &target_dir)?;
 
-        let actual_target = resolve_conflict(&initial_target, conflict, source.is_file())?;
+        let actual_target = resolve_conflict(&initial_target, conflict, source_is_file)?;
 
         match mode {
             PasteFileTreeEntryMode::Copy => {
@@ -5440,6 +5448,49 @@ mod paste_file_tree_entry_tests {
         )
         .await
         .expect_err("cut dir into itself should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    /// 复制目录到自身子目录时报错，避免递归复制刚创建出的目标目录。
+    #[tokio::test]
+    async fn paste_copy_dir_into_self_is_rejected() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "parent/child/file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "parent".to_string(),
+            "parent/child".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("copy dir into itself should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    /// 符号链接会跟随到真实目标，后端先拒绝以避免复制越界内容。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn paste_symlink_source_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (_t, root) = setup_temp();
+        create_file(&root, "real.txt", "content");
+        create_dir(&root, "dst");
+        symlink(root.join("real.txt"), root.join("link.txt")).expect("create symlink");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "link.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("symlink source should fail");
 
         assert!(matches!(err.code, AppErrorCode::InvalidInput));
     }

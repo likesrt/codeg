@@ -170,6 +170,10 @@ pub async fn create_file_tree_entry(
     Ok(Json(result))
 }
 
+/// 处理 Web 模式文件树粘贴请求。
+///
+/// 接收根目录、来源条目、目标目录、操作模式和冲突策略，并把真实文件系统操作委托给命令层；
+/// 返回粘贴后的工作区相对路径，错误保持命令层的可识别错误码。
 pub async fn paste_file_tree_entry(
     Json(params): Json<PasteFileTreeEntryParams>,
 ) -> Result<Json<String>, AppCommandError> {
