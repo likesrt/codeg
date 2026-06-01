@@ -84,6 +84,17 @@ pub struct CreateFileTreeEntryParams {
     pub kind: String,
 }
 
+/// 粘贴文件树条目的请求参数。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteFileTreeEntryParams {
+    pub root_path: String,
+    pub source_path: String,
+    pub target_dir_path: String,
+    pub mode: folder_commands::PasteFileTreeEntryMode,
+    pub conflict: folder_commands::PasteConflictStrategy,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -154,6 +165,20 @@ pub async fn create_file_tree_entry(
         params.path,
         params.name,
         params.kind,
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+pub async fn paste_file_tree_entry(
+    Json(params): Json<PasteFileTreeEntryParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let result = folder_commands::paste_file_tree_entry(
+        params.root_path,
+        params.source_path,
+        params.target_dir_path,
+        params.mode,
+        params.conflict,
     )
     .await?;
     Ok(Json(result))
