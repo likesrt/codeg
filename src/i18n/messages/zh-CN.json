@@ -481,6 +481,8 @@
       "enableHint": "关闭后，delegate_to_agent 工具会从智能体的 MCP 工具清单中隐藏。",
       "depthLimit": "最大委托深度",
       "depthHint": "允许范围：{min}–{max}。限制委托链（根 → 子 → 孙 …）的最大递归深度。",
+      "completedCacheLabel": "已完成结果缓存（MB）",
+      "completedCacheHint": "运行中委托会话已完成子智能体结果的内存缓存，仅在该会话运行期间保留，会话结束后自动清除。超出此预算时优先从内存中丢弃最旧的结果（仍可在子智能体自己的会话中查看）；0 表示不限（会话结束后仍会清除）。",
       "save": "保存",
       "saving": "保存中…",
       "saved": "委托设置已保存",
@@ -1904,6 +1906,7 @@
         "status": {
           "starting": "启动中",
           "running": "运行中",
+          "waiting": "待批准",
           "ok": "完成",
           "err": {
             "default": "失败",

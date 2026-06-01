@@ -2517,6 +2517,9 @@ export async function deleteModelProvider(id: number): Promise<void> {
 export interface DelegationSettings {
   enabled: boolean
   depth_limit: number
+  /** Per-parent byte budget (in MB) for the broker's in-memory cache of
+   * completed sub-agent result text. `0` = unlimited. */
+  completed_cache_max_mb: number
   /** Optional per-agent overrides applied when codeg-mcp spawns a subagent.
    * Keyed by `agent_type`. Missing entries mean "use agent defaults." */
   agent_defaults?: Partial<Record<AgentType, AgentDelegationDefaults>>

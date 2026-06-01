@@ -481,6 +481,8 @@
       "enableHint": "關閉後，delegate_to_agent 工具會從智慧體的 MCP 工具清單中隱藏。",
       "depthLimit": "最大委派深度",
       "depthHint": "允許範圍：{min}–{max}。限制委派鏈（根 → 子 → 孫 …）的最大遞迴深度。",
+      "completedCacheLabel": "已完成結果快取（MB）",
+      "completedCacheHint": "執行中委派工作階段已完成子代理結果的記憶體快取，僅在該工作階段執行期間保留，工作階段結束後自動清除。超出此預算時優先從記憶體中捨棄最舊的結果（仍可在子代理自己的工作階段中檢視）；0 表示不限（工作階段結束後仍會清除）。",
       "save": "儲存",
       "saving": "儲存中…",
       "saved": "委派設定已儲存",
@@ -1904,6 +1906,7 @@
         "status": {
           "starting": "啟動中",
           "running": "執行中",
+          "waiting": "待批准",
           "ok": "完成",
           "err": {
             "default": "失敗",
