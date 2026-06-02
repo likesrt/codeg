@@ -746,6 +746,7 @@ mod tauri_app {
                 folders::rename_file_tree_entry,
                 folders::delete_file_tree_entry,
                 folders::create_file_tree_entry,
+                folders::paste_file_tree_entry,
                 folders::git_log,
                 folders::git_commit_branches,
                 windows::open_folder_window,

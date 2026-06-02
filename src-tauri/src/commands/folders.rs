@@ -4092,6 +4092,382 @@ pub async fn create_file_tree_entry(
     Ok(rel)
 }
 
+/// 文件树粘贴操作模式：复制或剪切。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PasteFileTreeEntryMode {
+    Copy,
+    Cut,
+}
+
+/// 同名冲突处理策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PasteConflictStrategy {
+    /// 遇到同名直接报错，让前端弹出冲突对话框。
+    Abort,
+    /// 直接覆盖目标。
+    Overwrite,
+    /// 自动生成不冲突的副本名（如 "文件-副本.ext"）。
+    Duplicate,
+}
+
+/// 判断 candidate_child 是否为 candidate_parent 的子孙路径。
+///
+/// 用于检测目录粘贴到自身子树的危险操作，复制和剪切都要复用这层防护。
+fn is_descendant(candidate_parent: &Path, candidate_child: &Path) -> bool {
+    candidate_child.starts_with(candidate_parent)
+}
+
+/// 为同名冲突生成副本名称。
+///
+/// 首次追加 "-副本"，之后追加 "-副本(2)"、"-副本(3)" 等。
+fn build_duplicate_name(name: &str, attempt: usize) -> String {
+    if attempt == 1 {
+        format!("{}-副本", name)
+    } else {
+        format!("{}-副本({})", name, attempt)
+    }
+}
+
+/// 同步递归复制文件或目录。
+///
+/// 在 `run_file_io` 闭包内调用，不直接涉及 async；会拒绝任何层级的符号链接，
+/// 避免把工作区外内容卷入复制结果。
+fn copy_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppCommandError> {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+
+    if meta.is_file() {
+        std::fs::copy(source, destination).map_err(AppCommandError::io)?;
+        return Ok(());
+    }
+
+    // 源为目录，创建目标目录后递归复制子条目。
+    std::fs::create_dir_all(destination).map_err(AppCommandError::io)?;
+    for entry in std::fs::read_dir(source).map_err(AppCommandError::io)? {
+        let entry = entry.map_err(AppCommandError::io)?;
+        let child_source = entry.path();
+        let child_destination = destination.join(entry.file_name());
+        copy_tree_entry_sync(&child_source, &child_destination)?;
+    }
+    Ok(())
+}
+
+/// 递归确认目录树内没有符号链接。
+///
+/// 剪切同一文件系统内会优先使用 `rename`，不会逐项复制；因此移动目录前必须先扫描
+/// 子树，避免把含有符号链接的目录绕过复制阶段的安全检查。
+fn ensure_tree_has_no_symlinks(source: &Path) -> Result<(), AppCommandError> {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+    if !meta.is_dir() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(source).map_err(AppCommandError::io)? {
+        let entry = entry.map_err(AppCommandError::io)?;
+        ensure_tree_has_no_symlinks(&entry.path())?;
+    }
+    Ok(())
+}
+
+/// 同步删除文件或目录。
+///
+/// 供覆盖和清理临时粘贴产物复用；路径不存在时视为已清理完成。
+fn remove_tree_entry_sync(path: &Path) -> Result<(), AppCommandError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path).map_err(AppCommandError::io)
+        }
+        Ok(_) => std::fs::remove_file(path).map_err(AppCommandError::io),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(AppCommandError::io(err)),
+    }
+}
+
+/// 同步移动文件或目录（跨文件系统时回退到复制+删除）。
+fn move_tree_entry_sync(source: &Path, destination: &Path) -> Result<(), AppCommandError> {
+    let meta = std::fs::symlink_metadata(source).map_err(AppCommandError::io)?;
+    if meta.is_dir() {
+        ensure_tree_has_no_symlinks(source)?;
+    }
+
+    // 先尝试 rename，同文件系统内 O(1) 操作。
+    match std::fs::rename(source, destination) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            // 跨文件系统：复制后删除源。
+        }
+        Err(e) => return Err(AppCommandError::io(e)),
+    }
+
+    copy_tree_entry_sync(source, destination)?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(source).map_err(AppCommandError::io)?;
+    } else {
+        std::fs::remove_file(source).map_err(AppCommandError::io)?;
+    }
+    Ok(())
+}
+
+/// 判断路径是否可以作为新粘贴目标。
+///
+/// 只有确认路径不存在时才允许写入；权限或其它元数据错误必须返回，避免把
+/// 不可确认状态误判为空闲路径。
+fn ensure_paste_destination_available(path: &Path) -> Result<bool, AppCommandError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(AppCommandError::io(err)),
+    }
+}
+
+/// 根据冲突策略，若目标存在则返回实际应使用的目标路径。
+///
+/// `Abort` 策略下目标存在时返回 `AlreadyExists` 错误；
+/// `Overwrite` 策略由调用方分阶段处理，因此这里防御性拒绝；
+/// `Duplicate` 策略下递增序号生成不冲突的副本名。
+fn resolve_conflict(
+    target: &Path,
+    conflict: PasteConflictStrategy,
+    source_meta: &std::fs::Metadata,
+) -> Result<PathBuf, AppCommandError> {
+    if ensure_paste_destination_available(target)? {
+        return Ok(target.to_path_buf());
+    }
+
+    match conflict {
+        PasteConflictStrategy::Abort => Err(AppCommandError::already_exists(
+            "A file or directory with this name already exists in the target location",
+        )),
+        PasteConflictStrategy::Overwrite => Err(AppCommandError::already_exists(
+            "Overwrite must be handled by the paste operation after staging succeeds",
+        )),
+        PasteConflictStrategy::Duplicate => {
+            let parent = target.parent().ok_or_else(|| {
+                AppCommandError::invalid_input("Cannot determine parent directory")
+            })?;
+            let target_name = target.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+
+            // 目录直接在名字后追加副本后缀；文件则保留扩展名，避免副本失去类型信息。
+            let (stem, ext) = if source_meta.is_file() {
+                let stem = target
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(target_name);
+                (stem, target.extension().and_then(|e| e.to_str()))
+            } else {
+                (target_name, None)
+            };
+
+            for attempt in 1..=999 {
+                let candidate_name = if let Some(ext) = ext {
+                    format!("{}.{}", build_duplicate_name(stem, attempt), ext)
+                } else {
+                    build_duplicate_name(stem, attempt)
+                };
+                let candidate = parent.join(&candidate_name);
+                if ensure_paste_destination_available(&candidate)? {
+                    return Ok(candidate);
+                }
+            }
+            Err(AppCommandError::invalid_input(
+                "Could not generate a unique duplicate name after 999 attempts",
+            ))
+        }
+    }
+}
+
+/// 执行已解析路径的复制或剪切，并返回实际目标路径。
+///
+/// 当冲突策略为覆盖且目标已存在时，先把源条目写入同级临时路径，再把旧目标
+/// 改名为备份，最后将临时条目改回目标路径；这样即使最终替换失败，旧目标也
+/// 还在备份里，不会提前丢失。
+fn copy_paste_entry_sync(
+    source: &Path,
+    initial_target: &Path,
+    mode: PasteFileTreeEntryMode,
+    conflict: PasteConflictStrategy,
+    source_meta: &std::fs::Metadata,
+) -> Result<PathBuf, AppCommandError> {
+    if conflict == PasteConflictStrategy::Overwrite && initial_target.exists() {
+        let parent = initial_target.parent().ok_or_else(|| {
+            AppCommandError::invalid_input("Cannot determine parent directory")
+        })?;
+        let stage_path = parent.join(format!(
+            ".codeg-paste-{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backup_path = parent.join(format!(
+            ".codeg-paste-backup-{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+
+    let staged = match mode {
+            PasteFileTreeEntryMode::Copy => copy_tree_entry_sync(source, &stage_path),
+            PasteFileTreeEntryMode::Cut => move_tree_entry_sync(source, &stage_path),
+        };
+        if let Err(err) = staged {
+            let _ = remove_tree_entry_sync(&stage_path);
+            return Err(err);
+        }
+
+        if let Err(err) = std::fs::rename(initial_target, &backup_path).map_err(AppCommandError::io) {
+            if mode == PasteFileTreeEntryMode::Cut {
+                let restore_err = std::fs::rename(&stage_path, source).map_err(AppCommandError::io);
+                if let Err(restore_err) = restore_err {
+                    let backup_detail = err.detail.clone().unwrap_or_else(|| err.message.clone());
+                    let restore_detail = restore_err
+                        .detail
+                        .unwrap_or_else(|| restore_err.message.clone());
+                    return Err(err.with_detail(format!(
+                        "backup rename failed: {}; restore of staged source also failed: {}",
+                        backup_detail, restore_detail
+                    )));
+                }
+            } else {
+                let _ = remove_tree_entry_sync(&stage_path);
+            }
+            return Err(err);
+        }
+
+        if let Err(err) = std::fs::rename(&stage_path, initial_target).map_err(AppCommandError::io) {
+            if let Err(_restore_err) = std::fs::rename(&backup_path, initial_target) {
+                if mode == PasteFileTreeEntryMode::Cut {
+                    let _ = std::fs::rename(&stage_path, source);
+                } else {
+                    let _ = remove_tree_entry_sync(&stage_path);
+                }
+                return Err(err);
+            }
+            if mode == PasteFileTreeEntryMode::Cut {
+                let _ = std::fs::rename(&stage_path, source);
+            } else {
+                let _ = remove_tree_entry_sync(&stage_path);
+            }
+            let _ = remove_tree_entry_sync(&backup_path);
+            return Err(err);
+        }
+
+        let _ = remove_tree_entry_sync(&backup_path);
+        return Ok(initial_target.to_path_buf());
+    }
+
+    let actual_target = resolve_conflict(initial_target, conflict, source_meta)?;
+    match mode {
+        PasteFileTreeEntryMode::Copy => copy_tree_entry_sync(source, &actual_target)?,
+        PasteFileTreeEntryMode::Cut => move_tree_entry_sync(source, &actual_target)?,
+    }
+    Ok(actual_target)
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn paste_file_tree_entry(
+    root_path: String,
+    source_path: String,
+    target_dir_path: String,
+    mode: PasteFileTreeEntryMode,
+    conflict: PasteConflictStrategy,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Workspace root does not exist"));
+    }
+
+    let source = resolve_tree_path(&root, &source_path)?;
+    if !source.exists() {
+        return Err(AppCommandError::not_found("Source file does not exist"));
+    }
+    if source == root {
+        return Err(AppCommandError::invalid_input("Cannot copy workspace root"));
+    }
+
+    let source_meta = std::fs::symlink_metadata(&source).map_err(AppCommandError::io)?;
+    if source_meta.file_type().is_symlink() {
+        return Err(AppCommandError::invalid_input(
+            "Symbolic links are not supported for paste operations",
+        ));
+    }
+
+    let target_dir = resolve_tree_path(&root, &target_dir_path)?;
+    if !target_dir.exists() {
+        return Err(AppCommandError::not_found("Target directory does not exist"));
+    }
+    if !target_dir.is_dir() {
+        return Err(AppCommandError::invalid_input("Target must be a directory"));
+    }
+
+    if source_meta.is_dir() {
+        let canonical_source = std::fs::canonicalize(&source).map_err(AppCommandError::io)?;
+        let canonical_target = std::fs::canonicalize(&target_dir).map_err(AppCommandError::io)?;
+        if is_descendant(&canonical_source, &canonical_target) {
+            return Err(AppCommandError::invalid_input(
+                "Cannot paste a directory into itself or one of its descendants",
+            ));
+        }
+    }
+
+    let source_name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppCommandError::invalid_input("Source path has no file name"))?;
+    let initial_target = target_dir.join(source_name);
+
+    if initial_target == source {
+        match conflict {
+            PasteConflictStrategy::Abort => {
+                return Err(AppCommandError::already_exists(
+                    "A file or directory with this name already exists in the target location",
+                ));
+            }
+            PasteConflictStrategy::Overwrite => {
+                let rel = source
+                    .strip_prefix(&root)
+                    .map_err(|e| {
+                        AppCommandError::invalid_input("Failed to compute relative path")
+                            .with_detail(e.to_string())
+                    })?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                return Ok(rel);
+            }
+            PasteConflictStrategy::Duplicate => {
+                // 相同路径且策略为 Duplicate：不提前返回，继续走下面的 I/O 路径创建副本。
+            }
+        }
+    }
+
+    run_file_io(move || {
+        ensure_path_in_workspace(&root, &source)?;
+        ensure_path_in_workspace(&root, &target_dir)?;
+
+        let actual_target =
+            copy_paste_entry_sync(&source, &initial_target, mode, conflict, &source_meta)?;
+
+        let rel = actual_target
+            .strip_prefix(&root)
+            .map_err(|e| {
+                AppCommandError::invalid_input("Failed to compute relative path")
+                    .with_detail(e.to_string())
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        Ok(rel)
+    })
+    .await
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn git_log(
     path: String,
@@ -4918,5 +5294,451 @@ mod tests {
             .await
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
+    }
+}
+
+
+#[cfg(test)]
+mod paste_file_tree_entry_tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+
+    /// 创建临时目录并在其中创建测试文件/目录结构。
+    ///
+    /// 返回 (tempdir, root_path) 元组。root_path 为完整路径字符串。
+    fn setup_temp() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        (temp, root)
+    }
+
+    /// 在 root 下创建相对路径对应的文件，并写入内容。
+    fn create_file(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dir");
+        }
+        std::fs::write(&path, content).expect("write file");
+    }
+
+    /// 在 root 下创建相对路径对应的目录。
+    fn create_dir(root: &Path, rel: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(&path).expect("create dir");
+    }
+
+    // ── 复制文件 ──
+
+    /// 复制文件到另一个目录。
+    #[tokio::test]
+    async fn paste_copy_file_to_other_dir() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/file.txt", "hello");
+        create_dir(&root, "dst");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/file.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect("copy file should succeed");
+
+        assert_eq!(result, "dst/file.txt");
+        assert!(root.join("src/file.txt").exists());
+        assert!(root.join("dst/file.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("dst/file.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    /// 复制目录递归到另一个目录。
+    #[tokio::test]
+    async fn paste_copy_directory_recursively() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/a/1.txt", "one");
+        create_file(&root, "src/a/b/2.txt", "two");
+        create_dir(&root, "dst");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/a".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect("copy dir should succeed");
+
+        assert_eq!(result, "dst/a");
+        assert!(root.join("dst/a/b/2.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("dst/a/1.txt")).unwrap(),
+            "one"
+        );
+    }
+
+    // ── 剪切（移动）文件 ──
+
+    /// 剪切（移动）文件到另一个目录。
+    #[tokio::test]
+    async fn paste_cut_file_to_other_dir() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/file.txt", "hello");
+        create_dir(&root, "dst");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/file.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect("cut file should succeed");
+
+        assert_eq!(result, "dst/file.txt");
+        assert!(!root.join("src/file.txt").exists());
+        assert!(root.join("dst/file.txt").exists());
+    }
+
+    /// 剪切（移动）目录到另一个目录。
+    #[tokio::test]
+    async fn paste_cut_directory_to_other_dir() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/a/1.txt", "one");
+        create_dir(&root, "dst");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/a".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect("cut dir should succeed");
+
+        assert_eq!(result, "dst/a");
+        assert!(!root.join("src/a").exists());
+        assert!(root.join("dst/a/1.txt").exists());
+    }
+
+    /// 剪切目录时拒绝子级符号链接，避免同文件系统 rename 绕过递归复制检查。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn paste_cut_directory_with_nested_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/a/real.txt", "content");
+        create_dir(&root, "dst");
+        symlink(root.join("src/a/real.txt"), root.join("src/a/link.txt")).expect("create symlink");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/a".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("nested symlink should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+        assert!(root.join("src/a/real.txt").exists());
+        assert!(!root.join("dst/a").exists());
+    }
+
+    // ── 冲突策略 ──
+
+    /// Abort 策略下同名时报错。
+    #[tokio::test]
+    async fn paste_abort_on_name_conflict() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/file.txt", "original");
+        create_file(&root, "dst/file.txt", "existing");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/file.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("should fail on conflict");
+
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+        // 目标文件不应被覆盖
+        assert_eq!(
+            std::fs::read_to_string(root.join("dst/file.txt")).unwrap(),
+            "existing"
+        );
+    }
+
+    /// Overwrite 策略下同名时覆盖。
+    #[tokio::test]
+    async fn paste_overwrite_on_name_conflict() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/file.txt", "new content");
+        create_file(&root, "dst/file.txt", "old content");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/file.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Overwrite,
+        )
+        .await
+        .expect("overwrite should succeed");
+
+        assert_eq!(result, "dst/file.txt");
+        assert_eq!(std::fs::read_to_string(root.join("dst/file.txt")).unwrap(), "new content");
+    }
+
+    /// Duplicate 策略下同名时自动生成副本名。
+    #[tokio::test]
+    async fn paste_duplicate_on_name_conflict() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "src/file.txt", "original");
+        create_file(&root, "dst/file.txt", "existing first");
+        create_file(&root, "dst/file-副本.txt", "existing second");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "src/file.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Duplicate,
+        )
+        .await
+        .expect("duplicate should succeed");
+
+        assert_eq!(result, "dst/file-副本(2).txt");
+        assert!(root.join("dst/file.txt").exists());
+        assert!(root.join("dst/file-副本.txt").exists());
+        assert!(root.join("dst/file-副本(2).txt").exists());
+    }
+
+    // ── 相同路径特殊处理 ──
+
+    /// 相同路径 + Overwrite 策略返回原路径（无操作）。
+    #[tokio::test]
+    async fn paste_same_path_overwrite_returns_original_path() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "file.txt", "content");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Overwrite,
+        )
+        .await
+        .expect("same-path overwrite should succeed");
+
+        assert_eq!(result, "file.txt");
+    }
+
+    /// 相同路径 + Duplicate 策略创建副本。
+    #[tokio::test]
+    async fn paste_same_path_duplicate_creates_copy() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "file.txt", "content");
+
+        let result = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Duplicate,
+        )
+        .await
+        .expect("same-path duplicate should succeed");
+
+        assert_eq!(result, "file-副本.txt");
+        assert!(root.join("file.txt").exists());
+        assert!(root.join("file-副本.txt").exists());
+    }
+
+    /// 相同路径 + Abort 策略报 AlreadyExists。
+    #[tokio::test]
+    async fn paste_same_path_abort_fails() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("same-path abort should fail");
+
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+    }
+
+    // ── 安全性 ──
+
+    /// 剪切目录到自身子目录时报错。
+    #[tokio::test]
+    async fn paste_cut_dir_into_self_is_rejected() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "parent/child/file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "parent".to_string(),
+            "parent/child".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("cut dir into itself should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    /// 复制目录到自身子目录时报错，避免递归复制刚创建出的目标目录。
+    #[tokio::test]
+    async fn paste_copy_dir_into_self_is_rejected() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "parent/child/file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "parent".to_string(),
+            "parent/child".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("copy dir into itself should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    /// 符号链接会跟随到真实目标，后端先拒绝以避免复制越界内容。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn paste_symlink_source_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let (_t, root) = setup_temp();
+        create_file(&root, "real.txt", "content");
+        create_dir(&root, "dst");
+        symlink(root.join("real.txt"), root.join("link.txt")).expect("create symlink");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "link.txt".to_string(),
+            "dst".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("symlink source should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    /// 剪切文件到自身所在目录（即相同路径）不应报目录子孙检测错误。
+    #[tokio::test]
+    async fn paste_cut_file_same_path_handled_gracefully() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Cut,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("cut file to same path should fail");
+
+        assert!(matches!(err.code, AppErrorCode::AlreadyExists));
+    }
+
+    // ── 错误路径 ──
+
+    /// 源文件不存在时报 NotFound。
+    #[tokio::test]
+    async fn paste_source_not_found() {
+        let (_t, root) = setup_temp();
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "nonexistent.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("non-existent source should fail");
+
+        assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
+
+    /// 目标目录不存在时报 NotFound。
+    #[tokio::test]
+    async fn paste_target_dir_not_found() {
+        let (_t, root) = setup_temp();
+        create_file(&root, "file.txt", "content");
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "file.txt".to_string(),
+            "nonexistent_dir".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("non-existent target dir should fail");
+
+        assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
+
+    /// 根路径不存在时报 NotFound。
+    #[tokio::test]
+    async fn paste_root_not_found() {
+        let err = paste_file_tree_entry(
+            "/tmp/codeg_paste_test_nonexistent_root_12345".to_string(),
+            "file.txt".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("non-existent root should fail");
+
+        assert!(matches!(err.code, AppErrorCode::NotFound));
+    }
+
+    /// 源为工作区根路径时报 InvalidInput。
+    #[tokio::test]
+    async fn paste_source_is_root_rejected() {
+        let (_t, root) = setup_temp();
+
+        let err = paste_file_tree_entry(
+            root.to_string_lossy().to_string(),
+            "".to_string(),
+            "".to_string(),
+            PasteFileTreeEntryMode::Copy,
+            PasteConflictStrategy::Abort,
+        )
+        .await
+        .expect_err("root as source should fail");
+
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
     }
 }
