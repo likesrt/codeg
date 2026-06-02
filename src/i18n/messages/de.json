@@ -1903,9 +1903,14 @@
         "openDetail": "Konversation anzeigen",
         "detailTitle": "Unteragent-Konversation",
         "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
+        "waitForResult": "Warte auf das Ergebnis von Aufgabe {task}",
+        "waitForResultNoTask": "Warte auf das Aufgabenergebnis",
+        "cancelTask": "Aufgabe {task} wird abgebrochen",
+        "cancelTaskNoTask": "Aufgabe wird abgebrochen",
         "status": {
           "starting": "startet",
           "running": "läuft",
+          "checked": "geprüft",
           "waiting": "Genehmigung ausstehend",
           "ok": "fertig",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "Subagent: Token-Limit",
             "child_max_turn_requests": "Subagent: Anfragelimit",
             "child_empty": "Subagent ohne Ausgabe",
-            "child_unknown": "Subagent: Fehler"
+            "child_unknown": "Subagent: Fehler",
+            "unknown": "unbekannte Aufgabe"
           }
         }
       },

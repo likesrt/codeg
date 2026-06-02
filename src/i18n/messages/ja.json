@@ -1903,9 +1903,14 @@
         "openDetail": "会話を表示",
         "detailTitle": "サブエージェントの会話",
         "detailDescription": "委任されたサブエージェントの会話を読み取り専用で表示します。",
+        "waitForResult": "タスク {task} の実行結果を待機中",
+        "waitForResultNoTask": "タスクの実行結果を待機中",
+        "cancelTask": "タスク {task} をキャンセル中",
+        "cancelTaskNoTask": "タスクをキャンセル中",
         "status": {
           "starting": "起動中",
           "running": "実行中",
+          "checked": "確認済み",
           "waiting": "承認待ち",
           "ok": "完了",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "サブエージェント: トークン上限",
             "child_max_turn_requests": "サブエージェント: 要求上限",
             "child_empty": "サブエージェント応答なし",
-            "child_unknown": "サブエージェント: エラー"
+            "child_unknown": "サブエージェント: エラー",
+            "unknown": "不明なタスク"
           }
         }
       },

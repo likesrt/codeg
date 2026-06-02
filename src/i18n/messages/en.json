@@ -1903,9 +1903,14 @@
         "openDetail": "Open conversation",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
+        "waitForResult": "Waiting for task {task} result",
+        "waitForResultNoTask": "Waiting for task result",
+        "cancelTask": "Canceling task {task}",
+        "cancelTaskNoTask": "Canceling task",
         "status": {
           "starting": "starting",
           "running": "running",
+          "checked": "checked",
           "waiting": "awaiting approval",
           "ok": "done",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "subagent token limit",
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
-            "child_unknown": "subagent unknown error"
+            "child_unknown": "subagent unknown error",
+            "unknown": "unknown task"
           }
         }
       },

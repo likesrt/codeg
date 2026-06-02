@@ -1903,9 +1903,14 @@
         "openDetail": "대화 보기",
         "detailTitle": "서브에이전트 대화",
         "detailDescription": "위임된 서브에이전트 대화를 읽기 전용으로 봅니다.",
+        "waitForResult": "작업 {task} 실행 결과 대기 중",
+        "waitForResultNoTask": "작업 실행 결과 대기 중",
+        "cancelTask": "작업 {task} 취소 중",
+        "cancelTaskNoTask": "작업 취소 중",
         "status": {
           "starting": "시작 중",
           "running": "실행 중",
+          "checked": "확인됨",
           "waiting": "승인 대기 중",
           "ok": "완료",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "서브에이전트: 토큰 한도",
             "child_max_turn_requests": "서브에이전트: 요청 한도",
             "child_empty": "서브에이전트 응답 없음",
-            "child_unknown": "서브에이전트: 오류"
+            "child_unknown": "서브에이전트: 오류",
+            "unknown": "알 수 없는 작업"
           }
         }
       },

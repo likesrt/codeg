@@ -1903,9 +1903,14 @@
         "openDetail": "檢視會話",
         "detailTitle": "子智慧體會話",
         "detailDescription": "唯讀檢視委派給子智慧體的會話內容。",
+        "waitForResult": "等待 {task} 任務執行結果",
+        "waitForResultNoTask": "等待任務執行結果",
+        "cancelTask": "取消 {task} 任務",
+        "cancelTaskNoTask": "取消任務",
         "status": {
           "starting": "啟動中",
           "running": "執行中",
+          "checked": "已查詢",
           "waiting": "待批准",
           "ok": "完成",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出請求上限",
             "child_empty": "子代理無回應",
-            "child_unknown": "子代理未知錯誤"
+            "child_unknown": "子代理未知錯誤",
+            "unknown": "未知任務"
           }
         }
       },

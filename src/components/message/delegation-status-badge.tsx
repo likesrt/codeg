@@ -3,6 +3,7 @@
 import {
   CheckCircleIcon,
   CircleDashed,
+  Clock,
   Loader2,
   ShieldAlert,
   XCircleIcon,
@@ -15,7 +16,7 @@ export function StatusBadge({
   status,
   errorCode,
 }: {
-  status: "starting" | "running" | "waiting" | "ok" | "err"
+  status: "starting" | "running" | "waiting" | "ok" | "err" | "checked"
   errorCode?: string
 }) {
   const t = useTranslations("Folder.chat.delegation.status")
@@ -40,6 +41,16 @@ export function StatusBadge({
       <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
         <Loader2 className="animate-spin" />
         {t("running")}
+      </Badge>
+    )
+  }
+  if (status === "checked") {
+    // A poll returned "still running" — a settled snapshot, not live work.
+    // Neutral, non-spinning, so a superseded check stops spinning.
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <Clock className="text-muted-foreground" />
+        {t("checked")}
       </Badge>
     )
   }
@@ -90,6 +101,8 @@ function ErrorLabel({ code }: { code?: string }) {
       return <>{t("child_empty")}</>
     case "child_unknown":
       return <>{t("child_unknown")}</>
+    case "unknown":
+      return <>{t("unknown")}</>
     default:
       return <>{t("default")}</>
   }

@@ -412,6 +412,37 @@ describe("DelegatedSubThread (async ack semantics)", () => {
     )
   })
 
+  it("surfaces the broker task_id (short form) after the agent name from the structured ack", () => {
+    const input = JSON.stringify({ agent_type: "codex", task: "do x" })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={input}
+        output={ackOutput}
+        state="output-available"
+      />
+    )
+    // structuredContent.task_id = "t1" → "#t1" (slice(0,8) of a short id).
+    expect(screen.getByText("#t1")).toBeInTheDocument()
+  })
+
+  it("recovers the task_id from the live ack message text (task_id=<id>)", () => {
+    const input = JSON.stringify({ agent_type: "codex", task: "do x" })
+    // Live wire: only the CallToolResult content text is forwarded.
+    const output =
+      "Delegated; the sub-agent is running in the background. " +
+      "task_id=abcdef12-3456-7890. Call get_delegation_status with this task_id."
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("#abcdef12")).toBeInTheDocument()
+  })
+
   it("recognizes a Codex-wrapped running ack in content[0].text (Wall time prefix, no structuredContent)", () => {
     const report = JSON.stringify({
       status: "running",

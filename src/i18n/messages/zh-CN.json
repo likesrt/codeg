@@ -1903,9 +1903,14 @@
         "openDetail": "查看会话",
         "detailTitle": "子智能体会话",
         "detailDescription": "只读查看委托给子智能体的会话内容。",
+        "waitForResult": "等待 {task} 任务执行结果",
+        "waitForResultNoTask": "等待任务执行结果",
+        "cancelTask": "取消 {task} 任务",
+        "cancelTaskNoTask": "取消任务",
         "status": {
           "starting": "启动中",
           "running": "运行中",
+          "checked": "已查询",
           "waiting": "待批准",
           "ok": "完成",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "子代理超出 token 上限",
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
-            "child_unknown": "子代理未知错误"
+            "child_unknown": "子代理未知错误",
+            "unknown": "未知任务"
           }
         }
       },

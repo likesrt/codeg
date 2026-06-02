@@ -1903,9 +1903,14 @@
         "openDetail": "Voir la conversation",
         "detailTitle": "Conversation du sous-agent",
         "detailDescription": "Vue en lecture seule de la conversation du sous-agent délégué.",
+        "waitForResult": "En attente du résultat de la tâche {task}",
+        "waitForResultNoTask": "En attente du résultat de la tâche",
+        "cancelTask": "Annulation de la tâche {task}",
+        "cancelTaskNoTask": "Annulation de la tâche",
         "status": {
           "starting": "démarrage",
           "running": "en cours",
+          "checked": "vérifié",
           "waiting": "en attente d'approbation",
           "ok": "terminé",
           "err": {
@@ -1921,7 +1926,8 @@
             "child_max_tokens": "sous-agent : limite de jetons",
             "child_max_turn_requests": "sous-agent : limite de requêtes",
             "child_empty": "sous-agent sans sortie",
-            "child_unknown": "sous-agent : erreur"
+            "child_unknown": "sous-agent : erreur",
+            "unknown": "tâche inconnue"
           }
         }
       },

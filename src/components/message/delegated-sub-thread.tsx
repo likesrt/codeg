@@ -19,6 +19,7 @@ import { Eye } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { AgentIcon } from "@/components/agent-icon"
+import { extractEmbeddedJsonObject } from "@/lib/embedded-json"
 import { useDelegatedSubSession } from "@/hooks/use-delegated-sub-session"
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
 import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
@@ -234,41 +235,6 @@ function parseInput(raw: string | null | undefined): ParsedInput {
     task: typeof obj.task === "string" ? obj.task : null,
     workingDir: typeof obj.working_dir === "string" ? obj.working_dir : null,
   }
-}
-
-/**
- * Find the first complete JSON object embedded in `raw` and parse it.
- * Used to recover the broker's envelope from host-specific wrappings —
- * notably Codex, which serializes the MCP `function_call_output` as
- * `"Wall time: N seconds\nOutput:\n<json>"` (sometimes with a trailing
- * terminal-cursor character such as `_`). Direct `JSON.parse(raw)`
- * fails on these because of the textual prefix/suffix; this scanner
- * walks back from the last `}` until a balanced span parses cleanly.
- *
- * Returns null when no `{...}` substring parses. Bounded iteration:
- * each attempt shrinks the candidate by one `}`, so worst-case work is
- * linear in the count of `}` characters in `raw`.
- */
-function extractEmbeddedJsonObject(
-  raw: string
-): Record<string, unknown> | null {
-  const start = raw.indexOf("{")
-  if (start < 0) return null
-  let end = raw.lastIndexOf("}")
-  while (end > start) {
-    const candidate = raw.slice(start, end + 1)
-    try {
-      const v = JSON.parse(candidate)
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        return v as Record<string, unknown>
-      }
-    } catch {
-      // try a shorter span
-    }
-    end = raw.lastIndexOf("}", end - 1)
-    if (end < 0) break
-  }
-  return null
 }
 
 /**
@@ -508,6 +474,48 @@ function parseToolOutput(
   }
 }
 
+/**
+ * Surface the broker-minted `task_id` from the `delegate_to_agent` ack so the
+ * user can correlate this delegation with the later `get_delegation_status` /
+ * `cancel_delegation` cards. It is carried two ways: as
+ * `structuredContent.task_id` (persisted / snapshot rows) and embedded in the
+ * running-ack message text as `task_id=<id>` (the live wire forwards only the
+ * `CallToolResult.content` text, not `structuredContent`). Returns null when no
+ * id can be recovered. The structured form is tried first; the text scan is a
+ * fallback so a stray `"task_id":...` inside JSON never beats the real field.
+ */
+function parseDelegateTaskId(
+  output: string | null | undefined,
+  errorText: string | null | undefined
+): string | null {
+  for (const raw of [output, errorText]) {
+    if (!raw || typeof raw !== "string") continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    let obj: Record<string, unknown> | null = null
+    try {
+      const v = JSON.parse(trimmed) as unknown
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        obj = v as Record<string, unknown>
+      }
+    } catch {
+      obj = extractEmbeddedJsonObject(trimmed)
+    }
+    if (obj) {
+      const sc = obj.structuredContent
+      if (sc && typeof sc === "object" && !Array.isArray(sc)) {
+        const id = (sc as Record<string, unknown>).task_id
+        if (typeof id === "string" && id) return id
+      }
+      if (typeof obj.task_id === "string" && obj.task_id) return obj.task_id
+    }
+    // Live wire: the ack message text embeds `task_id=<id>`.
+    const m = trimmed.match(/task_id[=:]\s*"?([A-Za-z0-9][\w-]*)"?/)
+    if (m) return m[1]
+  }
+  return null
+}
+
 export function DelegatedSubThread({
   parentToolUseId,
   input,
@@ -520,6 +528,10 @@ export function DelegatedSubThread({
   const [sheetOpen, setSheetOpen] = useState(false)
   const parsed = useMemo(() => parseInput(input), [input])
   const parsedMeta = useMemo(() => parseDelegationMeta(meta), [meta])
+  const taskId = useMemo(
+    () => parseDelegateTaskId(output, errorText),
+    [output, errorText]
+  )
   // `enabled: false` — the card never fetches the child's persisted detail; it
   // only needs the live `binding` (agent type, status, child ids) from the
   // DelegationContext map. The child's output is viewed via "查看会话".
@@ -603,6 +615,14 @@ export function DelegatedSubThread({
               <span className="text-sm font-semibold text-foreground">
                 {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
               </span>
+              {taskId && (
+                <span
+                  className="shrink-0 font-mono text-xs text-muted-foreground"
+                  title={taskId}
+                >
+                  #{taskId.slice(0, 8)}
+                </span>
+              )}
               <StatusBadge status={status} errorCode={errorCode} />
             </div>
             {parsed.task && (
