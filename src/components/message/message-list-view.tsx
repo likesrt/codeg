@@ -731,7 +731,7 @@ export function MessageListView({
         message={liveMessage ?? null}
         entries={historicalPlanEntries}
         planKey={historicalPlanKey}
-        defaultExpanded={connStatus === "prompting"}
+        defaultExpanded={false}
         isStreaming={connStatus === "prompting"}
       />
     </div>
