@@ -383,19 +383,23 @@ export function SystemNetworkSettings() {
     setDownloadProgress(null)
     setRestartCountdown(null)
 
-    // The version running before this upgrade. A rollback (the supervisor
-    // reverting a version that couldn't boot/stay up) restores exactly this.
-    // We treat "reverted to the baseline" as the rollback signal rather than
-    // "not exactly the reported target": if a newer release is published
-    // between the manifest read and the download, the server can legitimately
-    // install a version newer than result.version, which must still count as
-    // success rather than a false rollback.
-    const baseline = currentVersion
-    const isRollback = (v: string | null): boolean =>
-      !!v && !!baseline && v === baseline
-
     let unsubscribe: (() => void) | undefined
     try {
+      // The version running before this upgrade. A rollback (the supervisor
+      // reverting a version that couldn't boot/stay up) restores exactly this,
+      // so we treat "reverted to the baseline" as the rollback signal rather
+      // than "not exactly the reported target": if a newer release is published
+      // between the manifest read and the download, the server can legitimately
+      // install a version newer than result.version, which must still count as
+      // success. Read it live from /health rather than trusting `currentVersion`
+      // state, which can be stale if another client updated the server since
+      // this tab last checked (else a real rollback to a version this tab never
+      // saw would be mis-reported as success). Fall back to state only if
+      // /health reports no version (older server).
+      const baseline = (await getRunningServerVersion()) ?? currentVersion
+      const isRollback = (v: string | null): boolean =>
+        !!v && !!baseline && v === baseline
+
       unsubscribe = await subscribeServerUpdateProgress(
         (p: ServerUpdateProgress) => {
           setDownloadProgress({
