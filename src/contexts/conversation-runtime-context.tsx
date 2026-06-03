@@ -22,7 +22,10 @@ import type {
   ToolCallStatus,
   TurnUsage,
 } from "@/lib/types"
-import { inferLiveToolName } from "@/lib/tool-call-normalization"
+import {
+  inferLiveToolName,
+  parseGoalUpdateTitle,
+} from "@/lib/tool-call-normalization"
 import { toErrorMessage } from "@/lib/app-error"
 
 export type ConversationSyncState = "idle" | "awaiting_persist"
@@ -81,6 +84,11 @@ const initialState: ConversationRuntimeState = {
   byConversationId: new Map(),
   conversationIdByExternalId: new Map(),
 }
+
+// Shared stable reference for the "no session" timeline result, so callers
+// memoizing on the returned array (MessageListView's `threadItems`) don't see
+// a fresh array on every render for conversations that don't exist yet.
+const EMPTY_TIMELINE: ConversationTimelineTurn[] = []
 
 type Action =
   | {
@@ -367,6 +375,30 @@ function extractRevisedPrompt(content: string | null): string | null {
   return trimmed
 }
 
+function resolveGoalToolInputFromLiveTitle(
+  toolName: string,
+  info: ToolCallInfo
+): string | null {
+  if (info.raw_input && info.raw_input.trim().length > 0) {
+    return info.raw_input
+  }
+
+  const goal = parseGoalUpdateTitle(info.title)
+  if (!goal) return info.raw_input
+
+  if (toolName === "create_goal") {
+    return JSON.stringify({ objective: goal.objective })
+  }
+  if (toolName === "update_goal") {
+    return JSON.stringify({
+      status: goal.status,
+      objective: goal.objective,
+    })
+  }
+
+  return info.raw_input
+}
+
 function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage
@@ -558,7 +590,10 @@ function buildStreamingTurnsFromLiveMessage(
           type: "tool_use",
           tool_use_id: block.info.tool_call_id,
           tool_name: toolName,
-          input_preview: block.info.raw_input,
+          input_preview: resolveGoalToolInputFromLiveTitle(
+            toolName,
+            block.info
+          ),
           // Forward the ACP `meta` field downstream so the renderer can
           // read delegation state (`meta["codeg.delegation"]`) for
           // pre-binding / post-refresh fallback rendering of
@@ -1063,10 +1098,34 @@ export function ConversationRuntimeProvider({
     [state.conversationIdByExternalId]
   )
 
+  // Timeline cache keyed by the session OBJECT (not the id). `updateSessionInState`
+  // always allocates a fresh session object for the conversation it touches and
+  // preserves the reference for every other conversation, so an unrelated
+  // dispatch (e.g. another tab's streaming token) leaves this conversation's
+  // session ref untouched — returning the identical timeline array then lets
+  // MessageListView's `threadItems` useMemo short-circuit instead of re-running
+  // the adapt/merge/scan pipeline on every cross-tab broadcast render.
+  //
+  // A WeakMap is used so a cache entry is collected automatically once its
+  // session object is no longer referenced by state (the session is replaced on
+  // update, or dropped on REMOVE_CONVERSATION / RESET / migration). The value
+  // can transitively retain a full transcript (detail.turns, live message,
+  // images, diffs), so a plain Map keyed by id would leak those indefinitely in
+  // a long-lived desktop provider as conversations are opened and closed.
+  // Keying by session is sound because each session object belongs to exactly
+  // one conversation id (no reducer path aliases a session across ids), so the
+  // conversation id baked into the result's keys is always consistent.
+  const timelineCacheRef = useRef(
+    new WeakMap<ConversationRuntimeSession, ConversationTimelineTurn[]>()
+  )
+
   const getTimelineTurns = useCallback(
     (conversationId: number): ConversationTimelineTurn[] => {
       const session = state.byConversationId.get(conversationId)
-      if (!session) return []
+      if (!session) return EMPTY_TIMELINE
+
+      const cached = timelineCacheRef.current.get(session)
+      if (cached) return cached
 
       // Phase 1: DB historical turns
       const persisted: ConversationTimelineTurn[] = (
@@ -1113,6 +1172,7 @@ export function ConversationRuntimeProvider({
         }
       }
 
+      timelineCacheRef.current.set(session, result)
       return result
     },
     [state.byConversationId]

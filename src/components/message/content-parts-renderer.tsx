@@ -41,6 +41,7 @@ import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
+import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
 import {
   FileTextIcon,
   FilePenLineIcon,
@@ -2295,6 +2296,10 @@ const ToolCallPart = memo(function ToolCallPart({
     )
   }
 
+  if (toolNameLower === "create_goal" || toolNameLower === "update_goal") {
+    return <GoalToolCallPart part={{ ...part, toolName: normalizedToolName }} />
+  }
+
   // Multi-agent delegation tool: surfaces an inline DelegatedSubThread
   // bound to the child sub-session via parent_tool_use_id. Matches the
   // bare `delegate_to_agent` (post-normalization) plus any host-specific
@@ -2575,56 +2580,68 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
 }: ContentPartsRendererProps) {
+  const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
+    if (part.type === "text") {
+      return (
+        <TextPart
+          key={`text-${keyId}`}
+          text={part.text}
+          preserveNewlines={role === "user"}
+        />
+      )
+    }
+
+    if (part.type === "tool-call") {
+      return <ToolCallPart key={`tc-${part.toolCallId ?? keyId}`} part={part} />
+    }
+
+    if (part.type === "tool-group") {
+      return <ToolGroupPart key={`tg-${keyId}`} part={part} />
+    }
+
+    if (part.type === "goal-run") {
+      return (
+        <GoalRunPart
+          key={`goal-${keyId}`}
+          part={part}
+          renderPart={(child, childKey) => renderPart(child, childKey)}
+        />
+      )
+    }
+
+    if (part.type === "delegation-status-group") {
+      return (
+        <DelegationStatusGroupCard key={`dsg-${keyId}`} polls={part.polls} />
+      )
+    }
+
+    if (part.type === "tool-result") {
+      return (
+        <ToolResultPart key={`tr-${part.toolCallId ?? keyId}`} part={part} />
+      )
+    }
+
+    if (part.type === "reasoning") {
+      return <ReasoningPart key={`reasoning-${keyId}`} part={part} />
+    }
+
+    if (part.type === "generated-image") {
+      return (
+        <GeneratedImagesBlock
+          key={`gimg-${keyId}`}
+          revisedPrompt={part.revisedPrompt}
+          image={part.image}
+          status={part.status}
+        />
+      )
+    }
+
+    return null
+  }
+
   return (
     <div className="space-y-4">
-      {parts.map((part, i) => {
-        if (part.type === "text") {
-          return (
-            <TextPart
-              key={`text-${i}`}
-              text={part.text}
-              preserveNewlines={role === "user"}
-            />
-          )
-        }
-
-        if (part.type === "tool-call") {
-          return <ToolCallPart key={`tc-${part.toolCallId ?? i}`} part={part} />
-        }
-
-        if (part.type === "tool-group") {
-          return <ToolGroupPart key={`tg-${i}`} part={part} />
-        }
-
-        if (part.type === "delegation-status-group") {
-          return (
-            <DelegationStatusGroupCard key={`dsg-${i}`} polls={part.polls} />
-          )
-        }
-
-        if (part.type === "tool-result") {
-          return (
-            <ToolResultPart key={`tr-${part.toolCallId ?? i}`} part={part} />
-          )
-        }
-
-        if (part.type === "reasoning") {
-          return <ReasoningPart key={`reasoning-${i}`} part={part} />
-        }
-
-        if (part.type === "generated-image") {
-          return (
-            <GeneratedImagesBlock
-              key={`gimg-${i}`}
-              revisedPrompt={part.revisedPrompt}
-              image={part.image}
-              status={part.status}
-            />
-          )
-        }
-
-        return null
-      })}
+      {parts.map((part, i) => renderPart(part, `${i}`))}
     </div>
   )
 })

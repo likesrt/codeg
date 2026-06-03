@@ -1960,11 +1960,31 @@
         "agentPromptLabel": "Prompt",
         "agentModelLabel": "Model",
         "agentRunning": "Running...",
+        "agentFallbackTitle": "Sub-agent starting…",
         "agentStatsBash": "Commands",
         "agentStatsRead": "Files read",
         "agentStatsSearch": "Searches",
         "agentStatsEdit": "Edits",
         "agentStatsOther": "Other",
+        "goal": {
+          "title": "Goal:",
+          "titleWithStatus": "Goal {status}",
+          "objective": "Objective",
+          "statusLabel": "Status",
+          "tokensUsed": "Tokens used",
+          "budget": "Budget",
+          "remaining": "Remaining",
+          "elapsed": "Elapsed",
+          "tokens": "tokens",
+          "status": {
+            "active": "active",
+            "paused": "paused",
+            "blocked": "blocked",
+            "usageLimited": "usage limited",
+            "budgetLimited": "budget limited",
+            "complete": "complete"
+          }
+        },
         "field": {
           "file": "File",
           "notebook": "Notebook",

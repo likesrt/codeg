@@ -1960,11 +1960,31 @@
         "agentPromptLabel": "Instrucción",
         "agentModelLabel": "Modelo",
         "agentRunning": "Ejecutando...",
+        "agentFallbackTitle": "Iniciando subagente…",
         "agentStatsBash": "Comandos",
         "agentStatsRead": "Archivos leídos",
         "agentStatsSearch": "Búsquedas",
         "agentStatsEdit": "Ediciones",
         "agentStatsOther": "Otros",
+        "goal": {
+          "title": "Objetivo:",
+          "titleWithStatus": "Objetivo {status}",
+          "objective": "Objetivo",
+          "statusLabel": "Estado",
+          "tokensUsed": "Tokens usados",
+          "budget": "Presupuesto",
+          "remaining": "Restante",
+          "elapsed": "Transcurrido",
+          "tokens": "tokens",
+          "status": {
+            "active": "activo",
+            "paused": "pausado",
+            "blocked": "bloqueado",
+            "usageLimited": "uso limitado",
+            "budgetLimited": "presupuesto limitado",
+            "complete": "completo"
+          }
+        },
         "field": {
           "file": "Archivo",
           "notebook": "Cuaderno",

@@ -78,6 +78,13 @@ describe("isAgentLikeToolName", () => {
     }
   })
 
+  it("matches Codex goal tools as standalone card tools", () => {
+    expect(isAgentLikeToolName("create_goal")).toBe(true)
+    expect(isAgentLikeToolName("update_goal")).toBe(true)
+    expect(isAgentLikeToolName("functions.create_goal")).toBe(true)
+    expect(isAgentLikeToolName("functions.update_goal")).toBe(true)
+  })
+
   it("does not match other tools", () => {
     expect(isAgentLikeToolName("task")).toBe(false)
     expect(isAgentLikeToolName("subagent")).toBe(false)

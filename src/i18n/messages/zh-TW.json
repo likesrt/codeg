@@ -1960,11 +1960,31 @@
         "agentPromptLabel": "提示詞",
         "agentModelLabel": "模型",
         "agentRunning": "執行中...",
+        "agentFallbackTitle": "子智能體啟動中…",
         "agentStatsBash": "命令",
         "agentStatsRead": "讀取檔案",
         "agentStatsSearch": "搜尋",
         "agentStatsEdit": "編輯",
         "agentStatsOther": "其他",
+        "goal": {
+          "title": "目標：",
+          "titleWithStatus": "目標{status}",
+          "objective": "目標",
+          "statusLabel": "狀態",
+          "tokensUsed": "已用 tokens",
+          "budget": "預算",
+          "remaining": "剩餘",
+          "elapsed": "耗時",
+          "tokens": "tokens",
+          "status": {
+            "active": "進行中",
+            "paused": "已暫停",
+            "blocked": "受阻",
+            "usageLimited": "用量受限",
+            "budgetLimited": "預算受限",
+            "complete": "已完成"
+          }
+        },
         "field": {
           "file": "檔案",
           "notebook": "筆記本",

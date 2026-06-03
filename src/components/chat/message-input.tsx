@@ -212,6 +212,26 @@ function hasDragFiles(dataTransfer: DataTransfer | null): boolean {
   return Array.from(dataTransfer.types).includes("Files")
 }
 
+// Extract pasted files from a clipboard event. On macOS/Windows pasted images
+// land in `clipboardData.files`, but on Linux (X11/Wayland) the same image is
+// only exposed through `clipboardData.items` as a file-kind DataTransferItem,
+// so fall back to `getAsFile()` when `files` is empty.
+function filesFromClipboard(dataTransfer: DataTransfer | null): File[] {
+  if (!dataTransfer) return []
+  const files = Array.from(dataTransfer.files ?? [])
+  if (files.length > 0) return files
+  // Mixed text+image clipboards (spreadsheet cells, rich web content) expose
+  // both a text/plain string and an image file item. Prefer the text and let
+  // the default paste run, so copying a cell doesn't get hijacked into an
+  // image attachment. Pure image pastes (screenshots) carry no text.
+  if (dataTransfer.getData("text/plain").trim().length > 0) return []
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : []
+  return items
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null)
+}
+
 function pointWithinElement(
   position: { x: number; y: number },
   element: HTMLElement
@@ -1276,7 +1296,7 @@ export function MessageInput({
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
       if (disabled) return
-      const files = Array.from(event.clipboardData?.files ?? [])
+      const files = filesFromClipboard(event.clipboardData)
       if (files.length === 0) return
       event.preventDefault()
       void appendFilesFromInput(files).catch((error) => {

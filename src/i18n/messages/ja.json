@@ -1960,11 +1960,31 @@
         "agentPromptLabel": "プロンプト",
         "agentModelLabel": "モデル",
         "agentRunning": "実行中...",
+        "agentFallbackTitle": "サブエージェント起動中…",
         "agentStatsBash": "コマンド",
         "agentStatsRead": "ファイル読取",
         "agentStatsSearch": "検索",
         "agentStatsEdit": "編集",
         "agentStatsOther": "その他",
+        "goal": {
+          "title": "目標：",
+          "titleWithStatus": "目標 {status}",
+          "objective": "目標",
+          "statusLabel": "ステータス",
+          "tokensUsed": "使用 tokens",
+          "budget": "予算",
+          "remaining": "残り",
+          "elapsed": "経過時間",
+          "tokens": "tokens",
+          "status": {
+            "active": "実行中",
+            "paused": "一時停止",
+            "blocked": "ブロック中",
+            "usageLimited": "使用量制限",
+            "budgetLimited": "予算制限",
+            "complete": "完了"
+          }
+        },
         "field": {
           "file": "ファイル",
           "notebook": "ノートブック",

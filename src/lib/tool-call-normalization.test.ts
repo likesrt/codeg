@@ -38,6 +38,38 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).not.toBe("memory_recall")
   })
 
+  it("returns canonical lower-case 'agent' for the SDK Agent tool before rawInput streams in", () => {
+    // claude-agent-acp reports the Agent/Task tool as `Agent` (capitalised) and
+    // often emits the initial ToolCall before `rawInput` (which carries
+    // `subagent_type`) is available. The metaToolName fallback must return the
+    // canonical lower-case `agent` so the live agent-card nesting check
+    // (`getToolName(...) === "agent"`) recognises it and child tool calls nest
+    // under the card. A capitalised `Agent` slipped past that check, leaving the
+    // children un-nested and the card stuck on its placeholder title.
+    expect(
+      inferLiveToolName({
+        title: "Explore the codebase",
+        kind: "other",
+        rawInput: null,
+        meta: { claudeCode: { toolName: "Agent" } },
+      })
+    ).toBe("agent")
+  })
+
+  it("keeps memory_recall intact when lower-casing the metaToolName fallback", () => {
+    // Guard: the lower-case fix must NOT route metaToolName through
+    // `normalizeToolName`, whose live-title heuristic rewrites `memory_recall`
+    // to `memory_re`.
+    expect(
+      inferLiveToolName({
+        title: "Recalled 3 memories",
+        kind: "read",
+        rawInput: null,
+        meta: { claudeCode: { toolName: "memory_recall" } },
+      })
+    ).toBe("memory_recall")
+  })
+
   it("preserves sub-agent detection when rawInput carries subagent_type", () => {
     // Regression guard: meta.claudeCode.toolName="Task" must NOT override
     // input-shape detection. Otherwise Claude Code's Task tool stops
@@ -196,5 +228,38 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
     expect(normalizeToolName("xcancel_delegation")).not.toBe(
       "cancel_delegation"
     )
+  })
+})
+
+describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
+  it.each([
+    ["create_goal", "create_goal"],
+    ["functions.create_goal", "create_goal"],
+    ["mcp__codeg__create_goal", "create_goal"],
+    ["Goal updated (active): 分析 README 文件", "create_goal"],
+    ["update_goal", "update_goal"],
+    ["functions.update_goal", "update_goal"],
+    ["mcp__codeg__update_goal", "update_goal"],
+    ["Goal updated (complete): 分析 README 文件", "update_goal"],
+  ])("%s -> %s", (input, expected) => {
+    expect(normalizeToolName(input)).toBe(expected)
+  })
+
+  it("infers live Codex goal updates from ACP titles", () => {
+    expect(
+      inferLiveToolName({
+        title: "Goal updated (active): 分析 README 文件",
+        kind: "other",
+        rawInput: JSON.stringify({ objective: "分析 README 文件" }),
+      })
+    ).toBe("create_goal")
+
+    expect(
+      inferLiveToolName({
+        title: "Goal updated (complete): 分析 README 文件",
+        kind: "other",
+        rawInput: JSON.stringify({ status: "complete" }),
+      })
+    ).toBe("update_goal")
   })
 })
