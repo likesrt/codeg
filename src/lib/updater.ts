@@ -1,5 +1,14 @@
 import { toErrorMessage } from "./app-error"
-import { getTransport, isDesktop } from "./transport"
+import { getTransport, isDesktop, isRemoteDesktopMode } from "./transport"
+
+// Drive the LOCAL Tauri app updater only for a genuine local desktop window.
+// A remote-desktop window IS a Tauri app (`isDesktop()` is true) but its
+// backend is a remote codeg-server, so update checks/actions must target that
+// server through the transport — otherwise the operator would check and update
+// their own local app instead of the server they are managing.
+export function usesTauriUpdater(): boolean {
+  return isDesktop() && !isRemoteDesktopMode()
+}
 
 // All updater imports are dynamic to avoid crashing in non-Tauri browsers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,7 +67,7 @@ export interface AppUpdateErrorInfo {
 }
 
 export async function getCurrentAppVersion(): Promise<string> {
-  if (!isDesktop()) {
+  if (!usesTauriUpdater()) {
     const result =
       await getTransport().call<AppUpdateCheckResult>("check_app_update")
     return result.currentVersion
@@ -72,7 +81,7 @@ export async function getCurrentAppVersion(): Promise<string> {
 }
 
 export async function checkAppUpdate(): Promise<AppUpdateCheckResult> {
-  if (!isDesktop()) {
+  if (!usesTauriUpdater()) {
     return getTransport().call<AppUpdateCheckResult>("check_app_update")
   }
   const { getVersion } = await import("@tauri-apps/api/app")

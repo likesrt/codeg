@@ -31,7 +31,7 @@ import {
   updateSystemLanguageSettings,
   updateSystemProxySettings,
 } from "@/lib/api"
-import { isDesktop, openUrl } from "@/lib/platform"
+import { openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
 import {
   checkAppUpdate,
@@ -44,6 +44,7 @@ import {
   relaunchApp,
   restartServer,
   subscribeServerUpdateProgress,
+  usesTauriUpdater,
   waitForServerHealthy,
 } from "@/lib/updater"
 import type { DownloadEvent, ServerUpdateProgress } from "@/lib/updater"
@@ -465,6 +466,28 @@ export function SystemNetworkSettings() {
           toast.error(t("upgradeRolledBack"))
           return
         }
+
+        // The loop skips transient nulls (the server is briefly down while the
+        // supervisor relaunches), so the window can elapse with a rollback
+        // still in flight. Require one definitive reading that the target
+        // version is still serving before claiming success; retry briefly to
+        // ride out a relaunch.
+        let finalVersion: string | null = null
+        for (let i = 0; i < 5; i++) {
+          finalVersion = await getRunningServerVersion()
+          if (finalVersion) break
+          await new Promise<void>((r) => setTimeout(r, 1500))
+        }
+        if (finalVersion && finalVersion !== result.version) {
+          setUpdateError(t("upgradeRolledBack"))
+          toast.error(t("upgradeRolledBack"))
+          return
+        }
+        if (!finalVersion) {
+          setUpdateError(t("restartTimeout"))
+          toast.error(t("restartTimeout"))
+          return
+        }
       }
 
       toast.success(t("upgradeSuccess"))
@@ -546,7 +569,7 @@ export function SystemNetworkSettings() {
                   {t("checking")}
                 </Button>
               ) : availableUpdate ? (
-                isDesktop() ? (
+                usesTauriUpdater() ? (
                   <Button
                     size="sm"
                     onClick={installUpdate}
