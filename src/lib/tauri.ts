@@ -38,6 +38,9 @@ import type {
   TerminalInfo,
   PromptInputBlock,
   FileTreeNode,
+  PasteFileTreeEntryRequest,
+  PreviewPasteFileTreeEntryRequest,
+  PasteConflictEntry,
   DirectoryEntry,
   FilePreviewContent,
   SearchFilesRequest,
@@ -1170,6 +1173,36 @@ export async function createFileTreeEntry(
   kind: "file" | "dir"
 ): Promise<string> {
   return invoke("create_file_tree_entry", { rootPath, path, name, kind })
+}
+
+/**
+ * 通过 Tauri IPC 在当前工作区文件树内粘贴一个文件或目录。
+ * @param request 后端粘贴命令需要的根目录、来源、目标目录、模式和冲突策略。
+ * @returns 粘贴后条目的工作区相对路径。
+ * @remarks 仅负责转发到 Rust 命令，实际复制/剪切和覆盖逻辑都在后端完成。
+ */
+export async function pasteFileTreeEntry(
+  request: PasteFileTreeEntryRequest
+): Promise<string> {
+  return invoke(
+    "paste_file_tree_entry",
+    request as unknown as Record<string, unknown>
+  )
+}
+
+/**
+ * 通过 Tauri IPC 预检文件树粘贴会产生的同名冲突。
+ * @param request 根目录、来源路径、目标目录路径。
+ * @returns 递归冲突列表；无冲突时为空数组。
+ * @remarks 只读取文件系统不执行任何变更，供前端弹出覆盖/逐项处理弹窗。
+ */
+export async function previewPasteFileTreeEntry(
+  request: PreviewPasteFileTreeEntryRequest
+): Promise<PasteConflictEntry[]> {
+  return invoke(
+    "preview_paste_file_tree_entry",
+    request as unknown as Record<string, unknown>
+  )
 }
 
 export async function gitLog(

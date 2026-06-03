@@ -1519,7 +1519,9 @@
         "watchStartFailed": "فشل بدء مراقبة الملفات",
         "createFailed": "فشل في الإنشاء",
         "downloadFailed": "فشل تنزيل {name}",
-        "downloadSaved": "تم تنزيل {name}"
+        "downloadSaved": "تم تنزيل {name}",
+        "pasteFailed": "فشل اللصق",
+        "pasteSucceeded": "اكتمل اللصق"
       },
       "createDialog": {
         "newFile": "ملف جديد",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "التراجع عن التغييرات المحلية للملف \"{name}\"؟",
         "descriptionFallback": "التراجع عن التغييرات المحلية لهذا الملف؟"
       },
-      "terminalTitle": "الطرفية · {name}"
+      "terminalTitle": "الطرفية · {name}",
+      "copyPaste": "نسخ / لصق",
+      "copyEntry": "نسخ",
+      "cutEntry": "قص",
+      "pasteEntry": "لصق",
+      "pasteConflict": {
+        "title": "تعارض في اللصق",
+        "summary": "لصق \"{name}\" يتعارض مع {count} عنصر (عناصر) موجودة. اختر طريقة المتابعة.",
+        "overwriteAll": "استبدال الكل",
+        "duplicateAll": "لصق الكل كنسخ",
+        "choosePerItem": "اختيار لكل عنصر",
+        "cancel": "إلغاء",
+        "overwrite": "استبدال",
+        "duplicate": "لصق كنسخة",
+        "back": "رجوع",
+        "apply": "تطبيق",
+        "sourcePath": "المصدر",
+        "targetPath": "الهدف"
+      }
     },
     "commandDropdown": {
       "loading": "جارٍ التحميل...",

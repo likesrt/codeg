@@ -1147,6 +1147,45 @@ export type FileTreeNode =
   | { kind: "file"; name: string; path: string }
   | { kind: "dir"; name: string; path: string; children: FileTreeNode[] }
 
+export type PasteFileTreeEntryMode = "copy" | "cut"
+export type PasteConflictStrategy = "abort" | "overwrite" | "duplicate"
+export type PasteConflictEntryKind = "file" | "dir"
+
+/** 单条冲突记录（由后端预检返回）。 */
+export interface PasteConflictEntry {
+  /** 冲突匹配键；目录粘贴时包含顶层目录名，保证顶层目录和同名子项不冲突。 */
+  path: string
+  /** 源条目的工作区相对路径。 */
+  sourcePath: string
+  /** 目标条目的工作区相对路径。 */
+  targetPath: string
+  /** 冲突条目的类型。 */
+  kind: PasteConflictEntryKind
+}
+
+/** 逐项冲突处理：path 对应冲突条目，strategy 为覆盖或复制成副本。 */
+export interface PasteConflictResolution {
+  path: string
+  strategy: PasteConflictStrategy
+}
+
+export interface PasteFileTreeEntryRequest {
+  rootPath: string
+  sourcePath: string
+  targetDirPath: string
+  mode: PasteFileTreeEntryMode
+  conflict: PasteConflictStrategy
+  /** 逐项冲突解决方案，传入时按 path 匹配；非冲突项可有可无。 */
+  resolutions?: PasteConflictResolution[]
+}
+
+/** 预检请求参数，与粘贴基本一致但不含策略字段。 */
+export interface PreviewPasteFileTreeEntryRequest {
+  rootPath: string
+  sourcePath: string
+  targetDirPath: string
+}
+
 export interface DirectoryEntry {
   name: string
   path: string

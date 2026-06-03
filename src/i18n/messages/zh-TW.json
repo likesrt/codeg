@@ -1519,7 +1519,9 @@
         "watchStartFailed": "檔案監聽啟動失敗",
         "createFailed": "建立失敗",
         "downloadFailed": "下載 {name} 失敗",
-        "downloadSaved": "已下載 {name}"
+        "downloadSaved": "已下載 {name}",
+        "pasteFailed": "貼上失敗",
+        "pasteSucceeded": "已完成貼上"
       },
       "createDialog": {
         "newFile": "新建檔案",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "確定回滾檔案 \"{name}\" 的本地修改嗎？",
         "descriptionFallback": "確定回滾該檔案的本地修改嗎？"
       },
-      "terminalTitle": "終端 · {name}"
+      "terminalTitle": "終端 · {name}",
+      "copyPaste": "複製 / 貼上",
+      "copyEntry": "複製",
+      "cutEntry": "剪下",
+      "pasteEntry": "貼上",
+      "pasteConflict": {
+        "title": "貼上衝突",
+        "summary": "貼上「{name}」將與 {count} 個現有項目衝突，請選擇處理方式。",
+        "overwriteAll": "全部覆蓋",
+        "duplicateAll": "全部貼上成副本",
+        "choosePerItem": "逐項選擇",
+        "cancel": "取消",
+        "overwrite": "覆蓋",
+        "duplicate": "貼上成副本",
+        "back": "返回",
+        "apply": "套用",
+        "sourcePath": "來源",
+        "targetPath": "目標"
+      }
     },
     "commandDropdown": {
       "loading": "載入中...",

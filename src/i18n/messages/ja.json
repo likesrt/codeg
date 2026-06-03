@@ -1519,7 +1519,9 @@
         "watchStartFailed": "ファイル監視の開始に失敗しました",
         "createFailed": "作成に失敗しました",
         "downloadFailed": "{name} のダウンロードに失敗しました",
-        "downloadSaved": "{name} をダウンロードしました"
+        "downloadSaved": "{name} をダウンロードしました",
+        "pasteFailed": "貼り付けに失敗しました",
+        "pasteSucceeded": "貼り付けが完了しました"
       },
       "createDialog": {
         "newFile": "新規ファイル",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "ファイル \"{name}\" のローカル変更をロールバックしますか？",
         "descriptionFallback": "このファイルのローカル変更をロールバックしますか？"
       },
-      "terminalTitle": "ターミナル · {name}"
+      "terminalTitle": "ターミナル · {name}",
+      "copyPaste": "コピー / 貼り付け",
+      "copyEntry": "コピー",
+      "cutEntry": "切り取り",
+      "pasteEntry": "貼り付け",
+      "pasteConflict": {
+        "title": "貼り付け競合",
+        "summary": "「{name}」の貼り付けは{count}個の既存項目と競合します。処理方法を選択してください。",
+        "overwriteAll": "すべて上書き",
+        "duplicateAll": "すべてコピーとして貼り付け",
+        "choosePerItem": "項目ごとに選択",
+        "cancel": "キャンセル",
+        "overwrite": "上書き",
+        "duplicate": "コピーとして貼り付け",
+        "back": "戻る",
+        "apply": "適用",
+        "sourcePath": "コピー元",
+        "targetPath": "貼り付け先"
+      }
     },
     "commandDropdown": {
       "loading": "読み込み中...",

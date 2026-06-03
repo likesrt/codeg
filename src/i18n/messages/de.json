@@ -1519,7 +1519,9 @@
         "watchStartFailed": "Dateiwatch konnte nicht gestartet werden",
         "createFailed": "Erstellen fehlgeschlagen",
         "downloadFailed": "Herunterladen von {name} fehlgeschlagen",
-        "downloadSaved": "{name} heruntergeladen"
+        "downloadSaved": "{name} heruntergeladen",
+        "pasteFailed": "Einfügen fehlgeschlagen",
+        "pasteSucceeded": "Einfügen abgeschlossen"
       },
       "createDialog": {
         "newFile": "Neue Datei",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "Lokale Änderungen für Datei \"{name}\" zurücksetzen?",
         "descriptionFallback": "Lokale Änderungen für diese Datei zurücksetzen?"
       },
-      "terminalTitle": "Konsole · {name}"
+      "terminalTitle": "Konsole · {name}",
+      "copyPaste": "Kopieren / Einfügen",
+      "copyEntry": "Kopieren",
+      "cutEntry": "Ausschneiden",
+      "pasteEntry": "Einfügen",
+      "pasteConflict": {
+        "title": "Einfügekonflikt",
+        "summary": "Das Einfügen von \"{name}\" steht mit {count} vorhandenen Elementen in Konflikt. Wähle, wie fortgefahren werden soll.",
+        "overwriteAll": "Alle überschreiben",
+        "duplicateAll": "Alle als Kopie einfügen",
+        "choosePerItem": "Pro Element wählen",
+        "cancel": "Abbrechen",
+        "overwrite": "Überschreiben",
+        "duplicate": "Als Kopie einfügen",
+        "back": "Zurück",
+        "apply": "Anwenden",
+        "sourcePath": "Quelle",
+        "targetPath": "Ziel"
+      }
     },
     "commandDropdown": {
       "loading": "Wird geladen...",

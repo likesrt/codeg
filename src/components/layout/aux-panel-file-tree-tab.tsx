@@ -23,12 +23,23 @@ import {
   useWorkspaceContext,
 } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
+import {
+  resolveFileTreePasteTarget,
+  useFileTreeClipboard,
+  type FileTreeClipboardItem,
+} from "@/hooks/use-file-tree-clipboard"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
 import {
+  FileTreePasteConflictDialog,
+  type PasteConflictItem,
+} from "@/components/layout/file-tree-paste-conflict-dialog"
+import {
   createFileTreeEntry,
   deleteFileTreeEntry,
+  pasteFileTreeEntry,
+  previewPasteFileTreeEntry,
   downloadWorkspaceDir,
   downloadWorkspaceFile,
   gitAddFiles,
@@ -50,6 +61,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import type {
   FileEditContent,
   FileTreeNode,
+  PasteConflictEntry,
+  PasteConflictResolution,
+  PasteConflictStrategy,
   GitBranchList,
   GitStatusEntry,
 } from "@/lib/types"
@@ -147,6 +161,26 @@ interface ExternalConflictPrompt {
   diskContent: string
   unsavedContent: string
   signature: string
+}
+
+/** 冲突预检后的全量冲突上下文，供弹窗和粘贴重试使用。 */
+interface PasteConflictPrompt {
+  clipboard: FileTreeClipboardItem
+  target: FileActionTarget
+  conflicts: PasteConflictEntry[]
+}
+
+/** 将后端返回的冲突条目转换为弹窗展示模型。 */
+function toPasteConflictItems(
+  entries: PasteConflictEntry[]
+): PasteConflictItem[] {
+  return entries.map((e) => ({
+    path: e.path,
+    sourcePath: e.sourcePath,
+    targetPath: e.targetPath,
+    name: e.path.split("/").pop() ?? e.path,
+    kind: e.kind === "dir" ? "dir" : "file",
+  }))
 }
 
 type GitFileState =
@@ -496,6 +530,10 @@ interface RenderNodeProps {
   onRequestUpload: (targetPath: string) => void
   onRequestDownloadFile: (target: FileActionTarget) => void
   onRequestDownloadDir: (target: FileActionTarget) => void
+  onRequestCopyEntry?: (target: FileActionTarget) => void
+  onRequestCutEntry?: (target: FileActionTarget) => void
+  onRequestPasteEntry?: (target: FileActionTarget) => void
+  canPasteEntry?: boolean
   onRefresh: () => void
 }
 
@@ -533,6 +571,10 @@ export function RenderNode({
   onRequestUpload,
   onRequestDownloadFile,
   onRequestDownloadDir,
+  onRequestCopyEntry,
+  onRequestCutEntry,
+  onRequestPasteEntry,
+  canPasteEntry = false,
   onRefresh,
 }: RenderNodeProps) {
   const t = useTranslations("Folder.fileTreeTab")
@@ -617,8 +659,20 @@ export function RenderNode({
             {t("attachToCurrentSession")}
           </ContextMenuItem>
           <ContextMenuSub>
-            <ContextMenuSubTrigger>{t("copyFilePath")}</ContextMenuSubTrigger>
+            <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
             <ContextMenuSubContent>
+              <ContextMenuItem onSelect={() => onRequestCopyEntry?.(node)}>
+                {t("copyEntry")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => onRequestCutEntry?.(node)}>
+                {t("cutEntry")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => onRequestPasteEntry?.(node)}
+                disabled={!canPasteEntry}
+              >
+                {t("pasteEntry")}
+              </ContextMenuItem>
               <ContextMenuItem onSelect={() => void handleCopyFilePath()}>
                 {t("copyRelativePath")}
               </ContextMenuItem>
@@ -817,6 +871,10 @@ export function RenderNode({
                   onRequestUpload={onRequestUpload}
                   onRequestDownloadFile={onRequestDownloadFile}
                   onRequestDownloadDir={onRequestDownloadDir}
+                  onRequestCopyEntry={onRequestCopyEntry}
+                  onRequestCutEntry={onRequestCutEntry}
+                  onRequestPasteEntry={onRequestPasteEntry}
+                  canPasteEntry={canPasteEntry}
                   onRefresh={onRefresh}
                 />
               ))
@@ -831,8 +889,20 @@ export function RenderNode({
           {t("attachToCurrentSession")}
         </ContextMenuItem>
         <ContextMenuSub>
-          <ContextMenuSubTrigger>{t("copyFilePath")}</ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
           <ContextMenuSubContent>
+            <ContextMenuItem onSelect={() => onRequestCopyEntry?.(node)}>
+              {t("copyEntry")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => onRequestCutEntry?.(node)}>
+              {t("cutEntry")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => onRequestPasteEntry?.(node)}
+              disabled={!canPasteEntry}
+            >
+              {t("pasteEntry")}
+            </ContextMenuItem>
             <ContextMenuItem onSelect={() => void handleCopyDirPath()}>
               {t("copyRelativePath")}
             </ContextMenuItem>
@@ -984,6 +1054,24 @@ export function FileTreeTab() {
   )
   const [externalConflictPrompt, setExternalConflictPrompt] =
     useState<ExternalConflictPrompt | null>(null)
+  const [pasteConflictPrompt, setPasteConflictPrompt] =
+    useState<PasteConflictPrompt | null>(null)
+  const fileTreeClipboard = useFileTreeClipboard()
+  const {
+    clipboard: fileTreeClipboardItem,
+    copy: copyFileTreeEntry,
+    cut: cutFileTreeEntry,
+    clear: clearFileTreeClipboard,
+  } = fileTreeClipboard
+  const canPasteEntry = Boolean(fileTreeClipboardItem)
+  const [, setPasting] = useState(false)
+  /**
+   * 用 ref 防止双击或连续快速点击绕过 state guard 重复提交粘贴。
+   *
+   * useState 的闭包在事件循环同一 tick 内不会反映最新值，
+   * 而 ref 的突变是同步的，能更可靠地阻止并发粘贴。
+   */
+  const pastingRef = useRef(false)
   const [savingExternalConflictCopy, setSavingExternalConflictCopy] =
     useState(false)
   const [directoryGitActionType, setDirectoryGitActionType] =
@@ -1056,11 +1144,14 @@ export function FileTreeTab() {
     previousExpandedPathsRef.current = new Set([FILE_TREE_ROOT_PATH])
     setGitignoreIgnoredPaths(new Set())
     setExternalConflictPrompt(null)
+    setPasteConflictPrompt(null)
     setSavingExternalConflictCopy(false)
+    setPasting(false)
+    clearFileTreeClipboard()
     lazyLoadedChildrenByPathRef.current.clear()
     lazyLoadingDirPathsRef.current.clear()
     externalConflictSignatureByPathRef.current.clear()
-  }, [folder?.path])
+  }, [clearFileTreeClipboard, folder?.path])
 
   // Handle pending reveal path: expand all ancestor directories once tree is loaded
   const hasNodes = nodes.length > 0
@@ -1605,6 +1696,135 @@ export function FileTreeTab() {
       }
     },
     [folder?.path, t]
+  )
+
+  /**
+   * 向后端发起一次文件树粘贴操作。
+   * @param clipboard 当前局部剪贴板条目。
+   * @param target 用户右键或选中的粘贴目标。
+   * @param conflict 本次提交后端的全局同名冲突策略；逐项处理时搭配 resolutions。
+   * @param resolutions 可选的逐项冲突解决方案，优先级高于全局策略。
+   * @returns 一个异步操作；成功后刷新文件树，剪切成功后清空剪贴板。
+   */
+  const pasteClipboardEntry = useCallback(
+    async (
+      clipboard: FileTreeClipboardItem,
+      target: FileActionTarget,
+      conflict: PasteConflictStrategy,
+      resolutions?: PasteConflictResolution[]
+    ) => {
+      const folderPath = folder?.path
+      if (!folderPath || pastingRef.current) return
+      pastingRef.current = true
+      setPasting(true)
+      try {
+        const resultPath = await pasteFileTreeEntry({
+          rootPath: folderPath,
+          sourcePath: clipboard.sourcePath,
+          targetDirPath: resolveFileTreePasteTarget(target),
+          mode: clipboard.mode,
+          conflict,
+          resolutions:
+            resolutions && resolutions.length > 0 ? resolutions : undefined,
+        })
+        toast.success(t("toasts.pasteSucceeded"), { description: resultPath })
+        setPasteConflictPrompt(null)
+        if (clipboard.mode === "cut") clearFileTreeClipboard()
+        await fetchTree()
+      } catch (error) {
+        const message = toErrorMessage(error)
+        toast.error(t("toasts.pasteFailed"), { description: message })
+      } finally {
+        pastingRef.current = false
+        setPasting(false)
+      }
+    },
+    [clearFileTreeClipboard, fetchTree, folder?.path, t]
+  )
+
+  /**
+   * 从右键菜单发起粘贴流程。
+   * @param target 用户右键的文件或目录条目。
+   * @returns 无返回值。
+   * @remarks 先预检冲突，有冲突则弹出增强对话框，无冲突直接执行粘贴。
+   */
+  const handleRequestPasteEntry = useCallback(
+    (target: FileActionTarget) => {
+      const clipboard = fileTreeClipboardItem
+      if (!clipboard || !folder?.path || pastingRef.current) return
+      // 在异步预览开始前抢占锁，防止同一事件循环内多次点击绕过 state guard。
+      pastingRef.current = true
+
+      void (async () => {
+        try {
+          const conflicts = await previewPasteFileTreeEntry({
+            rootPath: folder.path!,
+            sourcePath: clipboard.sourcePath,
+            targetDirPath: resolveFileTreePasteTarget(target),
+          })
+          if (conflicts.length === 0) {
+            // 释放预览锁后由 pasteClipboardEntry 重新抢占执行锁，
+            // 避免与 pasteClipboardEntry 内部的 pastingRef 检查冲突。
+            pastingRef.current = false
+            void pasteClipboardEntry(clipboard, target, "abort")
+          } else {
+            // 显示冲突对话框后释放预览锁，后续由对话框按钮触发
+            // pasteClipboardEntry 重新抢占执行锁。
+            pastingRef.current = false
+            setPasteConflictPrompt({ clipboard, target, conflicts })
+          }
+        } catch (error) {
+          pastingRef.current = false
+          const message = toErrorMessage(error)
+          toast.error(t("toasts.pasteFailed"), { description: message })
+        }
+      })()
+    },
+    [fileTreeClipboardItem, folder?.path, pasteClipboardEntry, t]
+  )
+
+  /**
+   * 用户选择全部覆盖或全部复制成副本后执行粘贴。
+   * @param strategy 用户选择的批量冲突策略。
+   * @returns 无返回值。
+   */
+  const handlePasteConflictConfirmAll = useCallback(
+    (strategy: "overwrite" | "duplicate") => {
+      if (!pasteConflictPrompt) return
+      void pasteClipboardEntry(
+        pasteConflictPrompt.clipboard,
+        pasteConflictPrompt.target,
+        strategy
+      )
+    },
+    [pasteClipboardEntry, pasteConflictPrompt]
+  )
+
+  /**
+   * 用户在逐项视图中确认选择后执行粘贴。
+   * @param perItemResolutions 每项的覆盖/复制成副本策略。
+   * @returns 无返回值。
+   * @remarks 全局策略设为 abort 并传逐项 resolutions，后端按 path 匹配。
+   */
+  const handlePasteConflictConfirmPerItem = useCallback(
+    (
+      perItemResolutions: {
+        path: string
+        strategy: "overwrite" | "duplicate"
+      }[]
+    ) => {
+      if (!pasteConflictPrompt) return
+      const resolutions: PasteConflictResolution[] = perItemResolutions.map(
+        ({ path, strategy }) => ({ path, strategy })
+      )
+      void pasteClipboardEntry(
+        pasteConflictPrompt.clipboard,
+        pasteConflictPrompt.target,
+        "abort",
+        resolutions
+      )
+    },
+    [pasteClipboardEntry, pasteConflictPrompt]
   )
 
   const resetDirectoryGitActionDialog = useCallback(() => {
@@ -2631,6 +2851,10 @@ export function FileTreeTab() {
                           onRequestDownloadDir={(target) =>
                             void handleRequestDownloadDir(target)
                           }
+                          onRequestCopyEntry={copyFileTreeEntry}
+                          onRequestCutEntry={cutFileTreeEntry}
+                          onRequestPasteEntry={handleRequestPasteEntry}
+                          canPasteEntry={canPasteEntry}
                           onRefresh={fetchTree}
                         />
                       ))}
@@ -2693,6 +2917,19 @@ export function FileTreeTab() {
                           disabled={!gitEnabled}
                         >
                           {t("actions.rollback")}
+                        </ContextMenuItem>
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
+                    <ContextMenuSub>
+                      <ContextMenuSubTrigger>
+                        {t("copyPaste")}
+                      </ContextMenuSubTrigger>
+                      <ContextMenuSubContent>
+                        <ContextMenuItem
+                          onSelect={() => handleRequestPasteEntry(rootTarget)}
+                          disabled={!canPasteEntry}
+                        >
+                          {t("pasteEntry")}
                         </ContextMenuItem>
                       </ContextMenuSubContent>
                     </ContextMenuSub>
@@ -2766,6 +3003,17 @@ export function FileTreeTab() {
               {t("upload")}
             </ContextMenuItem>
           )}
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                onSelect={() => handleRequestPasteEntry(rootTarget)}
+                disabled={!canPasteEntry}
+              >
+                {t("pasteEntry")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           <ContextMenuItem
             onSelect={() => {
               void fetchTree()
@@ -3293,6 +3541,40 @@ export function FileTreeTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <FileTreePasteConflictDialog
+        open={Boolean(pasteConflictPrompt)}
+        conflicts={
+          pasteConflictPrompt?.conflicts
+            ? toPasteConflictItems(pasteConflictPrompt.conflicts)
+            : []
+        }
+        title={t("pasteConflict.title")}
+        summaryDescription={
+          pasteConflictPrompt
+            ? t("pasteConflict.summary", {
+                count: pasteConflictPrompt.conflicts.length,
+                name: pasteConflictPrompt.clipboard.sourceName,
+              })
+            : ""
+        }
+        overwriteAllLabel={t("pasteConflict.overwriteAll")}
+        duplicateAllLabel={t("pasteConflict.duplicateAll")}
+        choosePerItemLabel={t("pasteConflict.choosePerItem")}
+        cancelLabel={t("pasteConflict.cancel")}
+        sourcePathLabel={t("pasteConflict.sourcePath")}
+        targetPathLabel={t("pasteConflict.targetPath")}
+        overwriteLabel={t("pasteConflict.overwrite")}
+        duplicateLabel={t("pasteConflict.duplicate")}
+        backLabel={t("pasteConflict.back")}
+        applyLabel={t("pasteConflict.apply")}
+        onConfirmAll={handlePasteConflictConfirmAll}
+        onConfirmPerItem={handlePasteConflictConfirmPerItem}
+        onOpenChange={(open) => {
+          if (open) return
+          setPasteConflictPrompt(null)
+        }}
+      />
 
       <AlertDialog
         open={Boolean(deleteTarget)}

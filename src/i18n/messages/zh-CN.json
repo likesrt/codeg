@@ -1519,7 +1519,9 @@
         "watchStartFailed": "文件监听启动失败",
         "createFailed": "创建失败",
         "downloadFailed": "下载 {name} 失败",
-        "downloadSaved": "已下载 {name}"
+        "downloadSaved": "已下载 {name}",
+        "pasteFailed": "粘贴失败",
+        "pasteSucceeded": "粘贴完成"
       },
       "createDialog": {
         "newFile": "新建文件",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "确定回滚文件 \"{name}\" 的本地修改吗？",
         "descriptionFallback": "确定回滚该文件的本地修改吗？"
       },
-      "terminalTitle": "终端 · {name}"
+      "terminalTitle": "终端 · {name}",
+      "copyPaste": "复制 / 粘贴",
+      "copyEntry": "复制",
+      "cutEntry": "剪切",
+      "pasteEntry": "粘贴",
+      "pasteConflict": {
+        "title": "粘贴冲突",
+        "summary": "粘贴 \"{name}\" 将与 {count} 个已有项冲突，请选择处理方式。",
+        "overwriteAll": "全部覆盖",
+        "duplicateAll": "全部复制成副本",
+        "choosePerItem": "逐项选择",
+        "cancel": "取消",
+        "overwrite": "覆盖",
+        "duplicate": "复制成副本",
+        "back": "返回",
+        "apply": "应用",
+        "sourcePath": "来源",
+        "targetPath": "目标"
+      }
     },
     "commandDropdown": {
       "loading": "加载中...",

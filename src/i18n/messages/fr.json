@@ -1519,7 +1519,9 @@
         "watchStartFailed": "Échec du démarrage de la surveillance de fichiers",
         "createFailed": "Échec de la création",
         "downloadFailed": "Échec du téléchargement de {name}",
-        "downloadSaved": "{name} téléchargé"
+        "downloadSaved": "{name} téléchargé",
+        "pasteFailed": "Échec du collage",
+        "pasteSucceeded": "Collage terminé"
       },
       "createDialog": {
         "newFile": "Nouveau fichier",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "Annuler les modifications locales du fichier \"{name}\" ?",
         "descriptionFallback": "Annuler les modifications locales de ce fichier ?"
       },
-      "terminalTitle": "Console · {name}"
+      "terminalTitle": "Console · {name}",
+      "copyPaste": "Copier / Coller",
+      "copyEntry": "Copier",
+      "cutEntry": "Couper",
+      "pasteEntry": "Coller",
+      "pasteConflict": {
+        "title": "Conflit de collage",
+        "summary": "Le collage de « {name} » est en conflit avec {count} élément(s) existant(s). Choisis comment continuer.",
+        "overwriteAll": "Tout écraser",
+        "duplicateAll": "Tout coller comme copie",
+        "choosePerItem": "Choisir par élément",
+        "cancel": "Annuler",
+        "overwrite": "Écraser",
+        "duplicate": "Coller comme copie",
+        "back": "Retour",
+        "apply": "Appliquer",
+        "sourcePath": "Source",
+        "targetPath": "Cible"
+      }
     },
     "commandDropdown": {
       "loading": "Chargement...",

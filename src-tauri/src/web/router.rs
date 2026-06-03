@@ -318,6 +318,10 @@ pub fn build_router(
             post(handlers::files::paste_file_tree_entry),
         )
         .route(
+            "/preview_paste_file_tree_entry",
+            post(handlers::files::preview_paste_file_tree_entry),
+        )
+        .route(
             "/upload_attachment",
             // The 2MiB `UPLOAD_MAX_BYTES` is the *file payload* limit; the
             // raw multipart body also carries boundary markers, the

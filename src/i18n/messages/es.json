@@ -1519,7 +1519,9 @@
         "watchStartFailed": "No se pudo iniciar la vigilancia de archivos",
         "createFailed": "Error al crear",
         "downloadFailed": "No se pudo descargar {name}",
-        "downloadSaved": "{name} descargado"
+        "downloadSaved": "{name} descargado",
+        "pasteFailed": "Error al pegar",
+        "pasteSucceeded": "Pegado completado"
       },
       "createDialog": {
         "newFile": "Nuevo archivo",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "¿Revertir cambios locales del archivo \"{name}\"?",
         "descriptionFallback": "¿Revertir cambios locales de este archivo?"
       },
-      "terminalTitle": "Consola · {name}"
+      "terminalTitle": "Consola · {name}",
+      "copyPaste": "Copiar / Pegar",
+      "copyEntry": "Copiar",
+      "cutEntry": "Cortar",
+      "pasteEntry": "Pegar",
+      "pasteConflict": {
+        "title": "Conflicto al pegar",
+        "summary": "Pegar \"{name}\" entra en conflicto con {count} elemento(s) existente(s). Elige cómo continuar.",
+        "overwriteAll": "Sobrescribir todo",
+        "duplicateAll": "Pegar todo como copia",
+        "choosePerItem": "Elegir por elemento",
+        "cancel": "Cancelar",
+        "overwrite": "Sobrescribir",
+        "duplicate": "Pegar como copia",
+        "back": "Volver",
+        "apply": "Aplicar",
+        "sourcePath": "Origen",
+        "targetPath": "Destino"
+      }
     },
     "commandDropdown": {
       "loading": "Cargando...",

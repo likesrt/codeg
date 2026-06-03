@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在辅助面板当前工作区文件树中增加文件/文件夹复制、剪切、粘贴，并在同名冲突时提供覆盖或粘贴成副本的选择。
+**Goal:** 在辅助面板当前工作区文件树中增加文件/文件夹复制、剪切、粘贴，并在同名冲突时提供冲突预检、全部覆盖、全部粘贴成副本和逐项处理。
 
-**Architecture:** 前端只负责菜单、局部剪贴板状态和冲突弹窗；后端负责真实文件系统操作、路径边界校验、递归复制/移动和冲突处理。现有“复制相对路径/复制绝对路径”保留，但会和文件操作一起收进同一个一级菜单，减少右键菜单层级。
+**Architecture:** 前端只负责菜单、局部剪贴板状态、冲突预检调用和冲突弹窗；后端负责真实文件系统操作、路径边界校验、递归复制/移动、冲突预检和全局/逐项冲突策略执行。现有“复制相对路径/复制绝对路径”保留，但会和文件操作一起收进同一个一级菜单，减少右键菜单层级。
 
 **Tech Stack:** Next.js 16 + React 19 + TypeScript，Tauri 2，Rust/Axum，Vitest + Testing Library，Cargo tests（`test-utils`）。
 
@@ -19,7 +19,7 @@
 - `src/hooks/use-file-tree-clipboard.test.ts`
   - 验证剪贴板状态流转、覆盖目标判断、清空行为。
 - `src/components/layout/file-tree-paste-conflict-dialog.tsx`
-  - 粘贴冲突时弹出覆盖/副本/取消的确认对话框。
+  - 粘贴冲突时展示冲突摘要、全部覆盖、全部副本、逐项处理和取消。
 - `src/components/layout/file-tree-paste-conflict-dialog.test.tsx`
   - 验证对话框三种选择和回调分发。
 
@@ -36,7 +36,7 @@
 - `src/lib/tauri.ts`
   - 增加 `pasteFileTreeEntry` invoke 包装。
 - `src-tauri/src/commands/folders.rs`
-  - 新增文件树粘贴命令、递归复制/移动辅助函数、冲突和路径校验测试。
+  - 新增文件树粘贴命令、冲突预检命令、递归复制/移动辅助函数、冲突和路径校验测试。
 - `src-tauri/src/web/handlers/files.rs`
   - 新增 HTTP handler 和请求体结构。
 - `src-tauri/src/web/router.rs`
@@ -44,7 +44,7 @@
 - `src-tauri/src/lib.rs`
   - 注册 Tauri invoke 命令。
 - `src/i18n/messages/*.json`
-  - 增加文件操作菜单、冲突弹窗和粘贴结果提示文案。
+  - 增加文件操作菜单、冲突预检弹窗、逐项处理和粘贴结果提示文案。
 
 ---
 
@@ -717,16 +717,61 @@ git commit -m "fix(files): 修正文件树粘贴交互"
 
 ---
 
+## Task 6: Add conflict precheck, all/individual strategies, and stronger UX
+
+**Files:**
+- Modify: `src-tauri/src/commands/folders.rs`
+- Modify: `src-tauri/src/web/handlers/files.rs`
+- Modify: `src-tauri/src/web/router.rs`
+- Modify: `src-tauri/src/lib.rs`
+- Modify: `src/lib/types.ts`
+- Modify: `src/lib/api.ts`
+- Modify: `src/lib/tauri.ts`
+- Modify: `src/components/layout/aux-panel-file-tree-tab.tsx`
+- Modify: `src/components/layout/file-tree-paste-conflict-dialog.tsx`
+- Modify: `src/i18n/messages/*.json`
+- Test: backend paste tests and frontend dialog/file-tree tests
+
+- [ ] **Step 1: Add backend conflict precheck tests**
+
+Cover file conflict and directory merge conflict lists. Expected output includes `path`, `sourcePath`, `targetPath`, and `kind`.
+
+- [ ] **Step 2: Implement backend conflict precheck**
+
+Add `preview_paste_file_tree_entry` that resolves paths under the workspace root and returns all recursive conflicts without mutating the filesystem.
+
+- [ ] **Step 3: Add all/individual conflict strategy tests**
+
+Cover all overwrite, all duplicate, and per-item mixed overwrite/duplicate for directory conflicts.
+
+- [ ] **Step 4: Implement strategy execution**
+
+Extend paste request types with optional per-item resolutions. The backend applies either the global strategy or the per-item map and keeps filesystem changes staged so failed operations do not silently drop source or target data.
+
+- [ ] **Step 5: Strengthen conflict dialog UX**
+
+Show source path, target path, conflict count, all-overwrite, all-duplicate, individual mode, and cancel. Use destructive styling for overwrite.
+
+- [ ] **Step 6: Wire frontend precheck flow**
+
+Before paste, call precheck. No conflicts => paste directly. Conflicts => show dialog. All strategy => paste with global strategy. Individual strategy => paste with per-item resolutions.
+
+- [ ] **Step 7: Verify**
+
+Run targeted frontend tests, backend paste tests, lint, and Codex sub-agent review loop.
+
+---
+
 ## Plan Coverage Check
 
 - 文件和文件夹复制/剪切/粘贴：Task 1, Task 3
 - 粘贴目标优先右键位置，否则用当前选中项：Task 3
-- 同名冲突提示覆盖或副本：Task 4
+- 同名冲突提示覆盖或副本：Task 4, Task 6
 - 复制相对路径/复制绝对路径与文件操作统一进同一一级菜单：Task 3
 - 仅作用于辅助面板当前工作区文件树：Task 3, Task 4
-- 后端真实文件系统操作与边界校验：Task 1
+- 后端真实文件系统操作、边界校验与冲突预检：Task 1, Task 6
 - 前端局部状态、菜单和刷新行为：Task 3, Task 4, Task 5
-- i18n 文案补齐：Task 4
+- i18n 文案补齐：Task 4, Task 6
 - 端到端验证：Task 5
 
 ## Self-Review Notes
@@ -735,3 +780,8 @@ git commit -m "fix(files): 修正文件树粘贴交互"
 - Task boundaries are small enough to implement and verify independently.
 - The typed request/response names are consistent across frontend and backend tasks.
 - The plan keeps the file operations logic in Rust and the interaction logic in React, which matches the spec and avoids split-brain path handling.
+
+## Progress Update
+
+- 已追加冲突预检、全部策略、逐项策略和覆盖弹窗 UX 强化任务。
+- 后续实现必须继续遵守 TDD 与 sub-agent-review-loop。

@@ -93,6 +93,15 @@ pub struct PasteFileTreeEntryParams {
     pub target_dir_path: String,
     pub mode: folder_commands::PasteFileTreeEntryMode,
     pub conflict: folder_commands::PasteConflictStrategy,
+    pub resolutions: Option<Vec<folder_commands::PasteConflictResolution>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPasteFileTreeEntryParams {
+    pub root_path: String,
+    pub source_path: String,
+    pub target_dir_path: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +192,22 @@ pub async fn paste_file_tree_entry(
         params.target_dir_path,
         params.mode,
         params.conflict,
+        params.resolutions,
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+/// 处理 Web 模式文件树粘贴冲突预检请求。
+///
+/// 只读取文件系统并返回同名冲突列表，不执行任何复制、移动或删除操作。
+pub async fn preview_paste_file_tree_entry(
+    Json(params): Json<PreviewPasteFileTreeEntryParams>,
+) -> Result<Json<Vec<folder_commands::PasteConflictEntry>>, AppCommandError> {
+    let result = folder_commands::preview_paste_file_tree_entry(
+        params.root_path,
+        params.source_path,
+        params.target_dir_path,
     )
     .await?;
     Ok(Json(result))

@@ -6916,17 +6916,20 @@ mod tests {
         inner.insert_completed("c", completed_with_text("p1", 400));
         assert!(!inner.completed.contains_key("a"), "oldest must be evicted");
         assert!(inner.completed.contains_key("b"));
-        assert!(
-            inner.completed.contains_key("c"),
-            "newest must be retained"
-        );
+        assert!(inner.completed.contains_key("c"), "newest must be retained");
         // Counter + order reflect only the two retained entries.
         assert_eq!(inner.completed_bytes.get("p1").copied(), Some(800));
         assert_eq!(inner.completed_order.get("p1").map(|o| o.len()), Some(2));
         // Survivors keep their FULL text — the valve drops whole entries, it
         // never truncates a survivor.
         assert_eq!(
-            inner.completed.get("c").unwrap().text.as_deref().map(str::len),
+            inner
+                .completed
+                .get("c")
+                .unwrap()
+                .text
+                .as_deref()
+                .map(str::len),
             Some(400)
         );
     }

@@ -1519,7 +1519,9 @@
         "watchStartFailed": "파일 감시 시작에 실패했습니다",
         "createFailed": "생성 실패",
         "downloadFailed": "{name} 다운로드 실패",
-        "downloadSaved": "{name} 다운로드 완료"
+        "downloadSaved": "{name} 다운로드 완료",
+        "pasteFailed": "붙여넣기 실패",
+        "pasteSucceeded": "붙여넣기 완료"
       },
       "createDialog": {
         "newFile": "새 파일",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "파일 \"{name}\"의 로컬 변경 사항을 롤백할까요?",
         "descriptionFallback": "이 파일의 로컬 변경 사항을 롤백할까요?"
       },
-      "terminalTitle": "터미널 · {name}"
+      "terminalTitle": "터미널 · {name}",
+      "copyPaste": "복사 / 붙여넣기",
+      "copyEntry": "복사",
+      "cutEntry": "잘라내기",
+      "pasteEntry": "붙여넣기",
+      "pasteConflict": {
+        "title": "붙여넣기 충돌",
+        "summary": "\"{name}\" 붙여넣기가 {count}개의 기존 항목과 충돌합니다. 계속할 방법을 선택하세요.",
+        "overwriteAll": "모두 덮어쓰기",
+        "duplicateAll": "모두 복사본으로 붙여넣기",
+        "choosePerItem": "항목별 선택",
+        "cancel": "취소",
+        "overwrite": "덮어쓰기",
+        "duplicate": "복사본으로 붙여넣기",
+        "back": "뒤로",
+        "apply": "적용",
+        "sourcePath": "원본",
+        "targetPath": "대상"
+      }
     },
     "commandDropdown": {
       "loading": "로딩 중...",

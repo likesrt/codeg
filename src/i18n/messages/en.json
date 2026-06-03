@@ -1519,7 +1519,9 @@
         "watchStartFailed": "Failed to start file watch",
         "createFailed": "Failed to create",
         "downloadFailed": "Failed to download {name}",
-        "downloadSaved": "Downloaded {name}"
+        "downloadSaved": "Downloaded {name}",
+        "pasteFailed": "Paste failed",
+        "pasteSucceeded": "Paste completed"
       },
       "createDialog": {
         "newFile": "New file",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "Rollback local changes for file \"{name}\"?",
         "descriptionFallback": "Rollback local changes for this file?"
       },
-      "terminalTitle": "Terminal · {name}"
+      "terminalTitle": "Terminal · {name}",
+      "copyPaste": "Copy / Paste",
+      "copyEntry": "Copy",
+      "cutEntry": "Cut",
+      "pasteEntry": "Paste",
+      "pasteConflict": {
+        "title": "Paste conflict",
+        "summary": "Pasting \"{name}\" will conflict with {count} existing item(s). Choose how to continue.",
+        "overwriteAll": "Overwrite all",
+        "duplicateAll": "Paste all as copies",
+        "choosePerItem": "Choose per item",
+        "cancel": "Cancel",
+        "overwrite": "Overwrite",
+        "duplicate": "Paste as copy",
+        "back": "Back",
+        "apply": "Apply",
+        "sourcePath": "Source",
+        "targetPath": "Target"
+      }
     },
     "commandDropdown": {
       "loading": "Loading...",

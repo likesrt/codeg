@@ -37,6 +37,10 @@ coverage/
 *.snap.new
 .vitest-cache/
 
+# Crash dumps
+/core
+/core.*
+
 # Agent
 .claude/*
 !.claude/

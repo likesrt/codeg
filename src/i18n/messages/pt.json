@@ -1519,7 +1519,9 @@
         "watchStartFailed": "Falha ao iniciar monitoramento de arquivos",
         "createFailed": "Falha ao criar",
         "downloadFailed": "Falha ao baixar {name}",
-        "downloadSaved": "{name} baixado"
+        "downloadSaved": "{name} baixado",
+        "pasteFailed": "Falha ao colar",
+        "pasteSucceeded": "Colagem concluída"
       },
       "createDialog": {
         "newFile": "Novo arquivo",
@@ -1606,7 +1608,25 @@
         "descriptionWithTarget": "Reverter alterações locais do arquivo \"{name}\"?",
         "descriptionFallback": "Reverter alterações locais deste arquivo?"
       },
-      "terminalTitle": "Console · {name}"
+      "terminalTitle": "Console · {name}",
+      "copyPaste": "Copiar / Colar",
+      "copyEntry": "Copiar",
+      "cutEntry": "Recortar",
+      "pasteEntry": "Colar",
+      "pasteConflict": {
+        "title": "Conflito ao colar",
+        "summary": "Colar \"{name}\" entrará em conflito com {count} item(ns) existente(s). Escolha como continuar.",
+        "overwriteAll": "Sobrescrever tudo",
+        "duplicateAll": "Colar tudo como cópia",
+        "choosePerItem": "Escolher por item",
+        "cancel": "Cancelar",
+        "overwrite": "Sobrescrever",
+        "duplicate": "Colar como cópia",
+        "back": "Voltar",
+        "apply": "Aplicar",
+        "sourcePath": "Origem",
+        "targetPath": "Destino"
+      }
     },
     "commandDropdown": {
       "loading": "Carregando...",
