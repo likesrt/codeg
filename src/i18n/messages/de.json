@@ -132,6 +132,22 @@
     "checkUpdateFailed": "Update-Prüfung fehlgeschlagen: {message}",
     "installSuccess": "Update installiert. App wird neu gestartet.",
     "installFailed": "Update fehlgeschlagen: {message}",
+    "upgradeSuccess": "Aktualisierung abgeschlossen. Wird neu geladen...",
+    "restartTimeout": "Der Server ist nicht rechtzeitig zurückgekehrt. Prüfe die Container- oder Dienstprotokolle.",
+    "restartingIn": "Neustart in {seconds} s...",
+    "waitingForServer": "Warten, bis der Server zurückkehrt...",
+    "dockerUpgradeHint": "Dies aktualisiert jetzt den laufenden Container. Beim Neuerstellen des Containers geht es verloren – zum Beibehalten ein Image mit der neuen Version ziehen oder bauen und den Container neu erstellen.",
+    "upgradeRolledBack": "Upgrade fehlgeschlagen; der Server wurde auf die vorherige Version zurückgesetzt.",
+    "serverUnreachable": "Der Server konnte für das Upgrade nicht erreicht werden. Prüfe, ob er läuft, und versuche es erneut.",
+    "rollbackButton": "Zurücksetzen",
+    "rollingBack": "Wird zurückgesetzt...",
+    "rollbackDescription": "Stellt die vor dem letzten Upgrade installierte Version wieder her.",
+    "rollbackConfirmTitle": "Auf die vorherige Version zurücksetzen?",
+    "rollbackConfirmDescription": "Der Server startet mit der vor dem letzten Upgrade installierten Version neu. Eine neuere Version kann weiterhin erneut installiert werden.",
+    "rollbackConfirm": "Zurücksetzen",
+    "rollbackCancel": "Abbrechen",
+    "rollbackSuccess": "Auf die vorherige Version zurückgesetzt. Wird neu geladen...",
+    "rollbackFailed": "Zurücksetzen fehlgeschlagen. Prüfe die Serverprotokolle.",
     "updateErrors": {
       "sourceUnavailable": "Die Update-Quelle ist nicht erreichbar. Prüfe Netzwerk oder Proxy und versuche es erneut.",
       "network": "Netzwerkverbindung fehlgeschlagen. Prüfe Netzwerk oder Proxy und versuche es erneut.",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "Alle Dateitabs schließen",
         "description": "Schließt alle geöffneten Dateitabs, wenn der Dateibereich aktiv ist"
+      },
+      "next_tab": {
+        "title": "Nächster Tab",
+        "description": "Zum nächsten Konversations- oder Datei-Tab wechseln"
+      },
+      "prev_tab": {
+        "title": "Vorheriger Tab",
+        "description": "Zum vorherigen Konversations- oder Datei-Tab wechseln"
       },
       "send_message": {
         "title": "Nachricht senden",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "Warte auf das Aufgabenergebnis",
         "cancelTask": "Aufgabe {task} wird abgebrochen",
         "cancelTaskNoTask": "Aufgabe wird abgebrochen",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "Vorheriges Ergebnis",
+        "nextResult": "Nächstes Ergebnis",
+        "noResultText": "Kein Ergebnis bei dieser Prüfung.",
         "status": {
           "starting": "startet",
           "running": "läuft",

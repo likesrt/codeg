@@ -4,15 +4,27 @@ use std::sync::Arc;
 use codeg_lib::app_state::AppState;
 use codeg_lib::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use codeg_lib::web::{
-    find_static_dir_standalone, generate_random_token, get_local_addresses, WebServerState,
+    find_static_dir_standalone, get_local_addresses, resolve_persisted_server_token, WebServerState,
 };
 
 fn main() {
+    // Capture our own executable path before anything can rename it (an
+    // in-place upgrade swaps the binary mid-run; `current_exe()` would then
+    // resolve to a `" (deleted)"` path on Linux). Cheap, single-shot.
+    codeg_lib::update::runtime::prime_self_exe();
+
     // Support --version flag
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+
+    // `--supervise`: run as the process supervisor that owns the worker's
+    // lifecycle (PID 1 in Docker). It spawns `codeg-server` without this
+    // flag and relaunches it after an in-place upgrade. Never returns.
+    if args.iter().any(|a| a == "--supervise") {
+        codeg_lib::supervise::run();
     }
 
     // When invoked as a git credential helper (by the script written via
@@ -114,7 +126,6 @@ async fn async_main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3080);
     let host = std::env::var("CODEG_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let token = std::env::var("CODEG_TOKEN").unwrap_or_else(|_| generate_random_token());
     // CODEG_DATA_DIR was already resolved and absolutized in `main()` so
     // all path resolvers across the process see the same root. Read it
     // back rather than re-deriving the default.
@@ -125,6 +136,34 @@ async fn async_main() {
     let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
     let app_version = env!("CARGO_PKG_VERSION");
 
+    // Staged-upgrade marker lifecycle. The marker is a proof token: it stays on
+    // disk for the whole trial window so a second self-update is refused while
+    // this freshly-swapped version is still unproven (re-swapping would clobber
+    // the only good `.bak` and make a trial-failure rollback restore the
+    // unproven version).
+    if codeg_lib::update::runtime::is_supervised() {
+        // Supervised trial: if this launch is the trial of a freshly-swapped
+        // version (marker present), keep the marker until we have stayed up
+        // past the trial window — at which point the upgrade is proven and the
+        // marker is cleared so future updates are allowed again. The supervisor
+        // only peeks at the marker to set probation; clearing is the worker's
+        // job. If this version can't survive the window the supervisor rolls it
+        // back first (which clears the marker), so this task never fires.
+        if codeg_lib::update::install::upgrade_staged() {
+            let trial = codeg_lib::update::runtime::upgrade_trial_secs();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(trial)).await;
+                let _ = codeg_lib::update::install::take_upgrade_staged();
+            });
+        }
+    } else {
+        // Standalone (non-supervised) self-update re-execs this binary in place,
+        // with no supervisor and thus no trial/rollback. Clear the marker on
+        // startup so a re-exec'd upgrade doesn't leave it behind and block every
+        // future update with "already staged".
+        let _ = codeg_lib::update::install::take_upgrade_staged();
+    }
+
     eprintln!("[SERVER] codeg-server v{}", app_version);
     eprintln!("[SERVER] Data directory: {}", data_dir.display());
     eprintln!("[SERVER] Static directory: {}", static_dir.display());
@@ -133,6 +172,21 @@ async fn async_main() {
     let db = codeg_lib::db::init_database(&data_dir, app_version)
         .await
         .expect("Failed to initialize database");
+
+    // Resolve the access token *after* the DB is up so a generated token can be
+    // persisted and reused across restarts (a self-update restart must not
+    // rotate it). An empty/whitespace CODEG_TOKEN is treated as unset.
+    let mut token_generated = false;
+    let token = resolve_persisted_server_token(
+        &db.conn,
+        std::env::var("CODEG_TOKEN").ok(),
+        &mut token_generated,
+    )
+    .await;
+    if token_generated {
+        eprintln!("[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}");
+        eprintln!("[SERVER] Pin your own by setting the CODEG_TOKEN environment variable.");
+    }
 
     // Restore and apply saved system proxy settings before any network operation.
     // reqwest clients (including the LazyLock in check_app_update) cache the proxy
@@ -173,6 +227,7 @@ async fn async_main() {
         delegation_broker: delegation_broker.clone(),
         delegation_tokens: delegation_tokens.clone(),
         delegation_socket_path: delegation_socket_path.clone(),
+        system_op_lock: codeg_lib::app_state::default_system_op_lock(),
     });
 
     // Apply persisted delegation settings (depth, enabled) before

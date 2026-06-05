@@ -132,6 +132,22 @@
     "checkUpdateFailed": "检查更新失败：{message}",
     "installSuccess": "升级包已安装，正在重启应用",
     "installFailed": "升级失败：{message}",
+    "upgradeSuccess": "升级完成，正在重新加载...",
+    "restartTimeout": "服务未能按时恢复，请检查容器或服务日志。",
+    "restartingIn": "将在 {seconds} 秒后重启...",
+    "waitingForServer": "正在等待服务恢复...",
+    "dockerUpgradeHint": "现在升级的是正在运行的容器。容器一旦被重建即丢失——如需保留，请拉取或构建新版本镜像后重建容器。",
+    "upgradeRolledBack": "升级失败，服务器已自动回滚到上一版本。",
+    "serverUnreachable": "无法连接到服务器以开始升级。请确认服务器正在运行后重试。",
+    "rollbackButton": "回滚",
+    "rollingBack": "回滚中...",
+    "rollbackDescription": "恢复到上次升级前安装的版本。",
+    "rollbackConfirmTitle": "回滚到上一个版本？",
+    "rollbackConfirmDescription": "服务器将重启并运行上次升级前安装的版本。更新的版本仍可再次安装。",
+    "rollbackConfirm": "回滚",
+    "rollbackCancel": "取消",
+    "rollbackSuccess": "已回滚到上一个版本，正在重新加载……",
+    "rollbackFailed": "回滚失败，请检查服务器日志。",
     "updateErrors": {
       "sourceUnavailable": "无法连接更新源，请检查网络或代理设置后重试。",
       "network": "网络连接异常，请检查网络或代理设置后重试。",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "关闭全部文件标签",
         "description": "当文件面板处于活动状态时关闭所有打开的文件标签"
+      },
+      "next_tab": {
+        "title": "下一个标签页",
+        "description": "切换到下一个会话或文件标签页"
+      },
+      "prev_tab": {
+        "title": "上一个标签页",
+        "description": "切换到上一个会话或文件标签页"
       },
       "send_message": {
         "title": "发送消息",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "等待任务执行结果",
         "cancelTask": "取消 {task} 任务",
         "cancelTaskNoTask": "取消任务",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "上一个结果",
+        "nextResult": "下一个结果",
+        "noResultText": "本次检查暂无结果",
         "status": {
           "starting": "启动中",
           "running": "运行中",

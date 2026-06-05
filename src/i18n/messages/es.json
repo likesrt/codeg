@@ -132,6 +132,22 @@
     "checkUpdateFailed": "No se pudo buscar actualizaciones: {message}",
     "installSuccess": "Actualización instalada. Reiniciando la app.",
     "installFailed": "La actualización falló: {message}",
+    "upgradeSuccess": "Actualización completada. Recargando...",
+    "restartTimeout": "El servidor no volvió a tiempo. Revisa los registros del contenedor o del servicio.",
+    "restartingIn": "Reiniciando en {seconds} s...",
+    "waitingForServer": "Esperando a que el servidor vuelva...",
+    "dockerUpgradeHint": "Esto actualiza el contenedor en ejecución ahora. Se pierde si se recrea el contenedor: para conservarlo, descarga o crea una imagen con la nueva versión y recrea el contenedor.",
+    "upgradeRolledBack": "La actualización falló; el servidor volvió a la versión anterior.",
+    "serverUnreachable": "No se pudo conectar con el servidor para iniciar la actualización. Comprueba que esté en ejecución e inténtalo de nuevo.",
+    "rollbackButton": "Revertir",
+    "rollingBack": "Revirtiendo...",
+    "rollbackDescription": "Restaura la versión instalada antes de la última actualización.",
+    "rollbackConfirmTitle": "¿Revertir a la versión anterior?",
+    "rollbackConfirmDescription": "El servidor se reiniciará con la versión instalada antes de la última actualización. Una versión más reciente seguirá disponible para instalar de nuevo.",
+    "rollbackConfirm": "Revertir",
+    "rollbackCancel": "Cancelar",
+    "rollbackSuccess": "Se revirtió a la versión anterior. Recargando...",
+    "rollbackFailed": "Error al revertir. Revisa los registros del servidor.",
     "updateErrors": {
       "sourceUnavailable": "No se puede acceder al origen de actualización. Revisa tu red o proxy e inténtalo de nuevo.",
       "network": "Falló la conexión de red. Revisa tu red o proxy e inténtalo de nuevo.",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "Cerrar todas las pestañas de archivos",
         "description": "Cierra todas las pestañas de archivos abiertas cuando el panel de archivos está activo"
+      },
+      "next_tab": {
+        "title": "Pestaña siguiente",
+        "description": "Cambiar a la siguiente pestaña de conversación o archivo"
+      },
+      "prev_tab": {
+        "title": "Pestaña anterior",
+        "description": "Cambiar a la pestaña anterior de conversación o archivo"
       },
       "send_message": {
         "title": "Enviar mensaje",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "Esperando el resultado de la tarea",
         "cancelTask": "Cancelando la tarea {task}",
         "cancelTaskNoTask": "Cancelando la tarea",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "Resultado anterior",
+        "nextResult": "Resultado siguiente",
+        "noResultText": "Sin resultado en esta comprobación.",
         "status": {
           "starting": "iniciando",
           "running": "en curso",

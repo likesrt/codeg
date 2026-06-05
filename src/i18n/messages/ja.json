@@ -132,6 +132,22 @@
     "checkUpdateFailed": "更新確認に失敗しました: {message}",
     "installSuccess": "更新をインストールしました。アプリを再起動します。",
     "installFailed": "更新に失敗しました: {message}",
+    "upgradeSuccess": "アップグレードが完了しました。再読み込みしています...",
+    "restartTimeout": "サーバーが時間内に復帰しませんでした。コンテナまたはサービスのログを確認してください。",
+    "restartingIn": "{seconds} 秒後に再起動します...",
+    "waitingForServer": "サーバーの復帰を待っています...",
+    "dockerUpgradeHint": "いま実行中のコンテナを更新します。コンテナを再作成すると失われます。維持するには、新しいバージョンのイメージを取得またはビルドしてコンテナを再作成してください。",
+    "upgradeRolledBack": "アップグレードに失敗しました。サーバーは前のバージョンにロールバックしました。",
+    "serverUnreachable": "アップグレードを開始するためにサーバーに接続できませんでした。サーバーが稼働中であることを確認して再試行してください。",
+    "rollbackButton": "ロールバック",
+    "rollingBack": "ロールバック中...",
+    "rollbackDescription": "前回のアップグレード前にインストールされていたバージョンに戻します。",
+    "rollbackConfirmTitle": "以前のバージョンにロールバックしますか？",
+    "rollbackConfirmDescription": "サーバーは前回のアップグレード前のバージョンで再起動します。新しいリリースは引き続き再インストールできます。",
+    "rollbackConfirm": "ロールバック",
+    "rollbackCancel": "キャンセル",
+    "rollbackSuccess": "以前のバージョンにロールバックしました。再読み込みしています...",
+    "rollbackFailed": "ロールバックに失敗しました。サーバーのログを確認してください。",
     "updateErrors": {
       "sourceUnavailable": "更新ソースに接続できません。ネットワークまたはプロキシを確認して再試行してください。",
       "network": "ネットワーク接続に失敗しました。ネットワークまたはプロキシを確認して再試行してください。",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "すべてのファイルタブを閉じる",
         "description": "ファイルペインがアクティブなときに開いているすべてのファイルタブを閉じます"
+      },
+      "next_tab": {
+        "title": "次のタブ",
+        "description": "次の会話またはファイルタブに切り替える"
+      },
+      "prev_tab": {
+        "title": "前のタブ",
+        "description": "前の会話またはファイルタブに切り替える"
       },
       "send_message": {
         "title": "メッセージを送信",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "タスクの実行結果を待機中",
         "cancelTask": "タスク {task} をキャンセル中",
         "cancelTaskNoTask": "タスクをキャンセル中",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "前の結果",
+        "nextResult": "次の結果",
+        "noResultText": "このチェックでは結果がありません",
         "status": {
           "starting": "起動中",
           "running": "実行中",

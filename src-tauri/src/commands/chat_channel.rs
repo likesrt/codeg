@@ -355,7 +355,12 @@ pub async fn weixin_check_qrcode_core(
             result
                 .bot_token
                 .as_deref()
-                .map(|t| if t.len() > 8 { &t[..8] } else { t })
+                .map(|t| {
+                    // Char-boundary-safe prefix: `&t[..8]` panics if a multibyte
+                    // char straddles byte 8.
+                    let end = t.char_indices().nth(8).map_or(t.len(), |(i, _)| i);
+                    &t[..end]
+                })
                 .unwrap_or("None"),
             result.base_url.as_deref().unwrap_or("None"),
         );

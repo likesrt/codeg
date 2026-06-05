@@ -937,7 +937,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "codeg"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "agent-client-protocol-schema",
  "async-trait",
@@ -961,6 +961,7 @@ dependencies = [
  "kill_tree",
  "libc",
  "mac-notification-sys",
+ "minisign-verify",
  "notify",
  "portable-pty",
  "prost",
@@ -972,6 +973,7 @@ dependencies = [
  "sacp-tokio",
  "sea-orm",
  "sea-orm-migration",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

@@ -132,6 +132,22 @@
     "checkUpdateFailed": "檢查更新失敗：{message}",
     "installSuccess": "升級包已安裝，正在重新啟動應用",
     "installFailed": "升級失敗：{message}",
+    "upgradeSuccess": "升級完成，正在重新載入...",
+    "restartTimeout": "服務未能即時恢復，請檢查容器或服務記錄。",
+    "restartingIn": "將在 {seconds} 秒後重新啟動...",
+    "waitingForServer": "正在等待服務恢復...",
+    "dockerUpgradeHint": "現在升級的是正在執行的容器。容器一旦被重新建立即遺失——如需保留，請拉取或建置新版本映像後重新建立容器。",
+    "upgradeRolledBack": "升級失敗，伺服器已自動回復到上一版本。",
+    "serverUnreachable": "無法連線到伺服器以開始升級。請確認伺服器正在執行後重試。",
+    "rollbackButton": "復原",
+    "rollingBack": "復原中...",
+    "rollbackDescription": "還原至上次升級前安裝的版本。",
+    "rollbackConfirmTitle": "復原到上一個版本？",
+    "rollbackConfirmDescription": "伺服器將重新啟動並執行上次升級前安裝的版本。較新的版本仍可再次安裝。",
+    "rollbackConfirm": "復原",
+    "rollbackCancel": "取消",
+    "rollbackSuccess": "已復原到上一個版本，正在重新載入……",
+    "rollbackFailed": "復原失敗，請檢查伺服器日誌。",
     "updateErrors": {
       "sourceUnavailable": "無法連線更新來源，請檢查網路或代理設定後重試。",
       "network": "網路連線異常，請檢查網路或代理設定後重試。",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "關閉全部檔案分頁",
         "description": "當檔案面板處於作用中狀態時關閉所有開啟的檔案分頁"
+      },
+      "next_tab": {
+        "title": "下一個標籤頁",
+        "description": "切換到下一個會話或檔案標籤頁"
+      },
+      "prev_tab": {
+        "title": "上一個標籤頁",
+        "description": "切換到上一個會話或檔案標籤頁"
       },
       "send_message": {
         "title": "傳送訊息",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "等待任務執行結果",
         "cancelTask": "取消 {task} 任務",
         "cancelTaskNoTask": "取消任務",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "上一個結果",
+        "nextResult": "下一個結果",
+        "noResultText": "本次檢查暫無結果",
         "status": {
           "starting": "啟動中",
           "running": "執行中",

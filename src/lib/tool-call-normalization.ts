@@ -365,8 +365,10 @@ export function inferLiveToolName(params: {
   // `mcp__<server>__<tool>` name for every MCP call. Resolve them FIRST, ahead
   // of `inferFromInput`, so the live stream routes into the same delegation
   // cards the historical path resolves from the raw tool name. Without this,
-  // `get_delegation_status` / `cancel_delegation` (input `{task_id}`) get
-  // misclassified as the generic "task" tool (shown as "任务" with no detail).
+  // `cancel_delegation` (input `{task_id}`) gets misclassified by
+  // `inferFromInput` as the generic "task" tool (shown as "任务" with no detail),
+  // and `get_delegation_status` (input `{task_ids}`) falls through unclassified —
+  // both need meta to resolve to the canonical companion tool name.
   // Scoped to these three so the documented input-shape-first ordering below
   // (notably Claude Code's `Task` → "agent" via `subagent_type`, whose meta
   // name is "Task" — not a delegation tool) is preserved for everything else.

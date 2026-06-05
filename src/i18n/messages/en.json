@@ -132,6 +132,22 @@
     "checkUpdateFailed": "Failed to check for updates: {message}",
     "installSuccess": "Update installed. Relaunching app.",
     "installFailed": "Update failed: {message}",
+    "upgradeSuccess": "Upgrade complete. Reloading...",
+    "restartTimeout": "The server didn't come back in time. Check the container or service logs.",
+    "restartingIn": "Restarting in {seconds}s...",
+    "waitingForServer": "Waiting for the server to come back...",
+    "dockerUpgradeHint": "This upgrades the running container now. It's lost if the container is recreated — to keep it, pull or build an image at the new version and recreate.",
+    "upgradeRolledBack": "Upgrade failed; the server rolled back to the previous version.",
+    "serverUnreachable": "Couldn't reach the server to start the upgrade. Check that it's running and try again.",
+    "rollbackButton": "Roll back",
+    "rollingBack": "Rolling back...",
+    "rollbackDescription": "Restore the version installed before the last upgrade.",
+    "rollbackConfirmTitle": "Roll back to the previous version?",
+    "rollbackConfirmDescription": "The server will restart on the version installed before the last upgrade. A newer release stays available to install again.",
+    "rollbackConfirm": "Roll back",
+    "rollbackCancel": "Cancel",
+    "rollbackSuccess": "Rolled back to the previous version. Reloading...",
+    "rollbackFailed": "Rollback failed. Check the server logs.",
     "updateErrors": {
       "sourceUnavailable": "Cannot reach the update source. Check your network or proxy and try again.",
       "network": "Network connection failed. Check your network or proxy and try again.",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "Close All File Tabs",
         "description": "Close all open file tabs when the file pane is active"
+      },
+      "next_tab": {
+        "title": "Next Tab",
+        "description": "Switch to the next conversation or file tab"
+      },
+      "prev_tab": {
+        "title": "Previous Tab",
+        "description": "Switch to the previous conversation or file tab"
       },
       "send_message": {
         "title": "Send Message",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "Waiting for task result",
         "cancelTask": "Canceling task {task}",
         "cancelTaskNoTask": "Canceling task",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "Previous result",
+        "nextResult": "Next result",
+        "noResultText": "No result captured for this check.",
         "status": {
           "starting": "starting",
           "running": "running",

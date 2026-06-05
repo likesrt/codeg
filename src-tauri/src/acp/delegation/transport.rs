@@ -21,10 +21,12 @@
 //!   * `call` — [`BrokerRequest`] for `delegate_to_agent`; returns a
 //!     [`BrokerResponse`] wrapping a `DelegationTaskReport` (a `Running` ack, or
 //!     a terminal report).
-//!   * `status` — [`BrokerStatusRequest`] for `get_delegation_status` (with an
-//!     optional `wait_ms` long-poll — omitted is an immediate snapshot, an
-//!     explicit `0` blocks until the task is terminal, a positive value is a
-//!     bounded wait); returns a task report.
+//!   * `status` — [`BrokerStatusRequest`] for `get_delegation_status`. Carries a
+//!     `task_ids` list (one or many) and an optional `wait_ms` long-poll —
+//!     omitted is an immediate snapshot, an explicit `0` blocks until a task is
+//!     terminal, a positive value is a bounded wait. Returns a `{ "tasks": [..] }`
+//!     envelope with one task report per requested id (in request order); a
+//!     batch wait wakes as soon as ANY requested task reaches a terminal state.
 //!   * `cancel_task` — [`BrokerCancelTaskRequest`] for `cancel_delegation`;
 //!     returns a task report.
 //!   * `cancel` — fire-and-forget [`BrokerCancelRequest`] from MCP
@@ -93,21 +95,25 @@ pub struct BrokerCancelRequest {
     pub reason: Option<String>,
 }
 
-/// Query the status (and, optionally, block briefly for the result) of a
-/// previously-issued delegation task by its broker `task_id`. Backs the
+/// Query the status (and, optionally, block briefly for the result) of one or
+/// more previously-issued delegation tasks by their broker `task_id`s. Backs the
 /// `get_delegation_status` MCP tool. Authenticated by the same per-launch
-/// `token`; the listener scopes the lookup to the token's parent connection
+/// `token`; the listener scopes each lookup to the token's parent connection
 /// so one parent can't read another's tasks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerStatusRequest {
     pub token: String,
-    pub task_id: String,
-    /// How long the listener may block waiting for the task to reach a terminal
-    /// state before returning the current (possibly still-running) status.
+    /// One or many task ids to resolve. The companion forwards the MCP
+    /// `task_ids` array into this list (trimmed, de-duplicated, order-preserving).
+    /// The listener returns one report per id, in this order.
+    pub task_ids: Vec<String>,
+    /// How long the listener may block waiting for a task to reach a terminal
+    /// state before returning the current (possibly still-running) snapshot.
     /// `None` (omitted) returns an immediate snapshot; an explicit `0` blocks
-    /// with no timeout until the task finishes (long-running children); any
+    /// with no timeout until a task finishes (long-running children); any
     /// positive value is a long-poll the listener clamps to a hard ceiling so a
-    /// single bounded call can't hang unbounded.
+    /// single bounded call can't hang unbounded. For a batch the wait resolves as
+    /// soon as ANY requested task reaches a terminal state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u64>,
 }
@@ -137,8 +143,9 @@ pub enum BrokerMessage {
 
 /// The wrapped outcome the main process returns over the same socket.
 /// `outcome` is a serialized [`super::types::DelegationTaskReport`] for `Call`
-/// / `Status` / `CancelTask` messages and `Value::Null` for `Cancel`
-/// acknowledgements.
+/// / `CancelTask` messages, a `{ "tasks": [report, ...] }` envelope (one report
+/// per requested id, in request order) for `Status`, and `Value::Null` for
+/// `Cancel` acknowledgements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerResponse {
     pub outcome: Value,
@@ -219,7 +226,9 @@ pub async fn client_round_trip(
     message_round_trip(socket_path, &BrokerMessage::Call(req.clone())).await
 }
 
-/// Dispatch a `get_delegation_status` query and read back the task report.
+/// Dispatch a `get_delegation_status` query and read back the
+/// `{ "tasks": [report, ...] }` envelope (one report per requested id, in
+/// request order).
 pub async fn client_status_round_trip(
     socket_path: &str,
     req: &BrokerStatusRequest,

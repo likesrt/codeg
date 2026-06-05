@@ -669,6 +669,16 @@ pub fn build_router(
             "/check_app_update",
             post(handlers::web_server::check_app_update),
         )
+        .route(
+            "/app_update_status",
+            post(handlers::web_server::app_update_status),
+        )
+        .route(
+            "/perform_app_update",
+            post(handlers::app_update::perform_app_update),
+        )
+        .route("/restart_app", post(handlers::app_update::restart_app))
+        .route("/rollback_app", post(handlers::app_update::rollback_app))
         // ─── Chat Channels ───
         .route(
             "/list_chat_channels",
@@ -916,7 +926,14 @@ pub fn build_router(
 }
 
 async fn health_check() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
+    // Include the running version so the upgrade UI can confirm — using only a
+    // local signal — that a restart actually landed on the new version (and
+    // wasn't auto-rolled-back by the supervisor) without depending on the
+    // remote update manifest.
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {

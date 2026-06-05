@@ -46,4 +46,92 @@ describe("extractLatestPlanEntriesFromMessages", () => {
       },
     ])
   })
+
+  function planToolCall(
+    id: string,
+    entries: { content: string; status: string }[]
+  ): AdaptedMessage {
+    return {
+      id,
+      role: "assistant",
+      timestamp: "2026-06-02T00:00:00.000Z",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: `${id}-plan`,
+          toolName: "TodoWrite",
+          input: JSON.stringify({ todos: entries }),
+          state: "output-available",
+        },
+      ],
+    } as AdaptedMessage
+  }
+
+  function userMessage(id: string): AdaptedMessage {
+    return {
+      id,
+      role: "user",
+      timestamp: "2026-06-02T00:00:00.000Z",
+      content: [{ type: "text", text: "do it" }],
+    } as AdaptedMessage
+  }
+
+  function assistantText(id: string): AdaptedMessage {
+    return {
+      id,
+      role: "assistant",
+      timestamp: "2026-06-02T00:00:00.000Z",
+      content: [{ type: "text", text: "done" }],
+    } as AdaptedMessage
+  }
+
+  it("hides a completed plan once the user has replied after it", () => {
+    const messages: AdaptedMessage[] = [
+      planToolCall("a1", [
+        { content: "Step one", status: "completed" },
+        { content: "Step two", status: "completed" },
+      ]),
+      userMessage("u1"),
+      assistantText("a2"),
+    ]
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual([])
+  })
+
+  it("keeps a completed plan that belongs to the latest agent reply", () => {
+    const messages: AdaptedMessage[] = [
+      userMessage("u1"),
+      planToolCall("a1", [{ content: "Step one", status: "completed" }]),
+    ]
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual([
+      { content: "Step one", status: "completed", priority: "medium" },
+    ])
+  })
+
+  it("keeps a completed plan when only assistant messages follow it", () => {
+    // Consecutive assistant messages (no user message between) are the same
+    // reply, so the completed plan stays visible.
+    const messages: AdaptedMessage[] = [
+      planToolCall("a1", [{ content: "Step one", status: "completed" }]),
+      assistantText("a2"),
+    ]
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual([
+      { content: "Step one", status: "completed", priority: "medium" },
+    ])
+  })
+
+  it("keeps an incomplete plan even after a later user message", () => {
+    // Only fully completed plans are treated as stale.
+    const messages: AdaptedMessage[] = [
+      planToolCall("a1", [
+        { content: "Step one", status: "completed" },
+        { content: "Step two", status: "in_progress" },
+      ]),
+      userMessage("u1"),
+      assistantText("a2"),
+    ]
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual([
+      { content: "Step one", status: "completed", priority: "medium" },
+      { content: "Step two", status: "in_progress", priority: "medium" },
+    ])
+  })
 })

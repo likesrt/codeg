@@ -88,16 +88,18 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).toBe("agent")
   })
 
-  it("resolves delegation companion tools from meta over the task_id input heuristic", () => {
-    // Regression guard for Task B: get_delegation_status / cancel_delegation
-    // take `{ task_id }` input, which inferFromInput would otherwise classify
-    // as the generic "task" tool (rendered as "任务" with no detail). The
-    // authoritative meta.claudeCode.toolName (the raw mcp__ name) must win.
+  it("resolves delegation companion tools from meta over the input-shape heuristic", () => {
+    // Regression guard for Task B: these companion tools must resolve from the
+    // authoritative meta.claudeCode.toolName (the raw mcp__ name), not from their
+    // input shape. get_delegation_status takes `{ task_ids }` and cancel_delegation
+    // takes `{ task_id }` — the latter would otherwise be classified by
+    // inferFromInput as the generic "task" tool (rendered as "任务" with no
+    // detail). meta must win.
     expect(
       inferLiveToolName({
         title: "mcp__codeg-delegate__get_delegation_status",
         kind: "other",
-        rawInput: JSON.stringify({ task_id: "t1", wait_ms: 1000 }),
+        rawInput: JSON.stringify({ task_ids: ["t1"], wait_ms: 1000 }),
         meta: {
           claudeCode: {
             toolName: "mcp__codeg-delegate__get_delegation_status",

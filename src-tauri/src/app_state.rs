@@ -44,6 +44,15 @@ pub struct AppState {
     /// Absolute path of the UDS / named pipe the companion connects to.
     /// PID-scoped so multiple codeg processes on the same host don't fight.
     pub delegation_socket_path: PathBuf,
+    /// Serializes mutually-exclusive system operations — in-place
+    /// self-update, restart, rollback — so a second click can't race a
+    /// download/swap already in flight. Handlers `try_lock` and reject when
+    /// held (an upgrade is already running).
+    pub system_op_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
+    Arc::new(tokio::sync::Mutex::new(()))
 }
 
 pub fn default_connection_manager() -> ConnectionManager {
@@ -78,6 +87,9 @@ pub fn build_delegation_stack(
         ConnectionManagerEventEmitter, DelegationEventEmitter,
     };
     use crate::acp::delegation::listener::default_socket_path;
+    use crate::acp::delegation::live_reply::{
+        ChildLiveReplyLookup, ConnectionManagerLiveReplyLookup,
+    };
     use crate::acp::delegation::meta_writer::{ConnectionManagerMetaWriter, DelegationMetaWriter};
     use crate::acp::delegation::spawner::ConnectionSpawner;
     use crate::acp::manager::ConnectionManagerSpawner;
@@ -97,11 +109,15 @@ pub fn build_delegation_stack(
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
     }) as Arc<dyn DelegationMetaWriter>;
+    let live_reply_lookup = Arc::new(ConnectionManagerLiveReplyLookup {
+        manager: cm_arc.clone(),
+    }) as Arc<dyn ChildLiveReplyLookup>;
     let event_emitter = Arc::new(ConnectionManagerEventEmitter { manager: cm_arc })
         as Arc<dyn DelegationEventEmitter>;
     let broker = Arc::new(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
-            .with_status_lookup(status_lookup),
+            .with_status_lookup(status_lookup)
+            .with_live_reply_lookup(live_reply_lookup),
     );
     let tokens = Arc::new(TokenRegistry::default());
     let socket_path = default_socket_path(&std::env::temp_dir());
@@ -157,6 +173,7 @@ impl AppState {
             delegation_broker,
             delegation_tokens,
             delegation_socket_path,
+            system_op_lock: default_system_op_lock(),
         }
     }
 }

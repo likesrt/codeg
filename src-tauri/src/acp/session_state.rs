@@ -650,6 +650,102 @@ impl SessionState {
         self.last_activity_at = Utc::now();
     }
 
+    /// A single-line "what the sub-agent is doing right now" hint, used by the
+    /// delegation broker so `get_delegation_status` can prove a running child is
+    /// genuinely making progress instead of returning a bare "Running.".
+    ///
+    /// Reads the still-streaming `live_message` — unlike `last_assistant_text`,
+    /// which is only snapshotted at `TurnComplete` and so is empty/stale while a
+    /// turn is in flight. Preference order, each reduced to one trimmed line
+    /// capped at `max_chars` chars (char-based → never splits a UTF-8 codepoint;
+    /// an `…` marks truncation):
+    ///
+    /// 1. the answer-in-progress — `Text` after the last `ToolCallRef`, mirroring
+    ///    the `TurnComplete` answer extraction;
+    /// 2. else the latest `Thinking` block (`thinking: …`);
+    /// 3. else the most recent tool call's label (`running tool: …`).
+    ///
+    /// `None` when the turn hasn't produced anything renderable yet.
+    pub fn latest_live_reply(&self, max_chars: usize) -> Option<String> {
+        let live = self.live_message.as_ref()?;
+
+        // (1) Answer-in-progress: the `Text` after the last tool call.
+        //
+        // Consecutive text deltas merge into a single block (see
+        // `append_text_delta`), so this is almost always ONE block — borrow it
+        // and take its last non-empty line without copying a potentially large
+        // streaming answer on every poll (this runs under the `SessionState`
+        // read lock on the `get_delegation_status` path). Only when the answer
+        // is split across multiple `Text` blocks (a `Thinking` block interleaved
+        // mid-answer) do we stitch them, which is rare.
+        let after_last_tool_call = live
+            .content
+            .iter()
+            .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut texts = live.content[after_last_tool_call..]
+            .iter()
+            .filter_map(|b| match b {
+                LiveContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            });
+        match (texts.next(), texts.next()) {
+            (None, _) => {}
+            (Some(only), None) => {
+                if let Some(line) = last_nonempty_line(only) {
+                    return Some(truncate_one_line(line, max_chars));
+                }
+            }
+            (Some(first), Some(second)) => {
+                let mut joined = String::with_capacity(first.len() + second.len());
+                joined.push_str(first);
+                joined.push_str(second);
+                for rest in texts {
+                    joined.push_str(rest);
+                }
+                if let Some(line) = last_nonempty_line(&joined) {
+                    return Some(truncate_one_line(line, max_chars));
+                }
+            }
+        }
+
+        // (2) Latest thinking block — the agent is reasoning, not silent.
+        if let Some(line) = live
+            .content
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                LiveContentBlock::Thinking { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .and_then(last_nonempty_line)
+        {
+            return Some(format!("thinking: {}", truncate_one_line(line, max_chars)));
+        }
+
+        // (3) Most recent tool call's label — work is happening in a tool.
+        if let Some(label) = live
+            .content
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                LiveContentBlock::ToolCallRef { tool_call_id } => Some(tool_call_id.as_str()),
+                _ => None,
+            })
+            .and_then(|id| self.active_tool_calls.get(id))
+            .map(|tc| tc.label.trim())
+            .filter(|l| !l.is_empty())
+        {
+            return Some(format!(
+                "running tool: {}",
+                truncate_one_line(label, max_chars)
+            ));
+        }
+
+        None
+    }
+
     /// Lazily initialize `self.live_message` and return a mutable reference
     /// to it. Centralizes the "create-if-absent" pattern shared by the
     /// text/thinking delta appenders, the tool-call ref pusher, and the
@@ -842,6 +938,25 @@ pub struct LiveSessionSnapshot {
     pub event_seq: u64,
 }
 
+/// Last non-empty line of `s`, trimmed. `None` if every line is blank.
+fn last_nonempty_line(s: &str) -> Option<&str> {
+    s.lines().map(str::trim).rev().find(|l| !l.is_empty())
+}
+
+/// Cap `line` at `max_chars` characters, appending `…` when truncated. Operates
+/// on `char`s so multi-byte text never splits mid-codepoint. Expects an
+/// already single, trimmed line (see [`last_nonempty_line`]). Single-pass: takes
+/// at most `max_chars + 1` chars total, so a huge (e.g. MB) input line never
+/// triggers a second full scan to decide whether to mark truncation.
+fn truncate_one_line(line: &str, max_chars: usize) -> String {
+    let mut chars = line.chars();
+    let mut out: String = (&mut chars).take(max_chars).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
 fn parse_tool_kind(s: &str) -> ToolKind {
     match s {
         "read" => ToolKind::Read,
@@ -935,6 +1050,115 @@ mod tests {
         assert!(!s.fork_supported);
         assert!(s.available_commands.is_empty());
         assert!(!s.selectors_ready);
+    }
+
+    #[test]
+    fn latest_live_reply_prefers_answer_after_last_tool_call() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "let me check".into(),
+        });
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-1".into(),
+            title: "ls".into(),
+            kind: "execute".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Found 3 files.\nDetails here".into(),
+        });
+        // Last non-empty line of the text that follows the final tool call.
+        assert_eq!(s.latest_live_reply(100).as_deref(), Some("Details here"));
+    }
+
+    #[test]
+    fn latest_live_reply_falls_back_to_thinking_then_tool() {
+        // Thinking only → `thinking:` prefix.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Thinking {
+            text: "pondering options".into(),
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("thinking: pondering options")
+        );
+
+        // A tool call with no trailing text / thinking → `running tool:` prefix.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-9".into(),
+            title: "grep files".into(),
+            kind: "search".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("running tool: grep files")
+        );
+    }
+
+    #[test]
+    fn latest_live_reply_truncates_to_char_budget_and_handles_empty() {
+        // No live message yet → nothing to report.
+        assert_eq!(fresh_state().latest_live_reply(100), None);
+
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "0123456789abcdef".into(),
+        });
+        assert_eq!(s.latest_live_reply(10).as_deref(), Some("0123456789…"));
+    }
+
+    #[test]
+    fn latest_live_reply_extracts_last_line_from_large_multiline_and_truncates_utf8() {
+        let mut s = fresh_state();
+        // A large multi-line streamed answer, a final multi-byte line, then
+        // trailing blank lines (which must be skipped). The tail extraction must
+        // not copy the whole answer, and truncation must land on a codepoint
+        // boundary.
+        let huge = "x".repeat(5000);
+        let last = "résumé 完成 ▸ 配置已更新";
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: format!("{huge}\nintermediate\n{last}\n   \n"),
+        });
+        let out = s.latest_live_reply(8).unwrap();
+        // First 8 chars of `last` are r é s u m é <space> 完, then a truncation
+        // marker — codepoint-safe (8 multi-byte chars + the ellipsis), proving
+        // the cap counts chars, not bytes.
+        assert_eq!(out, "résumé 完…");
+        assert_eq!(out.chars().count(), 9);
+    }
+
+    #[test]
+    fn latest_live_reply_stitches_text_split_by_interleaved_thinking() {
+        // A Thinking block between two text deltas yields two separate Text
+        // blocks; their concatenation forms the single answer line.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Answer ".into(),
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "hmm".into(),
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "continues here".into(),
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("Answer continues here")
+        );
     }
 
     #[test]

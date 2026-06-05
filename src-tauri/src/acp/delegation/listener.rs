@@ -181,12 +181,12 @@ impl DelegationListener {
                 let status_fut = self.process_status(req);
                 tokio::pin!(status_fut);
                 let mut probe = [0u8; 1];
-                let report = tokio::select! {
+                let reports = tokio::select! {
                     biased;
-                    report = &mut status_fut => report,
+                    reports = &mut status_fut => reports,
                     _ = conn.read(&mut probe) => return Ok(()),
                 };
-                report_response(report)?
+                reports_response(reports)?
             }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
             BrokerMessage::Cancel(cancel) => {
@@ -203,15 +203,16 @@ impl DelegationListener {
     }
 
     /// Validate the token, resolve the caller's parent connection/conversation,
-    /// and query the task's status (optionally blocking per the wire `wait_ms`:
-    /// omitted → immediate snapshot, explicit `0` → block until terminal, a
-    /// positive value → bounded long-poll clamped to [`STATUS_WAIT_MAX_MS`]).
-    /// Backs the `get_delegation_status` tool. An invalid token reports
-    /// `Unknown` — the caller can't usefully distinguish it from a genuinely
-    /// unknown task, and we don't leak which.
-    async fn process_status(&self, req: BrokerStatusRequest) -> DelegationTaskReport {
+    /// and query the status of every requested task id (optionally blocking per
+    /// the wire `wait_ms`: omitted → immediate snapshot, explicit `0` → block
+    /// until a task is terminal, a positive value → bounded long-poll clamped to
+    /// [`STATUS_WAIT_MAX_MS`]). Backs the `get_delegation_status` tool. Returns
+    /// one report per requested id, in request order. An invalid token reports
+    /// `Unknown` for each id — the caller can't usefully distinguish it from a
+    /// genuinely unknown task, and we don't leak which.
+    async fn process_status(&self, req: BrokerStatusRequest) -> Vec<DelegationTaskReport> {
         let Some(entry) = self.tokens.lookup(&req.token).await else {
-            return unknown_report(&req.task_id);
+            return req.task_ids.iter().map(|id| unknown_report(id)).collect();
         };
         let parent_conversation_id = self
             .parent_lookup
@@ -226,10 +227,10 @@ impl DelegationListener {
             Some(ms) => StatusWait::Bounded(ms.min(STATUS_WAIT_MAX_MS)),
         };
         self.broker
-            .get_task_status(
+            .get_tasks_status(
                 &entry.parent_connection_id,
                 parent_conversation_id,
-                &req.task_id,
+                &req.task_ids,
                 wait,
             )
             .await
@@ -334,11 +335,26 @@ impl DelegationListener {
 }
 
 /// Serialize a [`DelegationTaskReport`] into a [`BrokerResponse`] for the wire.
+/// Used by the `Call` / `CancelTask` arms, which each resolve to one report.
 fn report_response(report: DelegationTaskReport) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&report).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
         })?,
+    })
+}
+
+/// Serialize a batch of [`DelegationTaskReport`]s into a `{ "tasks": [..] }`
+/// envelope for the `Status` arm. The companion reads this back and renders it
+/// uniformly as a `{ "tasks": [..] }` result — one entry per requested id,
+/// whether the poll asked for a single id or a whole fan-out.
+fn reports_response(reports: Vec<DelegationTaskReport>) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::json!({
+            "tasks": serde_json::to_value(&reports).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+            })?,
+        }),
     })
 }
 
@@ -636,15 +652,17 @@ mod tests {
         });
         let status = BrokerMessage::Status(BrokerStatusRequest {
             token: "tok".into(),
-            task_id: task_id.clone(),
+            task_ids: vec![task_id.clone()],
             wait_ms: Some(1_000),
         });
         write_frame(&mut client, &status).await.unwrap();
         let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
         server_task.await.unwrap();
-        assert_eq!(resp.outcome["status"], "completed");
-        assert_eq!(resp.outcome["text"], "result-text");
-        assert_eq!(resp.outcome["child_conversation_id"], 42);
+        // The Status arm returns a `{ tasks: [..] }` envelope; a single id is
+        // the first (only) entry.
+        assert_eq!(resp.outcome["tasks"][0]["status"], "completed");
+        assert_eq!(resp.outcome["tasks"][0]["text"], "result-text");
+        assert_eq!(resp.outcome["tasks"][0]["child_conversation_id"], 42);
     }
 
     /// Start a running task directly and return `(broker, tokens, task_id)`.
@@ -692,7 +710,7 @@ mod tests {
 
         let status = BrokerMessage::Status(BrokerStatusRequest {
             token: "tok".into(),
-            task_id,
+            task_ids: vec![task_id],
             wait_ms: None,
         });
         write_frame(&mut client, &status).await.unwrap();
@@ -703,7 +721,7 @@ mod tests {
         .await
         .expect("omitted wait_ms must return immediately");
         server_task.await.unwrap().unwrap();
-        assert_eq!(resp.outcome["status"], "running");
+        assert_eq!(resp.outcome["tasks"][0]["status"], "running");
     }
 
     /// An explicit `wait_ms = 0` maps to an unbounded wait: the call blocks
@@ -718,7 +736,7 @@ mod tests {
 
         let status = BrokerMessage::Status(BrokerStatusRequest {
             token: "tok".into(),
-            task_id: task_id.clone(),
+            task_ids: vec![task_id.clone()],
             wait_ms: Some(0),
         });
         write_frame(&mut client, &status).await.unwrap();
@@ -749,8 +767,8 @@ mod tests {
             .await;
         let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
         server_task.await.unwrap().unwrap();
-        assert_eq!(resp.outcome["status"], "completed");
-        assert_eq!(resp.outcome["text"], "done");
+        assert_eq!(resp.outcome["tasks"][0]["status"], "completed");
+        assert_eq!(resp.outcome["tasks"][0]["text"], "done");
     }
 
     /// A `wait_ms = 0` status call that the companion cancels (dropping the
@@ -767,7 +785,7 @@ mod tests {
 
         let status = BrokerMessage::Status(BrokerStatusRequest {
             token: "tok".into(),
-            task_id,
+            task_ids: vec![task_id],
             wait_ms: Some(0),
         });
         write_frame(&mut client, &status).await.unwrap();
@@ -791,6 +809,113 @@ mod tests {
 
         // The task itself was not touched by the abandoned status query.
         assert_eq!(broker.pending_count().await, 1);
+    }
+
+    /// Batch status over the listener: two tasks, one completed and one still
+    /// running, return as a `{ tasks: [..] }` envelope with both reports in
+    /// request order.
+    #[tokio::test]
+    async fn batch_status_over_listener_multi_id() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Ok(1)).await;
+        mock.queue_spawn(Ok("child-2".into())).await;
+        mock.queue_send(Ok(2)).await;
+        let broker = make_broker(mock.clone()).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let start = |tool_use: &'static str| {
+            let broker = broker.clone();
+            async move {
+                broker
+                    .start_delegation(DelegationRequest {
+                        parent_connection_id: "parent-conn".into(),
+                        parent_conversation_id: 1,
+                        parent_tool_use_id: tool_use.into(),
+                        agent_type: AgentType::Codex,
+                        task: "do x".into(),
+                        working_dir: None,
+                        requested_working_dir: None,
+                        external_handle: None,
+                    })
+                    .await
+                    .task_id
+                    .unwrap()
+            }
+        };
+        let t1 = start("pt-1").await;
+        let t2 = start("pt-2").await;
+        broker
+            .complete_call(
+                &t1,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "first".into(),
+                    child_conversation_id: 1,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 3,
+                    token_usage: None,
+                }),
+            )
+            .await;
+
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+        let (mut client, mut server) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "tok".into(),
+            task_ids: vec![t1.clone(), t2.clone()],
+            wait_ms: None,
+        });
+        write_frame(&mut client, &status).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        let tasks = resp.outcome["tasks"].as_array().expect("tasks array");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["status"], "completed");
+        assert_eq!(tasks[0]["task_id"], t1.as_str());
+        assert_eq!(tasks[1]["status"], "running");
+        assert_eq!(tasks[1]["task_id"], t2.as_str());
+    }
+
+    /// An invalid token over a batch status reports `Unknown` for EACH requested
+    /// id (preserving order) rather than collapsing to a single report — so the
+    /// companion can still render one row per task.
+    #[tokio::test]
+    async fn batch_status_invalid_token_returns_unknown_per_id() {
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            Arc::new(TokenRegistry::default()),
+            Some(1),
+        );
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "bad-token".into(),
+            task_ids: vec!["a".into(), "b".into()],
+            wait_ms: None,
+        });
+        write_frame(&mut client, &status).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        let tasks = resp.outcome["tasks"].as_array().expect("tasks array");
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["status"], "unknown");
+        assert_eq!(tasks[0]["task_id"], "a");
+        assert_eq!(tasks[1]["status"], "unknown");
+        assert_eq!(tasks[1]["task_id"], "b");
     }
 
     /// `cancel_delegation` over the listener: a running task is canceled by id

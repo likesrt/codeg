@@ -112,7 +112,7 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
   entries,
   planKey,
   visible = true,
-  defaultExpanded = true,
+  defaultExpanded = false,
   isStreaming = false,
 }: AgentPlanOverlayProps) {
   const t = useTranslations("Folder.chat.agentPlanOverlay")
@@ -144,9 +144,37 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
   const [collapsedByPlanKey, setCollapsedByPlanKey] = useState<
     Record<string, boolean>
   >({})
-  const isExpanded = !(
-    collapsedByPlanKey[currentPlanStateKey] ?? !resolvedDefaultExpanded
-  )
+
+  // Detect the streaming "plan just created" transition and latch a one-time
+  // auto-expand. Done with the adjust-state-during-render pattern (guarded
+  // setState in the render body, not an effect) so it converges before paint —
+  // no collapsed→expanded flash and no cascading-render lint warnings.
+  //
+  // The overlay remounts per live message (parent keys it on the message id),
+  // so `prevLiveHadPlan === null` means this mount's first render. A plan that
+  // is already present then (opening a mid-stream session) initializes the
+  // tracker without expanding; only a later false→true flip while streaming —
+  // i.e. the agent creating the plan as we watch — triggers the auto-expand.
+  const liveHasPlan = liveEntries.length > 0
+  const [prevLiveHadPlan, setPrevLiveHadPlan] = useState<boolean | null>(null)
+  const [autoExpanded, setAutoExpanded] = useState(false)
+  if (prevLiveHadPlan !== liveHasPlan) {
+    const planCreatedLive =
+      prevLiveHadPlan === false &&
+      liveHasPlan &&
+      isStreaming &&
+      hasIncompleteEntries
+    setPrevLiveHadPlan(liveHasPlan)
+    if (planCreatedLive) {
+      setAutoExpanded(true)
+    }
+  }
+
+  const userCollapsed = collapsedByPlanKey[currentPlanStateKey]
+  const isExpanded =
+    userCollapsed !== undefined
+      ? !userCollapsed
+      : autoExpanded || resolvedDefaultExpanded
 
   if (!hasPlan) {
     return null

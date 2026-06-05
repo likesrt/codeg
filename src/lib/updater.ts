@@ -1,5 +1,14 @@
 import { toErrorMessage } from "./app-error"
-import { getTransport, isDesktop } from "./transport"
+import { getTransport, isDesktop, isRemoteDesktopMode } from "./transport"
+
+// Drive the LOCAL Tauri app updater only for a genuine local desktop window.
+// A remote-desktop window IS a Tauri app (`isDesktop()` is true) but its
+// backend is a remote codeg-server, so update checks/actions must target that
+// server through the transport — otherwise the operator would check and update
+// their own local app instead of the server they are managing.
+export function usesTauriUpdater(): boolean {
+  return isDesktop() && !isRemoteDesktopMode()
+}
 
 // All updater imports are dynamic to avoid crashing in non-Tauri browsers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -10,10 +19,52 @@ export type DownloadEvent =
   | { event: "Progress"; data: { chunkLength: number } }
   | { event: "Finished" }
 
+export type ServerUpdateCapability = "supervised" | "reexec"
+
 export interface AppUpdateCheckResult {
   currentVersion: string
   update: Update | null
+  // Server-mode only (absent in desktop). Whether THIS server process can
+  // apply the update in place, how it would restart, the deployment kind,
+  // the restart delay to drive the frontend countdown, and whether a
+  // previous version is staged for rollback.
+  selfUpdateSupported?: boolean
+  capability?: ServerUpdateCapability
+  runtime?: string
+  restartDelayMs?: number
+  rollbackAvailable?: boolean
 }
+
+// Local-only server self-update status, separate from {@link checkAppUpdate}
+// (which contacts the release source). Mirrors the backend `app_update_status`
+// handler.
+export interface ServerUpdateStatus {
+  currentVersion: string
+  selfUpdateSupported: boolean
+  capability: ServerUpdateCapability
+  runtime: string
+  restartDelayMs: number
+  rollbackAvailable: boolean
+}
+
+export interface ServerUpdateProgress {
+  phase: "downloading" | "verifying" | "extracting" | "swapping"
+  downloaded: number
+  total: number | null
+}
+
+export interface ServerUpdateActionResult {
+  version?: string
+  needRestart: boolean
+  restartDelayMs: number
+  // Supervisor probation window (seconds): a freshly-upgraded worker that
+  // crashes within it is auto-rolled-back. 0 in re-exec mode (no supervisor),
+  // so the frontend need not wait it out before declaring success.
+  trialSeconds: number
+  capability: ServerUpdateCapability
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 export type AppUpdateErrorKind =
   | "source_unreachable"
@@ -28,10 +79,21 @@ export interface AppUpdateErrorInfo {
 }
 
 export async function getCurrentAppVersion(): Promise<string> {
-  if (!isDesktop()) {
-    const result =
-      await getTransport().call<AppUpdateCheckResult>("check_app_update")
-    return result.currentVersion
+  if (!usesTauriUpdater()) {
+    // Read the running version from a LOCAL source, never the
+    // manifest-dependent update check: the settings page loads this alongside
+    // unrelated local state (proxy settings). This must fail OPEN — neither a
+    // release-source outage nor an older server missing /app_update_status
+    // (a newer desktop talking to an older remote server) may fail the load.
+    try {
+      const status = await getServerUpdateStatus()
+      if (status?.currentVersion) return status.currentVersion
+    } catch {
+      // Older server without the status route, or a transient failure — fall
+      // through to /health (present on every server build), never to the
+      // manifest check.
+    }
+    return (await getRunningServerVersion()) ?? "unknown"
   }
   try {
     const { getVersion } = await import("@tauri-apps/api/app")
@@ -42,13 +104,25 @@ export async function getCurrentAppVersion(): Promise<string> {
 }
 
 export async function checkAppUpdate(): Promise<AppUpdateCheckResult> {
-  if (!isDesktop()) {
+  if (!usesTauriUpdater()) {
     return getTransport().call<AppUpdateCheckResult>("check_app_update")
   }
   const { getVersion } = await import("@tauri-apps/api/app")
   const { check } = await import("@tauri-apps/plugin-updater")
   const [currentVersion, update] = await Promise.all([getVersion(), check()])
   return { currentVersion, update }
+}
+
+/**
+ * Local-only self-update status (capability + rollback availability) that does
+ * NOT contact the release source. Drives the manual rollback affordance so it
+ * stays reachable when the update manifest is unreachable (proxy/outage/air-gap)
+ * — `rollback_app` is entirely local. Returns null for a genuine local desktop
+ * window (no server to query; it updates via the Tauri plugin).
+ */
+export async function getServerUpdateStatus(): Promise<ServerUpdateStatus | null> {
+  if (usesTauriUpdater()) return null
+  return getTransport().call<ServerUpdateStatus>("app_update_status")
 }
 
 export async function installAppUpdate(
@@ -65,6 +139,133 @@ export async function installAppUpdate(
 export async function relaunchApp(): Promise<void> {
   const { relaunch } = await import("@tauri-apps/plugin-process")
   await relaunch()
+}
+
+// ─── Server / Docker in-place self-update ──────────────────────────────────
+
+/** Subscribe to download/verify/swap progress emitted by the server. */
+export function subscribeServerUpdateProgress(
+  handler: (progress: ServerUpdateProgress) => void
+): Promise<() => void> {
+  return getTransport().subscribe<ServerUpdateProgress>(
+    "app_update_progress",
+    handler
+  )
+}
+
+/**
+ * Download + verify + swap the new bundle on the server. Resolves once the
+ * new files are staged on disk; the caller then triggers {@link restartServer}.
+ * Generous timeout: the download can be tens of MB.
+ */
+export async function performServerUpdate(): Promise<ServerUpdateActionResult> {
+  return getTransport().call<ServerUpdateActionResult>(
+    "perform_app_update",
+    {},
+    { timeoutMs: 15 * 60_000 }
+  )
+}
+
+/** Ask the server to relaunch into the freshly-swapped binary. */
+export async function restartServer(): Promise<ServerUpdateActionResult> {
+  return getTransport().call<ServerUpdateActionResult>("restart_app")
+}
+
+/** Revert to the previously-installed bundle (kept as `.bak`). */
+export async function rollbackServer(): Promise<ServerUpdateActionResult> {
+  return getTransport().call<ServerUpdateActionResult>("rollback_app")
+}
+
+/**
+ * Poll `/health` until the restarted server answers or the deadline passes.
+ * The WebSocket drops during restart and HTTP calls fail in the meantime —
+ * both are swallowed as "not up yet".
+ */
+export async function waitForServerHealthy(opts: {
+  timeoutMs: number
+  intervalMs?: number
+  initialDelayMs?: number
+}): Promise<boolean> {
+  const interval = opts.intervalMs ?? 1500
+  if (opts.initialDelayMs) await sleep(opts.initialDelayMs)
+  const deadline = Date.now() + opts.timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      await getTransport().call("health", {}, { timeoutMs: 4000 })
+      return true
+    } catch {
+      // Server still restarting — keep polling.
+    }
+    await sleep(interval)
+  }
+  return false
+}
+
+/**
+ * Read the running server's version from `/health`. Local-only — no remote
+ * manifest fetch — so it can confirm (even when the update source is
+ * unreachable) that a restart actually landed on the new version rather than
+ * an auto-rolled-back previous one. Returns null if `/health` reports no
+ * version (older server) or the call fails.
+ */
+export async function getRunningServerVersion(): Promise<string | null> {
+  try {
+    return await readServerVersionStrict()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Like {@link getRunningServerVersion} but distinguishes "server reachable but
+ * reports no version" (resolves null — an older build) from "server
+ * unreachable" (rejects). Use where a silent fallback to stale UI state could
+ * mask a later rollback, e.g. establishing the pre-upgrade baseline: a failed
+ * `/health` call must not be mistaken for a definitive "no version" answer.
+ */
+export async function readServerVersionStrict(): Promise<string | null> {
+  const res = await getTransport().call<{ version?: string }>(
+    "health",
+    {},
+    { timeoutMs: 4000 }
+  )
+  return res?.version ?? null
+}
+
+export type RollbackOutcome = "rolled-back" | "unchanged" | "unreachable"
+
+/**
+ * After a rollback restart (the server is already answering `/health`), confirm
+ * it came back on a *different* (previous) version than the one we rolled back
+ * from. The rollback target can be an older build whose `/health` omits the
+ * version — that still counts as rolled back: the server is up and the backend
+ * has restored the previous bundle, so a missing version (strict-read resolves
+ * null) must NOT be mistaken for a failed restart. Only a version that stays
+ * equal to `fromVersion` is `"unchanged"` (rollback didn't take); only a server
+ * we can never read across all attempts is `"unreachable"`. Polls to ride out
+ * the relaunch.
+ */
+export async function confirmRollbackVersion(
+  fromVersion: string | null,
+  opts?: { attempts?: number; intervalMs?: number }
+): Promise<RollbackOutcome> {
+  const attempts = opts?.attempts ?? 5
+  const interval = opts?.intervalMs ?? 1500
+  let everRead = false
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const landed = await readServerVersionStrict()
+      everRead = true
+      // null = healthy but versionless (older target); any value !== the
+      // pre-rollback version = moved off it. Both mean the rollback landed.
+      if (landed === null || landed !== fromVersion) return "rolled-back"
+      // landed === fromVersion: not yet (or rollback didn't take) — retry.
+    } catch {
+      // Briefly unreachable during the relaunch — retry.
+    }
+    if (i < attempts - 1) await sleep(interval)
+  }
+  return everRead ? "unchanged" : "unreachable"
 }
 
 export async function closeAppUpdate(

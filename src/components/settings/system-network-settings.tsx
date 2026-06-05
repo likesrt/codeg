@@ -7,6 +7,7 @@ import {
   Languages,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Wifi,
 } from "lucide-react"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -16,6 +17,16 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import { useAppI18n } from "@/components/i18n-provider"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -31,17 +42,27 @@ import {
   updateSystemLanguageSettings,
   updateSystemProxySettings,
 } from "@/lib/api"
-import { isDesktop, openUrl } from "@/lib/platform"
+import { openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
 import {
   checkAppUpdate,
   closeAppUpdate,
+  confirmRollbackVersion,
   getCurrentAppVersion,
+  getRunningServerVersion,
+  getServerUpdateStatus,
   installAppUpdate,
   normalizeAppUpdateError,
+  performServerUpdate,
+  readServerVersionStrict,
   relaunchApp,
+  restartServer,
+  rollbackServer,
+  subscribeServerUpdateProgress,
+  usesTauriUpdater,
+  waitForServerHealthy,
 } from "@/lib/updater"
-import type { DownloadEvent } from "@/lib/updater"
+import type { DownloadEvent, ServerUpdateProgress } from "@/lib/updater"
 import { APP_LOCALES } from "@/lib/i18n"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -102,6 +123,23 @@ export function SystemNetworkSettings() {
     total: number | null
     phase: "downloading" | "installing"
   } | null>(null)
+  // Server/Docker self-update capability reported by `check_app_update`
+  // (absent in desktop mode). Drives whether the upgrade button performs a
+  // real in-place update or just links to the release page.
+  const [serverSelfUpdate, setServerSelfUpdate] = useState(false)
+  const [serverRuntime, setServerRuntime] = useState<string | undefined>(
+    undefined
+  )
+  const [restartDelayMs, setRestartDelayMs] = useState(2000)
+  // Non-null while the server is restarting after an upgrade: the seconds
+  // remaining on the countdown before we start polling /health.
+  const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+  // Whether a previous version is kept on the server (as `.bak`) and can be
+  // restored — drives the manual "roll back" affordance, which covers
+  // regressions the trial-window auto-rollback can't (they surface later).
+  const [serverRollbackAvailable, setServerRollbackAvailable] = useState(false)
+  const [rollingBack, setRollingBack] = useState(false)
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false)
 
   const [appLanguage, setAppLanguage] = useState<LanguageSelectValue>(
     languageSettings.mode === "system" ? "system" : languageSettings.language
@@ -189,6 +227,9 @@ export function SystemNetworkSettings() {
     })
     checkForUpdates().catch((err) => {
       console.error("[Settings] auto check update failed:", err)
+    })
+    loadServerUpdateStatus().catch((err) => {
+      console.error("[Settings] load server update status failed:", err)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -280,6 +321,15 @@ export function SystemNetworkSettings() {
       setCurrentVersion(result.currentVersion)
       setLastCheckedAt(new Date())
 
+      // Server-mode capability (undefined in desktop, where Tauri's updater
+      // handles installs and these fields aren't present).
+      setServerSelfUpdate(result.selfUpdateSupported ?? false)
+      setServerRuntime(result.runtime)
+      setServerRollbackAvailable(result.rollbackAvailable ?? false)
+      if (typeof result.restartDelayMs === "number") {
+        setRestartDelayMs(result.restartDelayMs)
+      }
+
       if (result.update) {
         setAvailableUpdate(result.update)
       } else {
@@ -298,6 +348,24 @@ export function SystemNetworkSettings() {
       setCheckingUpdate(false)
     }
   }, [availableUpdate, formatUpdateError, t])
+
+  // Populate the local self-update capability (incl. rollback availability)
+  // independent of the manifest-dependent update check, so the rollback button
+  // stays reachable even when the update source is down. No-op on a genuine
+  // local desktop window (it updates via the Tauri plugin).
+  const loadServerUpdateStatus = useCallback(async () => {
+    try {
+      const status = await getServerUpdateStatus()
+      if (!status) return
+      setCurrentVersion(status.currentVersion)
+      setServerSelfUpdate(status.selfUpdateSupported)
+      setServerRollbackAvailable(status.rollbackAvailable)
+      setServerRuntime(status.runtime)
+      setRestartDelayMs(status.restartDelayMs)
+    } catch (err) {
+      console.error("[Settings] load server update status failed:", err)
+    }
+  }, [])
 
   const installUpdate = useCallback(async () => {
     if (!availableUpdate) return
@@ -347,6 +415,264 @@ export function SystemNetworkSettings() {
       setDownloadProgress(null)
     }
   }, [availableUpdate, formatUpdateError, t])
+
+  // Drive the visible "restarting in N…" countdown over the relaunch delay,
+  // then resolve so the caller can start polling /health. Shared by the
+  // upgrade and rollback flows, which both restart the server.
+  const runRestartCountdown = useCallback((delayMs: number) => {
+    const totalWaitMs = delayMs + 1000
+    const start = Date.now()
+    return new Promise<void>((resolve) => {
+      const tick = () => {
+        const remaining = Math.max(0, totalWaitMs - (Date.now() - start))
+        setRestartCountdown(Math.ceil(remaining / 1000))
+        if (remaining <= 0) resolve()
+        else setTimeout(tick, 250)
+      }
+      tick()
+    })
+  }, [])
+
+  // Server / Docker in-place upgrade: download+verify+swap on the server,
+  // ask it to restart, then count down and poll /health before reloading.
+  const runServerUpgrade = useCallback(async () => {
+    if (!availableUpdate) return
+
+    setInstallingUpdate(true)
+    setUpdateError(null)
+    setDownloadProgress(null)
+    setRestartCountdown(null)
+
+    let unsubscribe: (() => void) | undefined
+    try {
+      // The version running before this upgrade. A rollback (the supervisor
+      // reverting a version that couldn't boot/stay up) restores exactly this,
+      // so we treat "reverted to the baseline" as the rollback signal rather
+      // than "not exactly the reported target": if a newer release is published
+      // between the manifest read and the download, the server can legitimately
+      // install a version newer than result.version, which must still count as
+      // success. Read it live from /health rather than trusting `currentVersion`
+      // state, which can be stale if another client updated the server since
+      // this tab last checked (else a real rollback to a version this tab never
+      // saw would be mis-reported as success). Distinguish "reachable but no
+      // version" (older server → fall back to state) from "unreachable": on a
+      // failed read, abort rather than upgrade a server we can't even reach and
+      // then trust stale state. Retry briefly to ride out a transient blip.
+      let liveBaseline: string | null = null
+      let reachable = false
+      for (let i = 0; i < 3; i++) {
+        try {
+          liveBaseline = await readServerVersionStrict()
+          reachable = true
+          break
+        } catch {
+          await new Promise<void>((r) => setTimeout(r, 1000))
+        }
+      }
+      if (!reachable) {
+        setUpdateError(t("serverUnreachable"))
+        toast.error(t("serverUnreachable"))
+        return
+      }
+      const baseline = liveBaseline ?? currentVersion
+      const isRollback = (v: string | null): boolean =>
+        !!v && !!baseline && v === baseline
+
+      unsubscribe = await subscribeServerUpdateProgress(
+        (p: ServerUpdateProgress) => {
+          setDownloadProgress({
+            downloaded: p.downloaded,
+            total: p.total,
+            phase: p.phase === "downloading" ? "downloading" : "installing",
+          })
+        }
+      )
+
+      const result = await performServerUpdate()
+      setDownloadProgress(null)
+
+      // Trigger the relaunch; the server responds before it exits/re-execs.
+      await restartServer()
+      const delayMs = result.restartDelayMs || restartDelayMs
+
+      // Phase 1: visible countdown over the configured relaunch delay.
+      await runRestartCountdown(delayMs)
+
+      // Phase 2: poll until the new process answers (or give up).
+      const healthy = await waitForServerHealthy({
+        timeoutMs: 90_000,
+        intervalMs: 1500,
+      })
+      if (!healthy) {
+        setUpdateError(t("restartTimeout"))
+        toast.error(t("restartTimeout"))
+        return
+      }
+      // The server answered — but the supervisor may have auto-rolled-back a
+      // version that couldn't boot, in which case the OLD version is now
+      // serving and healthy. Confirm via the LOCAL /health version (no remote
+      // manifest fetch, which could itself fail and mask the rollback) that
+      // the running version actually advanced before claiming success.
+      const runningVersion = await getRunningServerVersion()
+      if (isRollback(runningVersion)) {
+        setUpdateError(t("upgradeRolledBack"))
+        toast.error(t("upgradeRolledBack"))
+        return
+      }
+
+      // Phase 3 (supervised only): the new version is answering, but the
+      // supervisor auto-rolls-back a worker that crashes within the trial
+      // window. Keep watching across that window and only claim success if the
+      // target version is still the one serving when it elapses; if it reverts,
+      // the supervisor rolled back a version that booted but couldn't stay up.
+      const trialSeconds =
+        result.capability === "supervised" ? result.trialSeconds : 0
+      if (trialSeconds > 0 && result.version) {
+        const trialDeadline = Date.now() + trialSeconds * 1000 + 3000
+        let reverted = false
+        while (Date.now() < trialDeadline) {
+          setRestartCountdown(Math.ceil((trialDeadline - Date.now()) / 1000))
+          await new Promise<void>((r) => setTimeout(r, 2000))
+          const v = await getRunningServerVersion()
+          if (isRollback(v)) {
+            reverted = true
+            break
+          }
+        }
+        setRestartCountdown(null)
+        if (reverted) {
+          setUpdateError(t("upgradeRolledBack"))
+          toast.error(t("upgradeRolledBack"))
+          return
+        }
+
+        // The loop skips transient nulls (the server is briefly down while the
+        // supervisor relaunches), so the window can elapse with a rollback
+        // still in flight. Require one definitive reading that the target
+        // version is still serving before claiming success; retry briefly to
+        // ride out a relaunch.
+        let finalVersion: string | null = null
+        for (let i = 0; i < 5; i++) {
+          finalVersion = await getRunningServerVersion()
+          if (finalVersion) break
+          await new Promise<void>((r) => setTimeout(r, 1500))
+        }
+        if (isRollback(finalVersion)) {
+          setUpdateError(t("upgradeRolledBack"))
+          toast.error(t("upgradeRolledBack"))
+          return
+        }
+        if (!finalVersion) {
+          setUpdateError(t("restartTimeout"))
+          toast.error(t("restartTimeout"))
+          return
+        }
+      }
+
+      toast.success(t("upgradeSuccess"))
+      window.location.reload()
+    } catch (err) {
+      const message = formatUpdateError(err, "install")
+      setUpdateError(message)
+      toast.error(t("installFailed", { message }))
+      console.error("[Settings] server upgrade failed:", err)
+    } finally {
+      unsubscribe?.()
+      setInstallingUpdate(false)
+      setDownloadProgress(null)
+      setRestartCountdown(null)
+      // A failed attempt may have left a fresh `.bak`; refresh the local
+      // rollback availability (success reloads the page anyway).
+      void loadServerUpdateStatus()
+    }
+  }, [
+    availableUpdate,
+    currentVersion,
+    formatUpdateError,
+    loadServerUpdateStatus,
+    restartDelayMs,
+    runRestartCountdown,
+    t,
+  ])
+
+  // Manual rollback: restore the previous bundle (`.bak`) the server kept and
+  // restart onto it. Covers regressions that surface after the auto-rollback
+  // trial window has closed, where the supervisor will no longer step in.
+  const runServerRollback = useCallback(async () => {
+    setRollingBack(true)
+    setUpdateError(null)
+    setRestartCountdown(null)
+
+    try {
+      // The version running now — the one we are rolling back *from*. A
+      // successful rollback brings the server back on a different (previous)
+      // version, so we treat "the running version changed off this" as the
+      // success signal. Read it live and abort if the server is unreachable.
+      let fromVersion: string | null = null
+      let reachable = false
+      for (let i = 0; i < 3; i++) {
+        try {
+          fromVersion = await readServerVersionStrict()
+          reachable = true
+          break
+        } catch {
+          await new Promise<void>((r) => setTimeout(r, 1000))
+        }
+      }
+      if (!reachable) {
+        setUpdateError(t("serverUnreachable"))
+        toast.error(t("serverUnreachable"))
+        return
+      }
+
+      // Revert + relaunch is a single locked server operation now: it responds
+      // before it exits/re-execs, so there is no separate restart call to make.
+      const result = await rollbackServer()
+      const delayMs = result.restartDelayMs || restartDelayMs
+
+      await runRestartCountdown(delayMs)
+
+      const healthy = await waitForServerHealthy({
+        timeoutMs: 90_000,
+        intervalMs: 1500,
+      })
+      if (!healthy) {
+        setUpdateError(t("restartTimeout"))
+        toast.error(t("restartTimeout"))
+        return
+      }
+
+      // Confirm the rollback landed. The restored `.bak` is a strictly-older
+      // release, so the running version should move off `fromVersion` — but an
+      // older target may omit the version from `/health`, which still counts as
+      // success (the server is healthy and the previous bundle is restored).
+      // Only a version that stays equal to `fromVersion` is a failed rollback.
+      const outcome = await confirmRollbackVersion(fromVersion)
+      if (outcome === "unchanged") {
+        setUpdateError(t("rollbackFailed"))
+        toast.error(t("rollbackFailed"))
+        return
+      }
+      if (outcome === "unreachable") {
+        setUpdateError(t("restartTimeout"))
+        toast.error(t("restartTimeout"))
+        return
+      }
+
+      toast.success(t("rollbackSuccess"))
+      window.location.reload()
+    } catch (err) {
+      setUpdateError(toErrorMessage(err))
+      toast.error(t("rollbackFailed"))
+      console.error("[Settings] server rollback failed:", err)
+    } finally {
+      setRollingBack(false)
+      setRestartCountdown(null)
+      // Refresh rollback availability: a single-generation `.bak` is consumed
+      // by the rollback, so the button should disappear after a successful one.
+      void loadServerUpdateStatus()
+    }
+  }, [loadServerUpdateStatus, restartDelayMs, runRestartCountdown, t])
 
   if (loading) {
     return (
@@ -412,11 +738,29 @@ export function SystemNetworkSettings() {
                   {t("checking")}
                 </Button>
               ) : availableUpdate ? (
-                isDesktop() ? (
+                usesTauriUpdater() ? (
                   <Button
                     size="sm"
                     onClick={installUpdate}
                     disabled={installingUpdate}
+                  >
+                    {installingUpdate ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        {t("updating")}
+                      </>
+                    ) : (
+                      <>
+                        <ArrowUpCircle className="h-3.5 w-3.5" />
+                        {t("upgradeTo", { version: availableUpdate.version })}
+                      </>
+                    )}
+                  </Button>
+                ) : serverSelfUpdate ? (
+                  <Button
+                    size="sm"
+                    onClick={runServerUpgrade}
+                    disabled={installingUpdate || rollingBack}
                   >
                     {installingUpdate ? (
                       <>
@@ -448,7 +792,7 @@ export function SystemNetworkSettings() {
                   key="check-update"
                   size="sm"
                   onClick={checkForUpdates}
-                  disabled={installingUpdate}
+                  disabled={installingUpdate || rollingBack}
                   className="w-[9.5rem] justify-center transition-none"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -495,6 +839,51 @@ export function SystemNetworkSettings() {
                 </div>
               </div>
             )}
+
+            {restartCountdown !== null && (
+              <p className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {restartCountdown > 0
+                  ? t("restartingIn", { seconds: restartCountdown })
+                  : t("waitingForServer")}
+              </p>
+            )}
+
+            {serverSelfUpdate &&
+              serverRollbackAvailable &&
+              !usesTauriUpdater() && (
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <span className="text-muted-foreground/80 text-[11px] leading-5">
+                    {t("rollbackDescription")}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setRollbackConfirmOpen(true)}
+                    disabled={installingUpdate || rollingBack}
+                  >
+                    {rollingBack ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        {t("rollingBack")}
+                      </>
+                    ) : (
+                      <>
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        {t("rollbackButton")}
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
+
+            {availableUpdate &&
+              serverSelfUpdate &&
+              serverRuntime === "docker" && (
+                <p className="text-muted-foreground/80 text-[11px] leading-5">
+                  {t("dockerUpgradeHint")}
+                </p>
+              )}
 
             {availableUpdate && (
               <div className="space-y-2 pt-2 border-t border-border/70">
@@ -659,6 +1048,38 @@ export function SystemNetworkSettings() {
             </Select>
           </div>
         </section>
+
+        <AlertDialog
+          open={rollbackConfirmOpen}
+          onOpenChange={(open) => {
+            if (!rollingBack) setRollbackConfirmOpen(open)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t("rollbackConfirmTitle")}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("rollbackConfirmDescription")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={rollingBack}>
+                {t("rollbackCancel")}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault()
+                  setRollbackConfirmOpen(false)
+                  runServerRollback().catch((err) => {
+                    console.error("[Settings] server rollback failed:", err)
+                  })
+                }}
+              >
+                {t("rollbackConfirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </ScrollArea>
   )

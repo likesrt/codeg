@@ -132,6 +132,22 @@
     "checkUpdateFailed": "Falha ao verificar atualizações: {message}",
     "installSuccess": "Atualização instalada. Reiniciando o app.",
     "installFailed": "Falha na atualização: {message}",
+    "upgradeSuccess": "Atualização concluída. Recarregando...",
+    "restartTimeout": "O servidor não voltou a tempo. Verifique os logs do contêiner ou do serviço.",
+    "restartingIn": "Reiniciando em {seconds} s...",
+    "waitingForServer": "Aguardando o servidor voltar...",
+    "dockerUpgradeHint": "Isto atualiza o contêiner em execução agora. Perde-se se o contêiner for recriado — para mantê-lo, baixe ou crie uma imagem na nova versão e recrie o contêiner.",
+    "upgradeRolledBack": "Falha na atualização; o servidor reverteu para a versão anterior.",
+    "serverUnreachable": "Não foi possível acessar o servidor para iniciar a atualização. Verifique se ele está em execução e tente novamente.",
+    "rollbackButton": "Reverter",
+    "rollingBack": "Revertendo...",
+    "rollbackDescription": "Restaura a versão instalada antes da última atualização.",
+    "rollbackConfirmTitle": "Reverter para a versão anterior?",
+    "rollbackConfirmDescription": "O servidor será reiniciado na versão instalada antes da última atualização. Uma versão mais recente continua disponível para instalar novamente.",
+    "rollbackConfirm": "Reverter",
+    "rollbackCancel": "Cancelar",
+    "rollbackSuccess": "Revertido para a versão anterior. Recarregando...",
+    "rollbackFailed": "Falha ao reverter. Verifique os registros do servidor.",
     "updateErrors": {
       "sourceUnavailable": "Não foi possível acessar a fonte de atualização. Verifique sua rede ou proxy e tente novamente.",
       "network": "Falha na conexão de rede. Verifique sua rede ou proxy e tente novamente.",
@@ -264,6 +280,14 @@
       "close_all_file_tabs": {
         "title": "Fechar todas as abas de arquivo",
         "description": "Fecha todas as abas de arquivo abertas quando o painel de arquivos está ativo"
+      },
+      "next_tab": {
+        "title": "Próxima aba",
+        "description": "Mudar para a próxima aba de conversa ou arquivo"
+      },
+      "prev_tab": {
+        "title": "Aba anterior",
+        "description": "Mudar para a aba anterior de conversa ou arquivo"
       },
       "send_message": {
         "title": "Enviar mensagem",
@@ -1927,6 +1951,10 @@
         "waitForResultNoTask": "Aguardando o resultado da tarefa",
         "cancelTask": "Cancelando a tarefa {task}",
         "cancelTaskNoTask": "Cancelando a tarefa",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "Resultado anterior",
+        "nextResult": "Próximo resultado",
+        "noResultText": "Sem resultado nesta verificação.",
         "status": {
           "starting": "iniciando",
           "running": "em execução",

@@ -170,9 +170,10 @@ async fn end_to_end_named_pipe_happy_path() {
         .await;
 
     // 3. get_delegation_status → Completed with the result text, over the pipe.
+    //    The Status arm returns a `{ tasks: [..] }` envelope; one id → one entry.
     let status_req = BrokerStatusRequest {
         token: "tok".into(),
-        task_id,
+        task_ids: vec![task_id],
         wait_ms: Some(1_000),
     };
     let resp = client_status_round_trip_with_retry(&pipe, &status_req)
@@ -180,9 +181,9 @@ async fn end_to_end_named_pipe_happy_path() {
         .expect("status round-trip");
     listener_task.abort();
 
-    assert_eq!(resp.outcome["status"], "completed");
-    assert_eq!(resp.outcome["text"], "pipe-result");
-    assert_eq!(resp.outcome["child_conversation_id"], 77);
+    assert_eq!(resp.outcome["tasks"][0]["status"], "completed");
+    assert_eq!(resp.outcome["tasks"][0]["text"], "pipe-result");
+    assert_eq!(resp.outcome["tasks"][0]["child_conversation_id"], 77);
 }
 
 #[tokio::test]

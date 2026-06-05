@@ -40,7 +40,7 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
     className={cn(
       "group flex w-full flex-col gap-2",
       from === "user"
-        ? "is-user ml-auto justify-end max-w-[80%]"
+        ? "is-user ml-auto justify-end max-w-[88%]"
         : "is-assistant",
       className
     )}
@@ -389,7 +389,7 @@ function MessageResponseImpl({
   return (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-4 [&_ol]:pl-4",
+        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-3 [&_ol]:pl-3",
         className
       )}
       linkSafety={linkSafety}
