@@ -239,6 +239,37 @@ function realStartTagEnd(src: string, want: string): number | null {
   return findRealStartTag(src, want)?.gtEnd ?? null
 }
 
+// Decode HTML character references in a short text run (e.g. a <title>). Uses a
+// detached <textarea>, whose content model is escapable raw text: it decodes
+// entities without creating child elements or fetching any resource.
+function decodeHtmlEntities(text: string): string {
+  if (!text.includes("&") || typeof document === "undefined") return text
+  const el = document.createElement("textarea")
+  el.innerHTML = text
+  return el.value
+}
+
+/**
+ * The document's `<title>` text, or "" if absent. Located with the same
+ * quote/comment/raw-text-aware scanner as the wrappers, so a "<title>" inside a
+ * comment, script string, or `<template>` is ignored; the title's RCDATA
+ * content is read verbatim up to its `</title>` and its entities decoded, with
+ * whitespace collapsed the way a browser renders a title. Safe on untrusted
+ * HTML — it neither parses with DOMParser nor loads any resource.
+ */
+export function extractHtmlTitle(html: string): string {
+  let title = ""
+  scanStartTags(html, (name, _attrs, gtIndex) => {
+    if (name !== "title") return false
+    const rest = html.slice(gtIndex + 1)
+    const close = /<\/title(?=[\s/>])/i.exec(rest)
+    const raw = close ? rest.slice(0, close.index) : rest
+    title = decodeHtmlEntities(raw).replace(/\s+/g, " ").trim()
+    return true
+  })
+  return title
+}
+
 function extOf(path: string): string {
   const clean = path.split(/[?#]/)[0]
   const dot = clean.lastIndexOf(".")

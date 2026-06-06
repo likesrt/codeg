@@ -3,6 +3,7 @@ import {
   inlineHtmlResources,
   withSandboxCsp,
   resolveAbsPath,
+  extractHtmlTitle,
   type Base64Reader,
 } from "./html-preview-inline"
 
@@ -34,6 +35,60 @@ describe("resolveAbsPath", () => {
     expect(resolveAbsPath("/proj/docs", "./a.png")).toBe("/proj/docs/a.png")
     expect(resolveAbsPath("/proj/docs", "../img/a.png")).toBe("/proj/img/a.png")
     expect(resolveAbsPath("/proj", "/x/y")).toBe("/proj/x/y")
+  })
+})
+
+describe("extractHtmlTitle", () => {
+  it("extracts the document title", () => {
+    expect(
+      extractHtmlTitle(
+        `<html><head><title>Hello</title></head><body></body></html>`
+      )
+    ).toBe("Hello")
+  })
+
+  it("ignores attributes on the title tag and decodes entities", () => {
+    expect(extractHtmlTitle(`<title lang="en">A &amp; B &lt;3</title>`)).toBe(
+      "A & B <3"
+    )
+  })
+
+  it("collapses and trims whitespace", () => {
+    expect(extractHtmlTitle(`<title>  Multi\n  line   title  </title>`)).toBe(
+      "Multi line title"
+    )
+  })
+
+  it("returns an empty string when there is no title", () => {
+    expect(extractHtmlTitle(`<html><body><p>x</p></body></html>`)).toBe("")
+  })
+
+  it("takes the first title and treats its content as RCDATA", () => {
+    expect(extractHtmlTitle(`<title>a < b</title><title>two</title>`)).toBe(
+      "a < b"
+    )
+  })
+
+  it("ignores a <title> inside a comment", () => {
+    expect(
+      extractHtmlTitle(`<!-- <title>fake</title> --><title>real</title>`)
+    ).toBe("real")
+  })
+
+  it("ignores a <title> inside a <script> string", () => {
+    expect(
+      extractHtmlTitle(
+        `<script>var s = "<title>fake</title>"</script><title>real</title>`
+      )
+    ).toBe("real")
+  })
+
+  it("ignores a <title> inside <template> content", () => {
+    expect(
+      extractHtmlTitle(
+        `<template><title>fake</title></template><title>real</title>`
+      )
+    ).toBe("real")
   })
 })
 

@@ -2726,5 +2726,13 @@
       "diskSpace": "磁盘空间不足，无法完成操作。",
       "cancelled": "操作已取消。"
     }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "连接已断开",
+    "reconnectingDescription": "正在尝试重新连接服务器，通常会在几秒内自动恢复。",
+    "reconnectNow": "立即重连",
+    "sessionExpiredTitle": "会话已过期",
+    "sessionExpiredDescription": "登录状态已失效，请重新登录以继续。",
+    "goToLogin": "前往登录"
   }
 }

@@ -2726,5 +2726,13 @@
       "diskSpace": "Nicht genügend Speicherplatz, um den Vorgang abzuschließen.",
       "cancelled": "Der Vorgang wurde abgebrochen."
     }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Verbindung getrennt",
+    "reconnectingDescription": "Verbindung zum Server wird wiederhergestellt. Das geschieht normalerweise innerhalb weniger Sekunden automatisch.",
+    "reconnectNow": "Jetzt neu verbinden",
+    "sessionExpiredTitle": "Sitzung abgelaufen",
+    "sessionExpiredDescription": "Deine Sitzung ist nicht mehr gültig. Bitte melde dich erneut an, um fortzufahren.",
+    "goToLogin": "Zur Anmeldung"
   }
 }

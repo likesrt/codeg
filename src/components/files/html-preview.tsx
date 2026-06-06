@@ -1,10 +1,14 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ShieldCheck, ShieldOff } from "lucide-react"
 import { readWorkspaceFileBase64 } from "@/lib/api"
-import { inlineHtmlResources, withSandboxCsp } from "@/lib/html-preview-inline"
+import {
+  extractHtmlTitle,
+  inlineHtmlResources,
+  withSandboxCsp,
+} from "@/lib/html-preview-inline"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { cn } from "@/lib/utils"
 
@@ -29,6 +33,13 @@ export function HtmlPreview({
 
   const content = tab.content ?? ""
   const path = tab.path ?? ""
+
+  // The document's own <title>, shown at the left of the header bar; falls back
+  // to the file name when the document has none. Parsed from the raw source
+  // (not the inlined output) so it updates immediately, without loading any
+  // resource.
+  const title = useMemo(() => extractHtmlTitle(content), [content])
+  const heading = title || path.split("/").pop() || path
 
   useEffect(() => {
     let cancelled = false
@@ -71,14 +82,20 @@ export function HtmlPreview({
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="h-9 shrink-0 flex items-center justify-end px-3 border-b border-border bg-muted/20">
+      <div className="h-9 shrink-0 flex items-center justify-between gap-3 px-3 border-b border-border bg-muted/20">
+        <span
+          className="min-w-0 truncate text-xs font-medium text-foreground/80"
+          title={heading || undefined}
+        >
+          {heading}
+        </span>
         <button
           type="button"
           onClick={() => setTrusted((v) => !v)}
           aria-pressed={trusted}
           title={t("htmlPreviewTrustHint")}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+            "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
             trusted
               ? "text-amber-600 dark:text-amber-500 hover:bg-amber-500/10"
               : "text-muted-foreground hover:bg-primary/8"

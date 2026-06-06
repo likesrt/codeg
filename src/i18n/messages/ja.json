@@ -2726,5 +2726,13 @@
       "diskSpace": "操作を完了するためのディスク容量が足りません。",
       "cancelled": "操作はキャンセルされました。"
     }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "接続が切断されました",
+    "reconnectingDescription": "サーバーへの再接続を試みています。通常は数秒で自動的に復旧します。",
+    "reconnectNow": "今すぐ再接続",
+    "sessionExpiredTitle": "セッションの有効期限が切れました",
+    "sessionExpiredDescription": "セッションが無効になりました。続行するには再度サインインしてください。",
+    "goToLogin": "ログインへ移動"
   }
 }

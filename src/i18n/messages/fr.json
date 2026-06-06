@@ -2726,5 +2726,13 @@
       "diskSpace": "Espace disque insuffisant pour terminer l'opération.",
       "cancelled": "L'opération a été annulée."
     }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Connexion perdue",
+    "reconnectingDescription": "Tentative de reconnexion au serveur. Cela se rétablit généralement tout seul en quelques secondes.",
+    "reconnectNow": "Se reconnecter maintenant",
+    "sessionExpiredTitle": "Session expirée",
+    "sessionExpiredDescription": "Votre session n'est plus valide. Veuillez vous reconnecter pour continuer.",
+    "goToLogin": "Aller à la connexion"
   }
 }

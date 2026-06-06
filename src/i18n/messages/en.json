@@ -2726,5 +2726,13 @@
       "diskSpace": "Not enough disk space to complete the operation.",
       "cancelled": "The operation was cancelled."
     }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Connection lost",
+    "reconnectingDescription": "Trying to reconnect to the server. This usually recovers on its own within a few seconds.",
+    "reconnectNow": "Reconnect now",
+    "sessionExpiredTitle": "Session expired",
+    "sessionExpiredDescription": "Your session is no longer valid. Please sign in again to continue.",
+    "goToLogin": "Go to login"
   }
 }
