@@ -281,6 +281,8 @@ function getGitFileStateClassName(status?: string): string {
   return ""
 }
 
+const GITIGNORE_MUTED_CLASS = "text-muted-foreground/60"
+
 function getParentPath(path: string): string | null {
   const splitIdx = path.lastIndexOf("/")
   if (splitIdx < 0) return null
