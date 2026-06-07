@@ -188,6 +188,16 @@ pub struct ActiveDelegationState {
     pub agent_type: AgentType,
 }
 
+/// The in-flight user prompt for the current turn. Captured from
+/// `AcpEvent::UserMessage` into `SessionState.pending_user_message` and carried
+/// on `to_snapshot()` so a client attaching mid-turn can render the user turn
+/// even though the one-shot `UserMessage` event won't replay for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingUserMessage {
+    pub message_id: String,
+    pub blocks: Vec<crate::acp::types::UserMessageBlock>,
+}
+
 /// 后端权威的会话状态。每个 AgentConnection 持有一个 Arc<RwLock<SessionState>>。
 ///
 /// 字段范围：仅当前 turn 的 in-flight 数据 + 元信息 + 协商出的能力。
@@ -286,6 +296,34 @@ pub struct SessionState {
     /// cleared) so the lifecycle subscriber can surface it as the
     /// `delegation_call_id`-bound child outcome. Cleared on the next prompt.
     pub last_assistant_text: Option<String>,
+
+    /// The in-flight user prompt for the current turn, captured from
+    /// `AcpEvent::UserMessage` and cleared on `TurnComplete` (alongside
+    /// `live_message`). Carried on `to_snapshot()` so a client attaching
+    /// mid-turn renders the user turn even though no `UserMessage` event will
+    /// replay for it. `None` outside an active turn.
+    pub pending_user_message: Option<PendingUserMessage>,
+
+    /// Backend wall-clock instant the in-flight turn started, captured alongside
+    /// `pending_user_message` from `AcpEvent::UserMessage` and cleared on
+    /// `TurnComplete`. The detail endpoint uses it to tell the in-flight prompt
+    /// — persisted at/after this instant by the agent CLI, a local subprocess
+    /// sharing this machine's clock — apart from a prior identical prompt
+    /// persisted during an earlier turn (see `apply_in_flight_message_id`). Not
+    /// serialized: backend-internal, like `turn_in_flight`. `None` outside an
+    /// active turn.
+    pub pending_user_message_started_at: Option<DateTime<Utc>>,
+
+    /// True between a prompt being accepted (enqueued to the connection loop)
+    /// and that turn completing. Set by the manager BEFORE the enqueue (so it
+    /// is guaranteed set before the loop can dequeue) and cleared on
+    /// `TurnComplete`. The manager rejects a second prompt with
+    /// `AcpError::TurnInProgress` while this is set — otherwise the second
+    /// `Prompt` would queue behind the active turn and be silently dropped by
+    /// the loop's in-turn command handler (`_ => {}`), with the caller still
+    /// seeing success. Not serialized: it is a connection-loop liveness flag,
+    /// not part of the client-visible snapshot.
+    pub turn_in_flight: bool,
 }
 
 impl SessionState {
@@ -325,6 +363,9 @@ impl SessionState {
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
             last_assistant_text: None,
+            pending_user_message: None,
+            pending_user_message_started_at: None,
+            turn_in_flight: false,
         }
     }
 
@@ -552,6 +593,17 @@ impl SessionState {
                 }
                 self.live_message = None;
                 self.active_tool_calls.clear();
+                // The turn's user prompt is no longer "in flight" — the
+                // assistant reply is done and the transcript is the source of
+                // truth. Clear it so a post-turn snapshot doesn't carry a stale
+                // pending user message into a fresh attach.
+                self.pending_user_message = None;
+                self.pending_user_message_started_at = None;
+                // Turn finished: release the concurrency gate so the next prompt
+                // is accepted. (All connection-alive turn endings — normal,
+                // cancel, stop-reason — emit TurnComplete; disconnect/error
+                // discard the state entirely, so no stale flag can outlive them.)
+                self.turn_in_flight = false;
                 // NOTE: `active_delegations` is intentionally NOT cleared here.
                 // A running delegation's child runs in the background long after
                 // the parent's `delegate_to_agent` tool call returns and this
@@ -560,6 +612,19 @@ impl SessionState {
                 // web-only bug). It's removed per-entry by `DelegationCompleted`.
                 self.pending_permission = None;
                 self.status = ConnectionStatus::Connected;
+            }
+            AcpEvent::UserMessage { message_id, blocks } => {
+                // Capture the in-flight user prompt so a client attaching
+                // mid-turn renders the user turn from the snapshot (the
+                // one-shot event won't replay for it). Cleared on TurnComplete.
+                self.pending_user_message = Some(PendingUserMessage {
+                    message_id: message_id.clone(),
+                    blocks: blocks.clone(),
+                });
+                // Reference instant for the in-flight prompt's recency check in
+                // `apply_in_flight_message_id`. Set here (not at manager enqueue)
+                // so it tracks `pending_user_message` exactly.
+                self.pending_user_message_started_at = Some(Utc::now());
             }
             AcpEvent::ConversationLinked {
                 conversation_id,
@@ -643,8 +708,11 @@ impl SessionState {
                 // it is deliberately only the in-flight set.
                 self.active_delegations.remove(parent_tool_use_id);
             }
-            AcpEvent::ClaudeSdkMessage { .. } | AcpEvent::SessionLoadFailed { .. } => {
+            AcpEvent::ClaudeSdkMessage { .. }
+            | AcpEvent::SessionLoadFailed { .. }
+            | AcpEvent::UserPromptSent { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
+                // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
             }
         }
         self.last_activity_at = Utc::now();
@@ -895,6 +963,7 @@ impl SessionState {
             live_message: self.live_message.clone(),
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
+            pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
@@ -920,6 +989,12 @@ pub struct LiveSessionSnapshot {
     pub live_message: Option<LiveMessage>,
     pub active_tool_calls: Vec<ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
+    /// The in-flight user prompt for the current turn (see
+    /// `SessionState.pending_user_message`). `#[serde(default)]` so older
+    /// payloads still deserialize; `skip_serializing_if` so the no-pending case
+    /// keeps the wire shape byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_user_message: Option<PendingUserMessage>,
     /// Running sub-agent delegations recoverable from the snapshot (see
     /// `SessionState.active_delegations`). `#[serde(default)]` so older server
     /// payloads without this field still deserialize; `skip_serializing_if` so
@@ -1025,7 +1100,7 @@ mod tests {
     use crate::acp::types::{
         AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptCapabilitiesInfo,
         SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
-        SessionModeStateInfo,
+        SessionModeStateInfo, UserMessageBlock,
     };
 
     fn fresh_state() -> SessionState {
@@ -1050,6 +1125,84 @@ mod tests {
         assert!(!s.fork_supported);
         assert!(s.available_commands.is_empty());
         assert!(!s.selectors_ready);
+        assert!(s.pending_user_message.is_none());
+    }
+
+    fn text_user_message(id: &str, text: &str) -> AcpEvent {
+        AcpEvent::UserMessage {
+            message_id: id.to_string(),
+            blocks: vec![UserMessageBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn user_message_event_captures_pending_user_message() {
+        // The in-flight user prompt is captured so a mid-turn attacher renders
+        // the user turn from the snapshot (the one-shot event won't replay).
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-1", "hello agent"));
+        let pending = s.pending_user_message.as_ref().expect("pending set");
+        assert_eq!(pending.message_id, "user-1");
+        assert_eq!(
+            pending.blocks,
+            vec![UserMessageBlock::Text {
+                text: "hello agent".into()
+            }]
+        );
+        assert!(
+            s.pending_user_message_started_at.is_some(),
+            "the turn-start instant is captured alongside the pending prompt"
+        );
+    }
+
+    #[test]
+    fn turn_complete_clears_pending_user_message() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-1", "hi"));
+        assert!(s.pending_user_message.is_some());
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        assert!(
+            s.pending_user_message.is_none(),
+            "a completed turn must clear the pending user message (no stale snapshot)"
+        );
+        assert!(
+            s.pending_user_message_started_at.is_none(),
+            "the turn-start instant is cleared in lockstep with the pending prompt"
+        );
+    }
+
+    #[test]
+    fn to_snapshot_carries_pending_user_message() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-7", "snapshot me"));
+        let pending = s
+            .to_snapshot()
+            .pending_user_message
+            .expect("snapshot carries pending");
+        assert_eq!(pending.message_id, "user-7");
+    }
+
+    #[test]
+    fn snapshot_round_trips_pending_user_message_and_omits_when_absent() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-9", "round trip"));
+        let snap = s.to_snapshot();
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.pending_user_message, snap.pending_user_message);
+        // No-pending snapshot keeps the field off the wire (byte-identical with
+        // the pre-feature shape).
+        let empty_json = serde_json::to_string(&fresh_state().to_snapshot()).expect("serialize");
+        assert!(
+            !empty_json.contains("pending_user_message"),
+            "no-pending snapshot must omit the field"
+        );
     }
 
     #[test]
@@ -1149,9 +1302,7 @@ mod tests {
         s.apply_event(&AcpEvent::ContentDelta {
             text: "Answer ".into(),
         });
-        s.apply_event(&AcpEvent::Thinking {
-            text: "hmm".into(),
-        });
+        s.apply_event(&AcpEvent::Thinking { text: "hmm".into() });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "continues here".into(),
         });

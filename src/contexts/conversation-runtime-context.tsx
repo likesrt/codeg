@@ -168,6 +168,24 @@ type Action =
       turnToken: string
     }
   | {
+      // Roll back an optimistic user turn that never reached the backend
+      // (e.g. the send was rejected because a turn was already in flight, and
+      // the draft is being re-queued instead). Resets syncState to idle when no
+      // other optimistic turns remain so a stranded `awaiting_persist` doesn't
+      // block the next detail reconciliation.
+      type: "REMOVE_OPTIMISTIC_TURN"
+      conversationId: number
+      id: string
+    }
+  | {
+      // Cross-client VIEWER synthesizes the sender's user turn from a
+      // `user_message` event / snapshot. Idempotent + sender-guarded in the
+      // reducer (never fires on a client that has its own in-flight send).
+      type: "APPEND_VIEWER_USER_TURN"
+      conversationId: number
+      turn: MessageTurn
+    }
+  | {
       type: "SET_LIVE_MESSAGE"
       conversationId: number
       liveMessage: LiveMessage | null
@@ -764,6 +782,36 @@ function updateSessionInState(
   return { ...state, byConversationId: nextByConversationId }
 }
 
+/**
+ * Stable content signature for a USER turn. The same prompt surfaces under two
+ * unrelated id namespaces: a cross-client viewer's synthesized turn uses the
+ * broadcast `message_id`, while the SAME prompt, once the agent has written it
+ * to its JSONL transcript, comes back from the parser (in `detail.turns`) under
+ * a parser-assigned id. Id-based dedup therefore can't recognize the two as one
+ * message — only content can. Ids and timestamps are deliberately excluded.
+ * The encoding is structurally unambiguous (JSON, so block boundaries can't
+ * collide) and compares FULL payload — text verbatim and full image data — so a
+ * genuinely different prompt is never mistaken for a match. That matters because
+ * a match SUPPRESSES a visible user turn (see `APPEND_VIEWER_USER_TURN`), and it
+ * runs only on the rare cross-client viewer append, so comparing full data is
+ * fine. Unknown block types are serialized whole rather than collapsed to their
+ * tag, so no distinguishing content is silently dropped.
+ */
+function userTurnContentKey(turn: MessageTurn): string {
+  return JSON.stringify(
+    turn.blocks.map((b) => {
+      switch (b.type) {
+        case "text":
+          return { t: b.text }
+        case "image":
+          return { i: b.mime_type, d: b.data }
+        default:
+          return b
+      }
+    })
+  )
+}
+
 function reducer(
   state: ConversationRuntimeState,
   action: Action
@@ -790,8 +838,22 @@ function reducer(
       // kickoff in while the child still streams/just-finished its reply — the
       // bridged/promoted reply must outlive the fetch so a late partial can't
       // momentarily replace it).
+      //
+      // A detail that carries `in_flight_user_turn_id` is itself a MID-TURN
+      // snapshot (the backend only stamps it while a turn is running). Such a
+      // response must not clobber a more-complete live/promoted reply: a stale one
+      // landing just after `completeTurn` promoted the reply would otherwise clear
+      // `localTurns`, and the next live turn's in-flight suppression (keyed off the
+      // stale id) could then hide that completed reply. So treat it like
+      // `preserveLive` and keep every live buffer; a settled (non-in-flight) load
+      // replaces them authoritatively.
+      const detailIsInFlight = action.detail.in_flight_user_turn_id != null
       const isActivelyInteracting =
-        current.syncState === "awaiting_persist" || action.preserveLive === true
+        current.syncState === "awaiting_persist" ||
+        action.preserveLive === true ||
+        detailIsInFlight
+      const keepAllLiveBuffers =
+        action.preserveLive === true || detailIsInFlight
 
       const nextSession: ConversationRuntimeSession = {
         ...current,
@@ -801,7 +863,7 @@ function reducer(
         externalId: nextExternalId ?? current.externalId,
         sessionStats: action.detail.session_stats ?? current.sessionStats,
         ...(isActivelyInteracting
-          ? action.preserveLive === true
+          ? keepAllLiveBuffers
             ? {}
             : { localTurns: [] }
           : { localTurns: [], optimisticTurns: [], liveMessage: null }),
@@ -917,6 +979,111 @@ function reducer(
         syncState: "awaiting_persist",
         activeTurnToken: action.turnToken,
       }))
+
+    case "REMOVE_OPTIMISTIC_TURN": {
+      const current = state.byConversationId.get(action.conversationId)
+      if (!current) return state
+      const remaining = current.optimisticTurns.filter(
+        (t) => t.id !== action.id
+      )
+      // Not found → no-op (avoid a needless re-render / identity change).
+      if (remaining.length === current.optimisticTurns.length) return state
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        optimisticTurns: remaining,
+        // Drop back to idle once the last in-flight optimistic turn is rolled
+        // back, so the `awaiting_persist` set on append doesn't linger and
+        // suppress the next detail reconciliation. Concurrent optimistic turns
+        // (if any) keep us awaiting_persist.
+        syncState: remaining.length === 0 ? "idle" : s.syncState,
+      }))
+    }
+
+    case "APPEND_VIEWER_USER_TURN": {
+      const current =
+        state.byConversationId.get(action.conversationId) ??
+        createEmptySession(action.conversationId)
+      const id = action.turn.id
+      // EXACT-id dedup (not a heuristic): the sender's OWN optimistic turn
+      // shares this id — the UI threaded its optimistic turn id to the backend,
+      // which echoed it as the `user_message` message_id — so the sender drops
+      // its own echo here. Also covers an already-promoted turn (localTurns) and
+      // a snapshot re-deliver. Keyed on exact id so an UNRELATED optimistic turn
+      // on a co-controlling client never suppresses a DIFFERENT sender's prompt.
+      //
+      // `detail.turns` is checked too: while a turn is in flight the detail
+      // endpoint stamps the persisted in-flight user turn with this same
+      // broadcast id (see `apply_in_flight_message_id` in the backend), so the
+      // synthesized copy defers to the persisted turn in its correct position.
+      // This covers OpenCode and Gemini, whose transcript tail mid-stream is
+      // `[.., user X, partial assistant Y]` rather than ending at the user turn —
+      // the content guard below (which only matches a trailing user turn) can't
+      // see X, but the backend stamp (matched by content + turn-start recency)
+      // makes this id match X directly.
+      //
+      // Role-scoped to USER turns: every legitimate match (the sender's optimistic
+      // turn, a promoted local turn, the stamped persisted prompt) is a user turn.
+      // Requiring the role guards against an id collision — an unrelated ASSISTANT
+      // turn that happens to share this id (only reachable via a client id that
+      // slipped into another namespace) must never suppress the new prompt.
+      if (
+        current.optimisticTurns.some((t) => t.id === id && t.role === "user") ||
+        current.localTurns.some((t) => t.id === id && t.role === "user") ||
+        (current.detail?.turns.some((t) => t.id === id && t.role === "user") ??
+          false)
+      ) {
+        return state
+      }
+      // CONTENT dedup against persisted history. The exact-id guard above is
+      // blind to the prompt once the agent has written it to its JSONL
+      // transcript and it has been reloaded into `detail.turns`: the parser
+      // assigns it an unrelated id there, so the synthesized turn (keyed by the
+      // broadcast message_id) and the persisted turn never share an id. Without
+      // this, a viewer that attaches mid-stream after the prompt was persisted
+      // renders the user message twice.
+      //
+      // Suppress ONLY when the synthesized prompt equals the LAST persisted turn
+      // AND that turn is a user turn — i.e. the transcript currently ends exactly
+      // at the in-flight prompt, its reply still streaming in `liveMessage` and
+      // not yet written (the normal mid-stream shape for Claude/Codex, whose
+      // assistant turn is appended to the JSONL only on completion). We must NOT
+      // look past a trailing assistant turn: a PREVIOUS, already-answered user
+      // turn with identical text (e.g. a repeated "continue") ends with its
+      // completed assistant reply, so doing so would wrongly suppress a genuinely
+      // new prompt the transcript hasn't captured yet. When in doubt we keep the
+      // synthesized turn visible — a transient duplicate is recoverable, a hidden
+      // prompt is not. (Agents that persist a PARTIAL assistant turn mid-stream —
+      // OpenCode and Gemini — end with that partial rather than the user turn, so
+      // they fall through this content guard; the backend instead stamps their
+      // persisted user turn with this broadcast id, handled by the exact-id guard
+      // above.)
+      //
+      // Invariant: a trailing persisted user turn is the in-flight prompt. If a
+      // prior run instead left a bare trailing user turn (crash/cancel before any
+      // reply) and the user re-sends identical text, this self-corrects — the new
+      // prompt is written to the transcript near-instantly, becoming the trailing
+      // turn, at which point suppression of the (now redundant) synthesized copy
+      // is correct. The only-suppress-on-exact-trailing-match keeps the worst case
+      // a sub-second transient, never a stuck hidden prompt.
+      const persistedTurns = current.detail?.turns
+      const lastPersisted = persistedTurns?.[persistedTurns.length - 1]
+      if (
+        lastPersisted?.role === "user" &&
+        userTurnContentKey(lastPersisted) === userTurnContentKey(action.turn)
+      ) {
+        return state
+      }
+      // Append as an optimistic turn so it flows through the EXISTING promotion
+      // (COMPLETE_TURN → localTurns) and reset-on-fetch machinery, identical to
+      // the owner's own user turn. Deliberately does NOT set
+      // `syncState: "awaiting_persist"` — the viewer didn't send, so a later
+      // detail fetch should cleanly replace the synthesized turn with persisted
+      // truth (awaiting_persist would preserve it and risk a duplicate).
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        optimisticTurns: [...s.optimisticTurns, action.turn],
+      }))
+    }
 
     case "SET_LIVE_MESSAGE": {
       const current = state.byConversationId.get(action.conversationId)
@@ -1155,6 +1322,13 @@ interface ConversationRuntimeContextValue {
     turn: MessageTurn,
     turnToken: string
   ) => void
+  /** Roll back an optimistic user turn that never reached the backend (e.g. a
+   *  send rejected as "turn in progress", whose draft is being re-queued). */
+  removeOptimisticTurn: (conversationId: number, id: string) => void
+  /** Cross-client VIEWER: synthesize the sender's user turn from a broadcast
+   *  `user_message` / snapshot. No-op on the sender (sender-guarded + idempotent
+   *  in the reducer). */
+  appendViewerUserTurn: (conversationId: number, turn: MessageTurn) => void
   setLiveMessage: (
     conversationId: number,
     liveMessage: LiveMessage | null,
@@ -1272,7 +1446,46 @@ export function ConversationRuntimeProvider({
         hasLiveOrLocalReply && firstAssistantIdx !== -1
           ? rawPersistedTurns.slice(0, firstAssistantIdx)
           : rawPersistedTurns
-      const persisted: ConversationTimelineTurn[] = persistedTurns.map(
+
+      // Suppress the persisted PARTIAL in-flight reply for a non-delegation
+      // cross-client viewer. While a reply is streaming, some agents (OpenCode,
+      // Gemini) persist a partial assistant turn for it under a parser id; loaded
+      // into `detail` it sits beside the live reply (a separate assistant turn
+      // under a `live-…` id), and `mergeConsecutiveAssistantTurns` concatenates
+      // the two — so the already-persisted head (e.g. the first reasoning block)
+      // renders twice. Hide that persisted partial, but ONLY while `liveMessage`
+      // is in hand: the live stream carries the full reply (the attach snapshot is
+      // built atomically and includes it), so this only ever hides from render
+      // what the live stream is concurrently showing — never dropping a reply we
+      // can't re-show. The moment the turn ends, `liveMessage` clears and the
+      // persisted copy (now complete) renders normally; the brief promote→refetch
+      // grace window can show a transient visible duplicate, never a hidden turn.
+      //
+      // The in-flight prompt is identified authoritatively by the backend, which
+      // reports the id of the persisted user turn it stamped as the in-flight one
+      // (`detail.in_flight_user_turn_id`). This is robust where a frontend anchor
+      // is not: the viewer's synthesized prompt may be suppressed (the persisted
+      // copy already carries the broadcast id), and `liveMessage.startedAt` is the
+      // client clock on the streaming path — neither can locate the prompt across
+      // machines. When the new prompt isn't persisted yet the backend reports no
+      // id, so an earlier completed round's reply is never mistaken for a partial.
+      const inFlightPromptId = session.detail?.in_flight_user_turn_id ?? null
+      const inFlightPromptIdx =
+        !hasLiveOrLocalReply &&
+        session.liveMessage !== null &&
+        inFlightPromptId !== null
+          ? persistedTurns.findIndex(
+              (t) => t.role === "user" && t.id === inFlightPromptId
+            )
+          : -1
+      const visiblePersistedTurns =
+        inFlightPromptIdx === -1
+          ? persistedTurns
+          : persistedTurns.filter(
+              (t, i) => i <= inFlightPromptIdx || t.role !== "assistant"
+            )
+
+      const persisted: ConversationTimelineTurn[] = visiblePersistedTurns.map(
         (turn, index) => ({
           key: `persisted-${conversationId}-${turn.id}-${index}`,
           turn,
@@ -1361,18 +1574,48 @@ export function ConversationRuntimeProvider({
       // liveMessage, so they share `live-<cid>-<liveMessageId>[-i]` ids.
       // Rendering both duplicates the whole assistant turn (visible doubling +
       // React duplicate-key warnings once `mergeConsecutiveAssistantTurns`
-      // flat-maps their parts). Keep the LAST occurrence of each id: the live
-      // streaming copy (appended last) wins over an earlier promoted snapshot,
-      // and a re-promoted local turn wins over its stale earlier copy. Real
-      // turns always have distinct ids (liveMessage.id is minted fresh per
+      // flat-maps their parts).
+      //
+      // Retain rule is role-aware (all entries sharing an id are the same
+      // underlying turn, so the role is unambiguous):
+      //   - ASSISTANT (and any non-user): keep the LAST occurrence. The live
+      //     streaming copy (appended last) wins over an earlier promoted
+      //     snapshot, and a re-promoted local turn wins over its stale copy.
+      //   - USER: keep the FIRST occurrence. When the detail endpoint stamps the
+      //     persisted in-flight user turn with the broadcast id, that persisted
+      //     copy is emitted first, in its correct position before any partial
+      //     assistant reply; a same-id optimistic/synthesized copy is appended
+      //     later (and, for the sender, survives a mid-turn `awaiting_persist`
+      //     refetch). Keeping the persisted copy preserves ordering — otherwise
+      //     the prompt would render after its own streaming reply.
+      // Real turns always have distinct ids (liveMessage.id is minted fresh per
       // prompt cycle, DB turn ids are unique), so a normal multi-turn timeline
       // has no collisions and is returned untouched.
-      const lastIndexById = new Map<string, number>()
-      result.forEach((entry, i) => lastIndexById.set(entry.turn.id, i))
+      //
+      // The key includes the role, not just the id, so the merge only ever
+      // collapses entries that are genuinely the same turn (same id AND role).
+      // Should two DIFFERENT-role turns ever share an id — only reachable via a
+      // client id that collided into another namespace — they are kept separately
+      // (a recoverable visible duplicate) instead of one silently overwriting the
+      // other, which could hide a user prompt.
+      const retainKey = (turn: MessageTurn) =>
+        JSON.stringify([turn.role, turn.id])
+      const retainIndexByKey = new Map<string, number>()
+      result.forEach((entry, i) => {
+        const key = retainKey(entry.turn)
+        const existing = retainIndexByKey.get(key)
+        // First sighting always records; later sightings overwrite only for
+        // non-user turns (keep-last). User turns keep their first index.
+        if (existing === undefined || entry.turn.role !== "user") {
+          retainIndexByKey.set(key, i)
+        }
+      })
       const deduped =
-        lastIndexById.size === result.length
+        retainIndexByKey.size === result.length
           ? result
-          : result.filter((entry, i) => lastIndexById.get(entry.turn.id) === i)
+          : result.filter(
+              (entry, i) => retainIndexByKey.get(retainKey(entry.turn)) === i
+            )
 
       timelineCacheRef.current.set(session, deduped)
       return deduped
@@ -1640,6 +1883,20 @@ export function ConversationRuntimeProvider({
     []
   )
 
+  const removeOptimisticTurn = useCallback(
+    (conversationId: number, id: string) => {
+      dispatch({ type: "REMOVE_OPTIMISTIC_TURN", conversationId, id })
+    },
+    []
+  )
+
+  const appendViewerUserTurn = useCallback(
+    (conversationId: number, turn: MessageTurn) => {
+      dispatch({ type: "APPEND_VIEWER_USER_TURN", conversationId, turn })
+    },
+    []
+  )
+
   const setLiveMessage = useCallback(
     (
       conversationId: number,
@@ -1732,6 +1989,8 @@ export function ConversationRuntimeProvider({
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,
+      removeOptimisticTurn,
+      appendViewerUserTurn,
       setLiveMessage,
       setExternalId,
       setSyncState,
@@ -1751,6 +2010,8 @@ export function ConversationRuntimeProvider({
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,
+      removeOptimisticTurn,
+      appendViewerUserTurn,
       setLiveMessage,
       setExternalId,
       setSyncState,

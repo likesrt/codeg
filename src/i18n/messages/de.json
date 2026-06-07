@@ -136,6 +136,9 @@
     "restartTimeout": "Der Server ist nicht rechtzeitig zurückgekehrt. Prüfe die Container- oder Dienstprotokolle.",
     "restartingIn": "Neustart in {seconds} s...",
     "waitingForServer": "Warten, bis der Server zurückkehrt...",
+    "restartToUpdate": "Zum Aktualisieren neu starten",
+    "updateReadyHint": "Update heruntergeladen – zum Anwenden neu starten.",
+    "restarting": "Neustart...",
     "dockerUpgradeHint": "Dies aktualisiert jetzt den laufenden Container. Beim Neuerstellen des Containers geht es verloren – zum Beibehalten ein Image mit der neuen Version ziehen oder bauen und den Container neu erstellen.",
     "upgradeRolledBack": "Upgrade fehlgeschlagen; der Server wurde auf die vorherige Version zurückgesetzt.",
     "serverUnreachable": "Der Server konnte für das Upgrade nicht erreicht werden. Prüfe, ob er läuft, und versuche es erneut.",
@@ -1158,7 +1161,10 @@
       "loadingEditor": "Editor wird geladen...",
       "imageZoomIn": "Vergrößern",
       "imageZoomOut": "Verkleinern",
-      "imageZoomReset": "Zoom zurücksetzen"
+      "imageZoomReset": "Zoom zurücksetzen",
+      "htmlPreviewTitle": "HTML-Vorschau",
+      "htmlPreviewTrust": "Skripte aktivieren",
+      "htmlPreviewTrustHint": "Skripte dieser Datei ausführen und Netzwerkzugriff erlauben. Nur für vertrauenswürdige Dateien aktivieren."
     },
     "branchDropdown": {
       "toasts": {
@@ -1509,6 +1515,7 @@
       "newDirectory": "Verzeichnis",
       "openIn": "Öffnen in",
       "openInTerminal": "Im Terminal öffnen",
+      "copyPath": "Pfad kopieren",
       "upload": "Dateien/Ordner hochladen",
       "download": "Datei herunterladen",
       "downloadAsZip": "Als ZIP herunterladen",
@@ -1545,7 +1552,9 @@
         "downloadFailed": "Herunterladen von {name} fehlgeschlagen",
         "downloadSaved": "{name} heruntergeladen",
         "pasteFailed": "Einfügen fehlgeschlagen",
-        "pasteSucceeded": "Einfügen abgeschlossen"
+        "pasteSucceeded": "Einfügen abgeschlossen",
+        "pathCopied": "Pfad kopiert",
+        "copyPathFailed": "Pfad konnte nicht kopiert werden"
       },
       "createDialog": {
         "newFile": "Neue Datei",
@@ -1831,6 +1840,12 @@
       "agentSelector": {
         "noEnabledAgents": "Keine aktivierten Agenten",
         "openAgentsSettings": "Agenten-Einstellungen öffnen"
+      },
+      "subAgentOverlay": {
+        "title": "Subagenten",
+        "collapsedSummary": "Subagenten {count}",
+        "collapseAria": "Subagenten einklappen",
+        "expandAria": "Subagenten ausklappen"
       },
       "agentPlanOverlay": {
         "title": "Agentenplan",
@@ -2362,8 +2377,35 @@
       "turnCompleteDesc": "Wenn eine Agentenrunde endet",
       "error": "Agentenfehler",
       "errorDesc": "Wenn ein Agent einen Fehler feststellt",
+      "permissionRequest": "Berechtigungsanfrage",
+      "permissionRequestDesc": "Wenn ein Agent eine Berechtigung anfordert",
+      "userPromptSent": "Benutzernachricht",
+      "userPromptSentDesc": "Wenn du eine Nachricht sendest – der Nachrichtentext ist in der Benachrichtigung enthalten",
       "saved": "Ereignisfilter aktualisiert.",
-      "saveFailed": "Fehler beim Speichern des Ereignisfilters."
+      "saveFailed": "Fehler beim Speichern des Ereignisfilters.",
+      "loadFailed": "Einstellungen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Sendet bei einem aktivierten Ereignis eine JSON-Nutzlast per POST an eine oder mehrere URLs. Der Ereignisfilter oben gilt auch für Webhooks.",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "Webhook hinzufügen",
+      "removeWebhook": "Webhook entfernen",
+      "webhookSave": "Speichern",
+      "webhooksSaved": "Webhooks gespeichert.",
+      "webhooksSaveFailed": "Fehler beim Speichern der Webhooks.",
+      "webhookInvalidUrl": "Gültige http(s)-URLs eingeben.",
+      "docsTitle": "Anfrageformat",
+      "docsMethod": "Methode",
+      "docsContentType": "Content-Type",
+      "docsNote": "Jedes aktivierte Ereignis wird an alle URLs gesendet. Webhooks werden nicht entprellt; der Ereignisfilter oben gilt weiterhin.",
+      "editWebhook": "Webhook bearbeiten",
+      "enableWebhook": "Webhook aktivieren",
+      "webhookDuplicate": "Diese URL ist bereits konfiguriert.",
+      "cancel": "Abbrechen",
+      "webhooksEmpty": "Noch keine Webhooks konfiguriert.",
+      "deleteWebhookTitle": "Webhook löschen",
+      "deleteWebhookMessage": "Diesen Webhook entfernen? Ereignisse werden nicht mehr an diese URL gesendet.",
+      "delete": "Löschen"
     },
     "language": {
       "title": "Nachrichtensprache",
@@ -2661,5 +2703,91 @@
     "emptyDirectory": "Dieses Verzeichnis ist leer",
     "errorLoadingDir": "Verzeichnis konnte nicht geladen werden",
     "selectedCount": "{count} ausgewählt"
+  },
+  "BackupSettings": {
+    "title": "Sicherung & Wiederherstellung",
+    "description": "Exportiere eine portable Sicherung deiner codeg-Daten oder stelle aus einer Sicherung wieder her.",
+    "tabs": {
+      "backup": "Sicherung",
+      "restore": "Wiederherstellung"
+    },
+    "export": {
+      "includeExternal": "Gesprächsinhalte einschließen",
+      "includeExternalHint": "Archiviert auch die CLI-Transkripte (Claude, Codex, Gemini, …). Erhöht die Größe.",
+      "passphrase": "Passphrase (optional)",
+      "passphrasePlaceholder": "Leer lassen für ein unverschlüsseltes Archiv",
+      "passphraseConfirm": "Passphrase bestätigen",
+      "passphraseMismatch": "Die Passphrasen stimmen nicht überein.",
+      "noPassphraseWarning": "Diese Sicherung enthält Geheimnisse (API-Schlüssel, Tokens) im Klartext. Bewahre sie sicher auf.",
+      "passphraseLossWarning": "Mit dieser Passphrase verschlüsselt. Wenn du sie verlierst, kann die Sicherung nicht wiederhergestellt werden.",
+      "button": "Sicherung exportieren",
+      "inProgress": "Sicherung wird erstellt…",
+      "success": "Sicherung erstellt.",
+      "started": "Download der Sicherung gestartet."
+    },
+    "restore": {
+      "selectFile": "Sicherungsdatei auswählen",
+      "passphrasePrompt": "Diese Sicherung ist verschlüsselt. Gib ihre Passphrase ein.",
+      "unlock": "Entsperren",
+      "preview": {
+        "title": "Sicherungsdetails",
+        "encrypted": "Verschlüsselt",
+        "compatible": "Kompatibel",
+        "incompatible": "Inkompatibel",
+        "createdAt": "Erstellt: {value}",
+        "appVersion": "App-Version: {value}",
+        "incompatibleHint": "Diese Sicherung wurde mit einer neueren Version von codeg erstellt und kann nicht wiederhergestellt werden."
+      },
+      "replaceWarning": "Beim Wiederherstellen werden alle aktuellen codeg-Daten (Datenbank und Uploads) ersetzt. Deine aktuellen Daten werden zuvor als Snapshot gesichert.",
+      "keyringNote": "GitHub-/Chat-Tokens der Desktop-App liegen im Schlüsselbund des Betriebssystems und sind nicht enthalten; gib sie nach dem Wiederherstellen erneut ein.",
+      "button": "Wiederherstellen",
+      "staging": "Wiederherstellung wird vorbereitet…",
+      "staged": "Wiederherstellung vorbereitet. Neustart…",
+      "restarting": "Wiederherstellung vorbereitet. Server wird neu gestartet…",
+      "restartTimeout": "Der Server kam nicht rechtzeitig zurück. Lade die Seite neu, sobald er läuft.",
+      "externalSideLocation": "Gesprächstranskripte wurden nach {path} wiederhergestellt",
+      "confirmTitle": "Alle Daten ersetzen?",
+      "confirmBody": "Dadurch werden deine aktuelle codeg-Datenbank und Uploads durch die Sicherung ersetzt und anschließend neu gestartet. Deine aktuellen Daten werden zuvor als Snapshot gesichert.",
+      "cancel": "Abbrechen",
+      "confirmAction": "Ersetzen & neu starten",
+      "external": {
+        "title": "Gesprächsinhalte",
+        "hint": "Diese Sicherung enthält CLI-Transkripte. Wähle, wohin sie wiederhergestellt werden.",
+        "modeSkip": "Nicht wiederherstellen",
+        "modeSide": "In einen sicheren Nebenordner wiederherstellen",
+        "modeOriginal": "An den ursprünglichen CLI-Speicherorten wiederherstellen",
+        "forceOverwrite": "Vorhandene Dateien überschreiben",
+        "forceOverwriteHint": "Ersetzt Dateien, die bereits in den CLI-Ordnern vorhanden sind.",
+        "scanning": "Konflikte werden geprüft…",
+        "noConflicts": "Es werden keine vorhandenen Dateien überschrieben.",
+        "conflictCount": "{count} vorhandene Datei(en) wären betroffen.",
+        "conflictSkipNote": "Vorhandene Dateien bleiben erhalten (übersprungen), sofern du das Überschreiben nicht aktivierst."
+      },
+      "restartFailed": "Wiederherstellung vorbereitet, aber der Server konnte nicht neu starten. Starte ihn manuell neu, um sie anzuwenden."
+    },
+    "remoteUnsupported": "Sicherung & Wiederherstellung wirken auf die Daten des Rechners, auf dem codeg läuft. Du bist mit einem entfernten Arbeitsbereich verbunden – verwalte dessen Sicherungen direkt auf jenem Server."
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "Falsche Passphrase oder beschädigte Sicherung.",
+        "corrupted": "Das Sicherungsarchiv ist beschädigt.",
+        "unknownFormat": "Diese Datei ist keine erkannte codeg-Sicherung.",
+        "newerVersion": "Diese Sicherung wurde mit codeg {backupVersion} erstellt, neuer als diese Version ({appVersion}).",
+        "alreadyPending": "Es ist bereits eine Wiederherstellung vorbereitet. Starte neu, um sie anzuwenden, bevor du eine weitere vorbereitest."
+      }
+    },
+    "error": {
+      "diskSpace": "Nicht genügend Speicherplatz, um den Vorgang abzuschließen.",
+      "cancelled": "Der Vorgang wurde abgebrochen."
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Verbindung getrennt",
+    "reconnectingDescription": "Verbindung zum Server wird wiederhergestellt. Das geschieht normalerweise innerhalb weniger Sekunden automatisch.",
+    "reconnectNow": "Jetzt neu verbinden",
+    "sessionExpiredTitle": "Sitzung abgelaufen",
+    "sessionExpiredDescription": "Deine Sitzung ist nicht mehr gültig. Bitte melde dich erneut an, um fortzufahren.",
+    "goToLogin": "Zur Anmeldung"
   }
 }

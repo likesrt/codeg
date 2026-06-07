@@ -49,10 +49,19 @@ pub struct AppState {
     /// download/swap already in flight. Handlers `try_lock` and reject when
     /// held (an upgrade is already running).
     pub system_op_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Source of truth for an in-flight / completed app self-update, shared by
+    /// the desktop (tauri-plugin-updater) and server (in-place swap) paths.
+    /// The upgrade UI subscribes to it and re-syncs from a snapshot on mount,
+    /// so download progress survives settings-page navigation and reloads.
+    pub update_state: crate::update::AppUpdateStateHandle,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
     Arc::new(tokio::sync::Mutex::new(()))
+}
+
+pub fn default_update_state() -> crate::update::AppUpdateStateHandle {
+    crate::update::new_update_state_handle()
 }
 
 pub fn default_connection_manager() -> ConnectionManager {
@@ -174,6 +183,7 @@ impl AppState {
             delegation_tokens,
             delegation_socket_path,
             system_op_lock: default_system_op_lock(),
+            update_state: default_update_state(),
         }
     }
 }

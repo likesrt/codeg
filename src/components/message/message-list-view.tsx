@@ -20,6 +20,10 @@ import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { useSessionStats } from "@/contexts/session-stats-context"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
+import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
+import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { isDelegateToAgentToolName } from "@/lib/delegation-card"
+import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
 import {
   MessageThread,
   MessageThreadScrollButton,
@@ -110,6 +114,49 @@ type ThreadRenderItem =
 // Module-scope so the reference is stable across renders — lets the memoized
 // VirtualizedMessageThread bail out when `items` is unchanged.
 const getThreadItemKey = (item: ThreadRenderItem) => item.key
+
+// Stable empty reference so the SubAgentOverlay memo can bail out when there
+// are no delegations in the last reply.
+const EMPTY_DELEGATIONS: DelegationCardSource[] = []
+
+// Collect the `delegate_to_agent` tool calls within a turn's adapted parts,
+// recursing through tool-groups and goal-runs (a delegate call is normally a
+// standalone part — `isAgentLikeToolName` keeps it out of tool-groups — but we
+// scan nested containers defensively so a delegation is never missed).
+function collectDelegationSources(
+  parts: AdaptedContentPart[],
+  out: DelegationCardSource[]
+): void {
+  for (const part of parts) {
+    if (part.type === "tool-call") {
+      if (
+        part.toolCallId &&
+        isDelegateToAgentToolName(normalizeToolName(part.toolName))
+      ) {
+        out.push({
+          parentToolUseId: part.toolCallId,
+          input: part.input ?? null,
+          output: part.output ?? null,
+          errorText: part.errorText ?? null,
+          state: part.state,
+          meta: part.meta ?? null,
+        })
+      }
+    } else if (part.type === "tool-group") {
+      collectDelegationSources(part.items, out)
+    } else if (part.type === "goal-run") {
+      collectDelegationSources(part.items, out)
+    }
+  }
+}
+
+function extractDelegationSources(
+  parts: AdaptedContentPart[]
+): DelegationCardSource[] {
+  const out: DelegationCardSource[] = []
+  collectDelegationSources(parts, out)
+  return out
+}
 
 const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
   group,
@@ -632,7 +679,43 @@ export function MessageListView({
     [hideEmptyState, t]
   )
 
-  const agentPlanOverlayKey = liveMessage?.id ?? `history-${conversationId}`
+  // Namespaced with `plan-` so this key can never equal `subAgentOverlayKey`
+  // below: the two overlays are siblings in one container, and both fall back
+  // to a per-conversation string when there's no live message / assistant reply
+  // yet (the state a freshly-opened sub-agent dialog starts in). Without
+  // disjoint namespaces those fallbacks collide → React "two children with the
+  // same key".
+  const agentPlanOverlayKey =
+    liveMessage?.id != null
+      ? `plan-${liveMessage.id}`
+      : `plan-history-${conversationId}`
+
+  // Sub-agents delegated in the LAST agent reply. Scan the merged timeline
+  // backward for the most recent assistant turn (the live streaming turn is
+  // merged in too, so this covers both live and historical), and pull its
+  // `delegate_to_agent` tool calls. The overlay shows only while the last reply
+  // carries delegation cards — a newer non-delegating reply clears it.
+  const lastAssistantGroup = useMemo(() => {
+    let group: ResolvedMessageGroup | null = null
+    for (let i = threadItems.length - 1; i >= 0; i -= 1) {
+      const item = threadItems[i]
+      if (item.kind === "turn" && item.group.role === "assistant") {
+        group = item.group
+        break
+      }
+    }
+    return group
+  }, [threadItems])
+  const lastAssistantDelegations = useMemo(
+    () =>
+      lastAssistantGroup
+        ? extractDelegationSources(lastAssistantGroup.parts)
+        : EMPTY_DELEGATIONS,
+    [lastAssistantGroup]
+  )
+  const subAgentOverlayKey = lastAssistantGroup
+    ? `subagents-${lastAssistantGroup.id}`
+    : `subagents-history-${conversationId}`
 
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
 
@@ -726,14 +809,25 @@ export function MessageListView({
           isStreaming={connStatus === "prompting"}
         />
       )}
-      <AgentPlanOverlay
-        key={agentPlanOverlayKey}
-        message={liveMessage ?? null}
-        entries={historicalPlanEntries}
-        planKey={historicalPlanKey}
-        defaultExpanded={false}
-        isStreaming={connStatus === "prompting"}
-      />
+      {/* Shared overlay stack: the plan panel on top, the sub-agent panel
+          below it. A flex column keeps the order stable regardless of each
+          panel's expand/collapse height; empty panels render null and collapse
+          out. Positioning lives here (not in the child overlays). */}
+      <div className="pointer-events-none absolute right-8 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-end gap-2">
+        <AgentPlanOverlay
+          key={agentPlanOverlayKey}
+          message={liveMessage ?? null}
+          entries={historicalPlanEntries}
+          planKey={historicalPlanKey}
+          defaultExpanded={false}
+          isStreaming={connStatus === "prompting"}
+        />
+        <SubAgentOverlay
+          key={subAgentOverlayKey}
+          delegations={lastAssistantDelegations}
+          overlayKey={subAgentOverlayKey}
+        />
+      </div>
     </div>
   )
 }

@@ -101,7 +101,12 @@ pub async fn remove_folder_from_workspace(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<FolderIdParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::remove_folder_from_workspace_core(&state.db, params.folder_id).await?;
+    folder_commands::remove_folder_from_workspace_core(
+        &state.emitter,
+        &state.db,
+        params.folder_id,
+    )
+    .await?;
     Ok(Json(()))
 }
 

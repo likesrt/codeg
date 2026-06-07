@@ -136,6 +136,9 @@
     "restartTimeout": "El servidor no volvió a tiempo. Revisa los registros del contenedor o del servicio.",
     "restartingIn": "Reiniciando en {seconds} s...",
     "waitingForServer": "Esperando a que el servidor vuelva...",
+    "restartToUpdate": "Reiniciar para actualizar",
+    "updateReadyHint": "Actualización descargada: reinicia para aplicarla.",
+    "restarting": "Reiniciando...",
     "dockerUpgradeHint": "Esto actualiza el contenedor en ejecución ahora. Se pierde si se recrea el contenedor: para conservarlo, descarga o crea una imagen con la nueva versión y recrea el contenedor.",
     "upgradeRolledBack": "La actualización falló; el servidor volvió a la versión anterior.",
     "serverUnreachable": "No se pudo conectar con el servidor para iniciar la actualización. Comprueba que esté en ejecución e inténtalo de nuevo.",
@@ -1158,7 +1161,10 @@
       "loadingEditor": "Cargando editor...",
       "imageZoomIn": "Ampliar",
       "imageZoomOut": "Reducir",
-      "imageZoomReset": "Restablecer zoom"
+      "imageZoomReset": "Restablecer zoom",
+      "htmlPreviewTitle": "Vista previa HTML",
+      "htmlPreviewTrust": "Habilitar scripts",
+      "htmlPreviewTrustHint": "Ejecuta los scripts de este archivo y permite el acceso a la red. Actívalo solo para archivos de confianza."
     },
     "branchDropdown": {
       "toasts": {
@@ -1509,6 +1515,7 @@
       "newDirectory": "Directorio",
       "openIn": "Abrir en",
       "openInTerminal": "Abrir en terminal",
+      "copyPath": "Copiar ruta",
       "upload": "Subir archivos/carpeta",
       "download": "Descargar archivo",
       "downloadAsZip": "Descargar como ZIP",
@@ -1545,7 +1552,9 @@
         "downloadFailed": "No se pudo descargar {name}",
         "downloadSaved": "{name} descargado",
         "pasteFailed": "Error al pegar",
-        "pasteSucceeded": "Pegado completado"
+        "pasteSucceeded": "Pegado completado",
+        "pathCopied": "Ruta copiada",
+        "copyPathFailed": "No se pudo copiar la ruta"
       },
       "createDialog": {
         "newFile": "Nuevo archivo",
@@ -1831,6 +1840,12 @@
       "agentSelector": {
         "noEnabledAgents": "No hay agentes habilitados",
         "openAgentsSettings": "Abrir ajustes de agentes"
+      },
+      "subAgentOverlay": {
+        "title": "Subagentes",
+        "collapsedSummary": "Subagentes {count}",
+        "collapseAria": "Contraer subagentes",
+        "expandAria": "Expandir subagentes"
       },
       "agentPlanOverlay": {
         "title": "Plan del agente",
@@ -2362,8 +2377,35 @@
       "turnCompleteDesc": "Cuando finaliza un turno del agente",
       "error": "Error del agente",
       "errorDesc": "Cuando un agente encuentra un error",
+      "permissionRequest": "Solicitud de permiso",
+      "permissionRequestDesc": "Cuando un agente solicita permiso para actuar",
+      "userPromptSent": "Mensaje del usuario",
+      "userPromptSentDesc": "Cuando envías un mensaje (el texto del mensaje se incluye en la notificación)",
       "saved": "Filtro de eventos actualizado.",
-      "saveFailed": "Error al guardar el filtro de eventos."
+      "saveFailed": "Error al guardar el filtro de eventos.",
+      "loadFailed": "No se pudo cargar la configuración.",
+      "retry": "Reintentar",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Envía una carga JSON por POST a una o varias URL cuando se activa un evento habilitado. El filtro de eventos anterior también se aplica a los webhooks.",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "Agregar webhook",
+      "removeWebhook": "Eliminar webhook",
+      "webhookSave": "Guardar",
+      "webhooksSaved": "Webhooks guardados.",
+      "webhooksSaveFailed": "Error al guardar los webhooks.",
+      "webhookInvalidUrl": "Introduce URL http(s) válidas.",
+      "docsTitle": "Formato de solicitud",
+      "docsMethod": "Método",
+      "docsContentType": "Content-Type",
+      "docsNote": "Cada evento habilitado se entrega a todas las URL. Los webhooks no tienen antirrebote; el filtro de eventos anterior sigue aplicándose.",
+      "editWebhook": "Editar webhook",
+      "enableWebhook": "Activar webhook",
+      "webhookDuplicate": "Esta URL ya está configurada.",
+      "cancel": "Cancelar",
+      "webhooksEmpty": "Aún no hay webhooks configurados.",
+      "deleteWebhookTitle": "Eliminar webhook",
+      "deleteWebhookMessage": "¿Eliminar este webhook? Los eventos ya no se enviarán a esta URL.",
+      "delete": "Eliminar"
     },
     "language": {
       "title": "Idioma de mensajes",
@@ -2661,5 +2703,91 @@
     "emptyDirectory": "Este directorio está vacío",
     "errorLoadingDir": "Error al cargar el directorio",
     "selectedCount": "{count} seleccionado(s)"
+  },
+  "BackupSettings": {
+    "title": "Copia de seguridad y restauración",
+    "description": "Exporta una copia de seguridad portátil de tus datos de codeg, o restaura desde una.",
+    "tabs": {
+      "backup": "Copia de seguridad",
+      "restore": "Restaurar"
+    },
+    "export": {
+      "includeExternal": "Incluir el contenido de las conversaciones",
+      "includeExternalHint": "También archiva las transcripciones de las CLI (Claude, Codex, Gemini, …). Aumenta el tamaño.",
+      "passphrase": "Frase de contraseña (opcional)",
+      "passphrasePlaceholder": "Déjala vacía para un archivo sin cifrar",
+      "passphraseConfirm": "Confirmar la frase de contraseña",
+      "passphraseMismatch": "Las frases de contraseña no coinciden.",
+      "noPassphraseWarning": "Esta copia contendrá secretos (claves de API, tokens) en texto plano. Guárdala en un lugar seguro.",
+      "passphraseLossWarning": "Cifrada con esta frase de contraseña. Si la pierdes, la copia no se podrá recuperar.",
+      "button": "Exportar copia",
+      "inProgress": "Creando copia de seguridad…",
+      "success": "Copia de seguridad creada.",
+      "started": "Descarga de la copia iniciada."
+    },
+    "restore": {
+      "selectFile": "Seleccionar archivo de copia",
+      "passphrasePrompt": "Esta copia está cifrada. Introduce su frase de contraseña.",
+      "unlock": "Desbloquear",
+      "preview": {
+        "title": "Detalles de la copia",
+        "encrypted": "Cifrada",
+        "compatible": "Compatible",
+        "incompatible": "Incompatible",
+        "createdAt": "Creada: {value}",
+        "appVersion": "Versión de la app: {value}",
+        "incompatibleHint": "Esta copia fue creada por una versión más reciente de codeg y no se puede restaurar."
+      },
+      "replaceWarning": "Restaurar reemplaza todos los datos actuales de codeg (base de datos y subidas). Tus datos actuales se guardan primero en una instantánea para poder recuperarlos.",
+      "keyringNote": "Los tokens de GitHub/chat del escritorio están en el llavero del sistema y no se incluyen; vuelve a introducirlos tras restaurar.",
+      "button": "Restaurar",
+      "staging": "Preparando la restauración…",
+      "staged": "Restauración preparada. Reiniciando…",
+      "restarting": "Restauración preparada. Reiniciando el servidor…",
+      "restartTimeout": "El servidor no volvió a tiempo. Recarga la página cuando esté activo.",
+      "externalSideLocation": "Las transcripciones de conversaciones se restauraron en {path}",
+      "confirmTitle": "¿Reemplazar todos los datos?",
+      "confirmBody": "Esto reemplazará tu base de datos y subidas actuales de codeg con la copia y luego reiniciará. Tus datos actuales se guardan primero en una instantánea.",
+      "cancel": "Cancelar",
+      "confirmAction": "Reemplazar y reiniciar",
+      "external": {
+        "title": "Contenido de las conversaciones",
+        "hint": "Esta copia incluye transcripciones de las CLI. Elige dónde restaurarlas.",
+        "modeSkip": "No restaurar",
+        "modeSide": "Restaurar en una carpeta aparte segura",
+        "modeOriginal": "Restaurar en las ubicaciones originales de las CLI",
+        "forceOverwrite": "Sobrescribir archivos existentes",
+        "forceOverwriteHint": "Reemplaza los archivos que ya existen en las carpetas de las CLI.",
+        "scanning": "Comprobando conflictos…",
+        "noConflicts": "No se sobrescribirá ningún archivo existente.",
+        "conflictCount": "Se verían afectados {count} archivo(s) existente(s).",
+        "conflictSkipNote": "Los archivos existentes se conservan (se omiten) salvo que actives la sobrescritura."
+      },
+      "restartFailed": "La restauración quedó preparada, pero el servidor no pudo reiniciarse. Reinícialo manualmente para aplicarla."
+    },
+    "remoteUnsupported": "La copia de seguridad y la restauración actúan sobre los datos de la máquina que ejecuta codeg. Estás conectado a un espacio de trabajo remoto: gestiona sus copias desde ese servidor directamente."
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "Frase de contraseña incorrecta o copia dañada.",
+        "corrupted": "El archivo de copia de seguridad está dañado.",
+        "unknownFormat": "Este archivo no es una copia de seguridad de codeg reconocida.",
+        "newerVersion": "Esta copia fue creada por codeg {backupVersion}, más reciente que esta versión ({appVersion}).",
+        "alreadyPending": "Ya hay una restauración preparada. Reinicia para aplicarla antes de preparar otra."
+      }
+    },
+    "error": {
+      "diskSpace": "No hay espacio en disco suficiente para completar la operación.",
+      "cancelled": "La operación fue cancelada."
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Conexión perdida",
+    "reconnectingDescription": "Intentando volver a conectar con el servidor. Normalmente se recupera solo en unos segundos.",
+    "reconnectNow": "Volver a conectar ahora",
+    "sessionExpiredTitle": "Sesión caducada",
+    "sessionExpiredDescription": "Tu sesión ya no es válida. Inicia sesión de nuevo para continuar.",
+    "goToLogin": "Ir al inicio de sesión"
   }
 }

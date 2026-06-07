@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { FileTreeTab, RenderNode } from "./aux-panel-file-tree-tab"
 import { pasteFileTreeEntry, previewPasteFileTreeEntry } from "@/lib/api"
-import { copyTextToClipboard } from "@/lib/utils"
+import { copyTextFromMenu } from "@/lib/utils"
 
 const mockContext = vi.hoisted(() => {
   const store = {
@@ -156,7 +156,7 @@ vi.mock("@/lib/utils", async () => {
     await vi.importActual<typeof import("@/lib/utils")>("@/lib/utils")
   return {
     ...actual,
-    copyTextToClipboard: vi.fn(async () => true),
+    copyTextFromMenu: vi.fn(async () => true),
   }
 })
 
@@ -301,7 +301,7 @@ describe("RenderNode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
 
     await waitFor(() => {
-      expect(copyTextToClipboard).toHaveBeenCalledWith("src/app.ts")
+      expect(copyTextFromMenu).toHaveBeenCalledWith("src/app.ts")
     })
   })
 
@@ -342,7 +342,7 @@ describe("RenderNode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
 
     await waitFor(() => {
-      expect(copyTextToClipboard).toHaveBeenCalledWith(
+      expect(copyTextFromMenu).toHaveBeenCalledWith(
         "/home/me/project/src/app.ts"
       )
     })
@@ -390,7 +390,7 @@ describe("RenderNode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
 
     await waitFor(() => {
-      expect(copyTextToClipboard).toHaveBeenCalledWith("src/components")
+      expect(copyTextFromMenu).toHaveBeenCalledWith("src/components")
     })
   })
 
@@ -436,7 +436,7 @@ describe("RenderNode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
 
     await waitFor(() => {
-      expect(copyTextToClipboard).toHaveBeenCalledWith(
+      expect(copyTextFromMenu).toHaveBeenCalledWith(
         "/home/me/project/src/components"
       )
     })

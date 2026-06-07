@@ -34,6 +34,28 @@ pub struct OpenedTab {
     pub is_pinned: bool,
 }
 
+/// Response for `list_opened_tabs`: the persisted tab set plus the current
+/// workspace tab version. Clients seed their compare-and-set / echo logic from
+/// `version`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedTabsSnapshot {
+    pub items: Vec<OpenedTab>,
+    pub version: i64,
+}
+
+/// Response for `save_opened_tabs`: whether the compare-and-set was applied, the
+/// authoritative version after the call, and the canonical tab set. When
+/// `accepted` is false the save was stale (another client won) and `tabs` is the
+/// current truth to reconcile against.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTabsOutcome {
+    pub accepted: bool,
+    pub version: i64,
+    pub tabs: Vec<OpenedTab>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FolderCommandInfo {
     pub id: i32,

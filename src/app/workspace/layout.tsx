@@ -45,6 +45,7 @@ import {
   useWorkspaceContext,
 } from "@/contexts/workspace-context"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
+import { UpdateProvider } from "@/components/providers/update-provider"
 import { TabBar } from "@/components/tabs/tab-bar"
 import { TerminalPanel } from "@/components/terminal/terminal-panel"
 import { AuxPanel } from "@/components/layout/aux-panel"
@@ -837,7 +838,9 @@ export default function WorkspaceLayout({
   return (
     <Suspense>
       <RemoteConnectionGate>
-        <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
+        <UpdateProvider>
+          <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
+        </UpdateProvider>
       </RemoteConnectionGate>
     </Suspense>
   )

@@ -37,6 +37,7 @@ use crate::acp::types::{
     PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock, SessionConfigKindInfo,
     SessionConfigOptionInfo, SessionConfigSelectGroupInfo, SessionConfigSelectInfo,
     SessionConfigSelectOptionInfo, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
+    UserMessageBlock,
 };
 use crate::models::agent::AgentType;
 use crate::network::proxy;
@@ -75,6 +76,14 @@ fn merge_agent_env(
 pub enum ConnectionCommand {
     Prompt {
         blocks: Vec<PromptInputBlock>,
+        /// Pre-projected cross-client user-message broadcast (`message_id` +
+        /// user blocks), computed by the manager under the prompt lock. The
+        /// loop emits it as `AcpEvent::UserMessage` right before issuing the
+        /// agent request, so its seq strictly precedes the turn's assistant /
+        /// status events (viewers apply in seq order) and it only fires for a
+        /// prompt actually being processed. `None` for delegation children,
+        /// empty prompts, unbound conversations, and non-linked senders.
+        user_message: Option<(String, Vec<UserMessageBlock>)>,
     },
     SetMode {
         mode_id: String,
@@ -2782,9 +2791,18 @@ async fn run_conversation_loop<'a>(
             }
         };
         match cmd {
-            Some(ConnectionCommand::Prompt { blocks }) => {
+            Some(ConnectionCommand::Prompt {
+                blocks,
+                user_message,
+            }) => {
                 let prompt_blocks = map_prompt_blocks(blocks);
                 if prompt_blocks.is_empty() {
+                    // Defensive: the manager rejects empty prompts before the
+                    // concurrency gate is set / the command is enqueued (see
+                    // `send_prompt_inner`), and `map_prompt_blocks` is 1:1, so an
+                    // empty prompt should never reach here. If one ever did, it
+                    // would carry no turn-in-flight gate, so just surface the
+                    // error and keep the idle loop alive.
                     emit_with_state(
                         state,
                         emitter,
@@ -2809,6 +2827,20 @@ async fn run_conversation_loop<'a>(
                     },
                 )
                 .await;
+
+                // Broadcast the user's prompt to cross-client viewers BEFORE
+                // issuing the agent request. Emitting here (rather than at the
+                // manager enqueue site) guarantees its seq strictly precedes the
+                // turn's assistant/status events — viewers apply events in seq
+                // order, so otherwise the reply could render above the message.
+                // It also means a prompt that is never processed (rejected /
+                // dropped) broadcasts nothing. `apply_event` records it as
+                // `pending_user_message` so a client attaching mid-turn still
+                // renders the user turn from the snapshot.
+                if let Some((message_id, blocks)) = user_message {
+                    emit_with_state(state, emitter, AcpEvent::UserMessage { message_id, blocks })
+                        .await;
+                }
 
                 // Clone connection and session ID before entering the
                 // select loop so we can send CancelNotification without

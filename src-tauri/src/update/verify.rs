@@ -36,7 +36,8 @@ fn parse_public_key(minisign_pub_text: &str) -> Result<PublicKey, String> {
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
         .ok_or_else(|| "minisign public key text has no key line".to_string())?;
-    PublicKey::from_base64(key_line).map_err(|e| format!("failed to parse minisign public key: {e}"))
+    PublicKey::from_base64(key_line)
+        .map_err(|e| format!("failed to parse minisign public key: {e}"))
 }
 
 /// The embedded release-signing public key.

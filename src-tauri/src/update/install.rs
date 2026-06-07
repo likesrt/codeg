@@ -901,16 +901,12 @@ mod tests {
     #[test]
     fn sanitize_keeps_normal_paths() {
         let p = sanitize_entry_path(Path::new("codeg-server-linux-x64/web/index.html")).unwrap();
-        assert_eq!(
-            p,
-            PathBuf::from("codeg-server-linux-x64/web/index.html")
-        );
+        assert_eq!(p, PathBuf::from("codeg-server-linux-x64/web/index.html"));
     }
 
     /// Build a gzip'd tar with the given (path, bytes) regular-file entries.
     fn make_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut gz =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         {
             let mut builder = tar::Builder::new(&mut gz);
             for (name, data) in entries {
@@ -1022,10 +1018,13 @@ mod tests {
     #[test]
     fn asset_basename_is_known_for_supported_targets() {
         // At least the host target the tests run on must resolve.
-        assert!(asset_basename().is_some() || cfg!(not(any(
-            target_os = "linux",
-            target_os = "macos",
-            target_os = "windows"
-        ))));
+        assert!(
+            asset_basename().is_some()
+                || cfg!(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "windows"
+                )))
+        );
     }
 }

@@ -14,11 +14,6 @@ export function usesTauriUpdater(): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Update = any
 
-export type DownloadEvent =
-  | { event: "Started"; data: { contentLength?: number } }
-  | { event: "Progress"; data: { chunkLength: number } }
-  | { event: "Finished" }
-
 export type ServerUpdateCapability = "supervised" | "reexec"
 
 export interface AppUpdateCheckResult {
@@ -33,6 +28,12 @@ export interface AppUpdateCheckResult {
   runtime?: string
   restartDelayMs?: number
   rollbackAvailable?: boolean
+  // Whether the server speaks the detached `app_update_state` protocol
+  // (background download + progress events). Absent on servers older than this
+  // feature — a newer client must NOT drive the new in-place flow against them
+  // (their `perform_app_update` blocks and returns the legacy shape), and falls
+  // back to the "view release" affordance instead.
+  liveProgress?: boolean
 }
 
 // Local-only server self-update status, separate from {@link checkAppUpdate}
@@ -45,12 +46,74 @@ export interface ServerUpdateStatus {
   runtime: string
   restartDelayMs: number
   rollbackAvailable: boolean
+  liveProgress?: boolean
 }
 
-export interface ServerUpdateProgress {
-  phase: "downloading" | "verifying" | "extracting" | "swapping"
-  downloaded: number
-  total: number | null
+// ─── Unified, backend-owned update lifecycle ───────────────────────────────
+//
+// The backend (desktop tauri-plugin-updater OR server in-place swap) is the
+// single source of truth for an in-flight/completed update. The UI subscribes
+// to `app_update_state` and re-syncs from a snapshot on mount, so progress
+// survives navigating between settings pages, closing the page, or a reload.
+// Mirrors `src-tauri/src/update/state.rs` (camelCase over the wire).
+
+export type AppUpdateLifecycle =
+  | "idle"
+  | "downloading"
+  | "installing"
+  | "ready_to_restart"
+  | "restarting"
+  | "error"
+
+export interface AppUpdateState {
+  /** Monotonic; keep only the highest-seq snapshot/event seen. */
+  seq: number
+  status: AppUpdateLifecycle
+  /** Bytes downloaded so far (downloading only). */
+  downloaded?: number
+  /** Total bytes from Content-Length, if known. */
+  total?: number | null
+  /** Target version, once known. */
+  version?: string
+  /** Server-only: relaunch delay for the restart countdown. */
+  restartDelayMs?: number
+  /** Server-only: supervisor probation window. */
+  trialSeconds?: number
+  /** Server-only: how the restart is carried out. */
+  capability?: ServerUpdateCapability
+  /** Raw error message (error only); classify via {@link normalizeAppUpdateError}. */
+  error?: string
+}
+
+/** Snapshot of the current update state. Works in every mode: desktop reads a
+ * Tauri command, server/remote reads the HTTP handler. Call on mount to
+ * recover an in-flight download the UI would otherwise have lost. */
+export function getAppUpdateState(): Promise<AppUpdateState> {
+  return getTransport().call<AppUpdateState>("app_update_state")
+}
+
+/** Subscribe to live update-state transitions (download progress, ready,
+ * error, restarting). Arm this BEFORE the snapshot fetch so no event is
+ * missed. */
+export function subscribeAppUpdateState(
+  handler: (state: AppUpdateState) => void
+): Promise<() => void> {
+  return getTransport().subscribe<AppUpdateState>("app_update_state", handler)
+}
+
+/** Begin (or attach to) the download+install. Returns immediately with the
+ * current snapshot; progress arrives via {@link subscribeAppUpdateState}. The
+ * download runs detached in the backend, so it is not bound to this call's
+ * lifetime. */
+export function startAppUpdate(): Promise<AppUpdateState> {
+  return getTransport().call<AppUpdateState>("perform_app_update")
+}
+
+/** Relaunch into the freshly-installed bytes. Desktop relaunches the app;
+ * server triggers the supervised/re-exec restart (the caller then drives the
+ * countdown + health poll using the `ReadyToRestart` snapshot's metadata). */
+export function restartApp(): Promise<void> {
+  return getTransport().call("restart_app")
 }
 
 export interface ServerUpdateActionResult {
@@ -125,51 +188,12 @@ export async function getServerUpdateStatus(): Promise<ServerUpdateStatus | null
   return getTransport().call<ServerUpdateStatus>("app_update_status")
 }
 
-export async function installAppUpdate(
-  update: NonNullable<Update>,
-  onEvent?: (progress: DownloadEvent) => void
-): Promise<void> {
-  // Web mode: server returns metadata only; downloadAndInstall is unavailable.
-  // The browser-side user can't trigger a server-side install, so the caller
-  // is expected to surface a "view release" affordance instead.
-  if (typeof update?.downloadAndInstall !== "function") return
-  await update.downloadAndInstall(onEvent)
-}
-
 export async function relaunchApp(): Promise<void> {
   const { relaunch } = await import("@tauri-apps/plugin-process")
   await relaunch()
 }
 
 // ─── Server / Docker in-place self-update ──────────────────────────────────
-
-/** Subscribe to download/verify/swap progress emitted by the server. */
-export function subscribeServerUpdateProgress(
-  handler: (progress: ServerUpdateProgress) => void
-): Promise<() => void> {
-  return getTransport().subscribe<ServerUpdateProgress>(
-    "app_update_progress",
-    handler
-  )
-}
-
-/**
- * Download + verify + swap the new bundle on the server. Resolves once the
- * new files are staged on disk; the caller then triggers {@link restartServer}.
- * Generous timeout: the download can be tens of MB.
- */
-export async function performServerUpdate(): Promise<ServerUpdateActionResult> {
-  return getTransport().call<ServerUpdateActionResult>(
-    "perform_app_update",
-    {},
-    { timeoutMs: 15 * 60_000 }
-  )
-}
-
-/** Ask the server to relaunch into the freshly-swapped binary. */
-export async function restartServer(): Promise<ServerUpdateActionResult> {
-  return getTransport().call<ServerUpdateActionResult>("restart_app")
-}
 
 /** Revert to the previously-installed bundle (kept as `.bak`). */
 export async function rollbackServer(): Promise<ServerUpdateActionResult> {

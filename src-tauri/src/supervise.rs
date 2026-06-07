@@ -70,8 +70,14 @@ pub fn run() -> ! {
     // SAFETY: installing handlers before spawning any child. `signal` is fine
     // for our forward-and-flag use; we deliberately keep the handler trivial.
     unsafe {
-        libc::signal(libc::SIGTERM, forward_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, forward_signal as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            forward_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            forward_signal as *const () as libc::sighandler_t,
+        );
     }
 
     let exe = runtime::self_exe();
@@ -114,7 +120,9 @@ pub fn run() -> ! {
     let spawn_trial = |on_trial: &mut bool| -> std::process::Child {
         match spawn_and_track() {
             Ok(child) => child,
-            Err(e) if *on_trial && attempt_rollback(&format!("new version failed to spawn ({e})")) => {
+            Err(e)
+                if *on_trial && attempt_rollback(&format!("new version failed to spawn ({e})")) =>
+            {
                 *on_trial = false;
                 spawn_and_track().unwrap_or_else(|e2| {
                     eprintln!("[supervise][FATAL] failed to spawn restored worker: {e2}");
@@ -184,8 +192,8 @@ pub fn run() -> ! {
 
         // The worker exited. Decode how.
         let _ = child.try_wait(); // let std reap its own bookkeeping (no-op)
-        // Clear the pid immediately: during the relaunch delay below a
-        // forwarded signal must not `kill()` a PID the OS may have recycled.
+                                  // Clear the pid immediately: during the relaunch delay below a
+                                  // forwarded signal must not `kill()` a PID the OS may have recycled.
         WORKER_PID.store(0, Ordering::SeqCst);
         if TERMINATING.load(Ordering::SeqCst) {
             eprintln!("[supervise] worker stopped during shutdown; exiting");
@@ -231,7 +239,10 @@ pub fn run() -> ! {
                     std::process::exit(1);
                 });
                 spawned_at = std::time::Instant::now();
-                eprintln!("[supervise] previous version relaunched (pid {})", child.id());
+                eprintln!(
+                    "[supervise] previous version relaunched (pid {})",
+                    child.id()
+                );
                 continue;
             }
             eprintln!("[supervise] worker exited with code {code}; propagating");
@@ -253,7 +264,10 @@ pub fn run() -> ! {
                     std::process::exit(1);
                 });
                 spawned_at = std::time::Instant::now();
-                eprintln!("[supervise] previous version relaunched (pid {})", child.id());
+                eprintln!(
+                    "[supervise] previous version relaunched (pid {})",
+                    child.id()
+                );
                 continue;
             }
             eprintln!("[supervise] worker killed by signal {sig}; exiting");

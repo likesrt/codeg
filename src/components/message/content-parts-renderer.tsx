@@ -7,6 +7,7 @@ import {
 } from "@/lib/adapters/tool-kind-classifier"
 import type { MessageRole } from "@/lib/types"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
 import {
@@ -2309,11 +2310,7 @@ const ToolCallPart = memo(function ToolCallPart({
   // un-normalized. Falls through to the normal renderer when no
   // toolCallId is available (snapshot replays without a live binding)
   // so the user still sees the tool input/output.
-  if (
-    (toolNameLower === "delegate_to_agent" ||
-      /[^a-z0-9]delegate_to_agent$/.test(toolNameLower)) &&
-    part.toolCallId
-  ) {
+  if (isDelegateToAgentToolName(normalizedToolName) && part.toolCallId) {
     return (
       <DelegatedSubThread
         parentToolUseId={part.toolCallId}

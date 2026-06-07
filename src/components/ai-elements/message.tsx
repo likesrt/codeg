@@ -28,7 +28,7 @@ import {
   useState,
 } from "react"
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
-import { useStreamdownLinkSafety } from "./link-safety"
+import { markdownLinkComponents } from "./markdown-link"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -377,7 +377,6 @@ function MessageResponseImpl({
   children,
   ...props
 }: MessageResponseProps) {
-  const linkSafety = useStreamdownLinkSafety()
   const normalized = useMemo(
     () =>
       typeof children === "string"
@@ -392,10 +391,12 @@ function MessageResponseImpl({
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-3 [&_ol]:pl-3",
         className
       )}
-      linkSafety={linkSafety}
       plugins={streamdownPlugins}
       remarkPlugins={remarkPlugins}
       {...props}
+      // Merge after spreading props so a caller can still override other
+      // elements, but the link icon + safety routing on `a` always wins.
+      components={{ ...props.components, ...markdownLinkComponents }}
     >
       {normalized}
     </Streamdown>

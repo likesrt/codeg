@@ -10,6 +10,15 @@ pub enum AcpError {
     Protocol(String),
     #[error("agent process exited unexpectedly")]
     ProcessExited,
+    /// A prompt arrived while this connection already had a turn in flight.
+    /// The connection loop processes one turn at a time; a second concurrent
+    /// prompt (e.g. two co-controlling clients sending near-simultaneously)
+    /// is rejected here rather than silently dropped after a false success.
+    /// The frontend recognizes this (via the stable Display text, carried as
+    /// the error message on both transports) and re-queues the draft in the
+    /// message queue above the input box instead of surfacing an error.
+    #[error("turn already in progress for this connection")]
+    TurnInProgress,
     #[error("binary download failed: {0}")]
     DownloadFailed(String),
     #[error("platform not supported: {0}")]
@@ -50,6 +59,7 @@ impl AcpError {
             Self::InitializeTimeout => Some("initialize_timeout"),
             Self::ProbeTimedOut => Some("probe_timed_out"),
             Self::ProcessExited => Some("process_exited"),
+            Self::TurnInProgress => Some("turn_in_progress"),
             Self::SpawnFailed(_) => Some("spawn_failed"),
             Self::DownloadFailed(_) => Some("download_failed"),
             Self::ConnectionNotFound(_) => Some("connection_not_found"),

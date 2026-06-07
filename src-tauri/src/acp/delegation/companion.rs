@@ -576,8 +576,7 @@ fn render_batch_report(tasks: &[Value]) -> Value {
             .iter()
             .all(|t| t.get("status").and_then(|v| v.as_str()) == Some("failed"));
     let envelope = json!({ "tasks": tasks });
-    let text =
-        serde_json::to_string(&envelope).unwrap_or_else(|_| String::from("{\"tasks\":[]}"));
+    let text = serde_json::to_string(&envelope).unwrap_or_else(|_| String::from("{\"tasks\":[]}"));
     json!({
         "content": [{ "type": "text", "text": text }],
         "isError": all_failed,
@@ -922,7 +921,10 @@ mod tests {
             "params": { "name": "get_delegation_status", "arguments": { "task_ids": ["a", "b"] } }
         })
         .to_string();
-        assert!(matches!(dispatch_for_test(&line).await, LineAction::Spawn(_)));
+        assert!(matches!(
+            dispatch_for_test(&line).await,
+            LineAction::Spawn(_)
+        ));
     }
 
     #[tokio::test]
@@ -946,14 +948,19 @@ mod tests {
         // A non-string entry violates the schema's `items: string` contract — the
         // whole call is rejected, NOT silently narrowed to the valid ids. Both a
         // lone non-string and a mixed `[123, "abc"]` must fail.
-        for args in [json!({ "task_ids": [123] }), json!({ "task_ids": [123, "abc"] })] {
+        for args in [
+            json!({ "task_ids": [123] }),
+            json!({ "task_ids": [123, "abc"] }),
+        ] {
             let line = json!({
                 "jsonrpc": "2.0", "id": 23, "method": "tools/call",
                 "params": { "name": "get_delegation_status", "arguments": args }
             })
             .to_string();
             let resp = unwrap_respond(dispatch_for_test(&line).await);
-            let e = resp.error.expect("non-string task_ids entry must be rejected");
+            let e = resp
+                .error
+                .expect("non-string task_ids entry must be rejected");
             assert_eq!(e.code, -32602);
             assert!(e.message.contains("task_ids"));
         }

@@ -136,6 +136,9 @@
     "restartTimeout": "服务未能按时恢复，请检查容器或服务日志。",
     "restartingIn": "将在 {seconds} 秒后重启...",
     "waitingForServer": "正在等待服务恢复...",
+    "restartToUpdate": "重启以更新",
+    "updateReadyHint": "新版本已下载，重启以完成更新。",
+    "restarting": "正在重启…",
     "dockerUpgradeHint": "现在升级的是正在运行的容器。容器一旦被重建即丢失——如需保留，请拉取或构建新版本镜像后重建容器。",
     "upgradeRolledBack": "升级失败，服务器已自动回滚到上一版本。",
     "serverUnreachable": "无法连接到服务器以开始升级。请确认服务器正在运行后重试。",
@@ -1158,7 +1161,10 @@
       "loadingEditor": "编辑器加载中...",
       "imageZoomIn": "放大",
       "imageZoomOut": "缩小",
-      "imageZoomReset": "重置缩放"
+      "imageZoomReset": "重置缩放",
+      "htmlPreviewTitle": "HTML 预览",
+      "htmlPreviewTrust": "运行脚本",
+      "htmlPreviewTrustHint": "运行此文件的脚本并允许网络访问。仅对可信任的文件启用。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1509,6 +1515,7 @@
       "newDirectory": "目录",
       "openIn": "打开于",
       "openInTerminal": "在终端打开",
+      "copyPath": "复制路径",
       "upload": "上传文件/目录",
       "download": "下载文件",
       "downloadAsZip": "下载为 ZIP",
@@ -1545,7 +1552,9 @@
         "downloadFailed": "下载 {name} 失败",
         "downloadSaved": "已下载 {name}",
         "pasteFailed": "粘贴失败",
-        "pasteSucceeded": "粘贴完成"
+        "pasteSucceeded": "粘贴完成",
+        "pathCopied": "已复制路径",
+        "copyPathFailed": "复制路径失败"
       },
       "createDialog": {
         "newFile": "新建文件",
@@ -1831,6 +1840,12 @@
       "agentSelector": {
         "noEnabledAgents": "暂无已启用的 Agent",
         "openAgentsSettings": "打开 Agents 设置"
+      },
+      "subAgentOverlay": {
+        "title": "子智能体",
+        "collapsedSummary": "子智能体 {count}",
+        "collapseAria": "折叠子智能体",
+        "expandAria": "展开子智能体"
       },
       "agentPlanOverlay": {
         "title": "计划任务",
@@ -2374,8 +2389,35 @@
       "turnCompleteDesc": "代理回合结束时",
       "error": "代理错误",
       "errorDesc": "代理遇到错误时",
+      "permissionRequest": "权限请求",
+      "permissionRequestDesc": "智能体请求操作权限时",
+      "userPromptSent": "用户消息",
+      "userPromptSentDesc": "当你发送消息时——通知中会包含消息内容",
       "saved": "事件过滤已更新。",
-      "saveFailed": "保存事件过滤失败。"
+      "saveFailed": "保存事件过滤失败。",
+      "loadFailed": "加载设置失败。",
+      "retry": "重试",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "事件触发时，向一个或多个地址 POST 一份 JSON。上方的事件过滤同样作用于 Webhook。",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "添加 Webhook",
+      "removeWebhook": "删除 Webhook",
+      "webhookSave": "保存",
+      "webhooksSaved": "Webhook 已保存。",
+      "webhooksSaveFailed": "保存 Webhook 失败。",
+      "webhookInvalidUrl": "请输入有效的 http(s) 地址。",
+      "docsTitle": "请求格式",
+      "docsMethod": "请求方式",
+      "docsContentType": "内容类型",
+      "docsNote": "每个启用的事件都会投递到所有地址。Webhook 不做去抖；上方的事件过滤仍然生效。",
+      "editWebhook": "编辑 Webhook",
+      "enableWebhook": "启用 Webhook",
+      "webhookDuplicate": "该地址已配置。",
+      "cancel": "取消",
+      "webhooksEmpty": "尚未配置 Webhook。",
+      "deleteWebhookTitle": "删除 Webhook",
+      "deleteWebhookMessage": "删除此 Webhook？事件将不再投递到该地址。",
+      "delete": "删除"
     },
     "language": {
       "title": "消息语言",
@@ -2661,5 +2703,91 @@
     "openFailed": "打开远端工作区失败",
     "connectionLoadFailed": "加载远端连接失败：{message}",
     "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
+  },
+  "BackupSettings": {
+    "title": "备份与恢复",
+    "description": "导出一份可移植的 codeg 数据备份，或从备份中恢复。",
+    "tabs": {
+      "backup": "备份",
+      "restore": "恢复"
+    },
+    "export": {
+      "includeExternal": "包含会话内容",
+      "includeExternalHint": "同时打包各 CLI 的会话记录（Claude、Codex、Gemini 等），体积更大。",
+      "passphrase": "口令（可选）",
+      "passphrasePlaceholder": "留空则生成未加密的归档",
+      "passphraseConfirm": "确认口令",
+      "passphraseMismatch": "两次输入的口令不一致。",
+      "noPassphraseWarning": "该备份将以明文包含密钥（API key、token）。请妥善保管。",
+      "passphraseLossWarning": "将使用此口令加密。口令一旦丢失，备份将无法恢复。",
+      "button": "导出备份",
+      "inProgress": "正在创建备份…",
+      "success": "备份已创建。",
+      "started": "已开始下载备份。"
+    },
+    "restore": {
+      "selectFile": "选择备份文件",
+      "passphrasePrompt": "该备份已加密，请输入其口令。",
+      "unlock": "解锁",
+      "preview": {
+        "title": "备份详情",
+        "encrypted": "已加密",
+        "compatible": "兼容",
+        "incompatible": "不兼容",
+        "createdAt": "创建时间：{value}",
+        "appVersion": "应用版本：{value}",
+        "incompatibleHint": "该备份由更新版本的 codeg 创建，无法恢复。"
+      },
+      "replaceWarning": "恢复将替换当前全部 codeg 数据（数据库与上传文件）。当前数据会先做快照以便回退。",
+      "keyringNote": "桌面端的 GitHub/聊天 token 存于系统钥匙串，不包含在备份中；恢复后需重新填写。",
+      "button": "恢复",
+      "staging": "正在准备恢复…",
+      "staged": "恢复已就绪，正在重启…",
+      "restarting": "恢复已就绪，正在重启服务…",
+      "restartTimeout": "服务未能及时恢复。待其启动后请刷新页面。",
+      "externalSideLocation": "会话记录已恢复到 {path}",
+      "confirmTitle": "替换全部数据？",
+      "confirmBody": "这将用备份替换当前的 codeg 数据库与上传文件，然后重启。当前数据会先做快照。",
+      "cancel": "取消",
+      "confirmAction": "替换并重启",
+      "external": {
+        "title": "会话内容",
+        "hint": "该备份包含各 CLI 的会话记录。请选择恢复到何处。",
+        "modeSkip": "不恢复",
+        "modeSide": "恢复到安全的旁路目录",
+        "modeOriginal": "恢复到 CLI 的原始位置",
+        "forceOverwrite": "覆盖已存在的文件",
+        "forceOverwriteHint": "替换 CLI 目录中已存在的文件。",
+        "scanning": "正在检查冲突…",
+        "noConflicts": "不会覆盖任何已存在的文件。",
+        "conflictCount": "将影响 {count} 个已存在的文件。",
+        "conflictSkipNote": "未启用覆盖时，已存在的文件将被保留（跳过）。"
+      },
+      "restartFailed": "恢复已就绪，但服务未能重启。请手动重启以应用此次恢复。"
+    },
+    "remoteUnsupported": "备份与恢复作用于运行 codeg 的那台机器上的数据。你当前连接的是远程工作区——请直接在该服务器上管理其备份。"
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "口令错误或备份已损坏。",
+        "corrupted": "备份归档已损坏。",
+        "unknownFormat": "该文件不是可识别的 codeg 备份。",
+        "newerVersion": "该备份由 codeg {backupVersion} 创建，比当前版本（{appVersion}）更新。",
+        "alreadyPending": "已有一个恢复在等待生效。请先重启应用它，再暂存新的恢复。"
+      }
+    },
+    "error": {
+      "diskSpace": "磁盘空间不足，无法完成操作。",
+      "cancelled": "操作已取消。"
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "连接已断开",
+    "reconnectingDescription": "正在尝试重新连接服务器，通常会在几秒内自动恢复。",
+    "reconnectNow": "立即重连",
+    "sessionExpiredTitle": "会话已过期",
+    "sessionExpiredDescription": "登录状态已失效，请重新登录以继续。",
+    "goToLogin": "前往登录"
   }
 }

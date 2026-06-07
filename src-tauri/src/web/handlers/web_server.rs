@@ -124,6 +124,12 @@ pub struct AppUpdateCheckResult {
     pub restart_delay_ms: u64,
     /// A previous version is staged in `.bak` and can be rolled back to.
     pub rollback_available: bool,
+    /// This server speaks the detached `app_update_state` protocol (background
+    /// download + progress events + ready-to-restart snapshot). Always true on
+    /// this build; absent on older servers, which a newer client must treat as
+    /// unsupported rather than driving the new flow against the old blocking
+    /// `perform_app_update`.
+    pub live_progress: bool,
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -176,6 +182,7 @@ pub async fn check_app_update() -> Result<Json<AppUpdateCheckResult>, AppCommand
         runtime: runtime::runtime_label().to_string(),
         restart_delay_ms: runtime::restart_delay_ms(),
         rollback_available: server_rollback_available(),
+        live_progress: true,
     }))
 }
 
@@ -197,6 +204,9 @@ pub struct ServerUpdateStatus {
     pub restart_delay_ms: u64,
     /// A previous version is staged in `.bak` and can be rolled back to.
     pub rollback_available: bool,
+    /// This server speaks the detached `app_update_state` protocol. See
+    /// [`AppUpdateCheckResult::live_progress`].
+    pub live_progress: bool,
 }
 
 /// Local-only counterpart to [`check_app_update`]: reports what this process
@@ -215,5 +225,6 @@ pub async fn app_update_status() -> Json<ServerUpdateStatus> {
         runtime: runtime::runtime_label().to_string(),
         restart_delay_ms: runtime::restart_delay_ms(),
         rollback_available: server_rollback_available(),
+        live_progress: true,
     })
 }

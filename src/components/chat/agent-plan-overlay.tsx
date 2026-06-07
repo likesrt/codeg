@@ -182,7 +182,10 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
 
   if (!isExpanded) {
     return (
-      <div className="pointer-events-none absolute right-8 top-4 z-20 flex">
+      // Positioning (absolute right-8 top-4 z-20) is owned by the shared
+      // overlay-stack container in MessageListView so this panel stacks with
+      // the sub-agent overlay; here we only declare layout + pointer behavior.
+      <div className="pointer-events-none flex">
         <Button
           type="button"
           variant="secondary"
@@ -208,7 +211,7 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
 
   return (
     <div
-      className="pointer-events-none absolute right-8 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))]"
+      className="pointer-events-none flex max-w-[min(22rem,calc(100%-2rem))]"
       data-plan-key={currentPlanKey ?? undefined}
     >
       <div className="pointer-events-auto w-72 max-w-full rounded-xl border bg-card/60 hover:bg-card/95 shadow-lg backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85">

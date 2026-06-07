@@ -228,6 +228,7 @@ async fn async_main() {
         delegation_tokens: delegation_tokens.clone(),
         delegation_socket_path: delegation_socket_path.clone(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
+        update_state: codeg_lib::app_state::default_update_state(),
     });
 
     // Apply persisted delegation settings (depth, enabled) before

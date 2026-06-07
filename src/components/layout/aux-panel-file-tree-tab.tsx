@@ -109,7 +109,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
 import { toErrorMessage } from "@/lib/app-error"
-import { copyTextToClipboard } from "@/lib/utils"
+import { copyTextFromMenu } from "@/lib/utils"
 
 function parentDir(filePath: string): string {
   const slashIndex = filePath.lastIndexOf("/")
@@ -131,22 +131,26 @@ function baseName(path: string): string {
 }
 
 const FILE_TREE_ROOT_PATH = "__workspace_root__"
-const GITIGNORE_MUTED_CLASS = "text-muted-foreground/55"
 
 /**
- * Copies a path string to the clipboard and reports a successful copy.
- * @param path Path text to copy and show in the toast description.
- * @param successMessage Localized success message shown after a successful copy.
- * @returns A promise that resolves after the clipboard attempt and optional toast.
- * @remarks Does not show a toast when the clipboard API reports failure.
+ * 从右键菜单复制路径文本并显示结果提示。
+ * @param path 要写入剪贴板的相对路径或绝对路径。
+ * @param messages 成功文案，或包含成功与失败文案的对象。
+ * @returns 剪贴板尝试完成后的 Promise，无额外返回值。
+ * @remarks 会延迟到菜单关闭后写入剪贴板，以兼容非安全上下文中的 execCommand fallback。
  */
 async function copyPathToClipboard(
   path: string,
-  successMessage: string
+  messages: string | { success: string; failure: string }
 ): Promise<void> {
-  const copied = await copyTextToClipboard(path)
-  if (copied) {
-    toast.success(successMessage, { description: path })
+  const ok = await copyTextFromMenu(path)
+  const success = typeof messages === "string" ? messages : messages.success
+  const failure = typeof messages === "string" ? undefined : messages.failure
+
+  if (ok) {
+    toast.success(success, { description: path })
+  } else if (failure) {
+    toast.error(failure)
   }
 }
 
@@ -980,6 +984,16 @@ export function RenderNode({
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuItem
+          onSelect={() =>
+            void copyPathToClipboard(absolutePath, {
+              success: t("toasts.pathCopied"),
+              failure: t("toasts.copyPathFailed"),
+            })
+          }
+        >
+          {t("copyPath")}
+        </ContextMenuItem>
         {webMode && (
           <>
             <ContextMenuItem onSelect={() => onRequestUpload(node.path)}>

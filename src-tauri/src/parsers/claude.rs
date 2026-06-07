@@ -460,7 +460,7 @@ impl ClaudeParser {
     }
 }
 
-fn resolve_claude_config_dir() -> PathBuf {
+pub(crate) fn resolve_claude_config_dir() -> PathBuf {
     resolve_claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
 }
 

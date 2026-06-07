@@ -709,6 +709,12 @@ pub(crate) async fn do_start_web_server_tauri(
             .0
             .clone(),
         system_op_lock: crate::app_state::default_system_op_lock(),
+        // Reuse the same handle the desktop `app_update` commands write to so
+        // HTTP and webview readers see the identical update snapshot.
+        update_state: app
+            .state::<crate::update::AppUpdateStateHandle>()
+            .inner()
+            .clone(),
     });
 
     // See do_start_web_server_with_state for rationale on the reset.

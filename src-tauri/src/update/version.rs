@@ -72,13 +72,9 @@ pub struct LatestManifest {
 
 pub async fn fetch_latest_manifest() -> Result<LatestManifest, AppCommandError> {
     let client = manifest_client()?;
-    let response = client
-        .get(UPDATE_MANIFEST_URL)
-        .send()
-        .await
-        .map_err(|e| {
-            AppCommandError::network("Failed to fetch update manifest").with_detail(e.to_string())
-        })?;
+    let response = client.get(UPDATE_MANIFEST_URL).send().await.map_err(|e| {
+        AppCommandError::network("Failed to fetch update manifest").with_detail(e.to_string())
+    })?;
 
     if !response.status().is_success() {
         return Err(AppCommandError::network(format!(

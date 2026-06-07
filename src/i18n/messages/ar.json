@@ -136,6 +136,9 @@
     "restartTimeout": "لم يعد الخادم في الوقت المناسب. تحقق من سجلات الحاوية أو الخدمة.",
     "restartingIn": "إعادة التشغيل خلال {seconds} ثانية...",
     "waitingForServer": "في انتظار عودة الخادم...",
+    "restartToUpdate": "أعد التشغيل للتحديث",
+    "updateReadyHint": "تم تنزيل التحديث — أعد التشغيل لتطبيقه.",
+    "restarting": "جارٍ إعادة التشغيل...",
     "dockerUpgradeHint": "يؤدي هذا إلى ترقية الحاوية قيد التشغيل الآن. وتُفقد عند إعادة إنشاء الحاوية — وللاحتفاظ بها، اسحب أو ابنِ صورة بالإصدار الجديد ثم أعد إنشاء الحاوية.",
     "upgradeRolledBack": "فشلت الترقية؛ عاد الخادم إلى الإصدار السابق.",
     "serverUnreachable": "تعذّر الوصول إلى الخادم لبدء الترقية. تأكد من أنه قيد التشغيل وحاول مرة أخرى.",
@@ -1158,7 +1161,10 @@
       "loadingEditor": "جارٍ تحميل المحرر...",
       "imageZoomIn": "تكبير",
       "imageZoomOut": "تصغير",
-      "imageZoomReset": "إعادة تعيين التكبير"
+      "imageZoomReset": "إعادة تعيين التكبير",
+      "htmlPreviewTitle": "معاينة HTML",
+      "htmlPreviewTrust": "تفعيل البرامج النصية",
+      "htmlPreviewTrustHint": "تشغيل البرامج النصية لهذا الملف والسماح بالوصول إلى الشبكة. فعّلها فقط للملفات الموثوقة."
     },
     "branchDropdown": {
       "toasts": {
@@ -1509,6 +1515,7 @@
       "newDirectory": "مجلد",
       "openIn": "فتح في",
       "openInTerminal": "فتح في الطرفية",
+      "copyPath": "نسخ المسار",
       "upload": "رفع ملفات/مجلد",
       "download": "تنزيل ملف",
       "downloadAsZip": "تنزيل كملف ZIP",
@@ -1545,7 +1552,9 @@
         "downloadFailed": "فشل تنزيل {name}",
         "downloadSaved": "تم تنزيل {name}",
         "pasteFailed": "فشل اللصق",
-        "pasteSucceeded": "اكتمل اللصق"
+        "pasteSucceeded": "اكتمل اللصق",
+        "pathCopied": "تم نسخ المسار",
+        "copyPathFailed": "فشل نسخ المسار"
       },
       "createDialog": {
         "newFile": "ملف جديد",
@@ -1831,6 +1840,12 @@
       "agentSelector": {
         "noEnabledAgents": "لا يوجد وكلاء مفعّلون",
         "openAgentsSettings": "فتح إعدادات الوكلاء"
+      },
+      "subAgentOverlay": {
+        "title": "الوكلاء الفرعيون",
+        "collapsedSummary": "الوكلاء الفرعيون {count}",
+        "collapseAria": "طي الوكلاء الفرعيين",
+        "expandAria": "توسيع الوكلاء الفرعيين"
       },
       "agentPlanOverlay": {
         "title": "خطة الوكيل",
@@ -2362,8 +2377,35 @@
       "turnCompleteDesc": "عند انتهاء دور الوكيل",
       "error": "خطأ الوكيل",
       "errorDesc": "عندما يواجه الوكيل خطأ",
+      "permissionRequest": "طلب إذن",
+      "permissionRequestDesc": "عندما يطلب الوكيل إذنًا لتنفيذ إجراء",
+      "userPromptSent": "رسالة المستخدم",
+      "userPromptSentDesc": "عند إرسالك رسالة — يُضمَّن نص الرسالة في الإشعار",
       "saved": "تم تحديث فلتر الأحداث.",
-      "saveFailed": "فشل حفظ فلتر الأحداث."
+      "saveFailed": "فشل حفظ فلتر الأحداث.",
+      "loadFailed": "فشل تحميل الإعدادات.",
+      "retry": "إعادة المحاولة",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "يرسل حمولة JSON عبر POST إلى عنوان واحد أو أكثر عند تشغيل حدث مُفعَّل. ينطبق فلتر الأحداث أعلاه على Webhooks أيضًا.",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "إضافة Webhook",
+      "removeWebhook": "إزالة Webhook",
+      "webhookSave": "حفظ",
+      "webhooksSaved": "تم حفظ Webhooks.",
+      "webhooksSaveFailed": "فشل حفظ Webhooks.",
+      "webhookInvalidUrl": "أدخل عناوين http(s) صالحة.",
+      "docsTitle": "تنسيق الطلب",
+      "docsMethod": "الطريقة",
+      "docsContentType": "Content-Type",
+      "docsNote": "يتم تسليم كل حدث مُفعَّل إلى جميع العناوين. لا يتم تأخير Webhooks؛ ولا يزال فلتر الأحداث أعلاه ساريًا.",
+      "editWebhook": "تعديل Webhook",
+      "enableWebhook": "تفعيل Webhook",
+      "webhookDuplicate": "هذا العنوان مُعد بالفعل.",
+      "cancel": "إلغاء",
+      "webhooksEmpty": "لا توجد Webhooks مُعدة بعد.",
+      "deleteWebhookTitle": "حذف Webhook",
+      "deleteWebhookMessage": "هل تريد حذف هذا الـ Webhook؟ لن يتم تسليم الأحداث إلى هذا العنوان بعد الآن.",
+      "delete": "حذف"
     },
     "language": {
       "title": "لغة الرسائل",
@@ -2661,5 +2703,91 @@
     "emptyDirectory": "هذا المجلد فارغ",
     "errorLoadingDir": "فشل تحميل المجلد",
     "selectedCount": "{count} محدد"
+  },
+  "BackupSettings": {
+    "title": "النسخ الاحتياطي والاستعادة",
+    "description": "صدّر نسخة احتياطية محمولة من بيانات codeg، أو استعد من نسخة.",
+    "tabs": {
+      "backup": "نسخ احتياطي",
+      "restore": "استعادة"
+    },
+    "export": {
+      "includeExternal": "تضمين محتوى المحادثات",
+      "includeExternalHint": "يؤرشف أيضًا سجلات محادثات أدوات CLI (Claude وCodex وGemini …). يزيد الحجم.",
+      "passphrase": "عبارة المرور (اختياري)",
+      "passphrasePlaceholder": "اتركها فارغة للحصول على أرشيف غير مشفّر",
+      "passphraseConfirm": "تأكيد عبارة المرور",
+      "passphraseMismatch": "عبارتا المرور غير متطابقتين.",
+      "noPassphraseWarning": "ستحتوي هذه النسخة على أسرار (مفاتيح API والرموز) بنص واضح. احفظها في مكان آمن.",
+      "passphraseLossWarning": "مشفّرة بعبارة المرور هذه. إذا فقدتها، فلن يمكن استعادة النسخة الاحتياطية.",
+      "button": "تصدير النسخة الاحتياطية",
+      "inProgress": "جارٍ إنشاء النسخة الاحتياطية…",
+      "success": "تم إنشاء النسخة الاحتياطية.",
+      "started": "بدأ تنزيل النسخة الاحتياطية."
+    },
+    "restore": {
+      "selectFile": "اختر ملف النسخة الاحتياطية",
+      "passphrasePrompt": "هذه النسخة مشفّرة. أدخل عبارة المرور الخاصة بها.",
+      "unlock": "فتح القفل",
+      "preview": {
+        "title": "تفاصيل النسخة الاحتياطية",
+        "encrypted": "مشفّرة",
+        "compatible": "متوافقة",
+        "incompatible": "غير متوافقة",
+        "createdAt": "أُنشئت: {value}",
+        "appVersion": "إصدار التطبيق: {value}",
+        "incompatibleHint": "أُنشئت هذه النسخة بإصدار أحدث من codeg ولا يمكن استعادتها."
+      },
+      "replaceWarning": "تستبدل الاستعادة جميع بيانات codeg الحالية (قاعدة البيانات والملفات المرفوعة). تُلتقط بياناتك الحالية كلقطة أولًا حتى يمكن استرجاعها.",
+      "keyringNote": "تُخزَّن رموز GitHub/الدردشة لتطبيق سطح المكتب في سلسلة مفاتيح النظام ولا تُضمَّن؛ أعد إدخالها بعد الاستعادة.",
+      "button": "استعادة",
+      "staging": "جارٍ تجهيز الاستعادة…",
+      "staged": "تم تجهيز الاستعادة. جارٍ إعادة التشغيل…",
+      "restarting": "تم تجهيز الاستعادة. جارٍ إعادة تشغيل الخادم…",
+      "restartTimeout": "لم يعد الخادم في الوقت المحدد. أعد تحميل الصفحة بعد تشغيله.",
+      "externalSideLocation": "تمت استعادة سجلات المحادثات إلى {path}",
+      "confirmTitle": "استبدال جميع البيانات؟",
+      "confirmBody": "سيؤدي ذلك إلى استبدال قاعدة بيانات codeg والملفات المرفوعة الحالية بالنسخة الاحتياطية ثم إعادة التشغيل. تُلتقط بياناتك الحالية كلقطة أولًا.",
+      "cancel": "إلغاء",
+      "confirmAction": "استبدال وإعادة تشغيل",
+      "external": {
+        "title": "محتوى المحادثات",
+        "hint": "تتضمن هذه النسخة سجلات محادثات أدوات CLI. اختر مكان استعادتها.",
+        "modeSkip": "عدم الاستعادة",
+        "modeSide": "الاستعادة إلى مجلد جانبي آمن",
+        "modeOriginal": "الاستعادة إلى المواقع الأصلية لأدوات CLI",
+        "forceOverwrite": "الكتابة فوق الملفات الموجودة",
+        "forceOverwriteHint": "استبدال الملفات الموجودة بالفعل في مجلدات أدوات CLI.",
+        "scanning": "جارٍ التحقق من التعارضات…",
+        "noConflicts": "لن تتم الكتابة فوق أي ملف موجود.",
+        "conflictCount": "سيتأثر {count} من الملفات الموجودة.",
+        "conflictSkipNote": "تُحفظ الملفات الموجودة (تُتخطى) ما لم تفعّل الكتابة فوقها."
+      },
+      "restartFailed": "تم تجهيز الاستعادة، لكن تعذّر إعادة تشغيل الخادم. أعد تشغيله يدويًا لتطبيقها."
+    },
+    "remoteUnsupported": "يعمل النسخ الاحتياطي والاستعادة على بيانات الجهاز الذي يشغّل codeg. أنت متصل بمساحة عمل بعيدة — أدِر نسخها الاحتياطية من ذلك الخادم مباشرة."
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "عبارة المرور غير صحيحة أو النسخة الاحتياطية تالفة.",
+        "corrupted": "أرشيف النسخة الاحتياطية تالف.",
+        "unknownFormat": "هذا الملف ليس نسخة احتياطية معروفة من codeg.",
+        "newerVersion": "أُنشئت هذه النسخة بواسطة codeg {backupVersion}، وهي أحدث من هذا الإصدار ({appVersion}).",
+        "alreadyPending": "توجد استعادة مُجهّزة بالفعل. أعد التشغيل لتطبيقها قبل تجهيز أخرى."
+      }
+    },
+    "error": {
+      "diskSpace": "لا توجد مساحة قرص كافية لإكمال العملية.",
+      "cancelled": "تم إلغاء العملية."
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "انقطع الاتصال",
+    "reconnectingDescription": "تتم محاولة إعادة الاتصال بالخادم. عادةً ما يُستعاد الاتصال تلقائيًا خلال ثوانٍ قليلة.",
+    "reconnectNow": "إعادة الاتصال الآن",
+    "sessionExpiredTitle": "انتهت الجلسة",
+    "sessionExpiredDescription": "لم تعد جلستك صالحة. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
+    "goToLogin": "الانتقال إلى تسجيل الدخول"
   }
 }

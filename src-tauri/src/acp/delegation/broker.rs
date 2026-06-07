@@ -862,11 +862,7 @@ enum StatusClass {
 /// held. Mirrors the single-task resolution order — completed cache (parent
 /// scoped) → running set (parent scoped) → not-in-memory — and yields a
 /// cross-parent hit as `unknown` so a task owned by another parent never leaks.
-fn classify_locked(
-    inner: &PendingInner,
-    parent_connection_id: &str,
-    task_id: &str,
-) -> StatusClass {
+fn classify_locked(inner: &PendingInner, parent_connection_id: &str, task_id: &str) -> StatusClass {
     if let Some(c) = inner.completed.get(task_id) {
         if c.parent_connection_id == parent_connection_id {
             return StatusClass::Settled(completed_report(task_id, c));
@@ -2946,9 +2942,7 @@ impl DelegationBroker {
                         .await;
                     report
                 }
-                StatusClass::NotInMemory => {
-                    self.status_from_db(parent_conversation_id, id).await
-                }
+                StatusClass::NotInMemory => self.status_from_db(parent_conversation_id, id).await,
             };
             out.push(report);
         }
@@ -2974,7 +2968,11 @@ impl DelegationBroker {
         report: &mut DelegationTaskReport,
         child_connection_id: &str,
     ) {
-        if let Some(reply) = self.live_reply_lookup.latest_reply(child_connection_id).await {
+        if let Some(reply) = self
+            .live_reply_lookup
+            .latest_reply(child_connection_id)
+            .await
+        {
             report.message = Some(format!("Running.\nLatest sub-agent reply: {reply}"));
         }
     }
@@ -3421,13 +3419,11 @@ mod tests {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Ok("child-conn-1".into())).await;
         mock.queue_send(Ok(42)).await;
-        let broker = DelegationBroker::new(
-            mock.clone() as Arc<dyn ConnectionSpawner>,
-            shallow_lookup(),
-        )
-        .with_live_reply_lookup(Arc::new(MockChildLiveReplyLookup::new(Some(
-            "Reading config.rs".into(),
-        ))));
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup())
+                .with_live_reply_lookup(Arc::new(MockChildLiveReplyLookup::new(Some(
+                    "Reading config.rs".into(),
+                ))));
         enable_delegation(&broker).await;
 
         let ack = broker.start_delegation(request(1, "pt-1")).await;

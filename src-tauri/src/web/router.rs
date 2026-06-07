@@ -293,6 +293,10 @@ pub fn build_router(
         )
         .route("/read_file_base64", post(handlers::files::read_file_base64))
         .route(
+            "/read_workspace_file_base64",
+            post(handlers::files::read_workspace_file_base64),
+        )
+        .route(
             "/read_file_for_edit",
             post(handlers::files::read_file_for_edit),
         )
@@ -353,6 +357,30 @@ pub fn build_router(
             "/workspace_download_ticket",
             post(handlers::workspace_files::create_download_ticket),
         )
+        // ─── Backup & restore ───
+        //
+        // Export builds an archive and returns a download ticket; restore
+        // uploads the archive once (body limit disabled — it can be large),
+        // then inspects + stages it by reference. The data swap happens on the
+        // next process start; the client follows up with `restart_app`.
+        .route(
+            "/backup_create_ticket",
+            post(handlers::backup::backup_create_ticket),
+        )
+        .route(
+            "/backup_upload",
+            post(handlers::backup::backup_upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/backup_inspect", post(handlers::backup::backup_inspect))
+        .route(
+            "/backup_scan_external_conflicts",
+            post(handlers::backup::backup_scan_external_conflicts),
+        )
+        .route(
+            "/backup_restore_stage",
+            post(handlers::backup::backup_restore_stage),
+        )
+        .route("/backup_cancel", post(handlers::backup::backup_cancel))
         .route(
             "/download_workspace_file",
             post(handlers::workspace_files::download_workspace_file),
@@ -522,6 +550,10 @@ pub fn build_router(
             post(handlers::acp::acp_get_session_snapshot_by_conversation),
         )
         .route(
+            "/acp_find_connection_for_conversation",
+            post(handlers::acp::acp_find_connection_for_conversation),
+        )
+        .route(
             "/acp_clear_binary_cache",
             post(handlers::acp::acp_clear_binary_cache),
         )
@@ -674,6 +706,10 @@ pub fn build_router(
             post(handlers::web_server::app_update_status),
         )
         .route(
+            "/app_update_state",
+            post(handlers::app_update::app_update_state),
+        )
+        .route(
             "/perform_app_update",
             post(handlers::app_update::perform_app_update),
         )
@@ -743,6 +779,14 @@ pub fn build_router(
         .route(
             "/set_chat_event_filter",
             post(handlers::chat_channel::set_chat_event_filter),
+        )
+        .route(
+            "/get_chat_event_webhooks",
+            post(handlers::chat_channel::get_chat_event_webhooks),
+        )
+        .route(
+            "/set_chat_event_webhooks",
+            post(handlers::chat_channel::set_chat_event_webhooks),
         )
         .route(
             "/get_chat_message_language",
@@ -866,6 +910,10 @@ pub fn build_router(
         .route(
             "/workspace_download/{ticket}",
             get(handlers::workspace_files::consume_download_ticket),
+        )
+        .route(
+            "/backup_download/{ticket}",
+            get(handlers::backup::backup_download),
         );
 
     let api = public_api.merge(api);

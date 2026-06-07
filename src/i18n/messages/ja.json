@@ -136,6 +136,9 @@
     "restartTimeout": "サーバーが時間内に復帰しませんでした。コンテナまたはサービスのログを確認してください。",
     "restartingIn": "{seconds} 秒後に再起動します...",
     "waitingForServer": "サーバーの復帰を待っています...",
+    "restartToUpdate": "再起動して更新",
+    "updateReadyHint": "アップデートをダウンロードしました。再起動して適用してください。",
+    "restarting": "再起動しています…",
     "dockerUpgradeHint": "いま実行中のコンテナを更新します。コンテナを再作成すると失われます。維持するには、新しいバージョンのイメージを取得またはビルドしてコンテナを再作成してください。",
     "upgradeRolledBack": "アップグレードに失敗しました。サーバーは前のバージョンにロールバックしました。",
     "serverUnreachable": "アップグレードを開始するためにサーバーに接続できませんでした。サーバーが稼働中であることを確認して再試行してください。",
@@ -1158,7 +1161,10 @@
       "loadingEditor": "エディターを読み込み中...",
       "imageZoomIn": "拡大",
       "imageZoomOut": "縮小",
-      "imageZoomReset": "ズームをリセット"
+      "imageZoomReset": "ズームをリセット",
+      "htmlPreviewTitle": "HTML プレビュー",
+      "htmlPreviewTrust": "スクリプトを有効化",
+      "htmlPreviewTrustHint": "このファイルのスクリプトを実行し、ネットワークアクセスを許可します。信頼できるファイルでのみ有効にしてください。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1509,6 +1515,7 @@
       "newDirectory": "ディレクトリ",
       "openIn": "で開く",
       "openInTerminal": "ターミナルで開く",
+      "copyPath": "パスをコピー",
       "upload": "ファイル/フォルダをアップロード",
       "download": "ファイルをダウンロード",
       "downloadAsZip": "ZIP としてダウンロード",
@@ -1545,7 +1552,9 @@
         "downloadFailed": "{name} のダウンロードに失敗しました",
         "downloadSaved": "{name} をダウンロードしました",
         "pasteFailed": "貼り付けに失敗しました",
-        "pasteSucceeded": "貼り付けが完了しました"
+        "pasteSucceeded": "貼り付けが完了しました",
+        "pathCopied": "パスをコピーしました",
+        "copyPathFailed": "パスのコピーに失敗しました"
       },
       "createDialog": {
         "newFile": "新規ファイル",
@@ -1831,6 +1840,12 @@
       "agentSelector": {
         "noEnabledAgents": "有効なエージェントがありません",
         "openAgentsSettings": "エージェント設定を開く"
+      },
+      "subAgentOverlay": {
+        "title": "サブエージェント",
+        "collapsedSummary": "サブエージェント {count}",
+        "collapseAria": "サブエージェントを折りたたむ",
+        "expandAria": "サブエージェントを展開"
       },
       "agentPlanOverlay": {
         "title": "エージェントプラン",
@@ -2362,8 +2377,35 @@
       "turnCompleteDesc": "エージェントのターンが終了した時",
       "error": "エージェントエラー",
       "errorDesc": "エージェントがエラーに遭遇した時",
+      "permissionRequest": "権限リクエスト",
+      "permissionRequestDesc": "エージェントが操作の権限を要求した時",
+      "userPromptSent": "ユーザーメッセージ",
+      "userPromptSentDesc": "メッセージを送信したとき（通知に本文が含まれます）",
       "saved": "イベントフィルターを更新しました。",
-      "saveFailed": "イベントフィルターの保存に失敗しました。"
+      "saveFailed": "イベントフィルターの保存に失敗しました。",
+      "loadFailed": "設定の読み込みに失敗しました。",
+      "retry": "再試行",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "有効なイベントの発生時に、1 つ以上の URL へ JSON を POST します。上のイベントフィルターは Webhook にも適用されます。",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "Webhook を追加",
+      "removeWebhook": "Webhook を削除",
+      "webhookSave": "保存",
+      "webhooksSaved": "Webhook を保存しました。",
+      "webhooksSaveFailed": "Webhook の保存に失敗しました。",
+      "webhookInvalidUrl": "有効な http(s) URL を入力してください。",
+      "docsTitle": "リクエスト形式",
+      "docsMethod": "メソッド",
+      "docsContentType": "Content-Type",
+      "docsNote": "有効な各イベントはすべての URL に配信されます。Webhook はデバウンスされず、上のイベントフィルターが適用されます。",
+      "editWebhook": "Webhook を編集",
+      "enableWebhook": "Webhook を有効化",
+      "webhookDuplicate": "この URL は既に設定されています。",
+      "cancel": "キャンセル",
+      "webhooksEmpty": "Webhook はまだ設定されていません。",
+      "deleteWebhookTitle": "Webhook を削除",
+      "deleteWebhookMessage": "この Webhook を削除しますか？このURLにイベントは配信されなくなります。",
+      "delete": "削除"
     },
     "language": {
       "title": "メッセージ言語",
@@ -2661,5 +2703,91 @@
     "emptyDirectory": "このディレクトリは空です",
     "errorLoadingDir": "ディレクトリの読み込みに失敗しました",
     "selectedCount": "{count} 件選択中"
+  },
+  "BackupSettings": {
+    "title": "バックアップと復元",
+    "description": "codeg データのポータブルなバックアップを書き出すか、バックアップから復元します。",
+    "tabs": {
+      "backup": "バックアップ",
+      "restore": "復元"
+    },
+    "export": {
+      "includeExternal": "会話内容を含める",
+      "includeExternalHint": "各 CLI の会話履歴（Claude、Codex、Gemini など）も保存します。サイズが増えます。",
+      "passphrase": "パスフレーズ（任意）",
+      "passphrasePlaceholder": "空欄の場合は暗号化されません",
+      "passphraseConfirm": "パスフレーズの確認",
+      "passphraseMismatch": "パスフレーズが一致しません。",
+      "noPassphraseWarning": "このバックアップには秘密情報（API キー、トークン）が平文で含まれます。安全に保管してください。",
+      "passphraseLossWarning": "このパスフレーズで暗号化します。紛失するとバックアップは復元できません。",
+      "button": "バックアップを書き出す",
+      "inProgress": "バックアップを作成中…",
+      "success": "バックアップを作成しました。",
+      "started": "バックアップのダウンロードを開始しました。"
+    },
+    "restore": {
+      "selectFile": "バックアップファイルを選択",
+      "passphrasePrompt": "このバックアップは暗号化されています。パスフレーズを入力してください。",
+      "unlock": "ロック解除",
+      "preview": {
+        "title": "バックアップの詳細",
+        "encrypted": "暗号化済み",
+        "compatible": "互換あり",
+        "incompatible": "互換なし",
+        "createdAt": "作成日時: {value}",
+        "appVersion": "アプリのバージョン: {value}",
+        "incompatibleHint": "このバックアップは新しいバージョンの codeg で作成されており、復元できません。"
+      },
+      "replaceWarning": "復元すると現在の codeg データ（データベースとアップロード）がすべて置き換えられます。現在のデータは先にスナップショットされ、復旧できます。",
+      "keyringNote": "デスクトップの GitHub/チャットのトークンは OS のキーチェーンに保存され、含まれません。復元後に再入力してください。",
+      "button": "復元",
+      "staging": "復元を準備中…",
+      "staged": "復元を準備しました。再起動します…",
+      "restarting": "復元を準備しました。サーバーを再起動します…",
+      "restartTimeout": "サーバーが時間内に復帰しませんでした。起動後にページを再読み込みしてください。",
+      "externalSideLocation": "会話履歴を {path} に復元しました",
+      "confirmTitle": "すべてのデータを置き換えますか？",
+      "confirmBody": "現在の codeg データベースとアップロードをバックアップで置き換えてから再起動します。現在のデータは先にスナップショットされます。",
+      "cancel": "キャンセル",
+      "confirmAction": "置き換えて再起動",
+      "external": {
+        "title": "会話内容",
+        "hint": "このバックアップには CLI の会話履歴が含まれます。復元先を選択してください。",
+        "modeSkip": "復元しない",
+        "modeSide": "安全な別フォルダーに復元",
+        "modeOriginal": "CLI の元の場所に復元",
+        "forceOverwrite": "既存のファイルを上書き",
+        "forceOverwriteHint": "CLI フォルダー内の既存ファイルを置き換えます。",
+        "scanning": "競合を確認中…",
+        "noConflicts": "既存のファイルは上書きされません。",
+        "conflictCount": "既存のファイル {count} 件が影響を受けます。",
+        "conflictSkipNote": "上書きを有効にしない限り、既存ファイルは保持（スキップ）されます。"
+      },
+      "restartFailed": "復元は準備できましたが、サーバーを再起動できませんでした。手動で再起動して復元を適用してください。"
+    },
+    "remoteUnsupported": "バックアップと復元は codeg を実行しているマシンのデータを対象とします。現在リモートワークスペースに接続中です。そのサーバー上で直接バックアップを管理してください。"
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "パスフレーズが正しくないか、バックアップが破損しています。",
+        "corrupted": "バックアップアーカイブが破損しています。",
+        "unknownFormat": "このファイルは認識可能な codeg バックアップではありません。",
+        "newerVersion": "このバックアップは codeg {backupVersion} で作成されており、現在のバージョン（{appVersion}）より新しいです。",
+        "alreadyPending": "適用待ちの復元が既にあります。先に再起動して適用してから、新しい復元を準備してください。"
+      }
+    },
+    "error": {
+      "diskSpace": "操作を完了するためのディスク容量が足りません。",
+      "cancelled": "操作はキャンセルされました。"
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "接続が切断されました",
+    "reconnectingDescription": "サーバーへの再接続を試みています。通常は数秒で自動的に復旧します。",
+    "reconnectNow": "今すぐ再接続",
+    "sessionExpiredTitle": "セッションの有効期限が切れました",
+    "sessionExpiredDescription": "セッションが無効になりました。続行するには再度サインインしてください。",
+    "goToLogin": "ログインへ移動"
   }
 }
