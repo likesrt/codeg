@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切換只會改變這裡顯示與開啟的位址；服務會監聽所有網路介面，每個位址都可存取。",
     "sectionTitle": "Web 服務",
     "sectionDescription": "啟用後可透過瀏覽器遠端存取 Codeg",
     "port": "連接埠",
@@ -2552,6 +2553,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} 個執行中",
+      "waiting": "{count} 個待核准",
+      "error": "{count} 個發生錯誤"
+    },
+    "panel": {
+      "title": "活動工作階段",
+      "empty": "沒有活動工作階段",
+      "emptyHint": "正在執行或需要你處理的工作階段會顯示在這裡。",
+      "statusRunning": "執行中",
+      "statusWaiting": "等待中",
+      "statusError": "發生錯誤"
+    },
     "menu": {
       "scale": "縮放",
       "openManager": "管理寵物",

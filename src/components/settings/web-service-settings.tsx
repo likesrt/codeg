@@ -14,6 +14,13 @@ import { useTranslations } from "next-intl"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   startWebServer,
   stopWebServer,
   getWebServerStatus,
@@ -28,11 +35,37 @@ const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
 
-function AddressCard({ label, value }: { label: string; value: string }) {
+// Remembers which reachable address the user last chose to display/open.
+// Keyed by host (IP) only, so the choice survives a port change.
+const DISPLAY_HOST_STORAGE_KEY = "webService.displayHost"
+
+// Extract the host (IP) portion of an `http://ip:port` address.
+function addressHost(address: string): string {
+  try {
+    return new URL(address).hostname
+  } catch {
+    return address
+  }
+}
+
+// Read the remembered display host, tolerating environments where storage
+// access throws (blocked cookies / private mode) — same posture as the write.
+function readSavedDisplayHost(): string | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage.getItem(DISPLAY_HOST_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function AddressCard({ label, value }: { label?: string; value: string }) {
   const t = useTranslations("WebServiceSettings")
   return (
     <div className="space-y-1.5">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      {label && (
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      )}
       <div className="group relative flex items-center rounded-md border bg-muted/40 px-3 py-2">
         <code className="min-w-0 flex-1 truncate text-sm select-all">
           {value}
@@ -152,6 +185,7 @@ export function WebServiceSettings() {
   const [portProbe, setPortProbe] = useState<WebServicePortProbe | null>(null)
   const [autoStart, setAutoStart] = useState(false)
   const [configLoaded, setConfigLoaded] = useState(false)
+  const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
 
   const probePort = useCallback(async (portNum: number) => {
     try {
@@ -201,6 +235,39 @@ export function WebServiceSettings() {
   useEffect(() => {
     fetchStatus()
   }, [fetchStatus])
+
+  // Pick which reachable address to display/open. Keep a still-valid prior
+  // choice; otherwise honor the remembered host, falling back to the first
+  // entry (loopback). Selection is display-only — the service always binds
+  // 0.0.0.0, so every listed address stays reachable regardless of choice.
+  useEffect(() => {
+    const addresses = status?.addresses ?? []
+    if (addresses.length === 0) {
+      setSelectedAddress(null)
+      return
+    }
+    setSelectedAddress((prev) => {
+      if (prev && addresses.includes(prev)) return prev
+      const savedHost = readSavedDisplayHost()
+      const matched = savedHost
+        ? addresses.find((addr) => addressHost(addr) === savedHost)
+        : undefined
+      return matched ?? addresses[0]
+    })
+  }, [status])
+
+  function handleSelectAddress(address: string) {
+    setSelectedAddress(address)
+    try {
+      window.localStorage.setItem(
+        DISPLAY_HOST_STORAGE_KEY,
+        addressHost(address)
+      )
+    } catch {
+      // Ignore storage failures (private mode / quota); the selection still
+      // applies for the current session.
+    }
+  }
 
   const persistWebServiceConfig = useCallback(
     async (nextAutoStart = autoStart) => {
@@ -300,6 +367,8 @@ export function WebServiceSettings() {
   }
 
   const isRunning = status !== null
+  const currentAddress = selectedAddress ?? status?.addresses[0] ?? null
+  const hasMultipleAddresses = (status?.addresses.length ?? 0) > 1
   const showStaleBanner =
     !isRunning &&
     portProbe !== null &&
@@ -402,16 +471,38 @@ export function WebServiceSettings() {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          {/* Addresses (only when running) */}
-          {isRunning && (
-            <div className="space-y-3">
-              {status.addresses.map((addr) => (
-                <AddressCard
-                  key={addr}
-                  label={t("addressLabel")}
-                  value={addr}
-                />
-              ))}
+          {/* Address (only when running). The listener is bound to
+              0.0.0.0, so every local IP reaches the service; the selector
+              only changes which address is shown and opened by the arrow —
+              it never changes what the service actually listens on. */}
+          {isRunning && currentAddress && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                {t("addressLabel")}
+              </div>
+              {hasMultipleAddresses && (
+                <Select
+                  value={currentAddress}
+                  onValueChange={handleSelectAddress}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {status.addresses.map((addr) => (
+                      <SelectItem key={addr} value={addr}>
+                        {addr}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <AddressCard value={currentAddress} />
+              {hasMultipleAddresses && (
+                <p className="text-xs text-muted-foreground">
+                  {t("addressSwitchHint")}
+                </p>
+              )}
             </div>
           )}
         </div>

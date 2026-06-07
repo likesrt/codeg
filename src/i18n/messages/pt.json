@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "Alternar muda apenas o endereço mostrado e aberto aqui; o serviço escuta em todas as interfaces e continua acessível em cada endereço.",
     "sectionTitle": "Serviço Web",
     "sectionDescription": "Ativar para acessar o Codeg remotamente pelo navegador",
     "port": "Porta",
@@ -2552,6 +2553,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} em execução",
+      "waiting": "{count} aguardando aprovação",
+      "error": "{count} com erro"
+    },
+    "panel": {
+      "title": "Sessões ativas",
+      "empty": "Nenhuma sessão ativa",
+      "emptyHint": "Agentes em execução e os que precisam de você aparecem aqui.",
+      "statusRunning": "Em execução",
+      "statusWaiting": "Aguardando",
+      "statusError": "Erro"
+    },
     "menu": {
       "scale": "Escala",
       "openManager": "Gerenciar pets",

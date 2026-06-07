@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "Switching only changes the address shown and opened here — the service listens on all interfaces and stays reachable at every address.",
     "sectionTitle": "Web Service",
     "sectionDescription": "Enable to access Codeg remotely via browser",
     "port": "Port",
@@ -2564,6 +2565,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} running",
+      "waiting": "{count} awaiting approval",
+      "error": "{count} errored"
+    },
+    "panel": {
+      "title": "Active sessions",
+      "empty": "No active sessions",
+      "emptyHint": "Running agents and ones that need you appear here.",
+      "statusRunning": "Running",
+      "statusWaiting": "Waiting",
+      "statusError": "Error"
+    },
     "menu": {
       "scale": "Scale",
       "openManager": "Manage pets",

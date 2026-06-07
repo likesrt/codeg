@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切り替えても、ここに表示され開くアドレスが変わるだけです。サービスはすべてのインターフェースで待ち受けており、どのアドレスからもアクセスできます。",
     "sectionTitle": "Webサービス",
     "sectionDescription": "有効にするとブラウザからCodegにリモートアクセスできます",
     "port": "ポート",
@@ -2552,6 +2553,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "実行中 {count} 件",
+      "waiting": "承認待ち {count} 件",
+      "error": "エラー {count} 件"
+    },
+    "panel": {
+      "title": "アクティブなセッション",
+      "empty": "アクティブなセッションはありません",
+      "emptyHint": "実行中、または対応が必要なセッションがここに表示されます。",
+      "statusRunning": "実行中",
+      "statusWaiting": "待機中",
+      "statusError": "エラー"
+    },
     "menu": {
       "scale": "拡大率",
       "openManager": "ペット管理",

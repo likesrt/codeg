@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切换只改变这里显示和打开的地址；服务监听所有网卡，每个地址都可访问。",
     "sectionTitle": "Web 服务",
     "sectionDescription": "启用后可通过浏览器远程访问 Codeg",
     "port": "端口",
@@ -2564,6 +2565,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} 个运行中",
+      "waiting": "{count} 个待批准",
+      "error": "{count} 个出错"
+    },
+    "panel": {
+      "title": "活动会话",
+      "empty": "没有活动会话",
+      "emptyHint": "正在运行或需要你处理的会话会显示在这里。",
+      "statusRunning": "运行中",
+      "statusWaiting": "等待中",
+      "statusError": "出错"
+    },
     "menu": {
       "scale": "缩放",
       "openManager": "管理宠物",

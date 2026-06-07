@@ -15,6 +15,7 @@ pub mod models;
 mod network;
 pub mod parsers;
 pub mod paths;
+pub mod pet_sessions;
 pub mod pet_state_mapper;
 pub mod pets;
 #[cfg(feature = "tauri-runtime")]
@@ -369,6 +370,36 @@ mod tauri_app {
                     );
                 }
 
+                // Spawn the pet panel active-session aggregator: rebuilds the
+                // `PetSessionsPayload` (running/waiting/error counts + per-
+                // session rows with titles and pending permissions) on ACP
+                // lifecycle events and emits `pet://sessions` for the sprite
+                // badge + panel window. Shares the same buses as the ambient
+                // mapper but is kept separate so the DB-free ambient task stays
+                // simple; desktop-only (server mode has no pet window).
+                {
+                    let bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone();
+                    let broadcaster = app
+                        .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
+                        .inner()
+                        .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let manager = app.state::<ConnectionManager>().inner().clone_ref();
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::spawn(
+                        crate::pet_sessions::pet_sessions_subscriber_task(
+                            bus,
+                            broadcaster,
+                            emitter,
+                            manager,
+                            db_conn,
+                        ),
+                    );
+                }
+
                 // Delegation broker + UDS listener. Built from the managed
                 // ConnectionManager + DB so spawn / depth-lookup work against
                 // live state. Managed alongside the existing per-resource
@@ -615,6 +646,13 @@ mod tauri_app {
                     }
                 }
 
+                if label == windows::PET_PANEL_LABEL
+                    && matches!(event, tauri::WindowEvent::Focused(false))
+                {
+                    // Click-away dismiss for the session panel.
+                    windows::close_pet_panel_on_blur(window.app_handle());
+                }
+
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         // The close button does one of two things, depending
@@ -786,6 +824,9 @@ mod tauri_app {
                 windows::close_pet_window,
                 windows::pet_window_record_position,
                 windows::pet_show_context_menu,
+                windows::toggle_pet_panel,
+                windows::close_pet_panel,
+                windows::focus_conversation,
                 windows::update_traffic_light_position,
                 windows::update_appearance_mode,
                 windows::set_tray_locale,
@@ -806,6 +847,7 @@ mod tauri_app {
                 pet_commands::pet_marketplace_install,
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
+                pet_commands::pet_list_active_sessions,
                 app_update_commands::app_update_state,
                 app_update_commands::perform_app_update,
                 app_update_commands::restart_app,

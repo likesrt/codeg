@@ -1264,6 +1264,184 @@ pub async fn pet_window_record_position(
     Ok(())
 }
 
+// ─── Pet session panel (click-to-open companion window) ─────────────────
+//
+// A second, focusable window anchored next to the sprite. The sprite window
+// itself is transparent / non-focusing / exact-fit and hostile to a scrollable
+// interactive list, so the list + inline permission actions live here. Tapping
+// the pet toggles it; clicking away (blur) dismisses it.
+
+pub const PET_PANEL_LABEL: &str = "pet-panel";
+const PET_PANEL_WIDTH: f64 = 300.0;
+const PET_PANEL_HEIGHT: f64 = 380.0;
+const PET_PANEL_GAP: f64 = 8.0;
+
+/// Guards the toggle-vs-blur race. When the panel auto-closes on blur because
+/// the user clicked the pet, that same click also fires `toggle_pet_panel`;
+/// without this guard the toggle would immediately reopen the just-closed
+/// panel. The blur handler stamps the close instant here and `toggle_pet_panel`
+/// skips the reopen while the stamp is fresh.
+static PET_PANEL_BLUR_CLOSED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+const PET_PANEL_REOPEN_SUPPRESS_MS: u128 = 300;
+
+/// Close the panel on blur (click-away dismiss) and record the time so a
+/// paired pet click doesn't reopen it. Invoked from the global window-event
+/// handler in `lib.rs`.
+#[cfg(feature = "tauri-runtime")]
+pub fn close_pet_panel_on_blur(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window(PET_PANEL_LABEL) {
+        if let Ok(mut guard) = PET_PANEL_BLUR_CLOSED_AT.lock() {
+            *guard = Some(std::time::Instant::now());
+        }
+        let _ = panel.close();
+    }
+}
+
+/// True (consuming the stamp) if the panel was blur-closed within the suppress
+/// window — i.e. the current toggle is the back half of a click that already
+/// dismissed the panel, so it must not reopen.
+fn pet_panel_reopen_suppressed() -> bool {
+    if let Ok(mut guard) = PET_PANEL_BLUR_CLOSED_AT.lock() {
+        if let Some(t) = *guard {
+            if t.elapsed().as_millis() < PET_PANEL_REOPEN_SUPPRESS_MS {
+                *guard = None;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn toggle_pet_panel(app: AppHandle) -> Result<(), AppCommandError> {
+    // Already open → toggle off. (Covers the race where the pet click reaches
+    // this command before the panel's blur event has fired.)
+    if let Some(existing) = app.get_webview_window(PET_PANEL_LABEL) {
+        let _ = existing.close();
+        return Ok(());
+    }
+    // The click that closed it via blur must not reopen it.
+    if pet_panel_reopen_suppressed() {
+        return Ok(());
+    }
+    open_pet_panel_window(&app)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn close_pet_panel(app: AppHandle) -> Result<(), AppCommandError> {
+    if let Some(existing) = app.get_webview_window(PET_PANEL_LABEL) {
+        let _ = existing.close();
+    }
+    Ok(())
+}
+
+/// Create the panel anchored to the sprite. Prefers placement above the pet,
+/// falling back to below; the right edge aligns with the pet's, clamped to the
+/// monitor work area. All math is in logical pixels for DPI independence.
+#[cfg(feature = "tauri-runtime")]
+fn open_pet_panel_window(app: &AppHandle) -> Result<(), AppCommandError> {
+    let pet = app
+        .get_webview_window(PET_WINDOW_LABEL)
+        .ok_or_else(|| AppCommandError::window("Pet window not open", String::new()))?;
+
+    let sf = pet.scale_factor().unwrap_or(1.0);
+    let (px, py, pw, ph) = match (pet.outer_position(), pet.outer_size()) {
+        (Ok(pos), Ok(size)) => (
+            pos.x as f64 / sf,
+            pos.y as f64 / sf,
+            size.width as f64 / sf,
+            size.height as f64 / sf,
+        ),
+        _ => (0.0, 0.0, PET_BASE_WIDTH, PET_BASE_HEIGHT),
+    };
+
+    let (mon_x, mon_y, mon_w, mon_h) = pet
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let msf = m.scale_factor();
+            let mp = m.position();
+            let ms = m.size();
+            (
+                mp.x as f64 / msf,
+                mp.y as f64 / msf,
+                ms.width as f64 / msf,
+                ms.height as f64 / msf,
+            )
+        })
+        .unwrap_or((px, py - PET_PANEL_HEIGHT, 1920.0, 1080.0));
+
+    // Prefer above the pet; drop below if it would clip the top edge, then
+    // clamp into the monitor either way.
+    let mut panel_y = py - PET_PANEL_HEIGHT - PET_PANEL_GAP;
+    if panel_y < mon_y {
+        panel_y = py + ph + PET_PANEL_GAP;
+    }
+    let max_y = mon_y + mon_h - PET_PANEL_HEIGHT;
+    if panel_y > max_y {
+        panel_y = max_y.max(mon_y);
+    }
+
+    // Align the panel's right edge with the pet's, clamped horizontally.
+    let mut panel_x = (px + pw) - PET_PANEL_WIDTH;
+    let max_x = mon_x + mon_w - PET_PANEL_WIDTH;
+    if panel_x > max_x {
+        panel_x = max_x;
+    }
+    if panel_x < mon_x {
+        panel_x = mon_x;
+    }
+
+    let url = WebviewUrl::App("pet-panel".into());
+    let builder = WebviewWindowBuilder::new(app, PET_PANEL_LABEL, url)
+        .title("codeg sessions")
+        .inner_size(PET_PANEL_WIDTH, PET_PANEL_HEIGHT)
+        .position(panel_x, panel_y)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        // Focus it so click-away blur can dismiss it and buttons are clickable
+        // on the first click.
+        .focused(true)
+        .accept_first_mouse(true);
+
+    apply_pet_window_style(builder)
+        .build()
+        .map_err(|e| AppCommandError::window("Failed to open pet panel", e.to_string()))?;
+
+    Ok(())
+}
+
+/// Bring the main workspace to the foreground and ask it to focus a specific
+/// conversation. Uses an event (not a URL reload) so the in-memory tab/session
+/// state survives — `PetFocusBridge` in the main window calls `openTab`.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn focus_conversation(
+    app: AppHandle,
+    folder_id: i32,
+    conversation_id: i32,
+    agent: String,
+) -> Result<(), AppCommandError> {
+    use tauri::Emitter;
+    show_main_window(&app);
+    let payload = serde_json::json!({
+        "folderId": folder_id,
+        "conversationId": conversation_id,
+        "agent": agent,
+    });
+    app.emit_to("main", "workspace://focus-conversation", payload)
+        .map_err(|e| {
+            AppCommandError::window("Failed to signal main window", e.to_string())
+        })?;
+    Ok(())
+}
+
 // ─── Pet right-click context menu (native) ──────────────────────────────
 //
 // The pet window is intentionally tiny (a single sprite frame × user scale,

@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "Das Umschalten ändert nur die hier angezeigte und geöffnete Adresse – der Dienst lauscht auf allen Schnittstellen und bleibt unter jeder Adresse erreichbar.",
     "sectionTitle": "Webdienst",
     "sectionDescription": "Aktivieren Sie den Fernzugriff auf Codeg über den Browser",
     "port": "Port",
@@ -2552,6 +2553,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} laufend",
+      "waiting": "{count} warten auf Freigabe",
+      "error": "{count} fehlgeschlagen"
+    },
+    "panel": {
+      "title": "Aktive Sitzungen",
+      "empty": "Keine aktiven Sitzungen",
+      "emptyHint": "Laufende Agenten und solche, die dich brauchen, erscheinen hier.",
+      "statusRunning": "Läuft",
+      "statusWaiting": "Wartet",
+      "statusError": "Fehler"
+    },
     "menu": {
       "scale": "Skalierung",
       "openManager": "Pets verwalten",

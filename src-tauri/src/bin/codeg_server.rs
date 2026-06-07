@@ -4,7 +4,8 @@ use std::sync::Arc;
 use codeg_lib::app_state::AppState;
 use codeg_lib::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use codeg_lib::web::{
-    find_static_dir_standalone, get_local_addresses, resolve_persisted_server_token, WebServerState,
+    addresses_for_bind, advertise_host, find_static_dir_standalone, resolve_persisted_server_token,
+    WebServerState,
 };
 
 fn main() {
@@ -357,15 +358,19 @@ async fn async_main() {
         );
     }
 
-    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    let local_addr = listener.local_addr().ok();
+    let actual_port = local_addr.map(|a| a.port()).unwrap_or(port);
+    // `CODEG_HOST` may be `localhost` or a bracketed IPv6 (`[::1]`); advertise
+    // the concrete IP the socket bound to, not the raw config string.
+    let advertised_host = advertise_host(local_addr, &host);
 
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
     state
         .web_server_state
-        .mark_externally_running(actual_port, token.clone());
-    let addresses = get_local_addresses(actual_port);
+        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     eprintln!("[SERVER] Token: {}", token);
     eprintln!("[SERVER] Listening on:");

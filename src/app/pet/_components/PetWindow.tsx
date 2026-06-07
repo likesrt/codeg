@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
-import { getPet, getPetSettings, readPetSpritesheet } from "@/lib/pet/api"
+import {
+  getPet,
+  getPetSettings,
+  readPetSpritesheet,
+  togglePetPanel,
+} from "@/lib/pet/api"
 import type { PetDetail, PetWindowConfig } from "@/lib/pet/types"
 import {
   createPetSpriteObjectUrl,
@@ -22,6 +27,7 @@ import { usePetOneShot } from "../_hooks/usePetOneShot"
 import { usePetDrag } from "../_hooks/usePetDrag"
 import { PetSprite } from "./PetSprite"
 import { PetMenu } from "./PetMenu"
+import { PetBadge } from "./PetBadge"
 
 export interface PetWindowProps {
   petId: string
@@ -102,8 +108,14 @@ export function PetWindow({ petId }: PetWindowProps) {
     handleDragDirection(null)
   }, [handleDragDirection])
 
+  // A tap (vs. drag) toggles the session panel; the jump is tactile feedback.
   const handleClick = useCallback(() => {
     playOneShot("jumping", JUMPING_DURATION_MS)
+    if (isDesktop()) {
+      void togglePetPanel().catch((err) =>
+        console.warn("[Pet] toggle panel failed:", err)
+      )
+    }
   }, [playOneShot])
 
   // Track held-mouse-button state so hover-driven waving stays out of the
@@ -332,6 +344,7 @@ export function PetWindow({ petId }: PetWindowProps) {
         scale={scale}
         label={pet.displayName}
       />
+      <PetBadge />
       <PetMenu onScaleChange={setScale} onOpenSettings={openManager} />
     </div>
   )

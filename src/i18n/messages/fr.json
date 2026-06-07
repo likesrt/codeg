@@ -2235,6 +2235,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "Changer ne modifie que l'adresse affichée et ouverte ici ; le service écoute sur toutes les interfaces et reste accessible à chaque adresse.",
     "sectionTitle": "Service Web",
     "sectionDescription": "Activer pour accéder à Codeg à distance via le navigateur",
     "port": "Port",
@@ -2552,6 +2553,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} en cours",
+      "waiting": "{count} en attente d'approbation",
+      "error": "{count} en erreur"
+    },
+    "panel": {
+      "title": "Sessions actives",
+      "empty": "Aucune session active",
+      "emptyHint": "Les agents en cours et ceux qui vous attendent apparaissent ici.",
+      "statusRunning": "En cours",
+      "statusWaiting": "En attente",
+      "statusError": "Erreur"
+    },
     "menu": {
       "scale": "Échelle",
       "openManager": "Gérer les mascottes",

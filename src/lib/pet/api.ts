@@ -16,6 +16,7 @@ import type {
   PetCodexImportAvailability,
   PetDetail,
   PetMetaPatch,
+  PetSessionsPayload,
   PetSpriteAsset,
   PetSummary,
   PetWindowConfig,
@@ -119,6 +120,15 @@ export async function getCurrentPetState(): Promise<PetState> {
   return getTransport().call("pet_get_current_state")
 }
 
+// Snapshot of all active agent sessions (prompting / awaiting permission /
+// errored) with their conversation titles and any pending permission. The
+// sprite badge + panel call this on mount; live updates arrive on the
+// `pet://sessions` event. Counts follow the ambient precedence (a
+// permission-blocked session counts as waiting, not running).
+export async function listActivePetSessions(): Promise<PetSessionsPayload> {
+  return getTransport().call("pet_list_active_sessions")
+}
+
 // Tauri-only — these are noops in web mode (the standalone server cannot
 // open native windows on the user's machine). Callers should branch on
 // `isDesktop()` before invoking them.
@@ -135,6 +145,32 @@ export async function recordPetWindowPosition(
   y: number
 ): Promise<void> {
   return getTransport().call("pet_window_record_position", { x, y })
+}
+
+// Toggle the session panel anchored next to the sprite (open if closed, close
+// if open). Tauri-only. The backend guards the toggle-vs-blur race so a tap
+// that dismissed the panel via click-away doesn't immediately reopen it.
+export async function togglePetPanel(): Promise<void> {
+  return getTransport().call("toggle_pet_panel")
+}
+
+export async function closePetPanel(): Promise<void> {
+  return getTransport().call("close_pet_panel")
+}
+
+// Bring the main workspace forward and focus a conversation, without reloading
+// it (the main window's PetFocusBridge calls openTab). `agent` is the
+// snake_case AgentType. Tauri-only.
+export async function focusConversation(
+  folderId: number,
+  conversationId: number,
+  agent: string
+): Promise<void> {
+  return getTransport().call("focus_conversation", {
+    folderId,
+    conversationId,
+    agent,
+  })
 }
 
 export interface PetMenuLabels {

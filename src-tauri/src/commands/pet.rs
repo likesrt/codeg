@@ -9,14 +9,15 @@
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
+use crate::acp::manager::ConnectionManager;
 use crate::app_error::AppCommandError;
-use crate::db::service::app_metadata_service;
+use crate::db::service::{app_metadata_service, conversation_service};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::pet::{
     ImportCodexPetsRequest, ImportCodexPetsResult, ImportablePet, NewPetInput, PetCelebrationKind,
-    PetDetail, PetMetaPatch, PetSpriteAsset, PetState, PetSummary, PetWindowConfig,
-    PetWindowStatePatch,
+    PetDetail, PetMetaPatch, PetSessionEntry, PetSessionsPayload, PetSpriteAsset, PetState,
+    PetSummary, PetWindowConfig, PetWindowStatePatch,
 };
 use crate::pet_state_mapper::{read_pet_state, PetStateHandle};
 use crate::pets;
@@ -179,6 +180,25 @@ pub fn pet_celebrate_core(emitter: &EventEmitter, kind: PetCelebrationKind) {
 /// to fill in the gap.
 pub fn pet_get_current_state_core(handle: &PetStateHandle) -> PetState {
     read_pet_state(handle)
+}
+
+/// Snapshot of all active agent sessions for the pet panel: the connections
+/// that are prompting, awaiting a permission, or errored, joined with their
+/// conversation titles. Shared by the `pet_list_active_sessions` snapshot
+/// command (mount-time) and the `pet://sessions` aggregator (live updates), so
+/// the two never diverge. A missing/renamed conversation row degrades to an
+/// empty title rather than failing the whole payload.
+pub async fn pet_list_active_sessions_core(
+    manager: &ConnectionManager,
+    db: &DatabaseConnection,
+) -> Result<PetSessionsPayload, AppCommandError> {
+    let mut entries: Vec<PetSessionEntry> = manager.list_active_sessions().await;
+    for entry in &mut entries {
+        if let Ok(summary) = conversation_service::get_by_id(db, entry.conversation_id).await {
+            entry.title = summary.title.unwrap_or_default();
+        }
+    }
+    Ok(PetSessionsPayload::from_entries(entries))
 }
 
 pub async fn pet_save_window_state_core(
@@ -412,6 +432,15 @@ pub async fn pet_get_current_state(
     handle: tauri::State<'_, PetStateHandle>,
 ) -> Result<PetState, AppCommandError> {
     Ok(pet_get_current_state_core(handle.inner()))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn pet_list_active_sessions(
+    manager: tauri::State<'_, ConnectionManager>,
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<PetSessionsPayload, AppCommandError> {
+    pet_list_active_sessions_core(manager.inner(), &db.conn).await
 }
 
 #[cfg(feature = "tauri-runtime")]

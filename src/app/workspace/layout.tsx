@@ -52,7 +52,10 @@ import { AuxPanel } from "@/components/layout/aux-panel"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
 import { FileWorkspacePanel } from "@/components/files/file-workspace-panel"
 import { AppToaster } from "@/components/ui/app-toaster"
-import { DeepLinkBootstrap } from "@/components/workspace/deep-link-bootstrap"
+import {
+  DeepLinkBootstrap,
+  PetFocusBridge,
+} from "@/components/workspace/deep-link-bootstrap"
 import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
 import {
   ResizableHandle,
@@ -805,6 +808,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                         <WorkspaceDocumentTitle />
                         <TabKeysSync />
                         <DeepLinkBootstrap />
+                        <PetFocusBridge />
                         <WorkspaceOpenFolderListener />
                         <SessionStatsProvider>
                           <SidebarProvider>

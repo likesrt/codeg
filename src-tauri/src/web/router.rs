@@ -884,6 +884,10 @@ pub fn build_router(
             "/pet_get_current_state",
             post(handlers::pet::pet_get_current_state),
         )
+        .route(
+            "/pet_list_active_sessions",
+            post(handlers::pet::pet_list_active_sessions),
+        )
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
         .route("/terminal_write", post(handlers::terminal::terminal_write))

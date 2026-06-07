@@ -64,6 +64,7 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 dirs = "6"
+if-addrs = "0.13"
 walkdir = "2"
 sacp = "11.0.0"
 sacp-tokio = "11.0.0"
