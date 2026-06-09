@@ -6,6 +6,7 @@ pub mod chat_channel;
 pub mod conversations;
 pub mod delegation;
 pub mod experts;
+pub mod feedback;
 #[cfg(feature = "tauri-runtime")]
 pub mod file_io;
 pub mod folder_commands;
@@ -16,6 +17,7 @@ pub mod model_provider;
 pub mod notification;
 pub mod pet;
 pub mod project_boot;
+pub mod question;
 pub mod quick_messages;
 #[cfg(feature = "tauri-runtime")]
 pub mod remote_proxy;

@@ -1,6 +1,12 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from "react"
 import { useTranslations } from "next-intl"
 import {
   ChevronRight,
@@ -27,6 +33,7 @@ import {
   getHomeDirectory,
   listDirectoryEntries,
 } from "@/lib/api"
+import { parentFsPath } from "@/lib/path-utils"
 import type { DirectoryEntry } from "@/lib/types"
 import {
   ContextMenu,
@@ -74,8 +81,8 @@ interface DirectoryBrowserEntryRowProps {
 /**
  * 将父目录路径与子目录名拼接，兼容 Unix 和 Windows 路径分隔符。
  *
- * 目录浏览面板可能指向远程 Unix 或 Windows 路径，因此返回路径保留
- * `parent` 中已有的分隔符风格。拼接前会移除尾部多余分隔符。
+ * 关键参数为父路径与已验证的子目录名；返回绝对子路径。边界上会保留父路径的
+ * 分隔符风格，副作用为无。
  */
 function joinChildDirectory(parent: string, child: string): string {
   const separator = parent.includes("\\") && !parent.includes("/") ? "\\" : "/"
@@ -85,8 +92,8 @@ function joinChildDirectory(parent: string, child: string): string {
 /**
  * 在发送最终路径到后端前验证新子文件夹名称。
  *
- * `translate` 返回本地化验证文本。后端仍会验证完整路径；
- * 此函数仅即时拦截空名称和路径分隔符。
+ * 关键参数为用户输入名称和本地化函数；返回错误文案或 null。边界上拒绝空名称
+ * 与路径分隔符，后端仍会执行最终安全校验。
  */
 function validateNewFolderName(
   name: string,
@@ -101,44 +108,20 @@ function validateNewFolderName(
 }
 
 /**
- * 获取给定路径的父目录路径，兼容 Unix 和 Windows 路径分隔符。
- *
- * 如果路径已经是根目录（Unix "/" 或 Windows "C:\\" 等），返回原路径；
- * 否则移除最后一个路径段后返回父目录。
- */
-function getParentDirectoryPath(path: string): string {
-  // 检测路径使用的分隔符风格（优先判定为 Unix，除非仅含反斜杠）
-  const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/"
-
-  // Windows 绝对路径（如 "C:\\"）与 Unix 根 "/" 作为终止条件
-  if (path === "/") return "/"
-  if (/^[a-zA-Z]:\\?$/.test(path)) return path
-
-  const parts = path.replace(/[\\/]$/, "").split(separator)
-  parts.pop()
-  if (parts.length === 0) return separator === "\\" ? path : "/"
-
-  // Windows 盘符根：如 "C:" 后面需要追加分隔符
-  const parent = parts.join(separator)
-  if (/^[a-zA-Z]:$/.test(parent)) return parent + "\\"
-  return parent || "/"
-}
-
-/**
  * 规范化目录浏览器中的路径以便跨平台比较。
  *
- * 该函数只用于前端状态清理：把反斜杠统一成斜杠，并移除尾部分隔符，
- * 不改变真实路径，也不会发起文件系统访问。
+ * 关键参数为原始路径；返回仅用于比较的路径。边界上保留根目录，副作用为无，
+ * 不会改变真实文件系统路径。
  */
 function normalizeDirectoryBrowserPath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "")
+  return path.replace(/\\/g, "/").replace(/\/+$/, "") || path
 }
 
 /**
  * 将绝对目标目录转换成文件树删除 API 需要的相对路径。
  *
- * `deleteFileTreeEntry` 的后端以 `rootPath` 为根解析相对路径；目录浏览器拿到的是
- * 绝对路径，因此这里统一分隔符后裁掉根路径前缀，避免把绝对路径传给后端被拒绝。
+ * 关键参数为浏览根路径和待删路径；返回相对路径。边界上如果目标不在根路径下，
+ * 保留原路径交给后端拒绝，避免前端误裁剪。
  */
 function getRelativeDirectoryPath(
   rootPath: string,
@@ -156,8 +139,8 @@ function getRelativeDirectoryPath(
 /**
  * 判断候选路径是否等于目标目录或位于目标目录内部。
  *
- * 远程目录可能使用 Unix 或 Windows 分隔符，因此比较前统一分隔符并去掉尾部分隔符，
- * 避免删除 Windows 目录后遗漏其子路径状态。
+ * 关键参数为候选路径和目标路径；返回布尔值。边界上会统一 Windows 与 Unix
+ * 分隔符，副作用为无。
  */
 function isSameOrDescendantPath(candidate: string, target: string): boolean {
   const normalizedCandidate = normalizeDirectoryBrowserPath(candidate)
@@ -171,8 +154,8 @@ function isSameOrDescendantPath(candidate: string, target: string): boolean {
 /**
  * 渲染单行目录条目及其右键菜单命令。
  *
- * 该行将选择、展开、双击确认、子目录创建以及目录删除委托给父组件的回调函数，
- * 使父组件能集中管理树状态和对话框状态。
+ * 关键参数包含目录条目、层级和回调；返回 React 节点。副作用仅来自用户交互时
+ * 调用父组件传入的选择、展开、新建、删除回调。
  */
 function DirectoryBrowserEntryRow({
   depth,
@@ -237,8 +220,8 @@ function DirectoryBrowserEntryRow({
 /**
  * 渲染目录行左侧的展开/折叠箭头图标。
  *
- * 点击或键盘操作时阻止事件冒泡，避免同时选中该行。
- * 没有子项的条目仅保留占位宽度（不可见）。
+ * 关键参数为目录条目、展开状态、加载状态和展开回调；返回 React 节点。边界上
+ * 没有子项时只保留占位宽度，副作用是阻止事件冒泡避免误选中行。
  */
 function DirectoryExpandToggle({
   entry,
@@ -282,11 +265,14 @@ function DirectoryExpandToggle({
   )
 }
 
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect
+
 /**
- * 内置目录选择对话框，支持展开文件夹、创建子目录和删除目录。
+ * 内置目录选择对话框，支持展开文件夹、输入路径校验、创建子目录和删除目录。
  *
- * 通过 API 调用浏览服务端路径，选择后通过 `onSelect` 通知调用方。
- * 仅在用户显式选择或双击后自行关闭。
+ * 关键参数控制打开状态、选择回调和初始路径；返回对话框节点。边界上通过会话号
+ * 丢弃关闭重开后的过期异步结果，副作用为调用文件系统 API 与父组件回调。
  */
 export function DirectoryBrowserDialog({
   open,
@@ -303,26 +289,39 @@ export function DirectoryBrowserDialog({
     new Map()
   )
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
   const [createParentPath, setCreateParentPath] = useState<string | null>(null)
   const [newFolderName, setNewFolderName] = useState("")
   const [creating, setCreating] = useState(false)
-
-  // 目录删除相关状态
   const [deleteTarget, setDeleteTarget] = useState<DirectoryEntry | null>(null)
   const [deleting, setDeleting] = useState(false)
 
   const initialized = useRef(false)
+  const sessionGen = useRef(0)
+  const navSeq = useRef(0)
   const creatingRef = useRef(false)
   const deletingRef = useRef(false)
+  const prevOpen = useRef(open)
+  const pathInputRef = useRef(pathInput)
+
+  useIsomorphicLayoutEffect(() => {
+    if (prevOpen.current !== open) {
+      prevOpen.current = open
+      sessionGen.current += 1
+    }
+  }, [open])
+
+  useIsomorphicLayoutEffect(() => {
+    pathInputRef.current = pathInput
+  }, [pathInput])
 
   /**
    * 加载目录条目，可选跳过缓存进行强制刷新。
    *
-   * `options.force` 跳过当前 `entries` 缓存，围绕 API 调用更新加载/错误状态，
-   * 并在目录无法读取时返回 `null`，使导航调用方可避免在失败后更改根路径。
+   * 关键参数为目录路径和 force 选项；返回条目列表或 null。边界上过期会话不会写入
+   * 状态，副作用为更新加载、错误和缓存状态。
    */
   const loadEntries = useCallback(
     async (
@@ -331,21 +330,26 @@ export function DirectoryBrowserDialog({
     ): Promise<DirectoryEntry[] | null> => {
       if (!options.force && entries.has(path)) return entries.get(path)!
 
+      const gen = sessionGen.current
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
         const result = await listDirectoryEntries(path)
-        setEntries((prev) => new Map(prev).set(path, result))
+        if (gen === sessionGen.current) {
+          setEntries((prev) => new Map(prev).set(path, result))
+        }
         return result
       } catch {
-        setError(t("errorLoadingDir"))
+        if (gen === sessionGen.current) setError(t("errorLoadingDir"))
         return null
       } finally {
-        setLoading((prev) => {
-          const next = new Set(prev)
-          next.delete(path)
-          return next
-        })
+        if (gen === sessionGen.current) {
+          setLoading((prev) => {
+            const next = new Set(prev)
+            next.delete(path)
+            return next
+          })
+        }
       }
     },
     [entries, t]
@@ -353,18 +357,19 @@ export function DirectoryBrowserDialog({
 
   const navigateTo = useCallback(
     async (path: string) => {
+      const gen = sessionGen.current
+      const seq = (navSeq.current += 1)
       const result = await loadEntries(path)
+      if (gen !== sessionGen.current || seq !== navSeq.current) return
       if (result !== null) {
         setRootPath(path)
         setPathInput(path)
         setExpandedPaths(new Set())
-        setSelectedPath(null)
       }
     },
     [loadEntries]
   )
 
-  // Initialize on open
   useEffect(() => {
     if (!open) {
       initialized.current = false
@@ -373,21 +378,33 @@ export function DirectoryBrowserDialog({
     if (initialized.current) return
     initialized.current = true
 
+    const gen = sessionGen.current
+    const seq = navSeq.current
+    setRootPath("")
+    setPathInput(initialPath ?? "")
+    setExpandedPaths(new Set())
+    setEntries(new Map())
+    setError(null)
+    setLoading(new Set())
+    setConfirming(false)
+    setCreateParentPath(null)
+    setNewFolderName("")
+    setDeleteTarget(null)
+
     const init = async () => {
       try {
         const startPath = initialPath || (await getHomeDirectory())
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setRootPath(startPath)
         setPathInput(startPath)
-        setSelectedPath(null)
-        setExpandedPaths(new Set())
-        setEntries(new Map())
-        setError(null)
         setLoading(new Set([startPath]))
 
         const result = await listDirectoryEntries(startPath)
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
       } catch {
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setError(t("errorLoadingDir"))
         setLoading(new Set())
       }
@@ -397,47 +414,55 @@ export function DirectoryBrowserDialog({
 
   const handleToggleExpand = useCallback(
     async (path: string) => {
-      const newExpanded = new Set(expandedPaths)
-      if (newExpanded.has(path)) {
-        newExpanded.delete(path)
-        setExpandedPaths(newExpanded)
-      } else {
-        await loadEntries(path)
-        newExpanded.add(path)
-        setExpandedPaths(newExpanded)
+      if (expandedPaths.has(path)) {
+        setExpandedPaths((prev) => {
+          const next = new Set(prev)
+          next.delete(path)
+          return next
+        })
+        return
       }
+      const gen = sessionGen.current
+      await loadEntries(path)
+      if (gen !== sessionGen.current) return
+      setExpandedPaths((prev) => new Set(prev).add(path))
     },
     [expandedPaths, loadEntries]
   )
 
-  const handleSelect = useCallback(
-    (path: string) => {
-      setSelectedPath(path === selectedPath ? null : path)
-    },
-    [selectedPath]
-  )
+  const handleSelect = useCallback((path: string) => {
+    setPathInput(path)
+  }, [])
 
-  const handleConfirm = useCallback(() => {
-    if (selectedPath) {
-      onSelect(selectedPath)
+  const handleConfirm = useCallback(async () => {
+    const path = pathInput.trim()
+    if (!path || confirming) return
+    const gen = sessionGen.current
+    setConfirming(true)
+    const result = await loadEntries(path)
+    if (gen !== sessionGen.current) return
+    setConfirming(false)
+    if (pathInputRef.current.trim() !== path) return
+    if (result !== null) {
+      onSelect(path)
       onOpenChange(false)
     }
-  }, [selectedPath, onSelect, onOpenChange])
+  }, [pathInput, confirming, loadEntries, onSelect, onOpenChange])
 
   const handleNavigateUp = useCallback(() => {
-    if (!rootPath) return
-    const parts = rootPath.replace(/\/$/, "").split("/")
-    if (parts.length <= 1) return
-    parts.pop()
-    const parent = parts.join("/") || "/"
+    const parent = parentFsPath(pathInput.trim() || rootPath)
+    if (!parent) return
     navigateTo(parent)
-  }, [rootPath, navigateTo])
+  }, [pathInput, rootPath, navigateTo])
 
   const handleGoHome = useCallback(async () => {
+    const gen = sessionGen.current
     try {
       const home = await getHomeDirectory()
+      if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
+      if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
   }, [navigateTo, t])
@@ -459,30 +484,19 @@ export function DirectoryBrowserDialog({
     [onSelect, onOpenChange]
   )
 
-  /**
-   * 在指定父目录下开始创建子文件夹的内联编辑。
-   *
-   * 同时选中父目录以便用户看到新建位置；
-   * 清空已有输入避免重用旧名称。
-   */
   const beginCreateChildDirectory = useCallback((parentPath: string) => {
     setCreateParentPath(parentPath)
     setNewFolderName("")
-    setSelectedPath(parentPath)
+    setPathInput(parentPath)
     setError(null)
   }, [])
 
-  /**
-   * 创建子目录并仅刷新受影响的父目录。
-   *
-   * 验证错误保留在对话框中。ref 在 React 提交禁用 UI 前阻止重复提交。
-   * 成功后选中新目录并对父缓存强制刷新以显示新条目。
-   */
   const handleCreateChildDirectory = useCallback(async () => {
     if (!createParentPath || creatingRef.current) return
     const validationError = validateNewFolderName(newFolderName, t)
     if (validationError) return setError(validationError)
 
+    const gen = sessionGen.current
     const target = joinChildDirectory(createParentPath, newFolderName.trim())
     creatingRef.current = true
     setCreating(true)
@@ -490,23 +504,18 @@ export function DirectoryBrowserDialog({
     try {
       await createFolderDirectory(target)
       await loadEntries(createParentPath, { force: true })
-      setSelectedPath(target)
+      if (gen !== sessionGen.current) return
+      setPathInput(target)
       setCreateParentPath(null)
       setNewFolderName("")
     } catch {
-      setError(t("errorCreatingDir"))
+      if (gen === sessionGen.current) setError(t("errorCreatingDir"))
     } finally {
+      if (gen === sessionGen.current) setCreating(false)
       creatingRef.current = false
-      setCreating(false)
     }
   }, [createParentPath, loadEntries, newFolderName, t])
 
-  /**
-   * 打开目录删除确认框，并不直接执行删除。
-   *
-   * 将待删除的目录条目存入 `deleteTarget`，同时清理新建目录状态，避免用户在
-   * 同一个目录上同时进行新建和删除两种互斥操作。
-   */
   const beginDeleteDirectory = useCallback((entry: DirectoryEntry) => {
     setDeleteTarget(entry)
     setCreateParentPath(null)
@@ -514,17 +523,11 @@ export function DirectoryBrowserDialog({
     setError(null)
   }, [])
 
-  /**
-   * 确认删除选中的目录，完成后刷新父目录并清理失效状态。
-   *
-   * 通过 `deletingRef` 防重复提交；删除成功后对父目录进行强制刷新，
-   * 并仅清除指向已删除目录的选择、展开、新建状态和条目缓存，避免影响其他有效目录状态。
-   * 失败时设置错误信息为 `errorDeletingDir`。
-   */
   const handleDeleteDirectoryConfirm = useCallback(async () => {
     if (!deleteTarget || deletingRef.current) return
+    const gen = sessionGen.current
     const target = deleteTarget
-    const parentPath = getParentDirectoryPath(target.path)
+    const parentPath = parentFsPath(target.path) || rootPath
     const deletePath = getRelativeDirectoryPath(rootPath, target.path)
     deletingRef.current = true
     setDeleting(true)
@@ -532,6 +535,7 @@ export function DirectoryBrowserDialog({
     try {
       await deleteFileTreeEntry(rootPath, deletePath)
       await loadEntries(parentPath, { force: true })
+      if (gen !== sessionGen.current) return
       setEntries((current) => {
         const next = new Map(current)
         const normalizedParent = normalizeDirectoryBrowserPath(parentPath)
@@ -545,15 +549,13 @@ export function DirectoryBrowserDialog({
         }
         return next
       })
-      setSelectedPath((current) =>
-        current && isSameOrDescendantPath(current, target.path) ? null : current
+      setPathInput((current) =>
+        isSameOrDescendantPath(current, target.path) ? parentPath : current
       )
       setExpandedPaths((current) => {
         const next = new Set(current)
         for (const path of next) {
-          if (isSameOrDescendantPath(path, target.path)) {
-            next.delete(path)
-          }
+          if (isSameOrDescendantPath(path, target.path)) next.delete(path)
         }
         return next
       })
@@ -562,18 +564,13 @@ export function DirectoryBrowserDialog({
       )
       setDeleteTarget(null)
     } catch {
-      setError(t("errorDeletingDir"))
+      if (gen === sessionGen.current) setError(t("errorDeletingDir"))
     } finally {
+      if (gen === sessionGen.current) setDeleting(false)
       deletingRef.current = false
-      setDeleting(false)
     }
   }, [deleteTarget, rootPath, loadEntries, t])
 
-  /**
-   * 渲染指定路径下的子目录列表，支持加载态、空目录态及正常行。
-   *
-   * 每行传递选择、展开、双击、创建和删除回调。
-   */
   const renderEntries = (parentPath: string, depth: number) => {
     const children = entries.get(parentPath)
     const isLoading = loading.has(parentPath)
@@ -605,7 +602,9 @@ export function DirectoryBrowserDialog({
 
     return children.map((entry) => {
       const isExpanded = expandedPaths.has(entry.path)
-      const isSelected = selectedPath === entry.path
+      const isSelected =
+        normalizeDirectoryBrowserPath(entry.path) ===
+        normalizeDirectoryBrowserPath(pathInput)
 
       return (
         <div key={entry.path}>
@@ -678,9 +677,9 @@ export function DirectoryBrowserDialog({
               </div>
             </ScrollArea>
 
-            {selectedPath && (
+            {pathInput && (
               <p className="truncate text-xs text-muted-foreground">
-                {selectedPath}
+                {pathInput}
               </p>
             )}
 
@@ -729,10 +728,10 @@ export function DirectoryBrowserDialog({
             </Button>
             <Button
               onClick={handleConfirm}
-              disabled={!selectedPath}
+              disabled={!pathInput.trim() || confirming}
               type="button"
             >
-              {t("select")}
+              {confirming ? t("loading") : t("select")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -740,8 +739,8 @@ export function DirectoryBrowserDialog({
 
       <AlertDialog
         open={!!deleteTarget}
-        onOpenChange={(open) => {
-          if (open || deleting) return
+        onOpenChange={(nextOpen) => {
+          if (nextOpen || deleting) return
           setDeleteTarget(null)
         }}
       >

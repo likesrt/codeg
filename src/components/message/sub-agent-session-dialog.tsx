@@ -355,6 +355,7 @@ function SubAgentSessionBody({
           detailError={error}
           acpLoadError={acpLoadError}
           hideEmptyState={false}
+          showMessageNav={false}
         />
       </div>
     </div>

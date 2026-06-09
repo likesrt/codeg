@@ -91,6 +91,22 @@
       "placeholder": "Sélectionnez le niveau de zoom",
       "default": "Par défaut",
       "current": "Zoom actuel : {zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "Polices",
+      "sectionDescription": "Choisissez les polices pour l’interface, l’éditeur de code et le terminal. Les polices intégrées sont chargées à la demande ; sélectionnez « Personnalisée… » pour utiliser n’importe quelle police installée sur votre système.",
+      "interface": "Interface",
+      "editor": "Éditeur",
+      "terminal": "Terminal",
+      "groupSans": "Sans empattement",
+      "groupMono": "Monospace",
+      "custom": "Personnalisée…",
+      "customPlaceholder": "Nom de la police, par ex. Fira Code",
+      "fontSize": "Taille de police",
+      "ligatures": "Activer les ligatures",
+      "ligaturesUnavailable": "Cette police n’a pas de ligatures",
+      "terminalLigaturesHint": "Les ligatures du terminal ne s’appliquent qu’aux polices de programmation intégrées.",
+      "preview": "Aperçu"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "Échec de l’enregistrement de la gestion de configuration",
       "clineSaved": "Configuration Cline enregistrée",
       "saveClineFailed": "Échec de l'enregistrement de la configuration Cline",
-      "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer."
+      "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer.",
+      "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}"
     },
     "version": {
       "statusLabel": "Statut de version",
@@ -891,6 +908,8 @@
       "completing": "Finalisation...",
       "toasts": {
         "importedSessions": "{imported, plural, one {# session} other {# sessions}} importée(s), {skipped} ignorée(s)",
+        "importedAndUpdated": "{imported, plural, one {# session} other {# sessions}} importée(s), {updated, plural, one {# titre} other {# titres}} mis à jour, {skipped} ignorée(s)",
+        "updatedTitles": "{updated, plural, one {# titre} other {# titres}} mis à jour, {skipped} ignorée(s)",
         "noNewSessionsFound": "Aucune nouvelle session trouvée ({skipped} ignorée(s))",
         "importFailed": "Échec de l’import : {message}",
         "reviewCompleted": "{count, plural, one {# session en revue} other {# sessions en revue}} marquée(s) comme terminée(s)",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "Différences",
         "files": "Fichiers",
         "changes": "Changements",
         "commits": "Validations"
@@ -1123,16 +1141,6 @@
       "closeAll": "Tout fermer",
       "hideTerminal": "Masquer le terminal ({shortcut})",
       "openFolderFirst": "Ouvrez d'abord un dossier"
-    },
-    "sessionFiles": {
-      "currentResponse": "Réponse actuelle",
-      "noDiffDataAvailable": "Aucune donnée de diff disponible pour {filePath}",
-      "loading": "Chargement...",
-      "noFileChangesInConversation": "Aucun changement de fichier dans cette conversation",
-      "openConversationToSeeChanges": "Ouvrez une conversation pour voir ses changements de fichiers",
-      "remove": "Retirer",
-      "changeCount": "{count, plural, one {# changement} other {# changements}}",
-      "fileCount": "{count, plural, one {# fichier} other {# fichiers}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "Dossier",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "La branche upstream a été définie",
         "upstreamSetAndPushed": "Branche upstream définie et {count, plural, one {# commit} other {# commits}} poussé(s)",
         "noCommitsToPush": "Aucun commit à pousser",
-        "pushedCommits": "{count, plural, one {# commit poussé} other {# commits poussés}}"
+        "pushedCommits": "{count, plural, one {# commit poussé} other {# commits poussés}}",
+        "switchedToFolder": "Basculé vers {name}",
+        "switchFailed": "Échec du changement de branche"
       },
       "tasks": {
         "newBranch": "Créer la branche {name}",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "Aucun message rapide pour l'instant",
         "quickMessagesLoading": "Chargement...",
         "quickMessageUntitled": "Sans titre",
+        "liveFeedback": "Retour en direct",
+        "liveFeedbackDisabledHint": "Disponible pendant que l'agent travaille",
         "dropFilesToAttach": "Déposez des fichiers à joindre",
         "loadingSettings": "Chargement des paramètres...",
         "loadingMode": "Chargement du mode...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "Sous-agents",
         "collapsedSummary": "Sous-agents {count}",
-        "collapseAria": "Réduire les sous-agents",
-        "expandAria": "Développer les sous-agents"
+        "collapseAria": "Réduire les sous-agents"
       },
       "agentPlanOverlay": {
         "title": "Plan de l'agent",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count, plural, one {# échec} other {# échecs}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "Navigation des messages",
+        "expand": "Développer la navigation des messages",
+        "collapse": "Réduire la navigation des messages",
+        "jumpToMessage": "Aller à : {label}",
+        "fileCount": "{count, plural, one {# fichier} other {# fichiers}}",
+        "remove": "Retirer",
+        "noDiffDataAvailable": "Aucune donnée de diff disponible pour {filePath}"
+      },
+      "askQuestion": {
+        "title": "L'agent attend votre choix",
+        "subtitle": "Répondez puis envoyez. Vous pouvez ignorer à tout moment.",
+        "recommended": "Recommandé",
+        "other": "Autre",
+        "otherPlaceholder": "Saisissez votre réponse…",
+        "singleSelect": "Unique",
+        "multiSelect": "Multiple",
+        "skip": "Ignorer",
+        "next": "Suivant",
+        "submit": "Envoyer",
+        "submitError": "Échec de l'envoi. Veuillez réessayer."
+      },
+      "askQuestionResult": {
+        "title": "Question",
+        "answeredLabel": "Question et réponse :",
+        "awaiting": "En attente de ta réponse…",
+        "declined": "Tu as ignoré cette question — l’agent a utilisé son propre jugement.",
+        "noSelection": "Aucune sélection"
+      },
+      "configStale": {
+        "agentConfigTitle": "Paramètres de l'agent mis à jour",
+        "modelProviderTitle": "Fournisseur de modèle mis à jour",
+        "description": "Cette session utilise encore son ancienne configuration. Reconnectez-vous pour l'appliquer (l'historique de conversation est conservé).",
+        "reconnect": "Reconnecter pour appliquer",
+        "reconnecting": "Reconnexion…",
+        "reconnectDisabledDuringTurn": "Disponible une fois le tour en cours terminé",
+        "dismiss": "Ignorer",
+        "reconnectFailed": "Échec de la reconnexion de la session",
+        "applied": "Nouvelle configuration appliquée"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "Masquer",
     "show": "Afficher",
     "copy": "Copier",
+    "qrcode": "Code QR",
+    "qrcodeTitle": "Scanner pour ouvrir",
+    "qrcodeHint": "Scannez avec votre téléphone pour ouvrir Codeg dans un navigateur",
     "addressLabel": "Adresse d'accès",
     "tokenLabel": "Token d'accès",
     "tokenHint": "Entrez ce token lors du premier accès au client Web",
@@ -2467,7 +2521,8 @@
     "cancel": "Annuler",
     "delete": "Supprimer",
     "create": "Créer",
-    "save": "Enregistrer"
+    "save": "Enregistrer",
+    "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}"
   },
   "ExpertsSettings": {
     "title": "Compétences d'experts",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "Session expirée",
     "sessionExpiredDescription": "Votre session n'est plus valide. Veuillez vous reconnecter pour continuer.",
     "goToLogin": "Aller à la connexion"
+  },
+  "SessionFeedbackSettings": {
+    "title": "Retour en direct",
+    "description": "Envoyez des notes et corrections à un agent pendant qu'il travaille. Une fois activé, l'agent dispose d'un outil pour consulter les retours en direct et les conversations affichent une entrée de notes. Astuce : l'agent ne consulte généralement les retours que lorsque vous le mentionnez dans votre message — par exemple, ajoutez « vérifie régulièrement mes retours en direct pendant le travail ».",
+    "enable": "Activer le retour en direct",
+    "enableHint": "Ajoute un outil de consultation des retours aux agents démarrés après l'activation.",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de retour enregistrés",
+    "saveFailed": "Échec de l'enregistrement des paramètres de retour",
+    "loadFailed": "Échec du chargement : {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "Envoyez une note à {agent} pendant qu'il travaille…",
+    "agentFallback": "l'agent",
+    "ariaLabel": "Note de retour en direct",
+    "dialogTitle": "Retour en direct",
+    "dialogDescription": "Envoyez une note à l'agent pendant qu'il travaille. Il la lira lors de sa prochaine vérification, sans interrompre l'étape en cours.",
+    "send": "Envoyer",
+    "cancel": "Annuler",
+    "pending": "en attente",
+    "delivered": "reçue",
+    "turnEndedUnread": "L'agent a terminé avant de lire votre retour.",
+    "sendAsMessage": "Envoyer comme message",
+    "dismiss": "Ignorer",
+    "turnEndedResent": "Le tour est terminé : envoyé comme nouveau message.",
+    "turnEnded": "Le tour est déjà terminé.",
+    "submitFailed": "Impossible d'envoyer votre note"
+  },
+  "AskQuestionSettings": {
+    "title": "Poser une question à l'utilisateur",
+    "description": "Permet aux agents de s'interrompre et de vous poser une question à choix multiples affichée au-dessus de la zone de saisie de la conversation. L'agent attend votre réponse (ou que vous ignoriez).",
+    "enable": "Activer les questions à l'utilisateur",
+    "enableHint": "Ajoute l'outil ask_user_question aux agents démarrés après l'activation.",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de question enregistrés",
+    "saveFailed": "Échec de l'enregistrement des paramètres de question",
+    "loadFailed": "Échec du chargement : {detail}"
   }
 }

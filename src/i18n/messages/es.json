@@ -91,6 +91,22 @@
       "placeholder": "Selecciona el nivel de zoom",
       "default": "Predeterminado",
       "current": "Zoom actual: {zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "Fuentes",
+      "sectionDescription": "Elige las fuentes para la interfaz, el editor de código y el terminal. Las fuentes incluidas se cargan cuando se necesitan; selecciona «Personalizada…» para usar cualquier fuente instalada en tu sistema.",
+      "interface": "Interfaz",
+      "editor": "Editor",
+      "terminal": "Terminal",
+      "groupSans": "Sans-serif",
+      "groupMono": "Monoespaciada",
+      "custom": "Personalizada…",
+      "customPlaceholder": "Nombre de la fuente, p. ej. Fira Code",
+      "fontSize": "Tamaño de fuente",
+      "ligatures": "Activar ligaduras",
+      "ligaturesUnavailable": "Esta fuente no tiene ligaduras",
+      "terminalLigaturesHint": "Las ligaduras del terminal solo se aplican a las fuentes de programación incluidas.",
+      "preview": "Vista previa"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "No se pudo guardar la gestión de configuración",
       "clineSaved": "Configuración de Cline guardada",
       "saveClineFailed": "Error al guardar la configuración de Cline",
-      "modelProviderRequired": "Seleccione un proveedor de modelo antes de guardar."
+      "modelProviderRequired": "Seleccione un proveedor de modelo antes de guardar.",
+      "affectedRunningSessions": "{count, plural, one {# sesión activa necesita reconectarse para aplicar el cambio} other {# sesiones activas necesitan reconectarse para aplicar el cambio}}"
     },
     "version": {
       "statusLabel": "Estado de versión",
@@ -891,6 +908,8 @@
       "completing": "Completando...",
       "toasts": {
         "importedSessions": "Se importaron {imported, plural, one {# sesión} other {# sesiones}}, se omitieron {skipped}",
+        "importedAndUpdated": "Se importaron {imported, plural, one {# sesión} other {# sesiones}}, se actualizaron {updated, plural, one {# título} other {# títulos}}, se omitieron {skipped}",
+        "updatedTitles": "Se actualizaron {updated, plural, one {# título} other {# títulos}}, se omitieron {skipped}",
         "noNewSessionsFound": "No se encontraron sesiones nuevas (omitidas {skipped})",
         "importFailed": "Error al importar: {message}",
         "reviewCompleted": "Se marcaron como completadas {count, plural, one {# sesión en revisión} other {# sesiones en revisión}}",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "Diferencias",
         "files": "Archivos",
         "changes": "Cambios",
         "commits": "Confirmaciones"
@@ -1123,16 +1141,6 @@
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abre primero una carpeta"
-    },
-    "sessionFiles": {
-      "currentResponse": "Respuesta actual",
-      "noDiffDataAvailable": "No hay datos de diff disponibles para {filePath}",
-      "loading": "Cargando...",
-      "noFileChangesInConversation": "No se encontraron cambios de archivos en esta conversación",
-      "openConversationToSeeChanges": "Abre una conversación para ver sus cambios de archivos",
-      "remove": "Quitar",
-      "changeCount": "{count, plural, one {# cambio} other {# cambios}}",
-      "fileCount": "{count, plural, one {# archivo} other {# archivos}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "Carpeta",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "La rama upstream se ha configurado",
         "upstreamSetAndPushed": "Rama upstream configurada y se enviaron {count, plural, one {# commit} other {# commits}}",
         "noCommitsToPush": "No hay commits para enviar",
-        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}"
+        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}",
+        "switchedToFolder": "Cambiado a {name}",
+        "switchFailed": "No se pudo cambiar de rama"
       },
       "tasks": {
         "newBranch": "Crear rama {name}",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "Aún no hay mensajes rápidos",
         "quickMessagesLoading": "Cargando...",
         "quickMessageUntitled": "Sin título",
+        "liveFeedback": "Comentarios en vivo",
+        "liveFeedbackDisabledHint": "Disponible mientras el agente trabaja",
         "dropFilesToAttach": "Suelta archivos para adjuntar",
         "loadingSettings": "Cargando ajustes...",
         "loadingMode": "Cargando modo...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "Subagentes",
         "collapsedSummary": "Subagentes {count}",
-        "collapseAria": "Contraer subagentes",
-        "expandAria": "Expandir subagentes"
+        "collapseAria": "Contraer subagentes"
       },
       "agentPlanOverlay": {
         "title": "Plan del agente",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count, plural, one {# falló} other {# fallaron}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "Navegación de mensajes",
+        "expand": "Expandir navegación de mensajes",
+        "collapse": "Contraer navegación de mensajes",
+        "jumpToMessage": "Ir a: {label}",
+        "fileCount": "{count, plural, one {# archivo} other {# archivos}}",
+        "remove": "Quitar",
+        "noDiffDataAvailable": "No hay datos de diff disponibles para {filePath}"
+      },
+      "askQuestion": {
+        "title": "El agente necesita tu elección",
+        "subtitle": "Responde y luego envía. Puedes omitir en cualquier momento.",
+        "recommended": "Recomendado",
+        "other": "Otro",
+        "otherPlaceholder": "Escribe tu respuesta…",
+        "singleSelect": "Única",
+        "multiSelect": "Múltiple",
+        "skip": "Omitir",
+        "next": "Siguiente",
+        "submit": "Enviar",
+        "submitError": "No se pudo enviar. Inténtalo de nuevo."
+      },
+      "askQuestionResult": {
+        "title": "Pregunta",
+        "answeredLabel": "Pregunta y respuesta:",
+        "awaiting": "Esperando tu respuesta…",
+        "declined": "Descartaste esto: el agente usó su propio criterio.",
+        "noSelection": "Sin selección"
+      },
+      "configStale": {
+        "agentConfigTitle": "Configuración del agente actualizada",
+        "modelProviderTitle": "Proveedor de modelo actualizado",
+        "description": "Esta sesión sigue usando su configuración anterior. Vuelve a conectarte para aplicarla (se conserva el historial de la conversación).",
+        "reconnect": "Reconectar para aplicar",
+        "reconnecting": "Reconectando…",
+        "reconnectDisabledDuringTurn": "Disponible cuando termine el turno actual",
+        "dismiss": "Descartar",
+        "reconnectFailed": "No se pudo reconectar la sesión",
+        "applied": "Nueva configuración aplicada"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "Ocultar",
     "show": "Mostrar",
     "copy": "Copiar",
+    "qrcode": "Código QR",
+    "qrcodeTitle": "Escanear para abrir",
+    "qrcodeHint": "Escanea con tu teléfono para abrir Codeg en el navegador",
     "addressLabel": "Dirección de acceso",
     "tokenLabel": "Token de acceso",
     "tokenHint": "Ingrese este token al acceder al cliente Web por primera vez",
@@ -2467,7 +2521,8 @@
     "cancel": "Cancelar",
     "delete": "Eliminar",
     "create": "Crear",
-    "save": "Guardar"
+    "save": "Guardar",
+    "affectedRunningSessions": "{count, plural, one {# sesión activa necesita reconectarse para aplicar el cambio} other {# sesiones activas necesitan reconectarse para aplicar el cambio}}"
   },
   "ExpertsSettings": {
     "title": "Habilidades de expertos",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "Sesión caducada",
     "sessionExpiredDescription": "Tu sesión ya no es válida. Inicia sesión de nuevo para continuar.",
     "goToLogin": "Ir al inicio de sesión"
+  },
+  "SessionFeedbackSettings": {
+    "title": "Comentarios en vivo",
+    "description": "Envía notas y correcciones a un agente mientras trabaja. Cuando está activado, el agente obtiene una herramienta para consultar comentarios en vivo y las conversaciones muestran una entrada de notas. Consejo: el agente normalmente solo consulta los comentarios cuando lo mencionas en tu mensaje — por ejemplo, añade \"revisa mis comentarios en vivo periódicamente mientras trabajas\".",
+    "enable": "Activar comentarios en vivo",
+    "enableHint": "Inyecta una herramienta para consultar comentarios en los agentes iniciados después de activarlo.",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Ajustes de comentarios guardados",
+    "saveFailed": "No se pudieron guardar los ajustes de comentarios",
+    "loadFailed": "Error al cargar: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "Envía una nota a {agent} mientras trabaja…",
+    "agentFallback": "el agente",
+    "ariaLabel": "Nota de comentarios en vivo",
+    "dialogTitle": "Comentarios en vivo",
+    "dialogDescription": "Envía una nota al agente mientras trabaja. La leerá en su próxima comprobación, sin interrumpir el paso actual.",
+    "send": "Enviar",
+    "cancel": "Cancelar",
+    "pending": "esperando",
+    "delivered": "recibida",
+    "turnEndedUnread": "El agente terminó antes de leer tus comentarios.",
+    "sendAsMessage": "Enviar como mensaje",
+    "dismiss": "Descartar",
+    "turnEndedResent": "El turno terminó: se envió como un mensaje nuevo.",
+    "turnEnded": "El turno ya terminó.",
+    "submitFailed": "No se pudo enviar tu nota"
+  },
+  "AskQuestionSettings": {
+    "title": "Preguntar al usuario",
+    "description": "Permite que los agentes se detengan y te hagan una pregunta de opción múltiple que aparece encima del cuadro de entrada de la conversación. El agente espera hasta que respondas (u omitas).",
+    "enable": "Activar preguntas al usuario",
+    "enableHint": "Añade la herramienta ask_user_question a los agentes iniciados después de activarlo.",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Ajustes de preguntas guardados",
+    "saveFailed": "No se pudieron guardar los ajustes de preguntas",
+    "loadFailed": "Error al cargar: {detail}"
   }
 }

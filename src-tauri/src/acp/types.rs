@@ -261,6 +261,62 @@ pub enum AcpEvent {
         message_id: String,
         blocks: Vec<UserMessageBlock>,
     },
+    /// The user submitted a live-feedback note while the agent is mid-turn (the
+    /// `check_user_feedback` MCP-tool steering path). Broadcast so every client
+    /// viewing this conversation renders the pending note, and captured into
+    /// `SessionState.feedback` so a mid-turn snapshot attach recovers it.
+    /// Idempotent by `item.id` on apply (replay-safe).
+    FeedbackSubmitted {
+        item: crate::acp::feedback::FeedbackItem,
+    },
+    /// The agent read one or more pending feedback notes via
+    /// `check_user_feedback`. Carries only the note ids + the delivery instant;
+    /// clients already hold the note text (from `FeedbackSubmitted` / snapshot)
+    /// and just flip those ids to `Delivered`. Idempotent on apply.
+    FeedbackConsumed {
+        ids: Vec<String>,
+        delivered_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// An agent called the `ask_user_question` MCP tool: one or more
+    /// multiple-choice questions the user must answer before the (blocked) tool
+    /// call returns. Broadcast so every client viewing this conversation renders
+    /// the interactive card above the input box, and captured into
+    /// `SessionState.pending_question` so a client attaching mid-turn (cold
+    /// attach, reconnect, another window) recovers it from the snapshot. The
+    /// backend parks a one-shot per `question_id` waiting for the answer.
+    QuestionRequest {
+        question_id: String,
+        questions: Vec<crate::acp::question::QuestionSpec>,
+    },
+    /// A previously-pending question was answered (from any client) or canceled
+    /// (the tool call was aborted / the connection drained). Carries only the
+    /// `question_id`; clients clear the matching card. Idempotent on apply.
+    QuestionResolved { question_id: String },
+    /// The agent's effective settings (env vars / model provider / native config
+    /// files) changed AFTER this connection was spawned, so the running process
+    /// is still using its launch-time config. Emitted by
+    /// `ConnectionManager::refresh_connection_staleness` when a settings save
+    /// drifts a running session's freshly-recomputed config fingerprint away
+    /// from its spawn-time snapshot. `stale = false` means a prior drift was
+    /// reverted (the user changed the setting back) and the frontend should
+    /// clear its "restart to apply" banner. Carried into `SessionState` so a
+    /// snapshot attach (web reconnect, window refresh, new tile) recovers the
+    /// staleness the one-shot event won't replay for it.
+    SessionConfigStale {
+        stale: bool,
+        kind: ConfigStaleKind,
+    },
+}
+
+/// Which settings surface drifted, so the frontend can word the
+/// "restart to apply" banner precisely ("agent config" vs "model provider").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigStaleKind {
+    /// Agent env vars / enabled / model-provider binding / native config file.
+    AgentConfig,
+    /// A model provider row this agent is bound to (url / key / model) changed.
+    ModelProvider,
 }
 
 /// A block of the user's submitted prompt, broadcast via [`AcpEvent::UserMessage`]

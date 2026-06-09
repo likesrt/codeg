@@ -17,10 +17,13 @@ use tokio::sync::RwLock;
 
 use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
-    read_frame, write_frame, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerMessage,
-    BrokerRequest, BrokerResponse, BrokerStatusRequest,
+    read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
+    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
+    BrokerResponse, BrokerStatusRequest,
 };
 use crate::acp::delegation::types::{DelegationRequest, DelegationTaskReport, TaskStatus};
+use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
+use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 use crate::models::AgentType;
 use serde_json::Value;
 
@@ -29,6 +32,7 @@ use serde_json::Value;
 /// keeps running past this; the LLM simply re-issues the wait. An explicit
 /// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
 const STATUS_WAIT_MAX_MS: u64 = 60_000;
+
 
 /// Pluggable "what conversation is this parent currently in?" lookup. The
 /// production impl wraps `ConnectionManager.get_state`; tests use an
@@ -79,6 +83,13 @@ pub struct DelegationListener {
     pub broker: Arc<DelegationBroker>,
     pub tokens: Arc<TokenRegistry>,
     pub parent_lookup: Arc<dyn ParentSessionLookup>,
+    /// Pulls pending live-feedback notes for the `check_user_feedback` tool.
+    /// Shares the same `tokens` registry and parent-connection scoping as the
+    /// delegation arms — one companion, one socket, two features.
+    pub feedback: Arc<dyn SessionFeedbackAccess>,
+    /// Registers / cancels the blocking `ask_user_question` tool's pending
+    /// questions. Same `tokens` registry and parent-connection scoping.
+    pub questions: Arc<dyn SessionQuestionAccess>,
 }
 
 impl DelegationListener {
@@ -86,11 +97,15 @@ impl DelegationListener {
         broker: Arc<DelegationBroker>,
         tokens: Arc<TokenRegistry>,
         parent_lookup: Arc<dyn ParentSessionLookup>,
+        feedback: Arc<dyn SessionFeedbackAccess>,
+        questions: Arc<dyn SessionQuestionAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
             tokens,
             parent_lookup,
+            feedback,
+            questions,
         })
     }
 
@@ -189,6 +204,98 @@ impl DelegationListener {
                 reports_response(reports)?
             }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
+            BrokerMessage::Feedback(req) => {
+                // at-least-once delivery: READ pending notes (no mutation),
+                // WRITE the response, and COMMIT them delivered ONLY on a
+                // successful write. A dropped/failed write skips the commit, so
+                // the notes stay pending for the agent's next check.
+                match self.feedback_target(&req).await {
+                    None => {
+                        // Invalid token: return an empty envelope (no leak of
+                        // whether any feedback exists), nothing to commit.
+                        write_frame(conn, &feedback_response(&[])?).await?;
+                    }
+                    Some(parent_conn_id) => {
+                        let pending = self
+                            .feedback
+                            .read_pending_feedback(&parent_conn_id)
+                            .await;
+                        // Read-only: the response carries the note ids
+                        // (`_commit_ids`); delivery is committed LATER, by the
+                        // companion's `CommitFeedback` once it actually returns
+                        // the result to the agent. So a cancel that suppresses
+                        // the agent-facing response leaves the notes pending.
+                        write_frame(conn, &feedback_response(&pending)?).await?;
+                    }
+                }
+                return Ok(());
+            }
+            BrokerMessage::CommitFeedback(req) => {
+                self.process_commit_feedback(req).await;
+                // Empty ack so the companion can confirm the listener saw it.
+                BrokerResponse {
+                    outcome: Value::Null,
+                }
+            }
+            BrokerMessage::Ask(req) => {
+                // Register the question (broadcasting the card) and park until
+                // the user answers — racing peer-close exactly like `Status`.
+                // The companion holds this connection open for the whole wait
+                // and never writes a second frame, so the probe read only
+                // resolves on EOF/error; a canceled tool call drops the
+                // companion's future, closing this socket, which we observe and
+                // tear the pending question down. An invalid token, a gone
+                // connection, or a connection that already has a pending ask
+                // (one-at-a-time) yields a `declined` outcome (the LLM proceeds
+                // with its own judgment) rather than hanging.
+                let Some(parent_conn_id) = self.ask_target(&req).await else {
+                    write_frame(conn, &ask_declined_response()?).await?;
+                    return Ok(());
+                };
+                let Some(reg) = self
+                    .questions
+                    .register_question(&parent_conn_id, req.questions)
+                    .await
+                else {
+                    write_frame(conn, &ask_declined_response()?).await?;
+                    return Ok(());
+                };
+                let question_id = reg.question_id;
+                let mut answer_rx = reg.answer_rx;
+                // Close the teardown race: `ask_target` validated the token, but the
+                // parent connection may have been revoked + swept
+                // (`cancel_questions_by_parent`) in the window before the insert
+                // above — the sweep would have missed this just-registered entry,
+                // leaving it parked until peer-close. The token is revoked before
+                // the sweep, so a re-check that now finds it gone means teardown is
+                // underway: cancel immediately so the ask can't linger.
+                if self.tokens.lookup(&req.token).await.is_none() {
+                    self.questions
+                        .cancel_question(&parent_conn_id, &question_id)
+                        .await;
+                    write_frame(conn, &ask_declined_response()?).await?;
+                    return Ok(());
+                }
+                let mut probe = [0u8; 1];
+                let outcome = tokio::select! {
+                    biased;
+                    ans = &mut answer_rx => ans.ok(),
+                    _ = conn.read(&mut probe) => {
+                        self.questions
+                            .cancel_question(&parent_conn_id, &question_id)
+                            .await;
+                        return Ok(());
+                    }
+                };
+                let resp = match outcome {
+                    Some(o) => ask_response(&o)?,
+                    // Sender dropped without sending (connection teardown drain):
+                    // surface a declined outcome so the tool returns cleanly.
+                    None => ask_declined_response()?,
+                };
+                write_frame(conn, &resp).await?;
+                return Ok(());
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -253,6 +360,34 @@ impl DelegationListener {
                 &req.task_id,
             )
             .await
+    }
+
+    /// Validate the token and resolve the `check_user_feedback` target: the
+    /// caller's parent connection id. `None` on an invalid token — the LLM can't
+    /// usefully distinguish "no notes" from "bad token", and we don't leak which.
+    async fn feedback_target(&self, req: &BrokerFeedbackRequest) -> Option<String> {
+        let entry = self.tokens.lookup(&req.token).await?;
+        Some(entry.parent_connection_id)
+    }
+
+    /// Validate the token and resolve the `ask_user_question` target: the
+    /// caller's parent connection id. `None` on an invalid token — the LLM gets
+    /// a `declined` outcome (proceed with judgment), and we don't leak which.
+    async fn ask_target(&self, req: &BrokerAskRequest) -> Option<String> {
+        let entry = self.tokens.lookup(&req.token).await?;
+        Some(entry.parent_connection_id)
+    }
+
+    /// Mark the named feedback notes delivered, after the companion confirms it
+    /// returned them to the agent. Token-scoped to the parent connection. Unknown
+    /// tokens are dropped (no LLM on the receiving end to react).
+    async fn process_commit_feedback(&self, req: BrokerCommitFeedbackRequest) {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return;
+        };
+        self.feedback
+            .commit_feedback_delivered(&entry.parent_connection_id, req.ids)
+            .await;
     }
 
     /// Validate token + dispatch cancel to the broker. Unknown tokens and
@@ -355,6 +490,47 @@ fn reports_response(reports: Vec<DelegationTaskReport>) -> std::io::Result<Broke
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
             })?,
         }),
+    })
+}
+
+/// Serialize the pending feedback notes into a
+/// `{ "count": N, "feedback": [..], "_commit_ids": [..] }` envelope for the
+/// `Feedback` arm. Only the lean `text` + `created_at` reach the agent; the
+/// `_commit_ids` are internal — the companion echoes them back in a
+/// `CommitFeedback` once it delivers the result, and `render_feedback_result`
+/// strips them from the agent-facing output. `count == 0` is "no new feedback".
+fn feedback_response(items: &[PendingFeedback]) -> std::io::Result<BrokerResponse> {
+    let notes: Vec<Value> = items
+        .iter()
+        .map(|p| serde_json::json!({ "text": p.text, "created_at": p.created_at }))
+        .collect();
+    let ids: Vec<&str> = items.iter().map(|p| p.id.as_str()).collect();
+    Ok(BrokerResponse {
+        outcome: serde_json::json!({
+            "count": notes.len(),
+            "feedback": notes,
+            "_commit_ids": ids,
+        }),
+    })
+}
+
+/// Serialize a resolved [`QuestionOutcome`] into a [`BrokerResponse`] for the
+/// `Ask` arm — the `{ answers, declined }` envelope the companion renders.
+fn ask_response(outcome: &QuestionOutcome) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(outcome).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// The `declined` outcome — used when the token is invalid, the connection is
+/// gone, or the answer one-shot was dropped without a response. The LLM reads it
+/// as "the user didn't answer; proceed with your own judgment".
+fn ask_declined_response() -> std::io::Result<BrokerResponse> {
+    ask_response(&QuestionOutcome {
+        answers: Vec::new(),
+        declined: true,
     })
 }
 
@@ -461,6 +637,86 @@ mod tests {
         }
     }
 
+    /// In-memory feedback stub. `read_pending_feedback` returns the seeded notes
+    /// WITHOUT draining (read-only, matching production), recording the conn id;
+    /// `commit_feedback_delivered` records the (conn_id, ids) it was committed
+    /// with so tests can assert delivery happens only after a successful write.
+    /// Default is empty (the delegation tests don't exercise feedback).
+    #[derive(Default)]
+    struct StubFeedback {
+        items: tokio::sync::Mutex<Vec<PendingFeedback>>,
+        read_conn: tokio::sync::Mutex<Option<String>>,
+        committed: tokio::sync::Mutex<Vec<(String, Vec<String>)>>,
+    }
+    #[async_trait]
+    impl SessionFeedbackAccess for StubFeedback {
+        async fn read_pending_feedback(
+            &self,
+            parent_connection_id: &str,
+        ) -> Vec<PendingFeedback> {
+            *self.read_conn.lock().await = Some(parent_connection_id.to_string());
+            self.items.lock().await.clone()
+        }
+        async fn commit_feedback_delivered(&self, parent_connection_id: &str, ids: Vec<String>) {
+            self.committed
+                .lock()
+                .await
+                .push((parent_connection_id.to_string(), ids));
+        }
+    }
+
+    /// In-memory question stub. `register_question` mints a sequential id,
+    /// stashes the answer sender (so a test can resolve it via `answer`), and
+    /// records the (parent_conn, questions); `cancel_question` removes the
+    /// sender and records the canceled id. Lets the listener's `Ask` arm be
+    /// driven without a real `ConnectionManager`.
+    #[derive(Default)]
+    struct StubQuestion {
+        pending: tokio::sync::Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>,
+        registered: tokio::sync::Mutex<
+            Vec<(String, Vec<crate::acp::question::QuestionSpec>)>,
+        >,
+        canceled: tokio::sync::Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl SessionQuestionAccess for StubQuestion {
+        async fn register_question(
+            &self,
+            parent_connection_id: &str,
+            questions: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            let question_id = format!("q-{}", self.registered.lock().await.len() + 1);
+            let (tx, rx) = oneshot::channel();
+            self.pending.lock().await.insert(question_id.clone(), tx);
+            self.registered
+                .lock()
+                .await
+                .push((parent_connection_id.to_string(), questions));
+            Some(crate::acp::question::RegisteredQuestion {
+                question_id,
+                answer_rx: rx,
+            })
+        }
+        async fn cancel_question(&self, _parent_connection_id: &str, question_id: &str) {
+            self.pending.lock().await.remove(question_id);
+            self.canceled.lock().await.push(question_id.to_string());
+        }
+        async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {
+            // Not exercised by the listener unit tests (the teardown sweep lives
+            // in connection.rs); drop all parked senders to satisfy the trait.
+            self.pending.lock().await.clear();
+        }
+    }
+    impl StubQuestion {
+        async fn answer(&self, question_id: &str, outcome: QuestionOutcome) {
+            if let Some(tx) = self.pending.lock().await.remove(question_id) {
+                let _ = tx.send(outcome);
+            }
+        }
+    }
+
+    use tokio::sync::oneshot;
+
     async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
         let broker = Arc::new(DelegationBroker::new(
             mock as Arc<dyn ConnectionSpawner>,
@@ -488,6 +744,47 @@ mod tests {
             broker,
             tokens,
             Arc::new(StaticParentLookup(parent_conversation)),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+        )
+    }
+
+    /// Build a listener whose feedback access is the given stub, so feedback
+    /// tests can seed notes and assert the drain. Delegation pieces are minimal.
+    fn make_feedback_listener(
+        tokens: Arc<TokenRegistry>,
+        feedback: Arc<StubFeedback>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            feedback,
+            Arc::new(StubQuestion::default()),
+        )
+    }
+
+    /// Build a listener whose question access is the given stub, so ask tests
+    /// can register/answer questions and assert the round-trip. Delegation and
+    /// feedback pieces are minimal.
+    fn make_question_listener(
+        tokens: Arc<TokenRegistry>,
+        questions: Arc<StubQuestion>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            questions,
         )
     }
 
@@ -1106,4 +1403,326 @@ mod tests {
         assert_eq!(report.status, TaskStatus::Failed);
         assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
     }
+
+    // --- check_user_feedback over the listener -----------------------------
+
+    use crate::acp::feedback::PendingFeedback;
+
+    fn pending(id: &str, text: &str) -> PendingFeedback {
+        PendingFeedback {
+            id: id.into(),
+            text: text.into(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// The manager chunks each response via `bounded_feedback_batch`. The
+    /// serialized `feedback_response` of any such chunk must stay under the
+    /// transport cap (`MAX_FRAME_BYTES` = 16 MiB) so the companion's `read_frame`
+    /// never rejects it after the listener committed delivery — for BOTH
+    /// worst-case-escaping notes AND a flood of tiny notes (whose per-note JSON
+    /// overhead, not text length, is what a naive text-only bound would miss).
+    #[test]
+    fn bounded_feedback_response_always_fits_a_transport_frame() {
+        use crate::acp::delegation::transport::MAX_FRAME_BYTES;
+        use crate::acp::feedback::{bounded_feedback_batch, MAX_FEEDBACK_RESPONSE_BYTES};
+
+        // Worst-case escaping: many MAX_FEEDBACK_CHARS-sized control-char notes.
+        let worst = "\u{0001}".repeat(4096);
+        let big: Vec<PendingFeedback> = (0..5_000)
+            .map(|i| pending(&format!("b{i}"), &worst))
+            .collect();
+        // A flood of tiny notes: little text, lots of per-note JSON overhead.
+        let tiny: Vec<PendingFeedback> = (0..200_000)
+            .map(|i| pending(&format!("t{i}"), "x"))
+            .collect();
+
+        for (label, set) in [("worst-case", big), ("tiny-flood", tiny)] {
+            let total = set.len();
+            let batch = bounded_feedback_batch(set, MAX_FEEDBACK_RESPONSE_BYTES);
+            assert!(batch.len() < total, "{label}: batch must be chunked");
+            let encoded = serde_json::to_vec(&feedback_response(&batch).unwrap()).unwrap();
+            assert!(
+                encoded.len() < MAX_FRAME_BYTES,
+                "{label}: bounded response must fit a transport frame: {} >= {}",
+                encoded.len(),
+                MAX_FRAME_BYTES
+            );
+        }
+    }
+
+    /// A valid `check_user_feedback` returns the parent's notes in a
+    /// `{ count, feedback: [..] }` envelope (lean text, no ids) scoped to the
+    /// token's parent connection, and — crucially — commits them delivered ONLY
+    /// after the response is written, with the exact note ids.
+    #[tokio::test]
+    async fn feedback_returns_notes_then_commits_after_write() {
+        let feedback = Arc::new(StubFeedback::default());
+        *feedback.items.lock().await = vec![
+            pending("f1", "use the existing UserService"),
+            pending("f2", "skip the migration"),
+        ];
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_feedback_listener(tokens, feedback.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::Feedback(BrokerFeedbackRequest {
+            token: "tok".into(),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["count"], 2);
+        let notes = resp.outcome["feedback"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0]["text"], "use the existing UserService");
+        // The lean note shape carries no internal id...
+        assert!(notes[0].get("id").is_none());
+        // ...but the envelope carries `_commit_ids` for the companion to echo
+        // back in a CommitFeedback after it delivers the result.
+        let commit_ids = resp.outcome["_commit_ids"].as_array().unwrap();
+        assert_eq!(commit_ids, &vec!["f1", "f2"]);
+        // Read was scoped to the token's parent connection id.
+        assert_eq!(feedback.read_conn.lock().await.as_deref(), Some("parent-conn"));
+        // The Feedback arm is READ-ONLY — it does NOT commit (delivery is
+        // committed later, by the companion's CommitFeedback).
+        assert!(feedback.committed.lock().await.is_empty());
+    }
+
+    /// `CommitFeedback` marks the named ids delivered, scoped (via the token) to
+    /// the parent connection — the companion sends this only after it delivers.
+    #[tokio::test]
+    async fn commit_feedback_marks_delivered_scoped_to_parent() {
+        let feedback = Arc::new(StubFeedback::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_feedback_listener(tokens, feedback.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::CommitFeedback(BrokerCommitFeedbackRequest {
+            token: "tok".into(),
+            ids: vec!["f1".into(), "f2".into()],
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert!(resp.outcome.is_null(), "commit ack is empty");
+
+        let committed = feedback.committed.lock().await;
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].0, "parent-conn");
+        assert_eq!(committed[0].1, vec!["f1".to_string(), "f2".to_string()]);
+    }
+
+    /// An invalid token on `CommitFeedback` is a silent no-op (no commit).
+    #[tokio::test]
+    async fn commit_feedback_invalid_token_is_noop() {
+        let feedback = Arc::new(StubFeedback::default());
+        let listener = make_feedback_listener(Arc::new(TokenRegistry::default()), feedback.clone());
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        write_frame(
+            &mut client,
+            &BrokerMessage::CommitFeedback(BrokerCommitFeedbackRequest {
+                token: "bad".into(),
+                ids: vec!["f1".into()],
+            }),
+        )
+        .await
+        .unwrap();
+        let _: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert!(feedback.committed.lock().await.is_empty());
+    }
+
+    /// An invalid token returns an empty `{ count: 0 }` envelope (no leak of
+    /// whether any feedback exists), never reads the store, and commits nothing.
+    #[tokio::test]
+    async fn feedback_invalid_token_returns_empty() {
+        let feedback = Arc::new(StubFeedback::default());
+        *feedback.items.lock().await = vec![pending("f1", "should never be returned")];
+        let tokens = Arc::new(TokenRegistry::default());
+        let listener = make_feedback_listener(tokens, feedback.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::Feedback(BrokerFeedbackRequest {
+            token: "bad-token".into(),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["count"], 0);
+        assert!(resp.outcome["feedback"].as_array().unwrap().is_empty());
+        // The store was never read or committed for an unknown token.
+        assert!(feedback.read_conn.lock().await.is_none());
+        assert!(feedback.committed.lock().await.is_empty());
+    }
+
+    // --- ask_user_question over the listener -------------------------------
+
+    fn ask_msg(token: &str) -> BrokerMessage {
+        BrokerMessage::Ask(BrokerAskRequest {
+            token: token.into(),
+            questions: vec![crate::acp::question::QuestionSpec {
+                id: "qq-1".into(),
+                question: "Which approach?".into(),
+                header: "Approach".into(),
+                multi_select: false,
+                options: vec![
+                    crate::acp::question::QuestionOption {
+                        label: "Incremental".into(),
+                        description: String::new(),
+                    },
+                    crate::acp::question::QuestionOption {
+                        label: "Rewrite".into(),
+                        description: String::new(),
+                    },
+                ],
+            }],
+        })
+    }
+
+    use crate::acp::question::QuestionAnsweredItem;
+
+    /// An `Ask` registers the question, parks, and — once the user answers —
+    /// writes the `{ answers, declined }` envelope back over the same socket.
+    #[tokio::test]
+    async fn ask_registers_then_answer_resolves_response() {
+        let questions = Arc::new(StubQuestion::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_question_listener(tokens, questions.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        write_frame(&mut client, &ask_msg("tok")).await.unwrap();
+
+        // The server must be parked until an answer arrives — no response yet.
+        let early = tokio::time::timeout(Duration::from_millis(40), async {
+            read_frame::<_, BrokerResponse>(&mut client).await
+        })
+        .await;
+        assert!(early.is_err(), "ask must block until the user answers");
+
+        // Wait for the stub to record the registration, then answer it.
+        while questions.registered.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(questions.registered.lock().await[0].0, "parent-conn");
+        questions
+            .answer(
+                "q-1",
+                QuestionOutcome {
+                    answers: vec![QuestionAnsweredItem {
+                        question: "Which approach?".into(),
+                        header: "Approach".into(),
+                        multi_select: false,
+                        selected: vec!["Incremental".into()],
+                    }],
+                    declined: false,
+                },
+            )
+            .await;
+
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["declined"], false);
+        assert_eq!(resp.outcome["answers"][0]["selected"][0], "Incremental");
+        assert_eq!(resp.outcome["answers"][0]["header"], "Approach");
+    }
+
+    /// A canceled tool call drops the request socket; the listener observes the
+    /// peer-close, cancels the pending question, and returns without writing.
+    #[tokio::test]
+    async fn ask_peer_close_cancels_question() {
+        let questions = Arc::new(StubQuestion::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_question_listener(tokens, questions.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move { listener.serve_one(&mut server).await });
+        write_frame(&mut client, &ask_msg("tok")).await.unwrap();
+
+        // Let the server park inside the wait.
+        while questions.registered.lock().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Companion cancels: drop the request socket.
+        drop(client);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("serve_one must return after peer close");
+        result.unwrap().unwrap();
+        assert_eq!(questions.canceled.lock().await.as_slice(), &["q-1".to_string()]);
+    }
+
+    /// An invalid token never registers a question and returns a `declined`
+    /// outcome (the LLM proceeds with its own judgment).
+    #[tokio::test]
+    async fn ask_invalid_token_declined() {
+        let questions = Arc::new(StubQuestion::default());
+        let listener = make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        write_frame(&mut client, &ask_msg("bad-token"))
+            .await
+            .unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["declined"], true);
+        assert!(questions.registered.lock().await.is_empty());
+    }
+
 }

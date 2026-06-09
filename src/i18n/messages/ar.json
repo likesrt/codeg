@@ -91,6 +91,22 @@
       "placeholder": "اختر مستوى التكبير",
       "default": "افتراضي",
       "current": "التكبير الحالي: {zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "الخطوط",
+      "sectionDescription": "اختر خطوطًا للواجهة ومحرّر الأكواد والطرفية. تُحمّل الخطوط المضمّنة عند الحاجة؛ اختر «مخصّص…» لاستخدام أي خط مثبّت على نظامك.",
+      "interface": "الواجهة",
+      "editor": "المحرّر",
+      "terminal": "الطرفية",
+      "groupSans": "بلا زوائد",
+      "groupMono": "ثابت العرض",
+      "custom": "مخصّص…",
+      "customPlaceholder": "اسم الخط، مثل Fira Code",
+      "fontSize": "حجم الخط",
+      "ligatures": "تفعيل الحروف المتصلة",
+      "ligaturesUnavailable": "هذا الخط لا يحتوي على حروف متصلة",
+      "terminalLigaturesHint": "تنطبق الحروف المتصلة في الطرفية على خطوط البرمجة المضمّنة فقط.",
+      "preview": "معاينة"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "فشل حفظ إدارة الإعدادات",
       "clineSaved": "تم حفظ تكوين Cline",
       "saveClineFailed": "فشل في حفظ تكوين Cline",
-      "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ."
+      "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ.",
+      "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير"
     },
     "version": {
       "statusLabel": "حالة الإصدار",
@@ -891,6 +908,8 @@
       "completing": "جارٍ الإكمال...",
       "toasts": {
         "importedSessions": "تم استيراد {imported, plural, one {# جلسة} other {# جلسات}}، وتم تخطي {skipped}",
+        "importedAndUpdated": "تم استيراد {imported, plural, one {# جلسة} other {# جلسات}}، وتم تحديث {updated, plural, one {# عنوان} other {# عناوين}}، وتم تخطي {skipped}",
+        "updatedTitles": "تم تحديث {updated, plural, one {# عنوان} other {# عناوين}}، وتم تخطي {skipped}",
         "noNewSessionsFound": "لم يتم العثور على جلسات جديدة (تم تخطي {skipped})",
         "importFailed": "فشل الاستيراد: {message}",
         "reviewCompleted": "تم وضع علامة مكتمل على {count, plural, one {# جلسة مراجعة} other {# جلسات مراجعة}}",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "الفرق",
         "files": "الملفات",
         "changes": "التغييرات",
         "commits": "الالتزامات"
@@ -1123,16 +1141,6 @@
       "closeAll": "إغلاق الكل",
       "hideTerminal": "إخفاء الطرفية ({shortcut})",
       "openFolderFirst": "افتح مجلدا أولا"
-    },
-    "sessionFiles": {
-      "currentResponse": "الاستجابة الحالية",
-      "noDiffDataAvailable": "لا توجد بيانات diff متاحة لـ {filePath}",
-      "loading": "جارٍ التحميل...",
-      "noFileChangesInConversation": "لم يتم العثور على تغييرات ملفات في هذه المحادثة",
-      "openConversationToSeeChanges": "افتح محادثة لرؤية تغييرات الملفات الخاصة بها",
-      "remove": "إزالة",
-      "changeCount": "{count, plural, one {# تغيير} other {# تغييرات}}",
-      "fileCount": "{count, plural, one {# ملف} other {# ملفات}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "مجلد",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "تم تعيين فرع upstream",
         "upstreamSetAndPushed": "تم تعيين فرع upstream ودفع {count, plural, one {# التزام} other {# التزامات}}",
         "noCommitsToPush": "لا توجد التزامات للدفع",
-        "pushedCommits": "تم دفع {count, plural, one {# التزام} other {# التزامات}}"
+        "pushedCommits": "تم دفع {count, plural, one {# التزام} other {# التزامات}}",
+        "switchedToFolder": "تم التبديل إلى {name}",
+        "switchFailed": "فشل تبديل الفرع"
       },
       "tasks": {
         "newBranch": "إنشاء الفرع {name}",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "لا توجد رسائل سريعة بعد",
         "quickMessagesLoading": "جارٍ التحميل...",
         "quickMessageUntitled": "بدون عنوان",
+        "liveFeedback": "ملاحظات مباشرة",
+        "liveFeedbackDisabledHint": "متاح أثناء عمل الوكيل",
         "dropFilesToAttach": "أسقط الملفات لإرفاقها",
         "loadingSettings": "جارٍ تحميل الإعدادات...",
         "loadingMode": "جارٍ تحميل الوضع...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "الوكلاء الفرعيون",
         "collapsedSummary": "الوكلاء الفرعيون {count}",
-        "collapseAria": "طي الوكلاء الفرعيين",
-        "expandAria": "توسيع الوكلاء الفرعيين"
+        "collapseAria": "طي الوكلاء الفرعيين"
       },
       "agentPlanOverlay": {
         "title": "خطة الوكيل",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count, plural, zero {صفر فشل} one {فشل واحد} two {فشلان} few {# فشلوا} many {# فشلاً} other {# فشل}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "تنقل الرسائل",
+        "expand": "توسيع تنقل الرسائل",
+        "collapse": "طي تنقل الرسائل",
+        "jumpToMessage": "الانتقال إلى: {label}",
+        "fileCount": "{count, plural, one {# ملف} other {# ملفات}}",
+        "remove": "إزالة",
+        "noDiffDataAvailable": "لا توجد بيانات diff متاحة لـ {filePath}"
+      },
+      "askQuestion": {
+        "title": "يحتاج الوكيل إلى اختيارك",
+        "subtitle": "أجب ثم أرسل. يمكنك التخطّي في أي وقت.",
+        "recommended": "موصى به",
+        "other": "أخرى",
+        "otherPlaceholder": "اكتب إجابتك…",
+        "singleSelect": "اختيار واحد",
+        "multiSelect": "اختيار متعدد",
+        "skip": "تخطّي",
+        "next": "التالي",
+        "submit": "إرسال",
+        "submitError": "تعذّر الإرسال. حاول مرة أخرى."
+      },
+      "askQuestionResult": {
+        "title": "سؤال",
+        "answeredLabel": "سؤال وجواب:",
+        "awaiting": "في انتظار إجابتك…",
+        "declined": "لقد تجاهلت هذا — استخدم الوكيل حكمه الخاص.",
+        "noSelection": "لا يوجد اختيار"
+      },
+      "configStale": {
+        "agentConfigTitle": "تم تحديث إعدادات الوكيل",
+        "modelProviderTitle": "تم تحديث مزوّد النموذج",
+        "description": "لا تزال هذه الجلسة تستخدم الإعدادات السابقة. أعد الاتصال لتطبيقها (سيتم الاحتفاظ بسجل المحادثة).",
+        "reconnect": "أعد الاتصال للتطبيق",
+        "reconnecting": "جارٍ إعادة الاتصال…",
+        "reconnectDisabledDuringTurn": "متاح بعد انتهاء الدور الحالي",
+        "dismiss": "تجاهل",
+        "reconnectFailed": "فشل في إعادة الاتصال بالجلسة",
+        "applied": "تم تطبيق الإعدادات الجديدة"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "إخفاء",
     "show": "إظهار",
     "copy": "نسخ",
+    "qrcode": "رمز QR",
+    "qrcodeTitle": "امسح للفتح",
+    "qrcodeHint": "امسح بهاتفك لفتح Codeg في المتصفح",
     "addressLabel": "عنوان الوصول",
     "tokenLabel": "رمز الوصول",
     "tokenHint": "أدخل هذا الرمز عند الوصول إلى عميل الويب لأول مرة",
@@ -2467,7 +2521,8 @@
     "cancel": "إلغاء",
     "delete": "حذف",
     "create": "إنشاء",
-    "save": "حفظ"
+    "save": "حفظ",
+    "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير"
   },
   "ExpertsSettings": {
     "title": "مهارات الخبراء",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "انتهت الجلسة",
     "sessionExpiredDescription": "لم تعد جلستك صالحة. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
     "goToLogin": "الانتقال إلى تسجيل الدخول"
+  },
+  "SessionFeedbackSettings": {
+    "title": "ملاحظات مباشرة",
+    "description": "أرسل ملاحظات وتصحيحات إلى الوكيل أثناء عمله. عند التفعيل، يحصل الوكيل على أداة للتحقق من ملاحظاتك المباشرة، وتعرض المحادثات حقل إدخال للملاحظات. نصيحة: عادةً ما يتحقق الوكيل من الملاحظات فقط عند ذكرها في رسالتك — مثلاً أضف \"تحقق من ملاحظاتي المباشرة بانتظام أثناء العمل\" إلى رسالتك.",
+    "enable": "تفعيل الملاحظات المباشرة",
+    "enableHint": "يضيف أداة للتحقق من الملاحظات إلى الوكلاء الذين يبدؤون بعد التفعيل.",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "saved": "تم حفظ إعدادات الملاحظات",
+    "saveFailed": "تعذّر حفظ إعدادات الملاحظات",
+    "loadFailed": "فشل التحميل: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "أرسل ملاحظة إلى {agent} أثناء عمله…",
+    "agentFallback": "الوكيل",
+    "ariaLabel": "ملاحظة مباشرة",
+    "dialogTitle": "ملاحظات مباشرة",
+    "dialogDescription": "أرسل ملاحظة إلى الوكيل أثناء عمله. سيقرأها في فحصه التالي دون مقاطعة الخطوة الحالية.",
+    "send": "إرسال",
+    "cancel": "إلغاء",
+    "pending": "في الانتظار",
+    "delivered": "تم الاستلام",
+    "turnEndedUnread": "أنهى الوكيل الجولة قبل قراءة ملاحظاتك.",
+    "sendAsMessage": "إرسال كرسالة",
+    "dismiss": "تجاهل",
+    "turnEndedResent": "انتهت الجولة — تم الإرسال كرسالة جديدة بدلاً من ذلك.",
+    "turnEnded": "انتهت الجولة بالفعل.",
+    "submitFailed": "تعذّر إرسال ملاحظتك"
+  },
+  "AskQuestionSettings": {
+    "title": "سؤال المستخدم",
+    "description": "يسمح للوكلاء بالتوقّف وطرح سؤال متعدّد الخيارات يظهر فوق مربّع إدخال المحادثة. ينتظر الوكيل حتى تجيب (أو تتخطّى).",
+    "enable": "تفعيل سؤال المستخدم",
+    "enableHint": "يضيف أداة ask_user_question للوكلاء الذين يبدؤون بعد التفعيل.",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "saved": "تم حفظ إعدادات السؤال",
+    "saveFailed": "فشل حفظ إعدادات السؤال",
+    "loadFailed": "فشل التحميل: {detail}"
   }
 }

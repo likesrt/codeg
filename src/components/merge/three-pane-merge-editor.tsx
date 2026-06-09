@@ -7,10 +7,8 @@ import type { editor as MonacoEditorNs, IRange } from "monaco-editor"
 import { ArrowLeft, ArrowRight, CheckCheck } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
-
-const EDITOR_BASE_FONT_SIZE = 13
 import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
@@ -59,6 +57,7 @@ export function ThreePaneMergeEditor({
   const t = useTranslations("MergePage")
   const editorTheme = useMonacoThemeSync()
   const { zoomLevel } = useZoomLevel()
+  const { editorFontStack, editorFontSize, editorLigatures } = useEditorFont()
   const { registerEditor } = useSyncScroll()
 
   const leftEditorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(
@@ -504,7 +503,9 @@ export function ThreePaneMergeEditor({
   const editorOptions =
     useMemo<MonacoEditorNs.IStandaloneEditorConstructionOptions>(
       () => ({
-        fontSize: (EDITOR_BASE_FONT_SIZE * zoomLevel) / 100,
+        fontSize: (editorFontSize * zoomLevel) / 100,
+        fontFamily: editorFontStack,
+        fontLigatures: editorLigatures,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         automaticLayout: true,
@@ -514,7 +515,7 @@ export function ThreePaneMergeEditor({
         wordWrap: "off",
         overviewRulerLanes: 0,
       }),
-      [zoomLevel]
+      [zoomLevel, editorFontStack, editorFontSize, editorLigatures]
     )
 
   const readonlyOptions = useMemo(

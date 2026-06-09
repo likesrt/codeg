@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next"
 import "katex/dist/katex.min.css"
 import "./globals.css"
-import { JetBrains_Mono } from "next/font/google"
 import { NextIntlClientProvider } from "next-intl"
 import { AppI18nProvider } from "@/components/i18n-provider"
 import { getMessagesForLocale } from "@/i18n/messages"
@@ -13,11 +12,6 @@ import { AppearanceProvider } from "@/components/appearance-provider"
 import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-sans",
-})
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -47,11 +41,7 @@ export default async function RootLayout({
   const initialMessages = await getMessagesForLocale(appLocale)
 
   return (
-    <html
-      lang={initialLocale}
-      className={jetbrainsMono.variable}
-      suppressHydrationWarning
-    >
+    <html lang={initialLocale} suppressHydrationWarning>
       <body>
         {/* CSS-only dark background: applies before JS executes, preventing white flash in dark mode */}
         <style

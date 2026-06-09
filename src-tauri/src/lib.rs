@@ -45,9 +45,11 @@ mod tauri_app {
     use crate::commands::{
         acp as acp_commands, app_update as app_update_commands, backup,
         chat_channel as chat_channel_commands, conversations, delegation as delegation_commands,
-        experts as experts_commands, file_io, folder_commands, folders, mcp as mcp_commands,
+        experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
+        folders, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
-        quick_messages as quick_messages_commands, remote_proxy as remote_proxy_commands,
+        question as question_commands, quick_messages as quick_messages_commands,
+        remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, system_settings, terminal as terminal_commands,
         version_control, windows, workspace_state as workspace_state_commands,
     };
@@ -409,24 +411,40 @@ mod tauri_app {
                 let broker_for_lifecycle = {
                     let cm_state = app.state::<ConnectionManager>();
                     let db_conn = app.state::<db::AppDatabase>().conn.clone();
-                    let (broker, tokens, socket_path) = crate::app_state::build_delegation_stack(
-                        &cm_state,
-                        db_conn.clone(),
-                        effective_data_dir.clone(),
-                    );
+                    let (broker, tokens, socket_path, feedback_config, question_config) =
+                        crate::app_state::build_delegation_stack(
+                            &cm_state,
+                            db_conn.clone(),
+                            effective_data_dir.clone(),
+                        );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
+                    app.manage(feedback_config.clone());
+                    app.manage(question_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
                     ));
 
-                    // Push persisted settings into the broker before listener accept.
+                    // Push persisted settings into the broker + feedback + question
+                    // config before listener accept.
                     let broker_for_init = broker.clone();
                     let db_for_init = db_conn.clone();
+                    let feedback_for_init = feedback_config.clone();
+                    let question_for_init = question_config.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
                             &broker_for_init,
+                        )
+                        .await;
+                        crate::commands::feedback::apply_persisted_feedback_config(
+                            &db_for_init,
+                            &feedback_for_init,
+                        )
+                        .await;
+                        crate::commands::question::apply_persisted_question_config(
+                            &db_for_init,
+                            &question_for_init,
                         )
                         .await;
                     });
@@ -437,6 +455,16 @@ mod tauri_app {
                         tokens,
                         std::sync::Arc::new(
                             crate::acp::manager::ConnectionManagerParentLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerFeedbackLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerQuestionLookup {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
                         ),
@@ -720,6 +748,8 @@ mod tauri_app {
                 folders::list_open_folder_details,
                 folders::list_all_folder_details,
                 folders::open_folder,
+                folders::open_worktree_folder,
+                folders::resolve_worktree_folder,
                 folders::open_folder_in_workspace,
                 folders::open_folder_by_id,
                 folders::remove_folder_from_workspace,
@@ -826,6 +856,7 @@ mod tauri_app {
                 windows::pet_show_context_menu,
                 windows::toggle_pet_panel,
                 windows::close_pet_panel,
+                windows::resize_pet_panel,
                 windows::focus_conversation,
                 windows::update_traffic_light_position,
                 windows::update_appearance_mode,
@@ -868,6 +899,11 @@ mod tauri_app {
                 system_settings::update_system_rendering_settings,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
+                feedback_commands::get_feedback_settings,
+                feedback_commands::set_feedback_settings,
+                feedback_commands::submit_session_feedback,
+                question_commands::get_question_settings,
+                question_commands::set_question_settings,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,
@@ -887,6 +923,7 @@ mod tauri_app {
                 acp_commands::acp_cancel,
                 acp_commands::acp_fork,
                 acp_commands::acp_respond_permission,
+                acp_commands::acp_answer_question,
                 acp_commands::acp_disconnect,
                 acp_commands::acp_touch_connection,
                 acp_commands::acp_list_connections,

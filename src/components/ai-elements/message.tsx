@@ -28,6 +28,7 @@ import {
   useState,
 } from "react"
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
+import remarkBreaks from "remark-breaks"
 import { markdownLinkComponents } from "./markdown-link"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
@@ -325,7 +326,15 @@ export const MessageBranchPage = ({
   )
 }
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+  /**
+   * Render single newlines as hard line breaks (GitHub-comment flavor). Used
+   * for user-authored messages so their literal line breaks survive Markdown
+   * rendering. Assistant output leaves this off so it follows standard
+   * Markdown, where soft breaks collapse to spaces.
+   */
+  softBreaks?: boolean
+}
 
 const math = createMathPlugin({ singleDollarTextMath: true })
 
@@ -372,9 +381,13 @@ const remarkPlugins = [
   remarkRewriteFileUriLinks,
 ]
 
+// User messages opt in to this set so single newlines render as <br>.
+const remarkPluginsWithBreaks = [...remarkPlugins, remarkBreaks]
+
 function MessageResponseImpl({
   className,
   children,
+  softBreaks = false,
   ...props
 }: MessageResponseProps) {
   const normalized = useMemo(
@@ -392,7 +405,7 @@ function MessageResponseImpl({
         className
       )}
       plugins={streamdownPlugins}
-      remarkPlugins={remarkPlugins}
+      remarkPlugins={softBreaks ? remarkPluginsWithBreaks : remarkPlugins}
       {...props}
       // Merge after spreading props so a caller can still override other
       // elements, but the link icon + safety routing on `a` always wins.
@@ -405,7 +418,9 @@ function MessageResponseImpl({
 
 export const MessageResponse = memo(
   MessageResponseImpl,
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.softBreaks === nextProps.softBreaks
 )
 
 MessageResponse.displayName = "MessageResponse"

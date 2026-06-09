@@ -38,6 +38,7 @@ function conv(id: number): DbConversationSummary {
     id,
     folder_id: 1,
     title: `conv-${id}`,
+    title_locked: false,
     agent_type: "claude_code",
     status: "pending",
     model: null,

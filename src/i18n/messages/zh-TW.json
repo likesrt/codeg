@@ -91,6 +91,22 @@
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "字型",
+      "sectionDescription": "為介面、程式碼編輯器與終端機分別選擇字型。內建字型會按需載入；選擇「自訂…」可使用系統已安裝的任意字型。",
+      "interface": "介面",
+      "editor": "編輯器",
+      "terminal": "終端機",
+      "groupSans": "無襯線",
+      "groupMono": "等寬",
+      "custom": "自訂…",
+      "customPlaceholder": "字型名稱，如 Fira Code",
+      "fontSize": "字級",
+      "ligatures": "啟用連字",
+      "ligaturesUnavailable": "此字型不含連字",
+      "terminalLigaturesHint": "終端機連字僅對內建程式字型生效。",
+      "preview": "預覽"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "儲存配置管理失敗",
       "clineSaved": "Cline 配置已儲存",
       "saveClineFailed": "儲存 Cline 配置失敗",
-      "modelProviderRequired": "請先選擇一個模型供應商再儲存。"
+      "modelProviderRequired": "請先選擇一個模型供應商再儲存。",
+      "affectedRunningSessions": "{count} 個進行中的工作階段需重新連線以套用變更"
     },
     "version": {
       "statusLabel": "版本狀態",
@@ -891,6 +908,8 @@
       "completing": "處理中...",
       "toasts": {
         "importedSessions": "已匯入 {imported} 個會話，跳過 {skipped} 個",
+        "importedAndUpdated": "已匯入 {imported} 個會話，更新 {updated} 個標題，跳過 {skipped} 個",
+        "updatedTitles": "已更新 {updated} 個標題，跳過 {skipped} 個",
         "noNewSessionsFound": "沒有新會話（已跳過 {skipped} 個）",
         "importFailed": "匯入失敗：{message}",
         "reviewCompleted": "已將 {count} 個複查會話標記為已完成",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差異",
         "files": "檔案",
         "changes": "變更",
         "commits": "提交"
@@ -1123,16 +1141,6 @@
       "closeAll": "關閉所有",
       "hideTerminal": "隱藏終端（{shortcut}）",
       "openFolderFirst": "請先開啟一個資料夾"
-    },
-    "sessionFiles": {
-      "currentResponse": "目前回應",
-      "noDiffDataAvailable": "找不到 {filePath} 的差異資料",
-      "loading": "載入中...",
-      "noFileChangesInConversation": "此會話未發現檔案變更",
-      "openConversationToSeeChanges": "打開會話以查看檔案變更",
-      "remove": "移除",
-      "changeCount": "{count} 處變更",
-      "fileCount": "{count} 個檔案"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "資料夾",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "已設定遠端追蹤分支",
         "upstreamSetAndPushed": "已設定遠端追蹤分支並推送 {count} 個提交",
         "noCommitsToPush": "沒有可推送的提交",
-        "pushedCommits": "已推送 {count} 個提交"
+        "pushedCommits": "已推送 {count} 個提交",
+        "switchedToFolder": "已切換到 {name}",
+        "switchFailed": "切換分支失敗"
       },
       "tasks": {
         "newBranch": "新增分支 {name}",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "尚無快捷訊息",
         "quickMessagesLoading": "載入中...",
         "quickMessageUntitled": "未命名",
+        "liveFeedback": "即時回饋",
+        "liveFeedbackDisabledHint": "智能體工作時可傳送",
         "dropFilesToAttach": "拖曳檔案到此處附加",
         "loadingSettings": "正在載入設定...",
         "loadingMode": "正在載入模式...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "子智能體",
         "collapsedSummary": "子智能體 {count}",
-        "collapseAria": "摺疊子智能體",
-        "expandAria": "展開子智能體"
+        "collapseAria": "摺疊子智能體"
       },
       "agentPlanOverlay": {
         "title": "計畫任務",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count} 個失敗",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "訊息導覽",
+        "expand": "展開訊息導覽",
+        "collapse": "收合訊息導覽",
+        "jumpToMessage": "跳至：{label}",
+        "fileCount": "{count} 個檔案",
+        "remove": "移除",
+        "noDiffDataAvailable": "找不到 {filePath} 的差異資料"
+      },
+      "askQuestion": {
+        "title": "智能體需要你的選擇",
+        "subtitle": "回答後點擊提交，可隨時跳過",
+        "recommended": "推薦",
+        "other": "其他",
+        "otherPlaceholder": "輸入你的回答…",
+        "singleSelect": "單選",
+        "multiSelect": "多選",
+        "skip": "略過",
+        "next": "下一題",
+        "submit": "提交",
+        "submitError": "提交失敗，請重試。"
+      },
+      "askQuestionResult": {
+        "title": "提問",
+        "answeredLabel": "提問回答：",
+        "awaiting": "等待你的回答…",
+        "declined": "你已略過此問題 — 代理已自行判斷。",
+        "noSelection": "未選擇"
+      },
+      "configStale": {
+        "agentConfigTitle": "智能體設定已更新",
+        "modelProviderTitle": "模型供應商已更新",
+        "description": "目前的工作階段仍在使用舊設定，重新連線後生效（對話紀錄不會遺失）。",
+        "reconnect": "重新連線以套用",
+        "reconnecting": "正在重新連線…",
+        "reconnectDisabledDuringTurn": "目前回合結束後可重新連線",
+        "dismiss": "忽略",
+        "reconnectFailed": "重新連線工作階段失敗",
+        "applied": "已套用新設定"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "隱藏",
     "show": "顯示",
     "copy": "複製",
+    "qrcode": "QR 碼",
+    "qrcodeTitle": "掃碼開啟",
+    "qrcodeHint": "用手機掃描，在瀏覽器中開啟 Codeg",
     "addressLabel": "存取位址",
     "tokenLabel": "存取 Token",
     "tokenHint": "Web 用戶端首次存取時需輸入此 Token",
@@ -2467,7 +2521,8 @@
     "cancel": "取消",
     "delete": "刪除",
     "create": "建立",
-    "save": "儲存"
+    "save": "儲存",
+    "affectedRunningSessions": "{count} 個進行中的工作階段需重新連線以套用變更"
   },
   "ExpertsSettings": {
     "title": "專家技能",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "工作階段已過期",
     "sessionExpiredDescription": "登入狀態已失效，請重新登入以繼續。",
     "goToLogin": "前往登入"
+  },
+  "SessionFeedbackSettings": {
+    "title": "即時回饋",
+    "description": "在智能體工作過程中向它傳送提醒和修正。啟用後，智能體會取得一個查看即時回饋的工具，對話中也會出現留言入口。提示：智能體通常只在你的提示詞中提及時才會主動查看回饋——例如在訊息中加上「工作過程中定期查看我的即時回饋」，智能體才會主動讀取。",
+    "enable": "啟用即時回饋",
+    "enableHint": "為啟用之後啟動的智能體注入查看回饋工具。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "saved": "回饋設定已儲存",
+    "saveFailed": "儲存回饋設定失敗",
+    "loadFailed": "載入失敗：{detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "在 {agent} 工作時給它留言…",
+    "agentFallback": "智能體",
+    "ariaLabel": "即時回饋留言",
+    "dialogTitle": "即時回饋",
+    "dialogDescription": "在智能體工作時給它留言。它會在下次檢查時讀取，不會打斷當前步驟。",
+    "send": "送出",
+    "cancel": "取消",
+    "pending": "等待中",
+    "delivered": "已收到",
+    "turnEndedUnread": "智能體在讀取你的回饋前已結束本輪。",
+    "sendAsMessage": "作為新訊息送出",
+    "dismiss": "忽略",
+    "turnEndedResent": "本輪已結束——已改為作為新訊息送出。",
+    "turnEnded": "本輪已結束。",
+    "submitFailed": "留言送出失敗"
+  },
+  "AskQuestionSettings": {
+    "title": "向使用者提問",
+    "description": "允許智能體暫停並向你提出多選問題，問題會顯示在對話輸入框上方。智能體會一直等待，直到你作答（或略過）。",
+    "enable": "啟用向使用者提問",
+    "enableHint": "為開啟後啟動的智能體加入 ask_user_question 工具。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "saved": "提問設定已儲存",
+    "saveFailed": "儲存提問設定失敗",
+    "loadFailed": "載入失敗：{detail}"
   }
 }

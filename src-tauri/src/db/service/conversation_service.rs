@@ -48,6 +48,7 @@ pub async fn create_with_delegation(
         id: NotSet,
         folder_id: Set(folder_id),
         title: Set(title),
+        title_locked: Set(false),
         agent_type: Set(at_str),
         status: Set(conversation::ConversationStatus::InProgress),
         model: Set(None),
@@ -102,6 +103,9 @@ pub async fn update_status_if(
     Ok(result.rows_affected > 0)
 }
 
+/// Manual rename: set the title AND lock it. Once locked, the per-turn
+/// auto-title backfill ([`refresh_auto_title`]) leaves this row alone, so the
+/// user's hand-picked name survives every subsequent session-file parse.
 pub async fn update_title(
     conn: &DatabaseConnection,
     conversation_id: i32,
@@ -113,9 +117,48 @@ pub async fn update_title(
         .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
     active.title = Set(Some(title));
+    active.title_locked = Set(true);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())
+}
+
+/// Auto-derive counterpart to [`update_title`]: write `title` ONLY when the row
+/// is not user-locked and the value actually changed. Never sets `title_locked`
+/// (the title stays eligible for future auto-refreshes, e.g. when an agent like
+/// OpenCode regenerates its own session title) and deliberately does NOT bump
+/// `updated_at` — a title backfill is metadata, not user activity, so it must
+/// not float the row to the top of a recency-sorted sidebar. Returns `true`
+/// when a row was written so the caller can broadcast a sidebar upsert.
+///
+/// Implemented as a single conditional UPDATE (`... WHERE id = ? AND
+/// title_locked = false AND (title IS NULL OR title <> ?)`) so the lock/equality
+/// checks and the write are atomic: a manual rename ([`update_title`], which
+/// sets `title_locked = true`) that lands between a would-be read and the write
+/// can never be clobbered, because the lock predicate is re-evaluated at write
+/// time by the database. A non-existent row simply matches nothing (`false`).
+pub async fn refresh_auto_title(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    title: String,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Title, Expr::value(title))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(
+            sea_orm::Condition::any()
+                .add(conversation::Column::Title.is_null())
+                .add(conversation::Column::Title.ne(title)),
+        )
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
 }
 
 pub async fn update_external_id(
@@ -170,6 +213,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         id: r.id,
         folder_id: r.folder_id,
         title: r.title,
+        title_locked: r.title_locked,
         agent_type: parse_agent_type(&r.agent_type),
         status,
         model: r.model,
@@ -456,6 +500,135 @@ mod tests {
         assert!(
             rows.is_empty(),
             "soft-deleted child must not appear: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_leaves_title_unlocked() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-unlocked").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("hi".into()), None)
+            .await
+            .expect("create");
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert!(!summary.title_locked, "new conversation must start unlocked");
+    }
+
+    #[tokio::test]
+    async fn update_title_locks_the_title() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-lock").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create");
+        update_title(&db.conn, row.id, "My name".into())
+            .await
+            .expect("rename");
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("My name"));
+        assert!(summary.title_locked, "manual rename must lock the title");
+    }
+
+    #[tokio::test]
+    async fn refresh_auto_title_writes_when_unlocked_and_changed() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-auto").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
+
+        let wrote = refresh_auto_title(&db.conn, row.id, "fresh".into())
+            .await
+            .expect("auto");
+        assert!(wrote, "an unlocked, changed title must be written");
+
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("fresh"));
+        assert!(
+            !summary.title_locked,
+            "auto refresh must NOT lock — the title stays eligible for future refreshes"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_auto_title_skips_when_unchanged_or_empty() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-auto-skip").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("same".into()),
+            None,
+        )
+        .await
+        .expect("create");
+
+        assert!(
+            !refresh_auto_title(&db.conn, row.id, "same".into())
+                .await
+                .expect("auto-same"),
+            "identical title must be a no-op"
+        );
+        assert!(
+            !refresh_auto_title(&db.conn, row.id, String::new())
+                .await
+                .expect("auto-empty"),
+            "empty title must be a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_auto_title_never_clobbers_a_locked_title() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-auto-locked").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create");
+        update_title(&db.conn, row.id, "User pick".into())
+            .await
+            .expect("rename");
+
+        let wrote = refresh_auto_title(&db.conn, row.id, "parser title".into())
+            .await
+            .expect("auto");
+        assert!(!wrote, "a locked title must never be auto-overwritten");
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("User pick"));
+        assert!(summary.title_locked);
+    }
+
+    #[tokio::test]
+    async fn refresh_auto_title_does_not_bump_updated_at() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-no-bump").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("old".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        let before = row.updated_at;
+
+        let wrote = refresh_auto_title(&db.conn, row.id, "fresh".into())
+            .await
+            .expect("auto");
+        assert!(wrote);
+
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("fresh"));
+        assert_eq!(
+            summary.updated_at, before,
+            "auto-title backfill is metadata, not activity — it must not bump updated_at"
         );
     }
 }

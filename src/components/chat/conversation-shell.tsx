@@ -3,8 +3,10 @@ import { useTranslations } from "next-intl"
 import type {
   AgentType,
   ConnectionStatus,
+  PendingQuestionState,
   PromptCapabilitiesInfo,
   PromptDraft,
+  QuestionAnswer,
   SessionConfigOptionInfo,
   SessionModeInfo,
   AvailableCommandInfo,
@@ -19,6 +21,7 @@ import { Loader2 } from "lucide-react"
 import { ChatInput } from "@/components/chat/chat-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
+import { AskQuestionCard } from "@/components/chat/ask-question-card"
 
 interface ConversationShellProps {
   status: ConnectionStatus | null
@@ -29,11 +32,17 @@ interface ConversationShellProps {
   claudeApiRetry: ClaudeApiRetryState | null
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
+  /** Awaiting-answer multiple-choice `ask_user_question`. */
+  pendingAskQuestion: PendingQuestionState | null
   onFocus: () => void
   onSend: (draft: PromptDraft, modeId?: string | null) => void
   onCancel: () => void
   onRespondPermission: (requestId: string, optionId: string) => void
   onAnswerQuestion: (answer: string) => void
+  onAnswerAskQuestion: (
+    questionId: string,
+    answer: QuestionAnswer
+  ) => void | Promise<void>
   children: ReactNode
   modes?: SessionModeInfo[]
   configOptions?: SessionConfigOptionInfo[]
@@ -48,6 +57,15 @@ interface ConversationShellProps {
   attachmentTabId?: string | null
   draftStorageKey?: string | null
   hideInput?: boolean
+  /** Optional read-only live-feedback notes list rendered just above the
+   *  composer (see `FeedbackNotesDisplay`). Renders nothing when there are no
+   *  notes for the current turn. */
+  feedbackList?: ReactNode
+  /** Open the live-feedback dialog from the composer "+" menu (hidden when
+   *  omitted / feature off). */
+  onAddFeedback?: () => void
+  /** Grey out the live-feedback "+" entry when a note can't be sent right now. */
+  feedbackAddDisabled?: boolean
   isActive?: boolean
   queue?: QueuedMessage[]
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
@@ -60,6 +78,10 @@ interface ConversationShellProps {
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
+  /** Optional banner pinned to the top of the panel, above the message area
+   *  (e.g. the "restart to apply" config-stale banner). Renders nothing when
+   *  omitted. */
+  topBanner?: ReactNode
 }
 
 export function ConversationShell({
@@ -71,11 +93,13 @@ export function ConversationShell({
   claudeApiRetry,
   pendingPermission,
   pendingQuestion,
+  pendingAskQuestion,
   onFocus,
   onSend,
   onCancel,
   onRespondPermission,
   onAnswerQuestion,
+  onAnswerAskQuestion,
   children,
   modes,
   configOptions,
@@ -90,6 +114,9 @@ export function ConversationShell({
   attachmentTabId,
   draftStorageKey,
   hideInput = false,
+  feedbackList,
+  onAddFeedback,
+  feedbackAddDisabled,
   isActive,
   queue,
   onEnqueue,
@@ -102,6 +129,7 @@ export function ConversationShell({
   onSaveQueueEdit,
   onCancelQueueEdit,
   onForkSend,
+  topBanner,
 }: ConversationShellProps) {
   const tAcp = useTranslations("Folder.chat.acpConnections")
   const retryLineText = useMemo(() => {
@@ -160,7 +188,8 @@ export function ConversationShell({
   }, [claudeApiRetry, tAcp])
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
+      {topBanner}
       <div className="flex-1 min-h-0">{children}</div>
 
       <PermissionDialog
@@ -170,43 +199,65 @@ export function ConversationShell({
 
       <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />
 
-      {!hideInput && (
-        <div className="mx-auto w-full max-w-3xl">
-          <ChatInput
-            status={status}
-            promptCapabilities={promptCapabilities}
-            defaultPath={defaultPath}
-            agentName={agentName}
-            onFocus={onFocus}
-            onSend={onSend}
-            onCancel={onCancel}
-            modes={modes}
-            configOptions={configOptions}
-            modeLoading={modeLoading}
-            configOptionsLoading={configOptionsLoading}
-            selectorsLoading={selectorsLoading}
-            selectedModeId={selectedModeId}
-            onModeChange={onModeChange}
-            onConfigOptionChange={onConfigOptionChange}
-            agentType={agentType}
-            availableCommands={availableCommands}
-            attachmentTabId={attachmentTabId}
-            draftStorageKey={draftStorageKey}
-            isActive={isActive}
-            queue={queue}
-            onEnqueue={onEnqueue}
-            onQueueReorder={onQueueReorder}
-            onQueueEdit={onQueueEdit}
-            onQueueDelete={onQueueDelete}
-            editingItemId={editingItemId}
-            editingDraftText={editingDraftText}
-            isEditingQueueItem={isEditingQueueItem}
-            onSaveQueueEdit={onSaveQueueEdit}
-            onCancelQueueEdit={onCancelQueueEdit}
-            onForkSend={onForkSend}
-          />
-        </div>
-      )}
+      {/* Composer dock — the ask-question card floats above it as an overlay so
+          it never squeezes the message list above it, and aligns to the input
+          width. */}
+      <div className="relative">
+        {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-full z-20">
+            <div className="pointer-events-auto mx-auto w-full max-w-3xl px-4">
+              <AskQuestionCard
+                question={pendingAskQuestion}
+                onAnswer={onAnswerAskQuestion}
+              />
+            </div>
+          </div>
+        )}
+
+        {!hideInput && feedbackList && (
+          <div className="mx-auto w-full max-w-3xl px-4">{feedbackList}</div>
+        )}
+
+        {!hideInput && (
+          <div className="mx-auto w-full max-w-3xl">
+            <ChatInput
+              status={status}
+              promptCapabilities={promptCapabilities}
+              defaultPath={defaultPath}
+              agentName={agentName}
+              onFocus={onFocus}
+              onSend={onSend}
+              onCancel={onCancel}
+              modes={modes}
+              configOptions={configOptions}
+              modeLoading={modeLoading}
+              configOptionsLoading={configOptionsLoading}
+              selectorsLoading={selectorsLoading}
+              selectedModeId={selectedModeId}
+              onModeChange={onModeChange}
+              onConfigOptionChange={onConfigOptionChange}
+              agentType={agentType}
+              availableCommands={availableCommands}
+              attachmentTabId={attachmentTabId}
+              draftStorageKey={draftStorageKey}
+              isActive={isActive}
+              queue={queue}
+              onEnqueue={onEnqueue}
+              onQueueReorder={onQueueReorder}
+              onQueueEdit={onQueueEdit}
+              onQueueDelete={onQueueDelete}
+              editingItemId={editingItemId}
+              editingDraftText={editingDraftText}
+              isEditingQueueItem={isEditingQueueItem}
+              onSaveQueueEdit={onSaveQueueEdit}
+              onCancelQueueEdit={onCancelQueueEdit}
+              onForkSend={onForkSend}
+              onAddFeedback={onAddFeedback}
+              feedbackAddDisabled={feedbackAddDisabled}
+            />
+          </div>
+        )}
+      </div>
 
       {retryLineText && (
         <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">

@@ -91,6 +91,22 @@
       "placeholder": "ズームレベルを選択",
       "default": "デフォルト",
       "current": "現在のズーム：{zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "フォント",
+      "sectionDescription": "インターフェース、コードエディター、ターミナルのフォントをそれぞれ選択します。内蔵フォントは必要に応じて読み込まれます。「カスタム…」を選ぶと、システムにインストールされた任意のフォントを使用できます。",
+      "interface": "インターフェース",
+      "editor": "エディター",
+      "terminal": "ターミナル",
+      "groupSans": "サンセリフ",
+      "groupMono": "等幅",
+      "custom": "カスタム…",
+      "customPlaceholder": "フォント名（例：Fira Code）",
+      "fontSize": "フォントサイズ",
+      "ligatures": "合字を有効にする",
+      "ligaturesUnavailable": "このフォントには合字がありません",
+      "terminalLigaturesHint": "ターミナルの合字は内蔵のコーディングフォントにのみ適用されます。",
+      "preview": "プレビュー"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "設定管理の保存に失敗しました",
       "clineSaved": "Cline設定を保存しました",
       "saveClineFailed": "Cline設定の保存に失敗しました",
-      "modelProviderRequired": "保存する前にモデルプロバイダーを選択してください。"
+      "modelProviderRequired": "保存する前にモデルプロバイダーを選択してください。",
+      "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます"
     },
     "version": {
       "statusLabel": "バージョン状態",
@@ -891,6 +908,8 @@
       "completing": "完了処理中...",
       "toasts": {
         "importedSessions": "{imported, plural, one {# 件のセッション} other {# 件のセッション}} をインポートし、{skipped} 件をスキップしました",
+        "importedAndUpdated": "{imported, plural, one {# 件のセッション} other {# 件のセッション}} をインポートし、{updated, plural, one {# 件のタイトル} other {# 件のタイトル}} を更新し、{skipped} 件をスキップしました",
+        "updatedTitles": "{updated, plural, one {# 件のタイトル} other {# 件のタイトル}} を更新し、{skipped} 件をスキップしました",
         "noNewSessionsFound": "新しいセッションは見つかりませんでした（{skipped} 件をスキップ）",
         "importFailed": "インポートに失敗しました: {message}",
         "reviewCompleted": "{count, plural, one {# 件のレビューセッション} other {# 件のレビューセッション}} を完了にしました",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差分",
         "files": "ファイル",
         "changes": "変更",
         "commits": "コミット"
@@ -1123,16 +1141,6 @@
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください"
-    },
-    "sessionFiles": {
-      "currentResponse": "現在の応答",
-      "noDiffDataAvailable": "{filePath} の差分データがありません",
-      "loading": "読み込み中...",
-      "noFileChangesInConversation": "この会話にはファイル変更がありません",
-      "openConversationToSeeChanges": "会話を開いてファイル変更を表示してください",
-      "remove": "削除",
-      "changeCount": "{count, plural, one {# 件の変更} other {# 件の変更}}",
-      "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "フォルダ",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "アップストリームブランチを設定しました",
         "upstreamSetAndPushed": "アップストリームブランチを設定し、{count, plural, one {# 件のコミット} other {# 件のコミット}}をプッシュしました",
         "noCommitsToPush": "プッシュするコミットはありません",
-        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}"
+        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}",
+        "switchedToFolder": "{name} に切り替えました",
+        "switchFailed": "ブランチの切り替えに失敗しました"
       },
       "tasks": {
         "newBranch": "ブランチ {name} を作成",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "クイックメッセージはありません",
         "quickMessagesLoading": "読み込み中...",
         "quickMessageUntitled": "無題",
+        "liveFeedback": "ライブフィードバック",
+        "liveFeedbackDisabledHint": "エージェントの作業中に送信できます",
         "dropFilesToAttach": "ファイルをドロップして添付",
         "loadingSettings": "設定を読み込み中...",
         "loadingMode": "モードを読み込み中...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "サブエージェント",
         "collapsedSummary": "サブエージェント {count}",
-        "collapseAria": "サブエージェントを折りたたむ",
-        "expandAria": "サブエージェントを展開"
+        "collapseAria": "サブエージェントを折りたたむ"
       },
       "agentPlanOverlay": {
         "title": "エージェントプラン",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count} 件失敗",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "メッセージナビ",
+        "expand": "メッセージナビを開く",
+        "collapse": "メッセージナビを閉じる",
+        "jumpToMessage": "移動: {label}",
+        "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}",
+        "remove": "削除",
+        "noDiffDataAvailable": "{filePath} の差分データがありません"
+      },
+      "askQuestion": {
+        "title": "エージェントが選択を求めています",
+        "subtitle": "回答したら送信してください。いつでもスキップできます",
+        "recommended": "推奨",
+        "other": "その他",
+        "otherPlaceholder": "回答を入力…",
+        "singleSelect": "単一選択",
+        "multiSelect": "複数選択",
+        "skip": "スキップ",
+        "next": "次へ",
+        "submit": "送信",
+        "submitError": "送信できませんでした。もう一度お試しください。"
+      },
+      "askQuestionResult": {
+        "title": "質問",
+        "answeredLabel": "質問と回答：",
+        "awaiting": "回答をお待ちしています…",
+        "declined": "この質問をスキップしました — エージェントが独自に判断して進めました。",
+        "noSelection": "選択なし"
+      },
+      "configStale": {
+        "agentConfigTitle": "エージェント設定が更新されました",
+        "modelProviderTitle": "モデルプロバイダーが更新されました",
+        "description": "このセッションは以前の設定のままです。再接続すると適用されます（会話履歴は保持されます）。",
+        "reconnect": "再接続して適用",
+        "reconnecting": "再接続中…",
+        "reconnectDisabledDuringTurn": "現在のターンが完了すると再接続できます",
+        "dismiss": "閉じる",
+        "reconnectFailed": "セッションの再接続に失敗しました",
+        "applied": "新しい設定を適用しました"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "非表示",
     "show": "表示",
     "copy": "コピー",
+    "qrcode": "QRコード",
+    "qrcodeTitle": "スキャンして開く",
+    "qrcodeHint": "スマートフォンでスキャンして、ブラウザで Codeg を開きます",
     "addressLabel": "アクセスアドレス",
     "tokenLabel": "アクセストークン",
     "tokenHint": "Webクライアントの初回アクセス時にこのトークンを入力してください",
@@ -2467,7 +2521,8 @@
     "cancel": "キャンセル",
     "delete": "削除",
     "create": "作成",
-    "save": "保存"
+    "save": "保存",
+    "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます"
   },
   "ExpertsSettings": {
     "title": "エキスパートスキル",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "セッションの有効期限が切れました",
     "sessionExpiredDescription": "セッションが無効になりました。続行するには再度サインインしてください。",
     "goToLogin": "ログインへ移動"
+  },
+  "SessionFeedbackSettings": {
+    "title": "ライブフィードバック",
+    "description": "作業中のエージェントにメモや修正を送信できます。有効にすると、エージェントはライブフィードバックを確認するツールを取得し、会話にメモ入力が表示されます。ヒント：エージェントは通常、プロンプトで言及した場合にのみフィードバックを確認します。例えば「作業中に定期的にライブフィードバックを確認して」とメッセージに追加してください。",
+    "enable": "ライブフィードバックを有効にする",
+    "enableHint": "有効化後に起動したエージェントに、フィードバック確認ツールを注入します。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "フィードバック設定を保存しました",
+    "saveFailed": "フィードバック設定の保存に失敗しました",
+    "loadFailed": "読み込みに失敗しました: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "{agent} の作業中にメモを送る…",
+    "agentFallback": "エージェント",
+    "ariaLabel": "ライブフィードバックのメモ",
+    "dialogTitle": "ライブフィードバック",
+    "dialogDescription": "エージェントの作業中にメモを送ります。現在のステップを中断せず、次の確認時に読み取られます。",
+    "send": "送信",
+    "cancel": "キャンセル",
+    "pending": "待機中",
+    "delivered": "受領済み",
+    "turnEndedUnread": "エージェントはフィードバックを読む前にターンを終了しました。",
+    "sendAsMessage": "新しいメッセージとして送信",
+    "dismiss": "閉じる",
+    "turnEndedResent": "ターンが終了したため、新しいメッセージとして送信しました。",
+    "turnEnded": "ターンはすでに終了しています。",
+    "submitFailed": "メモを送信できませんでした"
+  },
+  "AskQuestionSettings": {
+    "title": "ユーザーに質問",
+    "description": "エージェントが処理を一時停止し、会話の入力欄の上に表示される選択式の質問をできるようにします。回答（またはスキップ）するまでエージェントは待機します。",
+    "enable": "ユーザーへの質問を有効化",
+    "enableHint": "有効化後に開始したエージェントに ask_user_question ツールを追加します。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "質問設定を保存しました",
+    "saveFailed": "質問設定の保存に失敗しました",
+    "loadFailed": "読み込みに失敗しました：{detail}"
   }
 }

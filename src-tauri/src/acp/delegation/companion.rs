@@ -4,13 +4,15 @@
 //!
 //! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
 //! one request → one response per line, with concurrent dispatch so
-//! `notifications/cancelled` can race an in-flight `tools/call`. It exposes
-//! three tools — `delegate_to_agent` (async; returns a `task_id` ack),
-//! `get_delegation_status` (poll/long-poll for the result), and
-//! `cancel_delegation` — whose schemas are embedded at compile time from
-//! [`TOOL_SCHEMA_JSON`]. Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status/cancel round-trip merely suppresses its
-//! response.
+//! `notifications/cancelled` can race an in-flight `tools/call`. It exposes up
+//! to four tools — `delegate_to_agent` (async; returns a `task_id` ack),
+//! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
+//! and `check_user_feedback` (pull the user's mid-turn steering notes) — whose
+//! schemas are embedded at compile time from [`TOOL_SCHEMA_JSON`] and gated by
+//! the `--features` groups (delegation / feedback). Only `delegate_to_agent`
+//! registers a broker-side cancel handle; canceling a status / cancel / feedback
+//! round-trip merely suppresses its response — and for `check_user_feedback`
+//! also skips the delivery commit, so a cancelled note stays pending.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
 //! that `notifications/initialized` etc. are fire-and-forget.
@@ -38,10 +40,12 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
-    client_cancel, client_cancel_task_round_trip, client_round_trip, client_status_round_trip,
-    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerRequest, BrokerResponse,
-    BrokerStatusRequest,
+    client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
+    client_feedback_round_trip, client_round_trip, client_status_round_trip, BrokerAskRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerFeedbackRequest,
+    BrokerRequest, BrokerResponse, BrokerStatusRequest,
 };
+use crate::acp::question::parse_questions;
 
 /// Upper bound on one broker-side cancel round-trip. Bounds both
 /// `handle_cancel_notification` (so stdin dispatch can't stall behind a
@@ -119,6 +123,59 @@ pub fn err(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse 
     }
 }
 
+/// Which tool groups this companion exposes. One `codeg-mcp` process can carry
+/// the delegation tools, the feedback tool, or both — gated independently so
+/// each feature can be toggled in settings without the other. Passed in via the
+/// `--features` arg at launch; a tool whose group is off is hidden from
+/// `tools/list` and rejected on `tools/call`.
+#[derive(Debug, Clone, Copy)]
+pub struct CompanionFeatures {
+    pub delegation: bool,
+    pub feedback: bool,
+    pub ask: bool,
+}
+
+impl CompanionFeatures {
+    /// Parse the comma-joined `--features` value (e.g. `delegation,feedback,ask`).
+    /// Unknown tokens are ignored. An absent value (`None`) defaults to
+    /// delegation-only — backward compatible with a parent that predates
+    /// feature gating (companion + listener ship together, so post-upgrade the
+    /// parent always passes an explicit `--features`).
+    pub fn parse(raw: Option<&str>) -> Self {
+        let Some(s) = raw else {
+            return Self {
+                delegation: true,
+                feedback: false,
+                ask: false,
+            };
+        };
+        let mut f = Self {
+            delegation: false,
+            feedback: false,
+            ask: false,
+        };
+        for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            match tok {
+                "delegation" => f.delegation = true,
+                "feedback" => f.feedback = true,
+                "ask" => f.ask = true,
+                _ => {}
+            }
+        }
+        f
+    }
+
+    /// Whether the named MCP tool is exposed under the enabled feature groups.
+    pub fn allows_tool(&self, name: &str) -> bool {
+        match name {
+            "check_user_feedback" => self.feedback,
+            "ask_user_question" => self.ask,
+            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
+            _ => false,
+        }
+    }
+}
+
 /// Process arguments threaded through every `tools/call` so the dispatcher
 /// can build a [`BrokerRequest`] without re-parsing argv per call.
 #[derive(Debug, Clone)]
@@ -126,6 +183,8 @@ pub struct CompanionContext {
     pub parent_connection_id: String,
     pub socket_path: String,
     pub token: String,
+    /// Tool groups this launch exposes (see [`CompanionFeatures`]).
+    pub features: CompanionFeatures,
 }
 
 /// Per-in-flight-call state. The companion stashes one of these per
@@ -199,18 +258,35 @@ pub enum LineAction {
     Silent,
 }
 
+/// Resolution of a spawned `tools/call`: the response to relay to the agent
+/// (`None` = cancellation won, so suppress per the MCP spec) plus an optional
+/// action the binary runs ONLY after that response is successfully written to
+/// the agent's stdout.
+///
+/// `after_relay` exists for `check_user_feedback`: marking the pulled notes
+/// `Delivered` (the broker `CommitFeedback`) must happen strictly AFTER the
+/// agent actually receives them. Committing any earlier — at listener read
+/// time, or right after the round-trip but before the stdout relay — would mark
+/// a note delivered that a failed/never-reached write (or a companion dying mid
+/// teardown) never put in front of the agent, breaking at-least-once delivery.
+/// Every other tool leaves this `None`.
+pub struct SpawnResult {
+    pub response: Option<JsonRpcResponse>,
+    pub after_relay: Option<futures_util::future::BoxFuture<'static, ()>>,
+}
+
 /// Materialized async tools/call ready to drive in a tokio task. The binary
-/// awaits `future` to obtain the optional `JsonRpcResponse` and writes
-/// it out (or suppresses, on cancel).
+/// awaits `future` to obtain the [`SpawnResult`]: it writes `response` (when
+/// `Some`) and, on a successful write, runs `after_relay` (when `Some`).
 pub struct SpawnedCall {
     /// JSON-RPC `id` of the original `tools/call` so the binary can stamp
     /// the response.
     pub request_id: Value,
     /// String form of `request_id` for inflight bookkeeping.
     pub request_id_key: String,
-    /// The future that performs the UDS round-trip racing the cancel
-    /// channel. `None` means cancellation won — suppress the response.
-    pub future: futures_util::future::BoxFuture<'static, Option<JsonRpcResponse>>,
+    /// The future that performs the UDS round-trip racing the cancel channel
+    /// and resolves to the [`SpawnResult`] to relay (and optionally commit).
+    pub future: futures_util::future::BoxFuture<'static, SpawnResult>,
 }
 
 /// Parse a stdin line and produce a [`LineAction`]. The binary handles the
@@ -251,8 +327,10 @@ pub async fn dispatch_line(
             }),
         )),
         "tools/list" => {
-            // The embedded schema is a JSON array of the three delegation tools.
-            let tools: Value = match serde_json::from_str(TOOL_SCHEMA_JSON) {
+            // The embedded schema is a JSON array of every tool the companion
+            // can carry; filter to the groups enabled for this launch so a
+            // disabled feature's tools never surface to the LLM.
+            let all: Value = match serde_json::from_str(TOOL_SCHEMA_JSON) {
                 Ok(v) => v,
                 Err(e) => {
                     return LineAction::Respond(err(
@@ -261,6 +339,20 @@ pub async fn dispatch_line(
                         format!("embedded schema invalid: {e}"),
                     ));
                 }
+            };
+            let tools = match all.as_array() {
+                Some(arr) => Value::Array(
+                    arr.iter()
+                        .filter(|t| {
+                            t.get("name")
+                                .and_then(|v| v.as_str())
+                                .map(|n| ctx.features.allows_tool(n))
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect(),
+                ),
+                None => all,
             };
             LineAction::Respond(ok(id, json!({ "tools": tools })))
         }
@@ -285,6 +377,14 @@ async fn build_tools_call_spawn(
         .to_string();
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
     let socket = ctx.socket_path.clone();
+    // Defense in depth: tools/list already hides tools whose feature group is
+    // off, but a misbehaving client could still call one by name. A disabled
+    // tool is rejected uniformly as "unknown tool" — indistinguishable from a
+    // genuinely nonexistent one (no leak that the feature exists but is off),
+    // and matching the legacy unknown-tool rejection shape.
+    if !ctx.features.allows_tool(&name) {
+        return LineAction::Respond(err(id, -32602, format!("unknown tool: {name}")));
+    }
     match name.as_str() {
         "delegate_to_agent" => {
             // MCP clients (Codex / Claude Code) generally do NOT populate
@@ -370,6 +470,36 @@ async fn build_tools_call_spawn(
                 Box::pin(async move { client_cancel_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_task_report).await
         }
+        "check_user_feedback" => {
+            let req = BrokerFeedbackRequest {
+                token: ctx.token.clone(),
+            };
+            // Feedback uses a dedicated spawn so it can COMMIT delivery only when
+            // the round-trip wins the cancel race (i.e. the result actually goes
+            // to the agent). A cancel that suppresses the response sends no
+            // commit, leaving the notes pending for the next check.
+            register_and_spawn_feedback(inflight, id, socket, ctx.token.clone(), req).await
+        }
+        "ask_user_question" => {
+            // Validate + parse the schema HERE so a malformed call gets a
+            // synchronous -32602 the LLM can fix, rather than round-tripping bad
+            // data. Stable per-question ids are minted now and flow through to
+            // the answer correlation.
+            let questions = match parse_questions(&arguments) {
+                Ok(qs) => qs,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerAskRequest {
+                token: ctx.token.clone(),
+                questions,
+            };
+            // No external_handle: canceling a blocking ask only suppresses its
+            // response. The companion dropping the round-trip future closes the
+            // socket, which the listener observes (peer-close) to tear the
+            // pending question down — no broker-side cancel to dispatch.
+            let round_trip = Box::pin(async move { client_ask_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_ask_result).await
+        }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
 }
@@ -411,7 +541,7 @@ async fn register_and_spawn(
         // notification handler is responsible for dispatching the broker-side
         // `Cancel` (status/cancel queries carry no external_handle, so nothing
         // is dispatched).
-        tokio::select! {
+        let response = tokio::select! {
             biased;
             _ = cancel_rx => {
                 let _ = inflight_for_task.take(&id_key_for_task).await;
@@ -428,6 +558,11 @@ async fn register_and_spawn(
                     )),
                 }
             }
+        };
+        // Delegation / status / cancel have no post-relay step.
+        SpawnResult {
+            response,
+            after_relay: None,
         }
     });
 
@@ -436,6 +571,118 @@ async fn register_and_spawn(
         request_id_key: id_key,
         future,
     })
+}
+
+/// `check_user_feedback`-specific spawn. Like [`register_and_spawn`], but it
+/// carries an `after_relay` commit — a `CommitFeedback` round-trip marking the
+/// pulled notes `Delivered` — that the binary runs ONLY after it successfully
+/// writes this response to the agent's stdout (the listener does not commit at
+/// read time). Two guards compose to make delivery at-least-once. First, if the
+/// cancel branch wins the biased select the result is `response: None` with no
+/// `after_relay`, so the check is suppressed and never committed (the notes stay
+/// pending for the next check). Second, when the round-trip wins, `after_relay`
+/// is built but only fires once the stdout relay succeeds; a failed or
+/// never-reached write (a dying companion, a broken agent stdin) skips the
+/// commit entirely. So a note flips to `Delivered` only after it was actually
+/// put in front of the agent. The sole irreducible boundary is the agent
+/// crashing after the bytes are flushed to its stdin but before it reads them —
+/// at which point the note is moot (the agent will not act on it), the correct
+/// semantics for a delivered best-effort steering side-channel.
+async fn register_and_spawn_feedback(
+    inflight: Arc<InflightCalls>,
+    id: Value,
+    socket: String,
+    token: String,
+    req: BrokerFeedbackRequest,
+) -> LineAction {
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    let id_key = request_id_key(&id);
+    inflight
+        .register(
+            id_key.clone(),
+            InflightEntry {
+                external_handle: None,
+                cancel_tx,
+            },
+        )
+        .await;
+
+    let id_for_response = id.clone();
+    let id_key_for_task = id_key.clone();
+    let inflight_for_task = inflight.clone();
+    let future = Box::pin(async move {
+        tokio::select! {
+            biased;
+            _ = cancel_rx => {
+                // Cancelled before delivery → suppress AND do not commit.
+                let _ = inflight_for_task.take(&id_key_for_task).await;
+                SpawnResult {
+                    response: None,
+                    after_relay: None,
+                }
+            }
+            rt = client_feedback_round_trip(&socket, &req) => {
+                let _ = inflight_for_task.take(&id_key_for_task).await;
+                match rt {
+                    Ok(resp) => {
+                        // Relay-then-commit: render the agent-facing result now,
+                        // but defer the `CommitFeedback` to `after_relay` so it
+                        // fires ONLY after the binary writes this response to the
+                        // agent's stdout. A dead/failed relay skips the commit,
+                        // leaving the notes pending for the next check
+                        // (at-least-once at the agent-facing boundary).
+                        let outcome = resp.outcome;
+                        let response = ok(id_for_response, render_feedback_result(&outcome));
+                        let commit: futures_util::future::BoxFuture<'static, ()> =
+                            Box::pin(async move {
+                                commit_feedback_after_delivery(&socket, &token, &outcome).await;
+                            });
+                        SpawnResult {
+                            response: Some(response),
+                            after_relay: Some(commit),
+                        }
+                    }
+                    Err(e) => SpawnResult {
+                        response: Some(err(
+                            id_for_response,
+                            -32603,
+                            format!("broker round-trip failed: {e}"),
+                        )),
+                        after_relay: None,
+                    },
+                }
+            }
+        }
+    });
+
+    LineAction::Spawn(SpawnedCall {
+        request_id: id,
+        request_id_key: id_key,
+        future,
+    })
+}
+
+/// Send a `CommitFeedback` for the note ids the listener embedded in the
+/// response (`_commit_ids`). Fire-and-forget, bounded by [`BROKER_CANCEL_BUDGET`]:
+/// a failed commit just leaves the notes pending for the next check.
+async fn commit_feedback_after_delivery(socket: &str, token: &str, outcome: &Value) {
+    let ids: Vec<String> = outcome
+        .get("_commit_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return;
+    }
+    let req = BrokerCommitFeedbackRequest {
+        token: token.to_string(),
+        ids,
+    };
+    let _ = tokio::time::timeout(BROKER_CANCEL_BUDGET, client_commit_feedback(socket, &req)).await;
 }
 
 /// Handle a `notifications/cancelled` notification. Looks up the in-flight
@@ -596,6 +843,92 @@ fn render_batch_report(tasks: &[Value]) -> Value {
 /// canceled task), and `unknown` are all valid tool results the LLM should read
 /// rather than treat as errors. The full report rides along in
 /// `structuredContent` so the frontend can read `status` + the child ids.
+/// Map the `check_user_feedback` round-trip outcome (a `{ count, feedback:[..] }`
+/// envelope from the listener) into an MCP `tools/call` result.
+///
+/// The human-readable `content` text is the steering the LLM acts on: when
+/// notes are present it frames them as high-priority user corrections and asks
+/// the agent to adjust and acknowledge; when empty it says so plainly. The raw
+/// envelope rides along in `structuredContent`. `isError` is always `false` — a
+/// successful check with no feedback is a valid result, not an error.
+pub fn render_feedback_result(outcome: &Value) -> Value {
+    let count = outcome.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let text = if count == 0 {
+        "No new feedback from the user. Continue with your current plan.".to_string()
+    } else {
+        let mut s = format!(
+            "The user sent {count} message(s) while you were working. Treat this as \
+             high-priority steering: adjust your current approach to honor it now, and \
+             briefly acknowledge what you changed.\n"
+        );
+        if let Some(notes) = outcome.get("feedback").and_then(|v| v.as_array()) {
+            for (i, note) in notes.iter().enumerate() {
+                let body = note.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                s.push_str(&format!("{}. {}\n", i + 1, body));
+            }
+        }
+        s
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        // Rebuild the structured payload from count + feedback only — the
+        // listener's internal `_commit_ids` must not leak to the agent's host.
+        "structuredContent": {
+            "count": count,
+            "feedback": outcome.get("feedback").cloned().unwrap_or_else(|| json!([])),
+        },
+    })
+}
+
+/// Map the `ask_user_question` round-trip outcome (a `{ answers, declined }`
+/// envelope from the listener) into an MCP `tools/call` result.
+///
+/// The human-readable `content` text reports the user's selections per question
+/// so the agent can act on them; a declined / empty answer tells the agent to
+/// proceed with its own judgment. The raw envelope rides along in
+/// `structuredContent`. `isError` is always `false` — a declined question is a
+/// valid result, not an error.
+pub fn render_ask_result(outcome: &Value) -> Value {
+    let declined = outcome
+        .get("declined")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let answers = outcome
+        .get("answers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let text = if declined || answers.is_empty() {
+        "The user dismissed the question(s) without choosing an answer. Proceed \
+         using your best judgment and reasonable defaults."
+            .to_string()
+    } else {
+        let mut s = String::from("The user answered your question(s):\n");
+        for (i, a) in answers.iter().enumerate() {
+            let header = a.get("header").and_then(|v| v.as_str()).unwrap_or("");
+            let question = a.get("question").and_then(|v| v.as_str()).unwrap_or("");
+            let selected: Vec<&str> = a
+                .get("selected")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect())
+                .unwrap_or_default();
+            let joined = if selected.is_empty() {
+                "(no selection)".to_string()
+            } else {
+                selected.join(", ")
+            };
+            s.push_str(&format!("{}. [{header}] {question}\n   → {joined}\n", i + 1));
+        }
+        s
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": { "answers": answers, "declined": declined },
+    })
+}
+
 pub fn render_task_report(report: &Value) -> Value {
     let status = report.get("status").and_then(|v| v.as_str()).unwrap_or("");
     let is_error = status == "failed";
@@ -631,15 +964,30 @@ mod tests {
     use super::*;
 
     fn ctx() -> CompanionContext {
+        // Delegation-only by default so the existing delegation-focused tests
+        // keep seeing exactly the three delegation tools.
+        ctx_with(CompanionFeatures {
+            delegation: true,
+            feedback: false,
+            ask: false,
+        })
+    }
+
+    fn ctx_with(features: CompanionFeatures) -> CompanionContext {
         CompanionContext {
             parent_connection_id: "p1".into(),
             socket_path: "/tmp/codeg-mcp-companion-test-nope.sock".into(),
             token: "tok".into(),
+            features,
         }
     }
 
     async fn dispatch_for_test(line: &str) -> LineAction {
         dispatch_line(&ctx(), Arc::new(InflightCalls::new()), line).await
+    }
+
+    async fn dispatch_with_features(features: CompanionFeatures, line: &str) -> LineAction {
+        dispatch_line(&ctx_with(features), Arc::new(InflightCalls::new()), line).await
     }
 
     fn unwrap_respond(action: LineAction) -> JsonRpcResponse {
@@ -1079,5 +1427,402 @@ mod tests {
             { "task_id": "t2", "status": "canceled" },
         ] });
         assert_eq!(render_status_result(&mixed)["isError"], false);
+    }
+
+    // -- check_user_feedback feature gating + rendering --------------------
+
+    const FEEDBACK_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: true,
+        ask: false,
+    };
+    const BOTH: CompanionFeatures = CompanionFeatures {
+        delegation: true,
+        feedback: true,
+        ask: false,
+    };
+    const ASK_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: true,
+    };
+
+    fn list_tool_names(action: LineAction) -> Vec<String> {
+        let resp = unwrap_respond(action);
+        resp.result.unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn features_parse_defaults_and_tokens() {
+        // Absent → delegation-only (backward compatible).
+        let def = CompanionFeatures::parse(None);
+        assert!(def.delegation && !def.feedback);
+        assert!(!def.ask);
+        // Explicit list, whitespace + unknown tokens tolerated.
+        let all = CompanionFeatures::parse(Some(" delegation , feedback , ask ,bogus"));
+        assert!(all.delegation && all.feedback && all.ask);
+        let fb = CompanionFeatures::parse(Some("feedback"));
+        assert!(!fb.delegation && fb.feedback && !fb.ask);
+        let ask = CompanionFeatures::parse(Some("ask"));
+        assert!(!ask.delegation && !ask.feedback && ask.ask);
+        // Empty string → nothing enabled.
+        let none = CompanionFeatures::parse(Some(""));
+        assert!(!none.delegation && !none.feedback && !none.ask);
+    }
+
+    #[tokio::test]
+    async fn tools_list_hides_feedback_when_disabled() {
+        // Default ctx is delegation-only: check_user_feedback must not appear.
+        let names = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!names.contains(&"check_user_feedback".to_string()));
+        assert_eq!(names.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_feedback_when_enabled() {
+        let names = list_tool_names(
+            dispatch_with_features(BOTH, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(names.contains(&"check_user_feedback".to_string()));
+        assert_eq!(names.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn tools_list_feedback_only_hides_delegation_tools() {
+        let names = list_tool_names(
+            dispatch_with_features(
+                FEEDBACK_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+        assert_eq!(names, vec!["check_user_feedback".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn check_user_feedback_spawns_when_enabled() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": { "name": "check_user_feedback", "arguments": {} }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(FEEDBACK_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn check_user_feedback_rejected_as_unknown_when_feature_off() {
+        // Delegation-only ctx: the feedback tool is indistinguishable from a
+        // nonexistent one (-32602 unknown tool), not a "disabled" leak.
+        let line = json!({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": { "name": "check_user_feedback", "arguments": {} }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn delegate_rejected_as_unknown_when_delegation_off() {
+        // Feedback-only ctx: delegation tools are hidden + rejected uniformly.
+        let line = json!({
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": { "name": "delegate_to_agent", "arguments": {"agent_type":"codex","task":"x"} }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(FEEDBACK_ONLY, &line).await);
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    // -- ask_user_question feature gating + validation + rendering ----------
+
+    #[tokio::test]
+    async fn tools_list_includes_ask_only_when_enabled() {
+        let off = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!off.contains(&"ask_user_question".to_string()));
+        let on = list_tool_names(
+            dispatch_with_features(ASK_ONLY, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+                .await,
+        );
+        assert_eq!(on, vec!["ask_user_question".to_string()]);
+    }
+
+    fn ask_args() -> Value {
+        json!({
+            "questions": [{
+                "question": "Which approach?",
+                "header": "Approach",
+                "multiSelect": false,
+                "options": [
+                    { "label": "Incremental", "description": "smaller diffs" },
+                    { "label": "Rewrite", "description": "clean slate" }
+                ]
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_spawns_when_valid_and_enabled() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 40, "method": "tools/call",
+            "params": { "name": "ask_user_question", "arguments": ask_args() }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(ASK_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_invalid_args_rejected_synchronously() {
+        // Empty questions array → -32602, fixable by the LLM without a round-trip.
+        let line = json!({
+            "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+            "params": { "name": "ask_user_question", "arguments": { "questions": [] } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(ASK_ONLY, &line).await);
+        assert_eq!(resp.error.unwrap().code, -32602);
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_rejected_as_unknown_when_feature_off() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 42, "method": "tools/call",
+            "params": { "name": "ask_user_question", "arguments": ask_args() }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[test]
+    fn render_ask_result_lists_selections() {
+        let outcome = json!({
+            "declined": false,
+            "answers": [
+                { "question": "Which approach?", "header": "Approach", "multiSelect": false,
+                  "selected": ["Incremental"] }
+            ]
+        });
+        let rendered = render_ask_result(&outcome);
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Approach"));
+        assert!(text.contains("Incremental"));
+        assert_eq!(rendered["structuredContent"]["declined"], false);
+    }
+
+    #[test]
+    fn render_ask_result_declined_tells_agent_to_proceed() {
+        let rendered = render_ask_result(&json!({ "declined": true, "answers": [] }));
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("dismissed"));
+    }
+
+    #[test]
+    fn render_feedback_empty_is_not_error_and_says_no_feedback() {
+        let rendered = render_feedback_result(&json!({ "count": 0, "feedback": [] }));
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("No new feedback"));
+        assert_eq!(rendered["structuredContent"]["count"], 0);
+    }
+
+    #[test]
+    fn render_feedback_lists_notes_as_high_priority_steering() {
+        let outcome = json!({
+            "count": 2,
+            "feedback": [
+                { "text": "use the existing UserService", "created_at": "2026-06-07T00:00:00Z" },
+                { "text": "skip the migration", "created_at": "2026-06-07T00:00:01Z" },
+            ]
+        });
+        let rendered = render_feedback_result(&outcome);
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("high-priority steering"));
+        assert!(text.contains("1. use the existing UserService"));
+        assert!(text.contains("2. skip the migration"));
+        // Structured payload carries the notes for hosts that keep it.
+        assert_eq!(rendered["structuredContent"]["count"], 2);
+    }
+
+    #[test]
+    fn render_feedback_strips_internal_commit_ids() {
+        // The listener embeds `_commit_ids` for the companion to echo back; they
+        // must NEVER leak into the agent-facing result (content or structured).
+        let outcome = json!({
+            "count": 1,
+            "feedback": [{ "text": "note", "created_at": "2026-06-07T00:00:00Z" }],
+            "_commit_ids": ["secret-id-1"],
+        });
+        let rendered = render_feedback_result(&outcome);
+        assert!(rendered["structuredContent"].get("_commit_ids").is_none());
+        assert_eq!(rendered["structuredContent"]["count"], 1);
+        assert_eq!(rendered["structuredContent"]["feedback"][0]["text"], "note");
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("secret-id-1"));
+    }
+
+    // -- commit-on-delivery protocol (the at-least-once delivery guarantee) ---
+
+    #[cfg(unix)]
+    fn feedback_resp_with_ids(ids: &[&str]) -> BrokerResponse {
+        BrokerResponse {
+            outcome: json!({
+                "count": 1,
+                "feedback": [{ "text": "steer", "created_at": "x" }],
+                "_commit_ids": ids,
+            }),
+        }
+    }
+
+    /// When the round-trip wins (no cancel), the companion COMMITS delivery by
+    /// sending a `CommitFeedback` with the listener's `_commit_ids`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn feedback_spawn_commits_after_delivery() {
+        use crate::acp::delegation::transport::{read_frame, write_frame, BrokerMessage};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("fb.sock").to_string_lossy().to_string();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let committed = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let committed2 = committed.clone();
+        let server = tokio::spawn(async move {
+            // 1) Feedback round-trip → respond with notes + _commit_ids.
+            let (mut c1, _) = listener.accept().await.unwrap();
+            let _: BrokerResponse = match read_frame::<_, BrokerMessage>(&mut c1).await.unwrap() {
+                BrokerMessage::Feedback(_) => {
+                    write_frame(&mut c1, &feedback_resp_with_ids(&["f1"])).await.unwrap();
+                    BrokerResponse { outcome: Value::Null }
+                }
+                other => panic!("expected Feedback, got {other:?}"),
+            };
+            // 2) CommitFeedback → record the ids.
+            let (mut c2, _) = listener.accept().await.unwrap();
+            if let BrokerMessage::CommitFeedback(req) = read_frame(&mut c2).await.unwrap() {
+                committed2.lock().await.push(req.ids);
+            }
+            write_frame(&mut c2, &BrokerResponse { outcome: Value::Null }).await.unwrap();
+        });
+
+        let inflight = Arc::new(InflightCalls::new());
+        let action = register_and_spawn_feedback(
+            inflight,
+            Value::from(1),
+            sock,
+            "tok".into(),
+            BrokerFeedbackRequest { token: "tok".into() },
+        )
+        .await;
+        let LineAction::Spawn(call) = action else {
+            panic!("expected Spawn")
+        };
+        let result = call.future.await;
+        let resp = result.response.expect("feedback result");
+        assert_eq!(resp.result.unwrap()["structuredContent"]["count"], 1);
+        // The commit is deferred to `after_relay`, which the binary runs ONLY
+        // after a successful stdout write — drive it here to simulate that relay.
+        result
+            .after_relay
+            .expect("feedback must carry a post-relay commit")
+            .await;
+        server.await.unwrap();
+        assert_eq!(*committed.lock().await, vec![vec!["f1".to_string()]]);
+    }
+
+    /// When a cancel wins the select, the companion suppresses the response AND
+    /// sends NO commit — so the notes stay pending for the next check.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn feedback_spawn_cancel_sends_no_commit() {
+        use crate::acp::delegation::transport::{read_frame, write_frame, BrokerMessage};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("fb.sock").to_string_lossy().to_string();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let saw_commit = Arc::new(Mutex::new(false));
+        let saw_commit2 = saw_commit.clone();
+        let server = tokio::spawn(async move {
+            // Accept the Feedback connection but DELAY responding, so the cancel
+            // (fired below) wins the select first.
+            if let Ok((mut c1, _)) = listener.accept().await {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let _ = write_frame(&mut c1, &feedback_resp_with_ids(&["f1"])).await;
+            }
+            // A commit (if any) would arrive as a second connection. Wait briefly;
+            // a timeout (no connection) is the expected, correct outcome.
+            if let Ok(Ok((mut c2, _))) =
+                tokio::time::timeout(Duration::from_millis(200), listener.accept()).await
+            {
+                if matches!(
+                    read_frame::<_, BrokerMessage>(&mut c2).await,
+                    Ok(BrokerMessage::CommitFeedback(_))
+                ) {
+                    *saw_commit2.lock().await = true;
+                }
+            }
+        });
+
+        let ctx = CompanionContext {
+            parent_connection_id: "p".into(),
+            socket_path: sock,
+            token: "tok".into(),
+            features: FEEDBACK_ONLY,
+        };
+        let inflight = Arc::new(InflightCalls::new());
+        // tools/call → Spawn (registers the inflight entry).
+        let call_line = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "check_user_feedback", "arguments": {} }
+        })
+        .to_string();
+        let action = dispatch_line(&ctx, inflight.clone(), &call_line).await;
+        let LineAction::Spawn(call) = action else {
+            panic!("expected Spawn")
+        };
+        // Cancel for the same id BEFORE the (delayed) response arrives.
+        let cancel_line =
+            json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 1 } })
+                .to_string();
+        assert!(matches!(
+            dispatch_line(&ctx, inflight.clone(), &cancel_line).await,
+            LineAction::Silent
+        ));
+        // Cancel won → response suppressed AND no post-relay commit exists.
+        let result = call.future.await;
+        assert!(
+            result.response.is_none(),
+            "cancel must suppress the response"
+        );
+        assert!(
+            result.after_relay.is_none(),
+            "a suppressed response carries no commit"
+        );
+        server.abort();
+        // Crucially: no commit was sent for a cancelled (undelivered) check.
+        assert!(!*saw_commit.lock().await, "a cancelled check must not commit");
     }
 }

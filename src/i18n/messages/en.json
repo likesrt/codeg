@@ -91,6 +91,22 @@
       "placeholder": "Select zoom level",
       "default": "Default",
       "current": "Current zoom: {zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "Fonts",
+      "sectionDescription": "Choose fonts for the interface, code editor, and terminal. Bundled fonts load on demand; pick “Custom…” to use any font installed on your system.",
+      "interface": "Interface",
+      "editor": "Editor",
+      "terminal": "Terminal",
+      "groupSans": "Sans-serif",
+      "groupMono": "Monospace",
+      "custom": "Custom…",
+      "customPlaceholder": "Font family, e.g. Fira Code",
+      "fontSize": "Font size",
+      "ligatures": "Enable font ligatures",
+      "ligaturesUnavailable": "This font has no ligatures",
+      "terminalLigaturesHint": "Terminal ligatures apply only to bundled coding fonts.",
+      "preview": "Preview"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "Failed to save config management",
       "clineSaved": "Cline config saved",
       "saveClineFailed": "Failed to save Cline config",
-      "modelProviderRequired": "Please select a model provider before saving."
+      "modelProviderRequired": "Please select a model provider before saving.",
+      "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}"
     },
     "version": {
       "statusLabel": "Version Status",
@@ -891,6 +908,8 @@
       "completing": "Completing...",
       "toasts": {
         "importedSessions": "Imported {imported, plural, one {# session} other {# sessions}}, skipped {skipped}",
+        "importedAndUpdated": "Imported {imported, plural, one {# session} other {# sessions}}, updated {updated, plural, one {# title} other {# titles}}, skipped {skipped}",
+        "updatedTitles": "Updated {updated, plural, one {# title} other {# titles}}, skipped {skipped}",
         "noNewSessionsFound": "No new sessions found (skipped {skipped})",
         "importFailed": "Import failed: {message}",
         "reviewCompleted": "Marked {count, plural, one {# review session} other {# review sessions}} as completed",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "Diff",
         "files": "Files",
         "changes": "Changes",
         "commits": "Commits"
@@ -1123,16 +1141,6 @@
       "closeAll": "Close All",
       "hideTerminal": "Hide Terminal ({shortcut})",
       "openFolderFirst": "Open a folder first"
-    },
-    "sessionFiles": {
-      "currentResponse": "Current response",
-      "noDiffDataAvailable": "No diff data available for {filePath}",
-      "loading": "Loading...",
-      "noFileChangesInConversation": "No file changes found in this conversation",
-      "openConversationToSeeChanges": "Open a conversation to see its file changes",
-      "remove": "Remove",
-      "changeCount": "{count, plural, one {# change} other {# changes}}",
-      "fileCount": "{count, plural, one {# file} other {# files}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "Folder",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "Upstream branch has been set",
         "upstreamSetAndPushed": "Upstream branch set and pushed {count, plural, one {# commit} other {# commits}}",
         "noCommitsToPush": "No commits to push",
-        "pushedCommits": "Pushed {count, plural, one {# commit} other {# commits}}"
+        "pushedCommits": "Pushed {count, plural, one {# commit} other {# commits}}",
+        "switchedToFolder": "Switched to {name}",
+        "switchFailed": "Failed to switch branch"
       },
       "tasks": {
         "newBranch": "Create branch {name}",
@@ -1783,6 +1793,8 @@
         "quickMessagesEmpty": "No quick messages yet",
         "quickMessagesLoading": "Loading...",
         "quickMessageUntitled": "Untitled",
+        "liveFeedback": "Live feedback",
+        "liveFeedbackDisabledHint": "Available while the agent is working",
         "dropFilesToAttach": "Drop files to attach",
         "loadingSettings": "Loading settings...",
         "loadingMode": "Loading mode...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "Sub-agents",
         "collapsedSummary": "Sub-agents {count}",
-        "collapseAria": "Collapse sub-agents",
-        "expandAria": "Expand sub-agents"
+        "collapseAria": "Collapse sub-agents"
       },
       "agentPlanOverlay": {
         "title": "Agent Plan",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count, plural, one {# failed} other {# failed}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "Message navigation",
+        "expand": "Expand message navigation",
+        "collapse": "Collapse message navigation",
+        "jumpToMessage": "Jump to: {label}",
+        "fileCount": "{count, plural, one {# file} other {# files}}",
+        "remove": "Remove",
+        "noDiffDataAvailable": "No diff data available for {filePath}"
+      },
+      "askQuestion": {
+        "title": "The agent needs your input",
+        "subtitle": "Answer below, then submit. You can skip anytime.",
+        "recommended": "Recommended",
+        "other": "Other",
+        "otherPlaceholder": "Type your answer…",
+        "singleSelect": "Single",
+        "multiSelect": "Multiple",
+        "skip": "Skip",
+        "next": "Next",
+        "submit": "Submit",
+        "submitError": "Couldn't submit. Please try again."
+      },
+      "askQuestionResult": {
+        "title": "Question",
+        "answeredLabel": "Q&A:",
+        "awaiting": "Waiting for your answer…",
+        "declined": "You dismissed this — the agent used its own judgment.",
+        "noSelection": "No selection"
+      },
+      "configStale": {
+        "agentConfigTitle": "Agent settings updated",
+        "modelProviderTitle": "Model provider updated",
+        "description": "This session is still using its previous configuration. Reconnect to apply — your conversation history is kept.",
+        "reconnect": "Reconnect to apply",
+        "reconnecting": "Reconnecting…",
+        "reconnectDisabledDuringTurn": "Available once the current turn finishes",
+        "dismiss": "Dismiss",
+        "reconnectFailed": "Failed to reconnect session",
+        "applied": "New configuration applied"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "Hide",
     "show": "Show",
     "copy": "Copy",
+    "qrcode": "QR Code",
+    "qrcodeTitle": "Scan to Open",
+    "qrcodeHint": "Scan with your phone to open Codeg in a browser",
     "addressLabel": "Access Address",
     "tokenLabel": "Access Token",
     "tokenHint": "Enter this token when accessing the Web client for the first time",
@@ -2479,7 +2533,8 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "create": "Create",
-    "save": "Save"
+    "save": "Save",
+    "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}"
   },
   "ExpertsSettings": {
     "title": "Expert Skills",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "Session expired",
     "sessionExpiredDescription": "Your session is no longer valid. Please sign in again to continue.",
     "goToLogin": "Go to login"
+  },
+  "SessionFeedbackSettings": {
+    "title": "Live Feedback",
+    "description": "Send notes and corrections to an agent while it's working. When enabled, the agent gets a tool to check for your mid-task feedback, and conversations show a note input. Tip: agents typically only check for feedback when you mention it in your prompt — for example, add \"check my live feedback regularly\" to your message so the agent knows to look.",
+    "enable": "Enable live feedback",
+    "enableHint": "Adds a check-for-feedback tool to agents started after this is turned on.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Feedback settings saved",
+    "saveFailed": "Failed to save feedback settings",
+    "loadFailed": "Failed to load: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "Send a note to {agent} while it works…",
+    "agentFallback": "the agent",
+    "ariaLabel": "Live feedback note",
+    "dialogTitle": "Live feedback",
+    "dialogDescription": "Send a note to the agent while it works. It reads your note the next time it checks — without interrupting the current step.",
+    "send": "Send",
+    "cancel": "Cancel",
+    "pending": "waiting",
+    "delivered": "received",
+    "turnEndedUnread": "The agent finished before reading your feedback.",
+    "sendAsMessage": "Send as message",
+    "dismiss": "Dismiss",
+    "turnEndedResent": "The turn ended — sent as a new message instead.",
+    "turnEnded": "The turn already ended.",
+    "submitFailed": "Couldn't send your note"
+  },
+  "AskQuestionSettings": {
+    "title": "Ask user question",
+    "description": "Let agents pause and ask you a multiple-choice question that appears above the conversation input box. The agent waits until you answer (or skip).",
+    "enable": "Enable ask user question",
+    "enableHint": "Adds the ask_user_question tool to agents started after this is turned on.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Question settings saved",
+    "saveFailed": "Failed to save question settings",
+    "loadFailed": "Failed to load: {detail}"
   }
 }

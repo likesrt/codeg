@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use crate::acp::manager::ConnectionManager;
+use crate::acp::types::ConfigStaleKind;
 use crate::app_error::AppCommandError;
 use crate::commands::acp;
 use crate::db::service::{agent_setting_service, model_provider_service};
@@ -202,6 +206,62 @@ pub async fn update_model_provider_core(
     Ok(ModelProviderInfo::from(model_row))
 }
 
+/// Result of `update_model_provider`: the updated provider row plus how many
+/// running sessions the cascade left on stale (launch-time) config — for the
+/// settings-side "N sessions need restart" toast.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateModelProviderResult {
+    pub provider: ModelProviderInfo,
+    pub affected_running_sessions: usize,
+}
+
+/// `update_model_provider_core` followed by a staleness refresh for every agent
+/// bound to this provider. Shared by the Tauri command and the web handler so
+/// both surface how many running sessions need a restart to pick up the new
+/// credentials/model. If the save didn't actually change url/key/model, the
+/// cascade is skipped, fingerprints are unchanged, and the refresh is a silent
+/// no-op returning 0.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_model_provider_and_refresh(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    data_dir: &Path,
+    id: i32,
+    name: Option<String>,
+    api_url: Option<String>,
+    api_key: Option<String>,
+    agent_type: Option<String>,
+    model: Option<String>,
+    emitter: &EventEmitter,
+) -> Result<UpdateModelProviderResult, AppCommandError> {
+    let provider =
+        update_model_provider_core(db, id, name, api_url, api_key, agent_type, model, emitter)
+            .await?;
+
+    // Every agent bound to this provider may now be on stale config (the cascade
+    // rewrote their env_json + native config files). Recompute and notify.
+    let agent_types: Vec<AgentType> = agent_setting_service::find_by_model_provider_id(&db.conn, id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
+        .collect();
+    let affected_running_sessions = acp::refresh_config_staleness(
+        manager,
+        db,
+        data_dir,
+        &agent_types,
+        ConfigStaleKind::ModelProvider,
+    )
+    .await;
+
+    Ok(UpdateModelProviderResult {
+        provider,
+        affected_running_sessions,
+    })
+}
+
 pub async fn delete_model_provider_core(db: &AppDatabase, id: i32) -> Result<(), AppCommandError> {
     // Check if any agent settings reference this provider.
     let dependents = agent_setting_service::find_by_model_provider_id(&db.conn, id)
@@ -259,6 +319,7 @@ pub async fn create_model_provider(
 #[allow(clippy::too_many_arguments)]
 pub async fn update_model_provider(
     db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, ConnectionManager>,
     id: i32,
     name: Option<String>,
     api_url: Option<String>,
@@ -266,9 +327,27 @@ pub async fn update_model_provider(
     agent_type: Option<String>,
     model: Option<String>,
     app: tauri::AppHandle,
-) -> Result<ModelProviderInfo, AppCommandError> {
+) -> Result<UpdateModelProviderResult, AppCommandError> {
+    use tauri::Manager;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let emitter = EventEmitter::Tauri(app);
-    update_model_provider_core(&db, id, name, api_url, api_key, agent_type, model, &emitter).await
+    update_model_provider_and_refresh(
+        &db,
+        &manager,
+        &app_data_dir,
+        id,
+        name,
+        api_url,
+        api_key,
+        agent_type,
+        model,
+        &emitter,
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -317,5 +396,106 @@ mod tests {
         // The raw key round-trips; only the masked view is derived.
         assert_eq!(rows[0].api_key, "sk-密钥abcd1234");
         assert!(!rows[0].api_key_masked.is_empty());
+    }
+
+    /// Regression for the model-provider staleness path: editing a provider must
+    /// flag the running sessions of agents bound to it. The mechanism is "the
+    /// bound agent's config fingerprint shifts" — `refresh_connection_staleness`
+    /// (tested in manager.rs) then flags any session whose spawn fingerprint no
+    /// longer matches. This proves the shift actually happens for a credential
+    /// change, and that a non-runtime edit (display name) does NOT shift it (so
+    /// provider edits don't over-flag).
+    ///
+    /// DB-only: we mutate the provider row directly via the service rather than
+    /// `update_model_provider_core`, so the on-disk config cascade never runs and
+    /// the test can't touch a developer's real agent config files. The fingerprint
+    /// also reads native config files, but only ever reads them and only between
+    /// DB mutations, so that component stays constant across the comparisons.
+    #[tokio::test]
+    async fn provider_credential_change_shifts_bound_agent_fingerprint() {
+        use crate::db::entities::agent_setting;
+        use crate::models::agent::AgentType;
+        use sea_orm::{ActiveModelTrait, NotSet, Set};
+
+        let db = fresh_in_memory_db().await;
+        let data_dir = std::env::temp_dir();
+
+        let provider = create_model_provider_core(
+            &db,
+            "Prov".to_string(),
+            "https://api.example.com".to_string(),
+            "sk-old-key".to_string(),
+            "codex".to_string(),
+            None,
+        )
+        .await
+        .expect("create provider");
+
+        // A Codex agent setting bound to that provider.
+        let now = chrono::Utc::now();
+        agent_setting::ActiveModel {
+            id: NotSet,
+            agent_type: Set(serde_json::to_string(&AgentType::Codex).unwrap()),
+            registry_id: Set("codex".to_string()),
+            enabled: Set(true),
+            sort_order: Set(0),
+            installed_version: Set(None),
+            env_json: Set(Some("{}".to_string())),
+            model_provider_id: Set(Some(provider.id)),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(&db.conn)
+        .await
+        .expect("insert codex agent setting");
+
+        let fp_before = acp::compute_session_config_fingerprint(&db, AgentType::Codex, &data_dir)
+            .await
+            .expect("fingerprint before");
+
+        // Changing the api_key (DB-only) must shift the bound agent's fingerprint:
+        // `apply_model_provider_env` injects the provider's key into the env.
+        model_provider_service::update(
+            &db.conn,
+            provider.id,
+            None,
+            None,
+            Some("sk-new-key".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("update provider key");
+
+        let fp_after_key =
+            acp::compute_session_config_fingerprint(&db, AgentType::Codex, &data_dir)
+                .await
+                .expect("fingerprint after key change");
+        assert_ne!(
+            fp_before, fp_after_key,
+            "changing the bound provider's api_key must shift the agent fingerprint"
+        );
+
+        // A non-runtime change (display name only) must NOT shift it.
+        model_provider_service::update(
+            &db.conn,
+            provider.id,
+            Some("Renamed".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("rename provider");
+
+        let fp_after_name =
+            acp::compute_session_config_fingerprint(&db, AgentType::Codex, &data_dir)
+                .await
+                .expect("fingerprint after rename");
+        assert_eq!(
+            fp_after_key, fp_after_name,
+            "renaming the provider must not shift the agent fingerprint"
+        );
     }
 }

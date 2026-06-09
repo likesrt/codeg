@@ -50,3 +50,24 @@ export function isTurnInProgressRejection(err: unknown): boolean {
   }
   return false
 }
+
+// Substring of the backend `AcpError::NoActiveTurn` Display string. Returned
+// when live feedback is submitted but no turn is in flight (the agent already
+// finished). The caller falls back to sending the text as an ordinary prompt.
+const NO_ACTIVE_TURN_MARKER = "no active turn"
+
+/**
+ * True when `err` is the backend's "no active turn for feedback" rejection, in
+ * any transport shape: a bare string (Tauri `AcpError` Display), or an object
+ * with a `message` carrying the marker (web `AppCommandError`). The web path
+ * maps this to a 4xx, so it is an expected, recoverable signal — not a fault.
+ */
+export function isNoActiveTurnRejection(err: unknown): boolean {
+  if (typeof err === "string") return err.includes(NO_ACTIVE_TURN_MARKER)
+  if (err && typeof err === "object") {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === "string")
+      return message.includes(NO_ACTIVE_TURN_MARKER)
+  }
+  return false
+}

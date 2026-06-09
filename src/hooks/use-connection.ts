@@ -15,8 +15,11 @@ import {
 import type {
   AgentType,
   AvailableCommandInfo,
+  ConfigStaleKind,
   ConnectionStatus,
+  PendingQuestionState,
   PromptCapabilitiesInfo,
+  QuestionAnswer,
   SessionConfigOptionInfo,
   SessionModeStateInfo,
   PromptInputBlock,
@@ -50,9 +53,20 @@ export interface UseConnectionReturn {
   pendingPermission: PendingPermission | null
   pendingUserMessage: PendingUserMessage | null
   pendingQuestion: PendingQuestion | null
+  pendingAskQuestion: PendingQuestionState | null
   claudeApiRetry: ClaudeApiRetryState | null
   error: string | null
   loadError: string | null
+  /** True when the running session is on stale (launch-time) config after a
+   *  later settings save. Drives the "restart to apply" banner. */
+  configStale: boolean
+  /** Which settings surface drifted, for the banner's wording. */
+  configStaleKind: ConfigStaleKind | null
+  /** Client-local: the user dismissed the stale banner for the current drift. */
+  configStaleDismissed: boolean
+  /** True for a delegation-spawned child connection (broker-owned). The stale
+   *  banner hides for these — the user can't restart a broker-owned process. */
+  isDelegationChild: boolean
   connect: (
     agentType: AgentType,
     workingDir?: string,
@@ -60,6 +74,12 @@ export interface UseConnectionReturn {
     conversationId?: number
   ) => Promise<void>
   disconnect: () => Promise<void>
+  /** Restart the session (disconnect + resume same sessionId) so it picks up
+   *  current agent/model settings. Returns `true` if it actually restarted,
+   *  `false` on a no-op (viewer / delegation child / no connection). */
+  reapplyConfig: () => Promise<boolean>
+  /** Dismiss the stale banner for the current drift without restarting. */
+  dismissConfigStale: () => void
   sendPrompt: (
     blocks: PromptInputBlock[],
     opts?: {
@@ -72,6 +92,7 @@ export interface UseConnectionReturn {
   setConfigOption: (configId: string, valueId: string) => Promise<void>
   cancel: () => Promise<void>
   respondPermission: (requestId: string, optionId: string) => Promise<void>
+  answerQuestion: (questionId: string, answer: QuestionAnswer) => Promise<void>
 }
 
 function derive(conn: ConnectionState | undefined) {
@@ -113,9 +134,14 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingUserMessage = connection?.pendingUserMessage ?? null
   const pendingQuestion = connection?.pendingQuestion ?? null
+  const pendingAskQuestion = connection?.pendingAskQuestion ?? null
   const claudeApiRetry = connection?.claudeApiRetry ?? null
   const error = connection?.error ?? null
   const loadError = connection?.loadError ?? null
+  const configStale = connection?.configStale ?? false
+  const configStaleKind = connection?.configStaleKind ?? null
+  const configStaleDismissed = connection?.configStaleDismissed ?? false
+  const isDelegationChild = connection?.isDelegationChild ?? false
 
   const connect = useCallback(
     (
@@ -173,6 +199,22 @@ export function useConnection(contextKey: string): UseConnectionReturn {
     [actions, contextKey]
   )
 
+  const answerQuestion = useCallback(
+    (questionId: string, answer: QuestionAnswer) =>
+      actions.answerQuestion(contextKey, questionId, answer),
+    [actions, contextKey]
+  )
+
+  const reapplyConfig = useCallback(
+    () => actions.reapplyConfig(contextKey),
+    [actions, contextKey]
+  )
+
+  const dismissConfigStale = useCallback(
+    () => actions.dismissConfigStale(contextKey),
+    [actions, contextKey]
+  )
+
   return useMemo(
     () => ({
       connectionId,
@@ -190,16 +232,24 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       pendingPermission,
       pendingUserMessage,
       pendingQuestion,
+      pendingAskQuestion,
       claudeApiRetry,
       error,
       loadError,
+      configStale,
+      configStaleKind,
+      configStaleDismissed,
+      isDelegationChild,
       connect,
       disconnect,
+      reapplyConfig,
+      dismissConfigStale,
       sendPrompt,
       setMode,
       setConfigOption,
       cancel,
       respondPermission,
+      answerQuestion,
     }),
     [
       connectionId,
@@ -217,16 +267,24 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       pendingPermission,
       pendingUserMessage,
       pendingQuestion,
+      pendingAskQuestion,
       claudeApiRetry,
       error,
       loadError,
+      configStale,
+      configStaleKind,
+      configStaleDismissed,
+      isDelegationChild,
       connect,
       disconnect,
+      reapplyConfig,
+      dismissConfigStale,
       sendPrompt,
       setMode,
       setConfigOption,
       cancel,
       respondPermission,
+      answerQuestion,
     ]
   )
 }

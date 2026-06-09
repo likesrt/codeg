@@ -24,6 +24,8 @@ import type {
   ConnectionInfo,
   ConversationConnectionInfo,
   LiveSessionSnapshot,
+  FeedbackItem,
+  QuestionAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
   AgentSkillScope,
@@ -35,6 +37,7 @@ import type {
   ExpertInstallStatus,
   FolderHistoryEntry,
   FolderDetail,
+  WorktreeResolution,
   DbConversationSummary,
   ImportResult,
   OpenedTab,
@@ -92,6 +95,7 @@ import type {
   ChatChannelMessageLog,
   WebhookConfig,
   ModelProviderInfo,
+  UpdateModelProviderResult,
   PluginCheckSummary,
   QuickMessage,
 } from "./types"
@@ -221,6 +225,24 @@ export async function acpRespondPermission(
   })
 }
 
+/**
+ * Submit the user's answer to a blocking `ask_user_question`. Resolves the
+ * parked tool call on the backend (and clears the card on every client via the
+ * `question_resolved` event). Idempotent: answering an already-resolved /
+ * unknown `questionId` is a no-op success.
+ */
+export async function acpAnswerQuestion(
+  connectionId: string,
+  questionId: string,
+  answer: QuestionAnswer
+): Promise<void> {
+  return getTransport().call("acp_answer_question", {
+    connectionId,
+    questionId,
+    answer,
+  })
+}
+
 export async function acpDisconnect(connectionId: string): Promise<void> {
   return getTransport().call("acp_disconnect", { connectionId })
 }
@@ -326,7 +348,7 @@ export async function acpUpdateAgentPreferences(
     codex_auth_json?: string | null
     codex_config_toml?: string | null
   }
-): Promise<void> {
+): Promise<number> {
   return getTransport().call("acp_update_agent_preferences", {
     agentType,
     enabled: params.enabled,
@@ -338,6 +360,8 @@ export async function acpUpdateAgentPreferences(
   })
 }
 
+/** Returns the number of running sessions left on stale config by this save
+ *  (for the settings-side "N sessions need restart" toast). */
 export async function acpUpdateAgentEnv(
   agentType: AgentType,
   params: {
@@ -345,7 +369,7 @@ export async function acpUpdateAgentEnv(
     env: Record<string, string>
     modelProviderId?: number | null
   }
-): Promise<void> {
+): Promise<number> {
   return getTransport().call("acp_update_agent_env", {
     agentType,
     enabled: params.enabled,
@@ -354,6 +378,8 @@ export async function acpUpdateAgentEnv(
   })
 }
 
+/** Returns the number of running sessions left on stale config by this save
+ *  (for the settings-side "N sessions need restart" toast). */
 export async function acpUpdateAgentConfig(
   agentType: AgentType,
   params: {
@@ -362,7 +388,7 @@ export async function acpUpdateAgentConfig(
     codex_auth_json?: string | null
     codex_config_toml?: string | null
   }
-): Promise<void> {
+): Promise<number> {
   return getTransport().call("acp_update_agent_config", {
     agentType,
     configJson: params.config_json ?? null,
@@ -1260,6 +1286,33 @@ export async function gitAddFiles(
 
 export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
+}
+
+/**
+ * Open a freshly created git worktree directory as a folder, recording the root
+ * folder it descends from (`sourceFolderId` is the folder the worktree was
+ * created from; the backend flattens to the root). Lets the worktree folder be
+ * merged under its parent in the sidebar.
+ */
+export async function openWorktreeFolder(
+  path: string,
+  sourceFolderId: number
+): Promise<FolderDetail> {
+  return getTransport().call("open_worktree_folder", { path, sourceFolderId })
+}
+
+/**
+ * Resolve where `branch` is checked out across the repo's worktrees. Returns the
+ * canonical worktree path (or null if the branch isn't checked out anywhere) and
+ * the registered folder id owning that path (or null for an external worktree).
+ * Path matching is canonicalized on the host that runs git, so it is correct for
+ * symlinked and remote-workspace paths the webview cannot resolve.
+ */
+export async function resolveWorktreeFolder(
+  repoPath: string,
+  branch: string
+): Promise<WorktreeResolution> {
+  return getTransport().call("resolve_worktree_folder", { repoPath, branch })
 }
 
 export async function openCommitWindow(folderId: number): Promise<void> {
@@ -2596,7 +2649,7 @@ export async function updateModelProvider(params: {
   apiKey?: string | null
   agentType?: string | null
   model?: string | null
-}): Promise<ModelProviderInfo> {
+}): Promise<UpdateModelProviderResult> {
   return getTransport().call("update_model_provider", {
     id: params.id,
     name: params.name ?? null,
@@ -2632,6 +2685,56 @@ export async function setDelegationSettings(
   settings: DelegationSettings
 ): Promise<DelegationSettings> {
   return getTransport().call("set_delegation_settings", { settings })
+}
+
+// ─── Live feedback settings + submit ───────────────────────────────────
+
+/** Mirror of Rust `FeedbackSettings`. */
+export interface FeedbackSettings {
+  enabled: boolean
+}
+
+export async function getFeedbackSettings(): Promise<FeedbackSettings> {
+  return getTransport().call("get_feedback_settings")
+}
+
+export async function setFeedbackSettings(
+  settings: FeedbackSettings
+): Promise<FeedbackSettings> {
+  return getTransport().call("set_feedback_settings", { settings })
+}
+
+/**
+ * Submit a live-feedback note to a running connection (the `check_user_feedback`
+ * steering path). Returns the stored note (it also arrives via the
+ * `feedback_submitted` event). Rejects when no turn is in flight — callers
+ * detect that with `isNoActiveTurnRejection` and fall back to a normal prompt.
+ */
+export async function submitSessionFeedback(
+  connectionId: string,
+  text: string
+): Promise<FeedbackItem> {
+  return getTransport().call("submit_session_feedback", {
+    connectionId,
+    text,
+  })
+}
+
+// ─── Ask-user-question settings ────────────────────────────────────────────
+
+/** Mirror of Rust `QuestionSettings` (default ON). */
+export interface QuestionSettings {
+  enabled: boolean
+}
+
+export async function getQuestionSettings(): Promise<QuestionSettings> {
+  return getTransport().call("get_question_settings")
+}
+
+export async function setQuestionSettings(
+  settings: QuestionSettings
+): Promise<QuestionSettings> {
+  return getTransport().call("set_question_settings", { settings })
 }
 
 /** Live probe — opens a transient ACP connection to `agent_type`, reads what

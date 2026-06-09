@@ -2,10 +2,22 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@xterm/xterm/css/xterm.css";
+/* 自托管字体（@font-face 声明惰性，woff2 仅在被应用/预览时下载） */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/fira-code";
+@import "@fontsource-variable/geist-mono";
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  /* 默认界面字体 = 系统 UI 字体，运行时由 AppearanceProvider 覆盖 --font-sans。
+     会话消息区等普通文本均跟随 --font-sans；--font-mono 不在此自定义，
+     由 Tailwind 默认等宽栈兜底（与代码编辑器字体相互独立）。 */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+
+  font-family: var(--font-sans);
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;

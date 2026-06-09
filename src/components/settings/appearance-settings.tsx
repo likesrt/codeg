@@ -22,6 +22,7 @@ import {
   type ZoomLevel,
 } from "@/lib/theme-presets"
 import { PetManagerSection } from "./pet-manager-section"
+import { FontSettingsSection } from "./font-settings-section"
 
 type ThemeMode = "system" | "light" | "dark"
 
@@ -194,6 +195,9 @@ export function AppearanceSettings() {
             </p>
           </div>
         </section>
+
+        {/* ===== Fonts ===== */}
+        <FontSettingsSection />
 
         {/* ===== Desktop Pet ===== */}
         <PetManagerSection />

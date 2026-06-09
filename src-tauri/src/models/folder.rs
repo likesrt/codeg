@@ -21,6 +21,9 @@ pub struct FolderDetail {
     pub last_opened_at: DateTime<Utc>,
     pub sort_order: i32,
     pub color: String,
+    /// Root folder this one was created under (worktree folders only); NULL for
+    /// top-level folders. Drives sidebar merge + worktree-branch detection.
+    pub parent_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -91,6 +91,22 @@
       "placeholder": "请选择缩放档位",
       "default": "默认",
       "current": "当前缩放：{zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "字体",
+      "sectionDescription": "为界面、代码编辑器和终端分别选择字体。内置字体按需加载；选择“自定义…”可使用系统已安装的任意字体。",
+      "interface": "界面",
+      "editor": "编辑器",
+      "terminal": "终端",
+      "groupSans": "无衬线",
+      "groupMono": "等宽",
+      "custom": "自定义…",
+      "customPlaceholder": "字体名称，如 Fira Code",
+      "fontSize": "字号",
+      "ligatures": "启用连字",
+      "ligaturesUnavailable": "该字体不含连字",
+      "terminalLigaturesHint": "终端连字仅对内置编程字体生效。",
+      "preview": "预览"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "保存配置管理失败",
       "clineSaved": "Cline 配置已保存",
       "saveClineFailed": "保存 Cline 配置失败",
-      "modelProviderRequired": "请先选择一个模型供应商再保存。"
+      "modelProviderRequired": "请先选择一个模型供应商再保存。",
+      "affectedRunningSessions": "{count} 个进行中的会话需重连以应用更改"
     },
     "version": {
       "statusLabel": "版本状态",
@@ -891,6 +908,8 @@
       "completing": "处理中...",
       "toasts": {
         "importedSessions": "已导入 {imported} 个会话，跳过 {skipped} 个",
+        "importedAndUpdated": "已导入 {imported} 个会话，更新 {updated} 个标题，跳过 {skipped} 个",
+        "updatedTitles": "已更新 {updated} 个标题，跳过 {skipped} 个",
         "noNewSessionsFound": "没有新会话（已跳过 {skipped} 个）",
         "importFailed": "导入失败：{message}",
         "reviewCompleted": "已将 {count} 个复查会话标记为已完成",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差异",
         "files": "文件",
         "changes": "变更",
         "commits": "提交"
@@ -1123,16 +1141,6 @@
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹"
-    },
-    "sessionFiles": {
-      "currentResponse": "当前响应",
-      "noDiffDataAvailable": "未找到 {filePath} 的差异数据",
-      "loading": "加载中...",
-      "noFileChangesInConversation": "该会话未发现文件变更",
-      "openConversationToSeeChanges": "打开会话以查看文件变更",
-      "remove": "移除",
-      "changeCount": "{count} 处变更",
-      "fileCount": "{count} 个文件"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "文件夹",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "已设置远程跟踪分支",
         "upstreamSetAndPushed": "已设置远程跟踪分支并推送 {count} 个提交",
         "noCommitsToPush": "没有可推送的提交",
-        "pushedCommits": "已推送 {count} 个提交"
+        "pushedCommits": "已推送 {count} 个提交",
+        "switchedToFolder": "已切换到 {name}",
+        "switchFailed": "切换分支失败"
       },
       "tasks": {
         "newBranch": "新建分支 {name}",
@@ -1783,6 +1793,8 @@
         "quickMessagesEmpty": "暂无快捷消息",
         "quickMessagesLoading": "加载中...",
         "quickMessageUntitled": "未命名",
+        "liveFeedback": "实时反馈",
+        "liveFeedbackDisabledHint": "智能体工作时可发送",
         "dropFilesToAttach": "拖拽文件到此处附加",
         "loadingSettings": "正在加载设置...",
         "loadingMode": "正在加载模式...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "子智能体",
         "collapsedSummary": "子智能体 {count}",
-        "collapseAria": "折叠子智能体",
-        "expandAria": "展开子智能体"
+        "collapseAria": "折叠子智能体"
       },
       "agentPlanOverlay": {
         "title": "计划任务",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count} 个失败",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "消息导航",
+        "expand": "展开消息导航",
+        "collapse": "收起消息导航",
+        "jumpToMessage": "跳转到：{label}",
+        "fileCount": "{count} 个文件",
+        "remove": "移除",
+        "noDiffDataAvailable": "未找到 {filePath} 的差异数据"
+      },
+      "askQuestion": {
+        "title": "智能体需要你的选择",
+        "subtitle": "回答后点击提交，可随时跳过",
+        "recommended": "推荐",
+        "other": "其他",
+        "otherPlaceholder": "输入你的回答…",
+        "singleSelect": "单选",
+        "multiSelect": "多选",
+        "skip": "跳过",
+        "next": "下一题",
+        "submit": "提交",
+        "submitError": "提交失败，请重试。"
+      },
+      "askQuestionResult": {
+        "title": "提问",
+        "answeredLabel": "提问回答：",
+        "awaiting": "等待你的回答…",
+        "declined": "你已忽略此问题 — 代理已自行判断。",
+        "noSelection": "未选择"
+      },
+      "configStale": {
+        "agentConfigTitle": "智能体配置已更新",
+        "modelProviderTitle": "模型供应商已更新",
+        "description": "当前会话仍在使用旧配置，重连后生效（对话历史不会丢失）。",
+        "reconnect": "重连以应用",
+        "reconnecting": "正在重连…",
+        "reconnectDisabledDuringTurn": "当前回合结束后可重连",
+        "dismiss": "忽略",
+        "reconnectFailed": "重连会话失败",
+        "applied": "新配置已应用"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "隐藏",
     "show": "显示",
     "copy": "复制",
+    "qrcode": "二维码",
+    "qrcodeTitle": "扫码打开",
+    "qrcodeHint": "用手机扫描，在浏览器中打开 Codeg",
     "addressLabel": "访问地址",
     "tokenLabel": "访问 Token",
     "tokenHint": "Web 客户端首次访问时需输入此 Token",
@@ -2479,7 +2533,8 @@
     "cancel": "取消",
     "delete": "删除",
     "create": "创建",
-    "save": "保存"
+    "save": "保存",
+    "affectedRunningSessions": "{count} 个进行中的会话需重连以应用更改"
   },
   "ExpertsSettings": {
     "title": "专家技能",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "会话已过期",
     "sessionExpiredDescription": "登录状态已失效，请重新登录以继续。",
     "goToLogin": "前往登录"
+  },
+  "SessionFeedbackSettings": {
+    "title": "实时反馈",
+    "description": "在智能体工作过程中向它发送提醒和纠正。开启后，智能体会获得一个查看实时反馈的工具，会话中也会出现留言入口。提示：智能体通常只在你的提示词中提及时才会主动查看反馈——例如在消息中加上「工作过程中定期查看我的实时反馈」，智能体才会主动读取。",
+    "enable": "启用实时反馈",
+    "enableHint": "为开启之后启动的智能体注入查看反馈工具。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "反馈设置已保存",
+    "saveFailed": "保存反馈设置失败",
+    "loadFailed": "加载失败：{detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "在 {agent} 工作时给它留言…",
+    "agentFallback": "智能体",
+    "ariaLabel": "实时反馈留言",
+    "dialogTitle": "实时反馈",
+    "dialogDescription": "在智能体工作时给它留言。它会在下次检查时读取，不会打断当前步骤。",
+    "send": "发送",
+    "cancel": "取消",
+    "pending": "等待中",
+    "delivered": "已收到",
+    "turnEndedUnread": "智能体在读取你的反馈前已结束本轮。",
+    "sendAsMessage": "作为新消息发送",
+    "dismiss": "忽略",
+    "turnEndedResent": "本轮已结束——已改为作为新消息发送。",
+    "turnEnded": "本轮已结束。",
+    "submitFailed": "留言发送失败"
+  },
+  "AskQuestionSettings": {
+    "title": "向用户提问",
+    "description": "允许智能体暂停并向你提出多选问题，问题会显示在会话输入框上方。智能体会一直等待，直到你作答（或跳过）。",
+    "enable": "启用向用户提问",
+    "enableHint": "为开启后启动的智能体添加 ask_user_question 工具。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "提问设置已保存",
+    "saveFailed": "保存提问设置失败",
+    "loadFailed": "加载失败：{detail}"
   }
 }

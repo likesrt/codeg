@@ -16,6 +16,7 @@ import {
   listAllFolderDetails,
   listOpenFolderDetails,
   openFolder as apiOpenFolder,
+  openWorktreeFolder as apiOpenWorktreeFolder,
   openFolderById as apiOpenFolderById,
   removeFolderFromWorkspace as apiRemoveFolderFromWorkspace,
   reorderFolders as apiReorderFolders,
@@ -56,6 +57,10 @@ interface AppWorkspaceContextValue {
 
   upsertFolder: (detail: FolderDetail) => void
   openFolder: (path: string) => Promise<FolderDetail>
+  openWorktreeFolder: (
+    path: string,
+    sourceFolderId: number
+  ) => Promise<FolderDetail>
   addFolderToWorkspaceById: (folderId: number) => Promise<FolderDetail>
   removeFolderFromWorkspace: (folderId: number) => Promise<void>
   reorderFolders: (ids: number[]) => Promise<void>
@@ -345,6 +350,21 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     [refreshConversations, upsertFolder]
   )
 
+  const openWorktreeFolder = useCallback(
+    async (path: string, sourceFolderId: number) => {
+      const detail = await apiOpenWorktreeFolder(path, sourceFolderId)
+      upsertFolder(detail)
+      setBranches((prev) => {
+        const next = new Map(prev)
+        next.set(detail.id, detail.git_branch ?? null)
+        return next
+      })
+      void refreshConversations()
+      return detail
+    },
+    [refreshConversations, upsertFolder]
+  )
+
   const addFolderToWorkspaceById = useCallback(
     async (folderId: number) => {
       const detail = await apiOpenFolderById(folderId)
@@ -496,6 +516,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       setBranch,
       upsertFolder,
       openFolder,
+      openWorktreeFolder,
       addFolderToWorkspaceById,
       removeFolderFromWorkspace,
       reorderFolders,
@@ -520,6 +541,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       setBranch,
       upsertFolder,
       openFolder,
+      openWorktreeFolder,
       addFolderToWorkspaceById,
       removeFolderFromWorkspace,
       reorderFolders,

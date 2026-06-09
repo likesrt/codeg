@@ -9,9 +9,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
+use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
+use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
-    AcpEvent, AvailableCommandInfo, ConnectionStatus, EventEnvelope, PromptCapabilitiesInfo,
-    SessionConfigOptionInfo, SessionModeStateInfo, ToolCallImageInfo,
+    AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
+    PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo, ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -219,6 +221,15 @@ pub struct SessionState {
     pub active_tool_calls: BTreeMap<String, ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
 
+    /// The agent's in-flight `ask_user_question` (one set of multiple-choice
+    /// questions awaiting the user's answer). Set by `QuestionRequest`, cleared
+    /// by a matching `QuestionResolved` (and defensively on `TurnComplete` /
+    /// `UserMessage`). Carried on `to_snapshot()` so a client attaching mid-turn
+    /// re-renders the interactive card the one-shot event won't replay for it.
+    /// At most one is pending at a time (the agent is blocked in the tool call);
+    /// the backend's `pending_questions` registry keys the answer one-shot.
+    pub pending_question: Option<PendingQuestionState>,
+
     /// In-flight (running) sub-agent delegations keyed by `parent_tool_use_id`.
     /// `DelegationStarted` inserts; `DelegationCompleted` removes. UNLIKE
     /// `active_tool_calls`, NOT cleared on `TurnComplete` (an async delegation
@@ -229,6 +240,16 @@ pub struct SessionState {
     /// cumulative growth; completed delegations are recovered from the child's
     /// persisted DB row, not from here. See `ActiveDelegationState`.
     pub active_delegations: BTreeMap<String, ActiveDelegationState>,
+
+    /// Live user-feedback ("steering") notes for the current turn. Appended by
+    /// `FeedbackSubmitted` (a user note while the agent works), flipped to
+    /// `Delivered` by `FeedbackConsumed` (the agent read them via the
+    /// `check_user_feedback` MCP tool), and cleared on the next turn's
+    /// `UserMessage` (notes are turn-scoped steering, not durable history).
+    /// Carried on `to_snapshot()` so a client attaching mid-turn renders the
+    /// pending notes the one-shot `FeedbackSubmitted` event won't replay for it.
+    /// Size is human-bounded (one entry per note the user types this turn).
+    pub feedback: Vec<FeedbackItem>,
 
     // ACP 协商出的能力
     pub modes: Option<SessionModeStateInfo>,
@@ -286,10 +307,20 @@ pub struct SessionState {
     pub(crate) recent_events: RecentEventsBuffer,
 
     /// Per-launch token registered with the delegation broker's
-    /// `TokenRegistry` when `codeg-delegate` is injected at init.
+    /// `TokenRegistry` when `codeg-mcp` is injected at init.
     /// Revoked when the connection tears down so a leaked binary can't
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
+
+    /// Whether the `check_user_feedback` MCP tool was exposed to THIS agent at
+    /// launch (the `feedback` feature was on when its companion was injected).
+    /// Fixed for the connection's lifetime — tool exposure can't change after
+    /// launch. The authoritative gate for both the submit path and the UI: a
+    /// session started before the feature was enabled has no tool, so notes
+    /// would strand; one started after has it. Carried on `to_snapshot()` so the
+    /// frontend gates the feedback bar on the agent's actual capability, not the
+    /// (possibly later-toggled) global setting.
+    pub feedback_tool_available: bool,
 
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
@@ -324,6 +355,19 @@ pub struct SessionState {
     /// seeing success. Not serialized: it is a connection-loop liveness flag,
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
+
+    /// True when the agent's effective settings changed after this connection
+    /// was spawned — the running process is still on its launch-time config and
+    /// needs a restart to pick up the change. Set/cleared by
+    /// `AcpEvent::SessionConfigStale` (emitted from
+    /// `ConnectionManager::refresh_connection_staleness` after a settings save).
+    /// Carried on `to_snapshot()` so a client attaching via the snapshot path
+    /// (web reconnect, window refresh, a newly-tiled panel) sees the staleness
+    /// the transient event won't replay for it.
+    pub config_stale: bool,
+    /// Which settings surface drifted, for the banner's wording. `Some` iff
+    /// `config_stale`; reset to `None` when staleness clears.
+    pub config_stale_kind: Option<ConfigStaleKind>,
 }
 
 impl SessionState {
@@ -346,7 +390,9 @@ impl SessionState {
             live_message: None,
             active_tool_calls: BTreeMap::new(),
             pending_permission: None,
+            pending_question: None,
             active_delegations: BTreeMap::new(),
+            feedback: Vec::new(),
             modes: None,
             current_mode: None,
             config_options: None,
@@ -362,10 +408,13 @@ impl SessionState {
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
+            feedback_tool_available: false,
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            config_stale: false,
+            config_stale_kind: None,
         }
     }
 
@@ -446,6 +495,10 @@ impl SessionState {
             }
             AcpEvent::SessionConfigOptions { config_options } => {
                 self.config_options = Some(config_options.clone());
+            }
+            AcpEvent::SessionConfigStale { stale, kind } => {
+                self.config_stale = *stale;
+                self.config_stale_kind = if *stale { Some(*kind) } else { None };
             }
             AcpEvent::PromptCapabilities {
                 prompt_capabilities,
@@ -559,6 +612,27 @@ impl SessionState {
                     self.pending_permission = None;
                 }
             }
+            AcpEvent::QuestionRequest {
+                question_id,
+                questions,
+            } => {
+                self.pending_question = Some(PendingQuestionState {
+                    question_id: question_id.clone(),
+                    questions: questions.clone(),
+                    created_at: Utc::now(),
+                });
+            }
+            AcpEvent::QuestionResolved { question_id } => {
+                // Mirror `PermissionResolved`: only clear when the resolved id
+                // matches the current one, so a late event for an already-
+                // replaced question can't wipe a live card from under the user.
+                if matches!(
+                    &self.pending_question,
+                    Some(p) if p.question_id == *question_id,
+                ) {
+                    self.pending_question = None;
+                }
+            }
             AcpEvent::TurnComplete { .. } => {
                 // Snapshot the just-finished turn's FINAL assistant text — what
                 // `get_delegation_status` returns as the child result. We take
@@ -611,6 +685,11 @@ impl SessionState {
                 // the snapshot the instant the parent turn ends (the original
                 // web-only bug). It's removed per-entry by `DelegationCompleted`.
                 self.pending_permission = None;
+                // A blocked `ask_user_question` can't outlive its turn: if the
+                // turn ends (cancel / stop) the card is moot. The backend's
+                // answer one-shot is cleaned via the listener's peer-close race;
+                // this just keeps the snapshot honest.
+                self.pending_question = None;
                 self.status = ConnectionStatus::Connected;
             }
             AcpEvent::UserMessage { message_id, blocks } => {
@@ -625,6 +704,14 @@ impl SessionState {
                 // `apply_in_flight_message_id`. Set here (not at manager enqueue)
                 // so it tracks `pending_user_message` exactly.
                 self.pending_user_message_started_at = Some(Utc::now());
+                // Live-feedback notes are turn-scoped steering: a new user turn
+                // starts with a clean slate. The previous turn's notes (read or
+                // not) are history at this point; the frontend's "agent didn't
+                // read your note → resend" fallback already had its post-turn
+                // window before this next prompt arrives.
+                self.feedback.clear();
+                // A new user turn supersedes any stale pending question.
+                self.pending_question = None;
             }
             AcpEvent::ConversationLinked {
                 conversation_id,
@@ -707,6 +794,27 @@ impl SessionState {
                 // Retaining it would turn this map into an unbounded history log;
                 // it is deliberately only the in-flight set.
                 self.active_delegations.remove(parent_tool_use_id);
+            }
+            AcpEvent::FeedbackSubmitted { item } => {
+                // Idempotent by id (replay / double-attach safe): append only if
+                // this note isn't already tracked. The authoritative append is
+                // here so snapshot replay reconstructs the same list the live
+                // node holds.
+                if !self.feedback.iter().any(|f| f.id == item.id) {
+                    self.feedback.push(item.clone());
+                }
+            }
+            AcpEvent::FeedbackConsumed { ids, delivered_at } => {
+                // Flip the named pending notes to Delivered. Idempotent: an id
+                // already Delivered (the emitting node marked it directly under
+                // the write lock; this re-apply is for replay/attach nodes) is
+                // skipped. Order-independent and safe to apply more than once.
+                for f in self.feedback.iter_mut() {
+                    if f.status == FeedbackStatus::Pending && ids.contains(&f.id) {
+                        f.status = FeedbackStatus::Delivered;
+                        f.delivered_at = Some(*delivered_at);
+                    }
+                }
             }
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::SessionLoadFailed { .. }
@@ -963,8 +1071,11 @@ impl SessionState {
             live_message: self.live_message.clone(),
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
+            pending_question: self.pending_question.clone(),
             pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
+            feedback: self.feedback.clone(),
+            feedback_tool_available: self.feedback_tool_available,
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
             config_options: self.config_options.clone(),
@@ -973,6 +1084,8 @@ impl SessionState {
             fork_supported: self.fork_supported,
             available_commands: self.available_commands.clone(),
             selectors_ready: self.selectors_ready,
+            config_stale: self.config_stale,
+            config_stale_kind: self.config_stale_kind,
             event_seq: self.event_seq,
         }
     }
@@ -989,6 +1102,12 @@ pub struct LiveSessionSnapshot {
     pub live_message: Option<LiveMessage>,
     pub active_tool_calls: Vec<ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
+    /// The agent's in-flight `ask_user_question` (see
+    /// `SessionState.pending_question`). `#[serde(default)]` so older payloads
+    /// deserialize; `skip_serializing_if` keeps the common no-question case off
+    /// the wire so every snapshot stays byte-identical with the pre-feature shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_question: Option<PendingQuestionState>,
     /// The in-flight user prompt for the current turn (see
     /// `SessionState.pending_user_message`). `#[serde(default)]` so older
     /// payloads still deserialize; `skip_serializing_if` so the no-pending case
@@ -1002,6 +1121,18 @@ pub struct LiveSessionSnapshot {
     /// doesn't bloat every snapshot with an empty array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_delegations: Vec<ActiveDelegationState>,
+    /// Live user-feedback notes for the current turn (see `SessionState.feedback`).
+    /// `#[serde(default)]` so older server payloads without this field still
+    /// deserialize; `skip_serializing_if` keeps the common empty case off the
+    /// wire so every snapshot stays byte-identical with the pre-feature shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feedback: Vec<FeedbackItem>,
+    /// Whether this agent has the `check_user_feedback` tool (see
+    /// `SessionState.feedback_tool_available`). `#[serde(default)]` so older
+    /// payloads deserialize to `false`; the frontend gates the feedback bar on
+    /// it. Always serialized (a plain bool) so the frontend can rely on it.
+    #[serde(default)]
+    pub feedback_tool_available: bool,
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
@@ -1010,6 +1141,17 @@ pub struct LiveSessionSnapshot {
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
     pub selectors_ready: bool,
+    /// Whether the running session is on stale (launch-time) config after a
+    /// later settings save (see `SessionState.config_stale`). `#[serde(default)]`
+    /// so older server payloads without the field deserialize to `false`; always
+    /// serialized so the frontend can rely on it from the snapshot path.
+    #[serde(default)]
+    pub config_stale: bool,
+    /// Which settings surface drifted (see `SessionState.config_stale_kind`).
+    /// `#[serde(default)]` + `skip_serializing_if` keep the common not-stale case
+    /// byte-identical with the pre-feature wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_stale_kind: Option<ConfigStaleKind>,
     pub event_seq: u64,
 }
 
@@ -2697,5 +2839,94 @@ mod tests {
             AcpEvent::ContentDelta { text } => assert_eq!(text, "abc"),
             _ => panic!("expected ContentDelta"),
         }
+    }
+
+    // --- live feedback: apply_event + snapshot --------------------------
+
+    fn feedback_note(id: &str, text: &str) -> FeedbackItem {
+        FeedbackItem::new_pending(id.into(), text.into(), Utc::now())
+    }
+
+    #[test]
+    fn feedback_submitted_appends_idempotently() {
+        let mut s = fresh_state();
+        let item = feedback_note("f1", "use UserService");
+        s.apply_event(&AcpEvent::FeedbackSubmitted { item: item.clone() });
+        assert_eq!(s.feedback.len(), 1);
+        // Replay / double-attach: a second apply with the same id is a no-op.
+        s.apply_event(&AcpEvent::FeedbackSubmitted { item });
+        assert_eq!(s.feedback.len(), 1, "duplicate id must not append twice");
+        assert_eq!(s.feedback[0].status, FeedbackStatus::Pending);
+        // A different id appends.
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f2", "skip the migration"),
+        });
+        assert_eq!(s.feedback.len(), 2);
+    }
+
+    #[test]
+    fn feedback_consumed_marks_named_notes_delivered() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "a"),
+        });
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f2", "b"),
+        });
+        let at = Utc::now();
+        s.apply_event(&AcpEvent::FeedbackConsumed {
+            ids: vec!["f1".into()],
+            delivered_at: at,
+        });
+        let f1 = s.feedback.iter().find(|f| f.id == "f1").unwrap();
+        let f2 = s.feedback.iter().find(|f| f.id == "f2").unwrap();
+        assert_eq!(f1.status, FeedbackStatus::Delivered);
+        assert_eq!(f1.delivered_at, Some(at));
+        assert_eq!(f2.status, FeedbackStatus::Pending, "unnamed note untouched");
+        // Idempotent: re-applying the same consumption leaves f1 delivered and
+        // does not flip its delivered_at to a new instant.
+        s.apply_event(&AcpEvent::FeedbackConsumed {
+            ids: vec!["f1".into()],
+            delivered_at: Utc::now(),
+        });
+        let f1 = s.feedback.iter().find(|f| f.id == "f1").unwrap();
+        assert_eq!(f1.delivered_at, Some(at), "delivered_at must not change");
+    }
+
+    #[test]
+    fn user_message_clears_feedback_for_new_turn() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "a"),
+        });
+        assert_eq!(s.feedback.len(), 1);
+        // A new turn's user prompt resets the turn-scoped feedback set.
+        s.apply_event(&text_user_message("user-1", "next prompt"));
+        assert!(
+            s.feedback.is_empty(),
+            "feedback is turn-scoped; a new user_message clears it"
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_feedback_and_omits_when_empty() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "snapshot me"),
+        });
+        let snap = s.to_snapshot();
+        assert_eq!(snap.feedback.len(), 1);
+        assert_eq!(snap.feedback[0].id, "f1");
+        // Round-trips through the wire shape the web client hydrates from.
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.feedback.len(), 1);
+        // The empty case keeps the NOTES array off the wire (the always-present
+        // `feedback_tool_available` bool is a separate field).
+        let empty = serde_json::to_string(&fresh_state().to_snapshot()).unwrap();
+        assert!(
+            !empty.contains("\"feedback\":"),
+            "no-feedback snapshot must omit the notes array"
+        );
     }
 }

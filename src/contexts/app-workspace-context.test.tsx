@@ -54,6 +54,7 @@ function makeSummary(
   return {
     folder_id: 1,
     title: null,
+    title_locked: false,
     agent_type: "claude_code",
     status: "in_progress",
     model: null,

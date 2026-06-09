@@ -25,6 +25,7 @@ import {
   acpSetConfigOption,
   acpCancel,
   acpRespondPermission,
+  acpAnswerQuestion,
   acpDisconnect,
   acpTouchConnection,
   acpGetSessionSnapshot,
@@ -38,11 +39,14 @@ import type {
   AcpEvent,
   ActiveDelegationState,
   AvailableCommandInfo,
+  ConfigStaleKind,
   ConnectionStatus,
   ConversationConnectionInfo,
   EventEnvelope,
   PlanEntryInfo,
   PermissionOptionInfo,
+  PendingQuestionState,
+  QuestionAnswer,
   SessionConfigOptionInfo,
   SessionModeStateInfo,
   SessionUsageUpdateInfo,
@@ -166,6 +170,11 @@ export interface ConnectionState {
    *  the runtime as a synthesized user turn; `null` outside an active turn. */
   pendingUserMessage: PendingUserMessage | null
   pendingQuestion: PendingQuestion | null
+  /** Awaiting-answer multiple-choice `ask_user_question` (the codeg-mcp blocking
+   *  tool). Set from a `question_request` event or a snapshot's
+   *  `pending_question`; cleared on `question_resolved` or turn end. Distinct
+   *  from the free-text `pendingQuestion` above. */
+  pendingAskQuestion: PendingQuestionState | null
   claudeApiRetry: ClaudeApiRetryState | null
   error: string | null
   /**
@@ -225,6 +234,25 @@ export interface ConnectionState {
    * a plain viewer is the lighter cousin with no delegation state.
    */
   isViewer: boolean
+  /**
+   * True when the agent's effective settings changed after this session was
+   * spawned, so the running process is still on its launch-time config (env
+   * vars / model provider / native config). Set from a `session_config_stale`
+   * event or a hydrated snapshot; cleared when the user reverts the setting or
+   * restarts the session via `reapplyConfig`. Drives the per-conversation
+   * "restart to apply" banner.
+   */
+  configStale: boolean
+  /** Which settings surface drifted, for the banner's wording. `null` when not stale. */
+  configStaleKind: ConfigStaleKind | null
+  /**
+   * Client-local: the user dismissed (X) the stale banner for the CURRENT
+   * drift. Hides the banner without touching the underlying `configStale`
+   * state. Reset to `false` whenever a fresh `session_config_stale` arrives (a
+   * new change re-shows the banner) and on a new connection. Never sourced from
+   * the snapshot — dismissal is per-client UI state.
+   */
+  configStaleDismissed: boolean
 }
 
 type ConnectRequest = {
@@ -356,6 +384,18 @@ type Action =
       pendingQuestion: PendingQuestion
     }
   | { type: "CLEAR_PENDING_QUESTION"; contextKey: string }
+  | {
+      type: "SET_ASK_QUESTION"
+      contextKey: string
+      pendingAskQuestion: PendingQuestionState
+    }
+  | {
+      type: "CLEAR_ASK_QUESTION"
+      contextKey: string
+      /** When present, only clear if the current question_id matches (guards a
+       *  late `question_resolved` from wiping a freshly-raised question). */
+      questionId?: string
+    }
   | { type: "SESSION_STARTED"; contextKey: string; sessionId: string }
   | {
       type: "SESSION_MODES"
@@ -366,6 +406,16 @@ type Action =
       type: "SESSION_CONFIG_OPTIONS"
       contextKey: string
       configOptions: SessionConfigOptionInfo[]
+    }
+  | {
+      type: "CONFIG_STALE_CHANGED"
+      contextKey: string
+      stale: boolean
+      kind: ConfigStaleKind
+    }
+  | {
+      type: "DISMISS_CONFIG_STALE"
+      contextKey: string
     }
   | {
       type: "SELECTORS_READY"
@@ -582,7 +632,14 @@ function extractPermissionToolKind(toolCall: unknown): string | null {
   return null
 }
 
-function extractQuestionText(rawInput: string | null): string | null {
+/**
+ * Extract the free-text question for the LEGACY `QuestionDialog` from a tool
+ * call's raw input — gated on a singular `question` STRING field. Exported so a
+ * regression test can prove the new multiple-choice `ask_user_question` tool
+ * (whose input is `{ questions: [...] }`, plural array) never trips this legacy
+ * path even though tool-name normalization classifies it as "question".
+ */
+export function extractQuestionText(rawInput: string | null): string | null {
   if (!rawInput) return null
   try {
     const parsed = JSON.parse(rawInput)
@@ -848,6 +905,7 @@ function connectionsReducer(
         pendingPermission: null,
         pendingUserMessage: null,
         pendingQuestion: null,
+        pendingAskQuestion: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -856,6 +914,9 @@ function connectionsReducer(
         parentToolUseId: null,
         parentConnectionId: null,
         isViewer: action.isViewer ?? false,
+        configStale: false,
+        configStaleKind: null,
+        configStaleDismissed: false,
       })
       return next
     }
@@ -897,6 +958,7 @@ function connectionsReducer(
         pendingPermission: null,
         pendingUserMessage: null,
         pendingQuestion: null,
+        pendingAskQuestion: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -905,6 +967,9 @@ function connectionsReducer(
         parentToolUseId: action.parentToolUseId,
         parentConnectionId: action.parentConnectionId,
         isViewer: false,
+        configStale: false,
+        configStaleKind: null,
+        configStaleDismissed: false,
       })
       return next
     }
@@ -991,10 +1056,16 @@ function connectionsReducer(
         usage: action.patch.usage,
         liveMessage: action.patch.liveMessage,
         pendingPermission: action.patch.pendingPermission,
+        pendingAskQuestion: action.patch.pendingAskQuestion,
         pendingUserMessage: action.patch.pendingUserMessage,
         promptCapabilities: mergedPromptCapabilities,
         selectorsReady: mergedSelectorsReady,
         supportsFork: mergedSupportsFork,
+        // Staleness is a current-state field (like status): apply the snapshot's
+        // value on the fresh path. `configStaleDismissed` is client-local and
+        // preserved via `...current`.
+        configStale: action.patch.configStale,
+        configStaleKind: action.patch.configStaleKind,
         lastAppliedSeq: action.patch.eventSeq,
       })
       return next
@@ -1051,6 +1122,10 @@ function connectionsReducer(
       } else if (conn.status === "prompting") {
         // Prompt cycle ended: clear in-flight Claude API retry banner.
         updated.claudeApiRetry = null
+        // A blocked ask_user_question can't outlive its turn. The normal path
+        // clears it via `question_resolved`; this is the safety net for a turn
+        // that ended without one (agent error / abandoned block).
+        updated.pendingAskQuestion = null
       }
       next.set(action.contextKey, updated)
       return next
@@ -1412,6 +1487,34 @@ function connectionsReducer(
       return next
     }
 
+    case "SET_ASK_QUESTION": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingAskQuestion: action.pendingAskQuestion,
+      })
+      return next
+    }
+
+    case "CLEAR_ASK_QUESTION": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (
+        action.questionId !== undefined &&
+        conn.pendingAskQuestion?.question_id !== action.questionId
+      ) {
+        return state
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingAskQuestion: null,
+      })
+      return next
+    }
+
     case "SESSION_STARTED": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
@@ -1445,6 +1548,41 @@ function connectionsReducer(
       next.set(action.contextKey, {
         ...conn,
         configOptions: action.configOptions,
+      })
+      return next
+    }
+
+    case "CONFIG_STALE_CHANGED": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const kind = action.stale ? action.kind : null
+      // A fresh stale=true is a NEW drift → un-dismiss so the banner reappears
+      // even if the user had dismissed a previous one. stale=false clears it.
+      const dismissed = action.stale ? false : conn.configStaleDismissed
+      if (
+        conn.configStale === action.stale &&
+        conn.configStaleKind === kind &&
+        conn.configStaleDismissed === dismissed
+      ) {
+        return state
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        configStale: action.stale,
+        configStaleKind: kind,
+        configStaleDismissed: dismissed,
+      })
+      return next
+    }
+
+    case "DISMISS_CONFIG_STALE": {
+      const conn = state.get(action.contextKey)
+      if (!conn || conn.configStaleDismissed) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        configStaleDismissed: true,
       })
       return next
     }
@@ -1728,6 +1866,11 @@ export interface AcpActionsValue {
     requestId: string,
     optionId: string
   ): Promise<void>
+  answerQuestion(
+    contextKey: string,
+    questionId: string,
+    answer: QuestionAnswer
+  ): Promise<void>
   setActiveKey(key: string | null): void
   touchActivity(contextKey: string): void
   registerOpenTabKeys(keys: Set<string>): void
@@ -1762,6 +1905,23 @@ export interface AcpActionsValue {
    * lifecycle. No-op when the child isn't attached.
    */
   detachDelegationChild(connectionId: string): void
+  /**
+   * Restart the session at `contextKey` so it picks up the latest agent/model
+   * settings: disconnect the running process, then reconnect with the same
+   * `sessionId` (the agent resumes the conversation — history is preserved).
+   * The freshly spawned process reads current config, so its recomputed
+   * fingerprint matches and `configStale` clears. Wired to the "restart to
+   * apply" banner button. Returns `true` if it actually restarted, `false` if
+   * it was a no-op (no connection, or a viewer / delegation child that doesn't
+   * own the backend process) — callers gate their "applied" confirmation on it.
+   */
+  reapplyConfig(contextKey: string): Promise<boolean>
+  /**
+   * Dismiss the "restart to apply" banner for the current drift WITHOUT
+   * restarting (client-local; the underlying `configStale` is untouched). A
+   * subsequent settings change re-shows it. Wired to the banner's X button.
+   */
+  dismissConfigStale(contextKey: string): void
 }
 
 const AcpActionsContext = createContext<AcpActionsValue | null>(null)
@@ -2296,6 +2456,30 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             requestId: e.request_id,
           })
           break
+        case "question_request":
+          // Agent called the blocking `ask_user_question` MCP tool. Flush any
+          // queued streaming so the card renders against current content, then
+          // raise the interactive multiple-choice card above the input box.
+          flushStreamingQueue()
+          dispatch({
+            type: "SET_ASK_QUESTION",
+            contextKey,
+            pendingAskQuestion: {
+              question_id: e.question_id,
+              questions: e.questions,
+              created_at: new Date().toISOString(),
+            },
+          })
+          break
+        case "question_resolved":
+          // The question was answered (this or another window) or canceled.
+          // Matched by question_id so a stale event can't wipe a fresh one.
+          dispatch({
+            type: "CLEAR_ASK_QUESTION",
+            contextKey,
+            questionId: e.question_id,
+          })
+          break
         case "permission_request":
           flushStreamingQueue()
           dispatch({
@@ -2382,6 +2566,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             entry.configOptions = e.config_options
             selectorsCache.set(cfgConn.agentType, entry)
           }
+          break
+        }
+        case "session_config_stale": {
+          flushStreamingQueue()
+          dispatch({
+            type: "CONFIG_STALE_CHANGED",
+            contextKey,
+            stale: e.stale,
+            kind: e.kind,
+          })
           break
         }
         case "selectors_ready": {
@@ -3527,6 +3721,36 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch, teardownAttachSubscription]
   )
 
+  const reapplyConfig = useCallback(
+    async (contextKey: string): Promise<boolean> => {
+      const conn = storeRef.current.connections.get(contextKey)
+      // Viewers / delegation children don't own the backend process — restarting
+      // would kill another client's (or the broker's) agent. The banner hides
+      // its restart button for them, but guard here too. Return false so the
+      // caller doesn't show a false "applied" confirmation on this no-op.
+      if (!conn || conn.isViewer || conn.isDelegationChild) return false
+      // Capture identity BEFORE teardown. `sessionId` is what makes the new
+      // process resume this conversation (session/load) rather than start fresh.
+      const { agentType, workingDir, sessionId } = conn
+      await disconnect(contextKey)
+      await connect(
+        contextKey,
+        agentType,
+        workingDir ?? undefined,
+        sessionId ?? undefined
+      )
+      return true
+    },
+    [connect, disconnect]
+  )
+
+  const dismissConfigStale = useCallback(
+    (contextKey: string) => {
+      dispatch({ type: "DISMISS_CONFIG_STALE", contextKey })
+    },
+    [dispatch]
+  )
+
   const disconnectAll = useCallback(async () => {
     const promises: Promise<void>[] = []
     pendingConnectRequestsRef.current.clear()
@@ -3633,6 +3857,32 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch]
   )
 
+  const answerQuestion = useCallback(
+    async (contextKey: string, questionId: string, answer: QuestionAnswer) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) {
+        // Throw, don't silently return: AskQuestionCard awaits this and holds a
+        // disabled in-flight state (spinner) until it resolves, only re-enabling
+        // on rejection. A silent resolve here would leave the card stuck. The
+        // throw routes to the card's retryable inline error instead.
+        throw new Error(
+          `[AcpConnections] answerQuestion: no connection for ${contextKey}`
+        )
+      }
+      try {
+        lastActivityRef.current.set(contextKey, Date.now())
+        await acpAnswerQuestion(conn.connectionId, questionId, answer)
+        // Optimistically clear; the backend also broadcasts question_resolved
+        // (idempotent on the matched id).
+        dispatch({ type: "CLEAR_ASK_QUESTION", contextKey, questionId })
+      } catch (e) {
+        console.error("[AcpConnections] answerQuestion failed:", e)
+        throw e
+      }
+    },
+    [dispatch]
+  )
+
   const attachDelegationChild = useCallback(
     (args: {
       connectionId: string
@@ -3713,12 +3963,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setConfigOption,
       cancel,
       respondPermission,
+      answerQuestion,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
       clearAcpLoadError,
       attachDelegationChild,
       detachDelegationChild,
+      reapplyConfig,
+      dismissConfigStale,
     }),
     [
       connect,
@@ -3729,12 +3982,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setConfigOption,
       cancel,
       respondPermission,
+      answerQuestion,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
       clearAcpLoadError,
       attachDelegationChild,
       detachDelegationChild,
+      reapplyConfig,
+      dismissConfigStale,
     ]
   )
 

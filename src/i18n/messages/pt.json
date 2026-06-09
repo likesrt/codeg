@@ -91,6 +91,22 @@
       "placeholder": "Selecione o nível de zoom",
       "default": "Padrão",
       "current": "Zoom atual: {zoom}%"
+    },
+    "fonts": {
+      "sectionTitle": "Fontes",
+      "sectionDescription": "Escolha as fontes para a interface, o editor de código e o terminal. As fontes incluídas são carregadas sob demanda; selecione “Personalizada…” para usar qualquer fonte instalada no seu sistema.",
+      "interface": "Interface",
+      "editor": "Editor",
+      "terminal": "Terminal",
+      "groupSans": "Sem serifa",
+      "groupMono": "Monoespaçada",
+      "custom": "Personalizada…",
+      "customPlaceholder": "Nome da fonte, ex.: Fira Code",
+      "fontSize": "Tamanho da fonte",
+      "ligatures": "Ativar ligaduras",
+      "ligaturesUnavailable": "Esta fonte não tem ligaduras",
+      "terminalLigaturesHint": "As ligaduras do terminal aplicam-se apenas às fontes de programação incluídas.",
+      "preview": "Pré-visualização"
     }
   },
   "SystemSettings": {
@@ -734,7 +750,8 @@
       "saveConfigManagementFailed": "Falha ao salvar o gerenciamento de configuração",
       "clineSaved": "Configuração do Cline salva",
       "saveClineFailed": "Falha ao salvar a configuração do Cline",
-      "modelProviderRequired": "Selecione um provedor de modelo antes de salvar."
+      "modelProviderRequired": "Selecione um provedor de modelo antes de salvar.",
+      "affectedRunningSessions": "{count, plural, one {# sessão ativa precisa reconectar para aplicar a alteração} other {# sessões ativas precisam reconectar para aplicar a alteração}}"
     },
     "version": {
       "statusLabel": "Status da versão",
@@ -891,6 +908,8 @@
       "completing": "Concluindo...",
       "toasts": {
         "importedSessions": "Importadas {imported, plural, one {# sessão} other {# sessões}}, ignoradas {skipped}",
+        "importedAndUpdated": "Importadas {imported, plural, one {# sessão} other {# sessões}}, atualizados {updated, plural, one {# título} other {# títulos}}, ignoradas {skipped}",
+        "updatedTitles": "Atualizados {updated, plural, one {# título} other {# títulos}}, ignoradas {skipped}",
         "noNewSessionsFound": "Nenhuma nova sessão encontrada (ignoradas {skipped})",
         "importFailed": "Falha na importação: {message}",
         "reviewCompleted": "Marcadas {count, plural, one {# sessão em revisão} other {# sessões em revisão}} como concluídas",
@@ -1079,7 +1098,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "Diferenças",
         "files": "Arquivos",
         "changes": "Alterações",
         "commits": "Confirmações"
@@ -1123,16 +1141,6 @@
       "closeAll": "Fechar tudo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abra primeiro uma pasta"
-    },
-    "sessionFiles": {
-      "currentResponse": "Resposta atual",
-      "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}",
-      "loading": "Carregando...",
-      "noFileChangesInConversation": "Nenhuma alteração de arquivo encontrada nesta conversa",
-      "openConversationToSeeChanges": "Abra uma conversa para ver suas alterações de arquivos",
-      "remove": "Remover",
-      "changeCount": "{count, plural, one {# alteração} other {# alterações}}",
-      "fileCount": "{count, plural, one {# arquivo} other {# arquivos}}"
     },
     "folderNameDropdown": {
       "fallbackFolderName": "Pasta",
@@ -1182,7 +1190,9 @@
         "upstreamSet": "A branch upstream foi definida",
         "upstreamSetAndPushed": "Branch upstream definida e {count, plural, one {# commit} other {# commits}} enviado(s)",
         "noCommitsToPush": "Não há commits para enviar",
-        "pushedCommits": "{count, plural, one {# commit enviado} other {# commits enviados}}"
+        "pushedCommits": "{count, plural, one {# commit enviado} other {# commits enviados}}",
+        "switchedToFolder": "Alternado para {name}",
+        "switchFailed": "Falha ao trocar de branch"
       },
       "tasks": {
         "newBranch": "Criar branch {name}",
@@ -1781,6 +1791,8 @@
         "quickMessagesEmpty": "Ainda não há mensagens rápidas",
         "quickMessagesLoading": "Carregando...",
         "quickMessageUntitled": "Sem título",
+        "liveFeedback": "Feedback ao vivo",
+        "liveFeedbackDisabledHint": "Disponível enquanto o agente trabalha",
         "dropFilesToAttach": "Solte arquivos para anexar",
         "loadingSettings": "Carregando configurações...",
         "loadingMode": "Carregando modo...",
@@ -1844,8 +1856,7 @@
       "subAgentOverlay": {
         "title": "Subagentes",
         "collapsedSummary": "Subagentes {count}",
-        "collapseAria": "Recolher subagentes",
-        "expandAria": "Expandir subagentes"
+        "collapseAria": "Recolher subagentes"
       },
       "agentPlanOverlay": {
         "title": "Plano do agente",
@@ -2117,6 +2128,46 @@
           "errorSuffix": "{count, plural, one {# falhou} other {# falharam}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "Navegação de mensagens",
+        "expand": "Expandir navegação de mensagens",
+        "collapse": "Recolher navegação de mensagens",
+        "jumpToMessage": "Ir para: {label}",
+        "fileCount": "{count, plural, one {# arquivo} other {# arquivos}}",
+        "remove": "Remover",
+        "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}"
+      },
+      "askQuestion": {
+        "title": "O agente precisa da sua escolha",
+        "subtitle": "Responda e envie. Você pode pular a qualquer momento.",
+        "recommended": "Recomendado",
+        "other": "Outro",
+        "otherPlaceholder": "Digite sua resposta…",
+        "singleSelect": "Única",
+        "multiSelect": "Múltipla",
+        "skip": "Pular",
+        "next": "Próxima",
+        "submit": "Enviar",
+        "submitError": "Falha ao enviar. Tente novamente."
+      },
+      "askQuestionResult": {
+        "title": "Pergunta",
+        "answeredLabel": "Pergunta e resposta:",
+        "awaiting": "Aguardando sua resposta…",
+        "declined": "Você ignorou isto — o agente usou o próprio julgamento.",
+        "noSelection": "Sem seleção"
+      },
+      "configStale": {
+        "agentConfigTitle": "Configurações do agente atualizadas",
+        "modelProviderTitle": "Provedor de modelo atualizado",
+        "description": "Esta sessão ainda está usando a configuração anterior. Reconecte para aplicar (o histórico da conversa é mantido).",
+        "reconnect": "Reconectar para aplicar",
+        "reconnecting": "Reconectando…",
+        "reconnectDisabledDuringTurn": "Disponível quando o turno atual terminar",
+        "dismiss": "Dispensar",
+        "reconnectFailed": "Falha ao reconectar a sessão",
+        "applied": "Nova configuração aplicada"
       }
     },
     "diffPreview": {
@@ -2254,6 +2305,9 @@
     "hide": "Ocultar",
     "show": "Mostrar",
     "copy": "Copiar",
+    "qrcode": "Código QR",
+    "qrcodeTitle": "Escanear para abrir",
+    "qrcodeHint": "Escaneie com seu telefone para abrir o Codeg no navegador",
     "addressLabel": "Endereço de acesso",
     "tokenLabel": "Token de acesso",
     "tokenHint": "Insira este token ao acessar o cliente Web pela primeira vez",
@@ -2467,7 +2521,8 @@
     "cancel": "Cancelar",
     "delete": "Excluir",
     "create": "Criar",
-    "save": "Salvar"
+    "save": "Salvar",
+    "affectedRunningSessions": "{count, plural, one {# sessão ativa precisa reconectar para aplicar a alteração} other {# sessões ativas precisam reconectar para aplicar a alteração}}"
   },
   "ExpertsSettings": {
     "title": "Habilidades de Especialista",
@@ -2803,5 +2858,44 @@
     "sessionExpiredTitle": "Sessão expirada",
     "sessionExpiredDescription": "Sua sessão não é mais válida. Faça login novamente para continuar.",
     "goToLogin": "Ir para o login"
+  },
+  "SessionFeedbackSettings": {
+    "title": "Feedback ao vivo",
+    "description": "Envie notas e correções a um agente enquanto ele trabalha. Quando ativado, o agente ganha uma ferramenta para verificar feedback ao vivo e as conversas mostram uma entrada de notas. Dica: o agente normalmente só verifica o feedback quando você menciona isso na mensagem — por exemplo, adicione \"verifique meu feedback ao vivo regularmente enquanto trabalha\".",
+    "enable": "Ativar feedback ao vivo",
+    "enableHint": "Injeta uma ferramenta de verificação de feedback nos agentes iniciados após a ativação.",
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "saved": "Configurações de feedback salvas",
+    "saveFailed": "Falha ao salvar as configurações de feedback",
+    "loadFailed": "Falha ao carregar: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "Envie uma nota para {agent} enquanto ele trabalha…",
+    "agentFallback": "o agente",
+    "ariaLabel": "Nota de feedback ao vivo",
+    "dialogTitle": "Feedback ao vivo",
+    "dialogDescription": "Envie uma nota ao agente enquanto ele trabalha. Ele a lerá na próxima verificação, sem interromper a etapa atual.",
+    "send": "Enviar",
+    "cancel": "Cancelar",
+    "pending": "aguardando",
+    "delivered": "recebida",
+    "turnEndedUnread": "O agente terminou antes de ler o seu feedback.",
+    "sendAsMessage": "Enviar como mensagem",
+    "dismiss": "Dispensar",
+    "turnEndedResent": "O turno terminou — enviado como nova mensagem.",
+    "turnEnded": "O turno já terminou.",
+    "submitFailed": "Não foi possível enviar a sua nota"
+  },
+  "AskQuestionSettings": {
+    "title": "Perguntar ao usuário",
+    "description": "Permite que os agentes pausem e façam uma pergunta de múltipla escolha que aparece acima da caixa de entrada da conversa. O agente aguarda até você responder (ou pular).",
+    "enable": "Ativar perguntas ao usuário",
+    "enableHint": "Adiciona a ferramenta ask_user_question aos agentes iniciados após a ativação.",
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "saved": "Configurações de pergunta salvas",
+    "saveFailed": "Falha ao salvar as configurações de pergunta",
+    "loadFailed": "Falha ao carregar: {detail}"
   }
 }

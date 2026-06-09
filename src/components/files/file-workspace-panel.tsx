@@ -29,10 +29,9 @@ import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-const EDITOR_BASE_FONT_SIZE = 13
 import "@/lib/monaco-local"
 
 const math = createMathPlugin({ singleDollarTextMath: true })
@@ -793,6 +792,7 @@ export function FileWorkspacePanel() {
   const gitChangeDecorationsRef = useRef<string[]>([])
   const editorTheme = useMonacoThemeSync()
   const { zoomLevel } = useZoomLevel()
+  const { editorFontStack, editorFontSize, editorLigatures } = useEditorFont()
   const [editorMountVersion, setEditorMountVersion] = useState(0)
   const [cursorLine, setCursorLine] = useState(1)
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>(
@@ -1679,7 +1679,9 @@ export function FileWorkspacePanel() {
                 readOnly: !canEdit || activeFileTab.loading,
                 minimap: { enabled: false },
                 automaticLayout: true,
-                fontSize: (EDITOR_BASE_FONT_SIZE * zoomLevel) / 100,
+                fontSize: (editorFontSize * zoomLevel) / 100,
+                fontFamily: editorFontStack,
+                fontLigatures: editorLigatures,
                 lineNumbersMinChars,
                 lineDecorationsWidth: 10,
                 wordWrap: "off",

@@ -183,8 +183,10 @@ describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
   // canonical name so the renderer routes them into DelegatedSubThread.
   it.each([
     "delegate_to_agent",
+    "mcp__codeg-mcp__delegate_to_agent",
     "mcp__codeg-delegate__delegate_to_agent",
     "mcp__codeg__delegate_to_agent",
+    "codeg-mcp/delegate_to_agent",
     "codeg-delegate/delegate_to_agent",
     "codeg-delegate.delegate_to_agent",
     "codeg-delegate:delegate_to_agent",
@@ -203,8 +205,10 @@ describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
 describe("normalizeToolName collapses delegation companion tools across hosts", () => {
   it.each([
     "get_delegation_status",
+    "mcp__codeg-mcp__get_delegation_status",
     "mcp__codeg-delegate__get_delegation_status",
     "mcp__codeg__get_delegation_status",
+    "codeg-mcp/get_delegation_status",
     "codeg-delegate/get_delegation_status",
     "codeg-delegate.get_delegation_status",
     "codeg-delegate:get_delegation_status",
@@ -214,8 +218,10 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
 
   it.each([
     "cancel_delegation",
+    "mcp__codeg-mcp__cancel_delegation",
     "mcp__codeg-delegate__cancel_delegation",
     "mcp__codeg__cancel_delegation",
+    "codeg-mcp/cancel_delegation",
     "codeg-delegate/cancel_delegation",
     "codeg-delegate.cancel_delegation",
     "codeg-delegate:cancel_delegation",
@@ -230,6 +236,24 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
     expect(normalizeToolName("xcancel_delegation")).not.toBe(
       "cancel_delegation"
     )
+  })
+})
+
+describe("normalizeToolName collapses ask_user_question across hosts", () => {
+  it.each([
+    "question",
+    "ask_user_question",
+    "askuserquestion",
+    "mcp__codeg-mcp__ask_user_question",
+    "codeg-mcp/ask_user_question",
+    "codeg-mcp.ask_user_question",
+    "codeg-mcp:ask_user_question",
+  ])("%s -> question", (input) => {
+    expect(normalizeToolName(input)).toBe("question")
+  })
+
+  it("does not match a suffix without a separator", () => {
+    expect(normalizeToolName("xask_user_question")).not.toBe("question")
   })
 })
 

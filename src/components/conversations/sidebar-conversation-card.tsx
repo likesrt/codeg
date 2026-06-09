@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useState, useCallback } from "react"
-import { Pencil, Trash2, Circle, Plus } from "lucide-react"
+import { Pencil, Trash2, Circle, Plus, Loader2, XCircle } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
@@ -48,7 +48,7 @@ interface SidebarConversationCardProps {
   onRename: (id: number, newTitle: string) => Promise<void>
   onDelete: (id: number, agentType: string, folderId: number) => Promise<void>
   onStatusChange: (id: number, status: ConversationStatus) => Promise<void>
-  onNewConversation?: () => void
+  onNewConversation?: (folderId: number) => void
 }
 
 export const SidebarConversationCard = memo(function SidebarConversationCard({
@@ -190,25 +190,29 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
 
               {isRunning ? (
                 <span
-                  className={cn(
-                    "relative inline-flex shrink-0 items-center justify-center",
-                    "h-[0.9375rem] rounded-[0.3125rem] px-[0.25rem]",
-                    "text-[0.625rem] font-semibold leading-none tracking-[0.01875rem]",
-                    "bg-amber-500/20 text-amber-600 dark:bg-amber-400/20 dark:text-amber-400"
-                  )}
+                  className="relative inline-flex shrink-0 items-center justify-center"
+                  title={tSidebar("statusRunningBadge")}
                 >
-                  {tSidebar("statusRunningBadge")}
+                  <Loader2
+                    className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400"
+                    aria-hidden
+                  />
+                  <span className="sr-only">
+                    {tSidebar("statusRunningBadge")}
+                  </span>
                 </span>
               ) : isCancelled ? (
                 <span
-                  className={cn(
-                    "relative inline-flex shrink-0 items-center justify-center",
-                    "h-[0.9375rem] rounded-[0.3125rem] px-[0.25rem]",
-                    "text-[0.625rem] font-semibold leading-none tracking-[0.01875rem]",
-                    "bg-destructive/20 text-destructive"
-                  )}
+                  className="relative inline-flex shrink-0 items-center justify-center"
+                  title={tSidebar("statusCancelledBadge")}
                 >
-                  {tSidebar("statusCancelledBadge")}
+                  <XCircle
+                    className="h-3.5 w-3.5 text-destructive"
+                    aria-hidden
+                  />
+                  <span className="sr-only">
+                    {tSidebar("statusCancelledBadge")}
+                  </span>
                 </span>
               ) : timeLabel ? (
                 <span
@@ -229,7 +233,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
         <ContextMenuContent>
           {onNewConversation && (
             <>
-              <ContextMenuItem onSelect={onNewConversation}>
+              <ContextMenuItem
+                onSelect={() => onNewConversation(conversation.folder_id)}
+              >
                 <Plus className="h-4 w-4" />
                 {t("newConversation")}
               </ContextMenuItem>

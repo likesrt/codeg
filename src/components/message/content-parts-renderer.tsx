@@ -5,8 +5,9 @@ import {
   TOOL_KIND_ORDER,
   type ToolKindLabel,
 } from "@/lib/adapters/tool-kind-classifier"
-import type { MessageRole } from "@/lib/types"
+import type { MessageRole, PlanEntryInfo } from "@/lib/types"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { normalizePriority, normalizeStatus } from "@/lib/plan-parse"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
@@ -38,11 +39,13 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
+import { AskQuestionResultCard } from "./ask-question-result-card"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
 import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
+import { PlanCard, PlanEntriesList } from "./plan-card"
 import {
   FileTextIcon,
   FilePenLineIcon,
@@ -52,8 +55,6 @@ import {
   GlobeIcon,
   ListTodoIcon,
   SparklesIcon,
-  CircleIcon,
-  CircleDotIcon,
   CircleCheckIcon,
   CompassIcon,
   MapIcon,
@@ -62,6 +63,7 @@ import {
   WrenchIcon,
   ChevronRightIcon,
   BrainIcon,
+  MessageCircleQuestionMarkIcon,
 } from "lucide-react"
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -848,6 +850,8 @@ function getToolIcon(
     return <ListTodoIcon className={ICON_CLASS} />
   if (name === "attempt_completion")
     return <CircleCheckIcon className={ICON_CLASS} />
+  if (name === "question")
+    return <MessageCircleQuestionMarkIcon className={ICON_CLASS} />
   return undefined
 }
 
@@ -1560,64 +1564,33 @@ function TaskToolInput({ input }: { input: Record<string, unknown> }) {
   )
 }
 
-/** TodoWrite: checklist-style display */
+/**
+ * TodoWrite: checklist-style display. Fallback path only — a persisted
+ * TodoWrite tool_use is normally converted to a first-class `plan` part
+ * (rendered by <PlanCard>) in the adapter; this renders the same checklist
+ * via the shared <PlanEntriesList> when that conversion didn't run (live
+ * streaming, or unparsable input). Maps raw todos to PlanEntryInfo so the
+ * fallback looks identical to the dedicated card.
+ */
 function TodoWriteToolInput({ input }: { input: Record<string, unknown> }) {
   const todos = Array.isArray(input.todos) ? input.todos : []
-
   if (todos.length === 0) return null
 
-  const statusIcon = (status: string) => {
-    if (status === "completed")
-      return <CircleCheckIcon className="size-3.5 shrink-0 text-green-500" />
-    if (status === "in_progress")
-      return <CircleDotIcon className="size-3.5 shrink-0 text-blue-500" />
-    return <CircleIcon className="size-3.5 shrink-0 text-muted-foreground" />
-  }
+  const entries: PlanEntryInfo[] = todos.flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return []
+    const todo = raw as Record<string, unknown>
+    const content = str(todo, "content") ?? ""
+    if (!content) return []
+    return [
+      {
+        content,
+        status: normalizeStatus(str(todo, "status")),
+        priority: normalizePriority(str(todo, "priority")),
+      },
+    ]
+  })
 
-  const priorityBadge = (priority: string) => {
-    const colors: Record<string, string> = {
-      high: "bg-red-500/15 text-red-500",
-      medium: "bg-yellow-500/15 text-yellow-600",
-      low: "bg-muted text-muted-foreground",
-    }
-    return (
-      <span
-        className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${colors[priority] ?? colors.low}`}
-      >
-        {priority}
-      </span>
-    )
-  }
-
-  return (
-    <div className="space-y-1">
-      {todos.map((todo: Record<string, unknown>, i: number) => {
-        const id = str(todo, "id") ?? String(i + 1)
-        const content = str(todo, "content") ?? ""
-        const status = str(todo, "status") ?? "pending"
-        const priority = str(todo, "priority")
-
-        return (
-          <div
-            key={id}
-            className="flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
-          >
-            {statusIcon(status)}
-            <span
-              className={
-                status === "completed"
-                  ? "text-muted-foreground line-through"
-                  : "text-foreground"
-              }
-            >
-              {content}
-            </span>
-            {priority && priorityBadge(priority)}
-          </div>
-        )
-      })}
-    </div>
-  )
+  return <PlanEntriesList entries={entries} />
 }
 
 function ApplyPatchToolInput({ input }: { input: string }) {
@@ -2092,18 +2065,16 @@ function parseCliExecutionEnvelope(text: string): {
 
 const TextPart = memo(function TextPart({
   text,
-  preserveNewlines = false,
+  softBreaks = false,
 }: {
   text: string
-  preserveNewlines?: boolean
+  // User-authored text opts in so single newlines survive as line breaks
+  // (chat input commonly relies on them) while Markdown still renders.
+  softBreaks?: boolean
 }) {
-  if (preserveNewlines) {
-    return <div className="whitespace-pre-wrap break-words text-sm">{text}</div>
-  }
-
   return (
     <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
-      <MessageResponse>{text}</MessageResponse>
+      <MessageResponse softBreaks={softBreaks}>{text}</MessageResponse>
     </div>
   )
 })
@@ -2350,6 +2321,21 @@ const ToolCallPart = memo(function ToolCallPart({
     )
   }
 
+  // codeg-mcp ask_user_question: render the asked question(s) and the user's
+  // selection as a dedicated read-only card instead of the generic tool shell.
+  // The live interactive answering is handled separately by the pinned
+  // AskQuestionCard; this is the in-stream record (historical + in-flight).
+  if (toolNameLower === "question") {
+    return (
+      <AskQuestionResultCard
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+
   // Cline: attempt_completion — render as an expanded card with result + progress
   if (toolNameLower === "attempt_completion") {
     const parsedCompletion = tryParseJson(part.input ?? "")
@@ -2474,6 +2460,14 @@ const ReasoningPart = memo(function ReasoningPart({
   )
 })
 
+const PlanPart = memo(function PlanPart({
+  part,
+}: {
+  part: Extract<AdaptedContentPart, { type: "plan" }>
+}) {
+  return <PlanCard entries={part.entries} isStreaming={part.isStreaming} />
+})
+
 const ToolGroupPart = memo(function ToolGroupPart({
   part,
 }: {
@@ -2583,7 +2577,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
         <TextPart
           key={`text-${keyId}`}
           text={part.text}
-          preserveNewlines={role === "user"}
+          softBreaks={role === "user"}
         />
       )
     }
@@ -2620,6 +2614,10 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 
     if (part.type === "reasoning") {
       return <ReasoningPart key={`reasoning-${keyId}`} part={part} />
+    }
+
+    if (part.type === "plan") {
+      return <PlanPart key={`plan-${keyId}`} part={part} />
     }
 
     if (part.type === "generated-image") {

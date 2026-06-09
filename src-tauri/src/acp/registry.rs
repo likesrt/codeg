@@ -130,34 +130,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Codex CLI",
             description: "ACP adapter for OpenAI's coding assistant",
             distribution: AgentDistribution::Binary {
-                version: "0.15.0",
+                version: "0.16.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-aarch64-apple-darwin.tar.gz",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-apple-darwin.tar.gz",
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-x86_64-apple-darwin.tar.gz",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-apple-darwin.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-aarch64-unknown-linux-gnu.tar.gz",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-unknown-linux-gnu.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-x86_64-unknown-linux-gnu.tar.gz",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-unknown-linux-gnu.tar.gz",
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-aarch64-pc-windows-msvc.zip",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-pc-windows-msvc.zip",
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-x86_64-pc-windows-msvc.zip",
+                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-pc-windows-msvc.zip",
                     },
                 ],
             },
@@ -312,7 +312,7 @@ mod tests {
             Some("22.19.0"),
         );
         assert_npx_version(AgentType::Cline, "3.0.9", "cline@3.0.9", None);
-        assert_binary_version(AgentType::Codex, "0.15.0", "/releases/download/v0.15.0/");
+        assert_binary_version(AgentType::Codex, "0.16.0", "/releases/download/v0.16.0/");
         assert_binary_version(AgentType::OpenCode, "1.16.2", "/releases/download/v1.16.2/");
     }
 }

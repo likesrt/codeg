@@ -8,15 +8,52 @@ import {
   terminalResize,
   terminalKill,
 } from "@/lib/api"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { createWriteQueue } from "@/lib/terminal/write-queue"
+import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
-import type { ITheme, Terminal as XTermTerminal } from "@xterm/xterm"
+import type {
+  ITerminalAddon,
+  ITheme,
+  Terminal as XTermTerminal,
+} from "@xterm/xterm"
 
-const TERMINAL_BASE_FONT_SIZE = 13
+function computeTerminalFontSize(base: number, zoomLevel: number): number {
+  return Math.round((base * zoomLevel) / 100)
+}
 
-function computeTerminalFontSize(zoomLevel: number): number {
-  return Math.round((TERMINAL_BASE_FONT_SIZE * zoomLevel) / 100)
+type DisposableAddon = ITerminalAddon & { dispose: () => void }
+
+/** 惰性加载 @xterm/addon-ligatures（仅终端连字需要，且对系统字体可能无效）。 */
+async function enableTerminalLigatures(
+  term: XTermTerminal,
+  ref: { current: DisposableAddon | null },
+  isCurrent: () => boolean
+) {
+  if (ref.current) return
+  try {
+    const { LigaturesAddon } = await import("@xterm/addon-ligatures")
+    // 动态 import resolve 后重新校验三件事，否则会有竞态：
+    // 1) isCurrent()：终端仍是当前实例且连字仍需开启（覆盖「import 期间被销毁/重建」
+    //    以及「import 期间用户又关掉连字」两种情况）；
+    // 2) ref.current 仍为空：覆盖「并发两次 enable 都通过了 await 前检查」——
+    //    校验到赋值之间无 await，先到者占位后，后到者在此返回，避免重复挂载。
+    if (!isCurrent() || ref.current) return
+    const addon = new LigaturesAddon() as unknown as DisposableAddon
+    term.loadAddon(addon)
+    ref.current = addon
+  } catch {
+    // 加载失败时静默降级
+  }
+}
+
+function disableTerminalLigatures(ref: { current: DisposableAddon | null }) {
+  try {
+    ref.current?.dispose()
+  } catch {
+    // ignore
+  }
+  ref.current = null
 }
 
 const DARK_THEME: ITheme = {
@@ -124,7 +161,13 @@ export function TerminalView({
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
   const { zoomLevel } = useZoomLevel()
+  const { terminalFontStack, terminalFontSize, terminalLigatures } =
+    useTerminalFont()
   const zoomLevelRef = useRef(zoomLevel)
+  const terminalFontRef = useRef(terminalFontStack)
+  const terminalSizeRef = useRef(terminalFontSize)
+  const terminalLigaturesRef = useRef(terminalLigatures)
+  const ligaturesAddonRef = useRef<DisposableAddon | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -152,8 +195,11 @@ export function TerminalView({
 
       const term = new Terminal({
         cursorBlink: true,
-        fontSize: computeTerminalFontSize(zoomLevelRef.current),
-        fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+        fontSize: computeTerminalFontSize(
+          terminalSizeRef.current,
+          zoomLevelRef.current
+        ),
+        fontFamily: terminalFontRef.current,
         theme: getTerminalTheme(containerRef.current),
         allowProposedApi: true,
       })
@@ -164,6 +210,23 @@ export function TerminalView({
 
       fitAddonRef.current = fitAddon
       termRef.current = term
+
+      if (terminalLigaturesRef.current) {
+        enableTerminalLigatures(
+          term,
+          ligaturesAddonRef,
+          () => termRef.current === term && terminalLigaturesRef.current
+        )
+      }
+
+      // Ordered single-flight pump for terminal input. Both onData (typed
+      // bytes) and the custom-key escape sequences below feed this one queue,
+      // so input reaches the PTY in exact type order regardless of transport
+      // reordering, and fast bursts coalesce into fewer round-trips. A failed
+      // send is dropped, not retried — re-sending an ambiguous write could
+      // duplicate already-delivered bytes, worse than a drop in a shell. See
+      // lib/terminal/write-queue.ts.
+      const writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
 
       // Shell line-editing shortcuts. Sends readline/zle bindings so they
       // work regardless of terminfo.
@@ -182,7 +245,7 @@ export function TerminalView({
         const { code, altKey, metaKey, ctrlKey, shiftKey } = e
 
         const writeSeq = (seq: string) => {
-          terminalWrite(terminalId, seq).catch(() => {})
+          writeQueue.enqueue(seq)
           e.preventDefault()
           return false
         }
@@ -216,7 +279,7 @@ export function TerminalView({
         // Some apps toggle focus reporting; don't leak focus in/out sequences
         // into the shell prompt when tabs are switched.
         if (data === "\x1b[I" || data === "\x1b[O") return
-        terminalWrite(terminalId, data).catch(() => {})
+        writeQueue.enqueue(data)
       })
 
       // Debounced resize — avoid flooding IPC during drag
@@ -244,12 +307,16 @@ export function TerminalView({
       const unlistenExit = await subscribe<TerminalEvent>(
         `terminal://exit/${terminalId}`,
         () => {
+          // PTY is gone — stop the input pump (the reliable terminal-gone
+          // signal; the queue's error-string match is only a fast-path).
+          writeQueue.dispose()
           onProcessExitedRef.current?.(terminalId)
           term.write("\r\n\x1b[90m[Process exited]\x1b[0m\r\n")
         }
       )
 
       if (cancelled) {
+        writeQueue.dispose()
         themeObserver.disconnect()
         onDataDisposable.dispose()
         onResizeDisposable.dispose()
@@ -271,6 +338,7 @@ export function TerminalView({
 
       // If unmounted while spawn was in flight, clean up the spawned PTY
       if (cancelled) {
+        writeQueue.dispose()
         terminalKill(terminalId).catch(() => {})
         themeObserver.disconnect()
         onDataDisposable.dispose()
@@ -305,6 +373,7 @@ export function TerminalView({
       resizeObserver.observe(containerRef.current)
 
       cleanup = () => {
+        writeQueue.dispose()
         if (resizeTimer) clearTimeout(resizeTimer)
         if (fitTimer) clearTimeout(fitTimer)
         themeObserver.disconnect()
@@ -316,6 +385,7 @@ export function TerminalView({
         term.dispose()
         fitAddonRef.current = null
         termRef.current = null
+        ligaturesAddonRef.current = null
         lastResizeRef.current = null
       }
     }
@@ -341,15 +411,18 @@ export function TerminalView({
     }
   }, [isActive, isVisible])
 
-  // React to zoom level changes. Updates the ref synchronously so async init()
-  // always reads the latest zoom, and pushes the new font size to already-mounted
+  // React to zoom / font-family / font-size changes. Updates refs synchronously so
+  // async init() always reads the latest values, and pushes them to already-mounted
   // terminals. Double rAF ensures xterm's renderer has recomputed cell metrics
   // before we refit.
   useEffect(() => {
     zoomLevelRef.current = zoomLevel
+    terminalFontRef.current = terminalFontStack
+    terminalSizeRef.current = terminalFontSize
     const term = termRef.current
     if (!term) return
-    term.options.fontSize = computeTerminalFontSize(zoomLevel)
+    term.options.fontFamily = terminalFontStack
+    term.options.fontSize = computeTerminalFontSize(terminalFontSize, zoomLevel)
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const el = containerRef.current
@@ -358,7 +431,24 @@ export function TerminalView({
         }
       })
     })
-  }, [zoomLevel])
+  }, [zoomLevel, terminalFontStack, terminalFontSize])
+
+  // React to the ligature toggle. Lazily loads @xterm/addon-ligatures on enable,
+  // disposes it on disable.
+  useEffect(() => {
+    terminalLigaturesRef.current = terminalLigatures
+    const term = termRef.current
+    if (!term) return
+    if (terminalLigatures) {
+      enableTerminalLigatures(
+        term,
+        ligaturesAddonRef,
+        () => termRef.current === term && terminalLigaturesRef.current
+      )
+    } else {
+      disableTerminalLigatures(ligaturesAddonRef)
+    }
+  }, [terminalLigatures])
 
   return (
     <div

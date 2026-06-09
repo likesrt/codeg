@@ -65,6 +65,26 @@ pub fn build_router(
             post(handlers::delegation::set_delegation_settings),
         )
         .route(
+            "/get_feedback_settings",
+            post(handlers::feedback::get_feedback_settings),
+        )
+        .route(
+            "/set_feedback_settings",
+            post(handlers::feedback::set_feedback_settings),
+        )
+        .route(
+            "/submit_session_feedback",
+            post(handlers::feedback::submit_session_feedback),
+        )
+        .route(
+            "/get_question_settings",
+            post(handlers::question::get_question_settings),
+        )
+        .route(
+            "/set_question_settings",
+            post(handlers::question::set_question_settings),
+        )
+        .route(
             "/get_folder_conversation",
             post(handlers::conversations::get_folder_conversation),
         )
@@ -121,6 +141,14 @@ pub fn build_router(
         )
         .route("/get_folder", post(handlers::folders::get_folder))
         .route("/open_folder", post(handlers::folders::open_folder))
+        .route(
+            "/open_worktree_folder",
+            post(handlers::folders::open_worktree_folder),
+        )
+        .route(
+            "/resolve_worktree_folder",
+            post(handlers::folders::resolve_worktree_folder),
+        )
         .route(
             "/open_folder_in_workspace",
             post(handlers::folders::open_folder_in_workspace),
@@ -536,6 +564,10 @@ pub fn build_router(
         .route(
             "/acp_respond_permission",
             post(handlers::acp::acp_respond_permission),
+        )
+        .route(
+            "/acp_answer_question",
+            post(handlers::acp::acp_answer_question),
         )
         .route(
             "/acp_list_connections",

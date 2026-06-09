@@ -29,6 +29,9 @@ pub struct DbConversationSummary {
     pub id: i32,
     pub folder_id: i32,
     pub title: Option<String>,
+    /// Mirror of `conversation.title_locked`: the user renamed this row by hand,
+    /// so the auto-title backfill must leave it alone.
+    pub title_locked: bool,
     pub agent_type: AgentType,
     pub status: String,
     pub model: Option<String>,
@@ -113,5 +116,9 @@ pub struct SidebarData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportResult {
     pub imported: u32,
+    /// Already-imported conversations whose title was refreshed from the
+    /// agent's session file (e.g. an AI-generated title that did not yet exist
+    /// at first import). Manual renames are never touched.
+    pub updated: u32,
     pub skipped: u32,
 }

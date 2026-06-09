@@ -391,11 +391,37 @@ impl GeminiParser {
             .unwrap_or_else(Utc::now);
         let ended_at = Self::parse_timestamp(value.get("lastUpdated")).or(last_message_ts);
 
-        let title = messages
+        // Gemini emits its own AI-generated title through the `update_topic`
+        // tool call; prefer the newest non-empty one. Otherwise fall back to the
+        // first real user message, skipping the injected `<session_context>`
+        // bootstrap envelope so it never becomes the title.
+        let topic_title = messages.iter().rev().find_map(|m| {
+            m.get("toolCalls")
+                .and_then(|c| c.as_array())
+                .and_then(|calls| {
+                    calls.iter().rev().find_map(|call| {
+                        if call.get("name").and_then(|n| n.as_str()) == Some("update_topic") {
+                            call.get("args")
+                                .and_then(|a| a.get("title"))
+                                .and_then(|t| t.as_str())
+                                .map(str::trim)
+                                .filter(|t| !t.is_empty())
+                                .map(|t| truncate_str(t, 100))
+                        } else {
+                            None
+                        }
+                    })
+                })
+        });
+
+        let fallback_title = messages
             .iter()
             .filter(|m| m.get("type").and_then(|t| t.as_str()) == Some("user"))
-            .find_map(Self::extract_message_text)
+            .filter_map(Self::extract_message_text)
+            .find(|t| !t.trim_start().starts_with("<session_context"))
             .map(|t| truncate_str(&t, 100));
+
+        let title = topic_title.or(fallback_title);
 
         let model = messages.iter().rev().find_map(|m| {
             m.get("model")
@@ -929,6 +955,85 @@ mod tests {
         assert!((percent - 0.0051).abs() < 1e-9);
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn gemini_prefers_update_topic_title_over_first_user_message() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let base: PathBuf = env::temp_dir().join(format!("codeg-gemini-topic-{nanos}"));
+        let chats_dir = base.join("tmp").join("codeg").join("chats");
+        fs::create_dir_all(&chats_dir).expect("create chat dir");
+        fs::write(
+            base.join("tmp").join("codeg").join(".project_root"),
+            "/Users/test/workspace/demo",
+        )
+        .expect("write project root");
+
+        let file_path = chats_dir.join("session-2026-03-02T04-30-topic.json");
+        let content = r#"{
+  "sessionId": "topic-session",
+  "startTime": "2026-03-02T04:30:20.796Z",
+  "lastUpdated": "2026-03-02T04:33:13.631Z",
+  "messages": [
+    {"id": "u1", "timestamp": "2026-03-02T04:30:20.796Z", "type": "user", "content": [{"text": "first user prompt"}]},
+    {"id": "a1", "timestamp": "2026-03-02T04:31:00.000Z", "type": "gemini", "content": "ok", "toolCalls": [
+      {"id": "ut-1", "name": "update_topic", "args": {"title": "Stale Topic", "strategic_intent": "x"}, "status": "success"}
+    ]},
+    {"id": "a2", "timestamp": "2026-03-02T04:32:00.000Z", "type": "gemini", "content": "ok", "toolCalls": [
+      {"id": "ut-2", "name": "update_topic", "args": {"title": "Analyzing Commit", "strategic_intent": "y"}, "status": "success"}
+    ]}
+  ]
+}"#;
+        fs::write(&file_path, content).expect("write chat file");
+
+        let parser = GeminiParser::with_base_dir(base.clone());
+        let summaries = parser.list_conversations().expect("list conversations");
+        let _ = fs::remove_dir_all(&base);
+
+        assert_eq!(summaries.len(), 1);
+        // Newest update_topic title wins, over the stale topic and the first
+        // user message.
+        assert_eq!(summaries[0].title.as_deref(), Some("Analyzing Commit"));
+    }
+
+    #[test]
+    fn gemini_falls_back_to_real_prompt_skipping_session_context() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let base: PathBuf = env::temp_dir().join(format!("codeg-gemini-ctx-{nanos}"));
+        let chats_dir = base.join("tmp").join("codeg").join("chats");
+        fs::create_dir_all(&chats_dir).expect("create chat dir");
+        fs::write(
+            base.join("tmp").join("codeg").join(".project_root"),
+            "/Users/test/workspace/demo",
+        )
+        .expect("write project root");
+
+        let file_path = chats_dir.join("session-2026-03-02T04-30-ctx.json");
+        let content = r#"{
+  "sessionId": "ctx-session",
+  "startTime": "2026-03-02T04:30:20.796Z",
+  "lastUpdated": "2026-03-02T04:33:13.631Z",
+  "messages": [
+    {"id": "u0", "timestamp": "2026-03-02T04:30:20.796Z", "type": "user", "content": [{"text": "<session_context>\nThis is the Gemini CLI. Setting up context.\n</session_context>"}]},
+    {"id": "u1", "timestamp": "2026-03-02T04:30:21.000Z", "type": "user", "content": [{"text": "the real first prompt"}]}
+  ]
+}"#;
+        fs::write(&file_path, content).expect("write chat file");
+
+        let parser = GeminiParser::with_base_dir(base.clone());
+        let summaries = parser.list_conversations().expect("list conversations");
+        let _ = fs::remove_dir_all(&base);
+
+        assert_eq!(summaries.len(), 1);
+        // The injected <session_context> envelope is skipped so the real prompt
+        // becomes the title.
+        assert_eq!(summaries[0].title.as_deref(), Some("the real first prompt"));
     }
 
     #[test]

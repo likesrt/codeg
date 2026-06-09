@@ -354,6 +354,7 @@ fn compute_folders(all_conversations: &[ConversationSummary]) -> Vec<FolderInfo>
 
 pub async fn import_local_conversations_core(
     conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
     let folder = folder_service::get_folder_by_id(conn, folder_id)
@@ -364,18 +365,29 @@ pub async fn import_local_conversations_core(
                 .with_detail(format!("folder_id={folder_id}"))
         })?;
 
-    import_service::import_local_conversations(conn, folder_id, &folder.path)
-        .await
-        .map_err(AppCommandError::from)
+    let (result, updated_ids) =
+        import_service::import_local_conversations(conn, folder_id, &folder.path)
+            .await
+            .map_err(AppCommandError::from)?;
+
+    // Broadcast a sidebar upsert for every title refreshed in place, so other
+    // windows and web clients converge live. The importing client refetches the
+    // list itself, which also covers the newly imported rows.
+    for id in updated_ids {
+        emit_conversation_upsert(emitter, conn, id).await;
+    }
+
+    Ok(result)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn import_local_conversations(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
-    import_local_conversations_core(&db.conn, folder_id).await
+    import_local_conversations_core(&db.conn, &EventEmitter::Tauri(app), folder_id).await
 }
 
 /// Build the `meta["codeg.delegation"]` value for a delegation child loaded
@@ -421,7 +433,7 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
 /// `meta["codeg.delegation"]` to the DB-derived snapshot. Skips blocks
 /// whose meta is already populated so the live-broker write (when present)
 /// always wins. Tool-name match is by substring to cover the
-/// MCP-prefixed (`mcp__codeg-delegate__delegate_to_agent`) and bare forms
+/// MCP-prefixed (`mcp__codeg-mcp__delegate_to_agent`) and bare forms
 /// the host may have emitted.
 fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationSummary]) {
     if children.is_empty() {
@@ -458,15 +470,21 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
 
 /// Core logic for loading a folder conversation with full OpenClaw fallback.
 /// Shared by both the Tauri command and the web handler.
+///
+/// Returns the detail plus the title parsed from the session file this call
+/// just read (`None` when no file matched). The live wrapper uses that title to
+/// backfill the DB row's title when the user hasn't locked it — reusing this
+/// already-happening per-turn parse rather than reading the file again.
 pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
-) -> Result<DbConversationDetail, AppCommandError> {
+) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
     let summary = conversation_service::get_by_id(conn, conversation_id)
         .await
         .map_err(AppCommandError::from)?;
 
-    let (mut turns, session_stats, resolved_ext_id) = if let Some(ref ext_id) = summary.external_id
+    let (mut turns, session_stats, resolved_ext_id, parsed_title) = if let Some(ref ext_id) =
+        summary.external_id
     {
         let at = summary.agent_type;
         let eid = ext_id.clone();
@@ -488,7 +506,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Cline => Box::new(ClineParser::new()),
             };
             match parser.get_conversation(&eid) {
-                Ok(d) => Ok((d.turns, d.session_stats, None)),
+                Ok(d) => Ok((d.turns, d.session_stats, None, d.summary.title)),
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
                     // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
@@ -521,12 +539,17 @@ pub async fn get_folder_conversation_core(
                             if let Some(conv) = matched {
                                 let new_ext_id = conv.id.clone();
                                 if let Ok(d) = parser.get_conversation(&new_ext_id) {
-                                    return Ok((d.turns, d.session_stats, Some(new_ext_id)));
+                                    return Ok((
+                                        d.turns,
+                                        d.session_stats,
+                                        Some(new_ext_id),
+                                        d.summary.title,
+                                    ));
                                 }
                             }
                         }
                     }
-                    Ok((vec![], None, None))
+                    Ok((vec![], None, None, None))
                 }
                 Err(e) => Err(parse_error_to_app_error(e)),
             }
@@ -539,7 +562,7 @@ pub async fn get_folder_conversation_core(
             .with_detail(e.to_string())
         })??
     } else {
-        (vec![], None, None)
+        (vec![], None, None, None)
     };
 
     // If we resolved a different external_id (e.g. ACP UUID → parser branch ID),
@@ -562,12 +585,15 @@ pub async fn get_folder_conversation_core(
         .unwrap_or_default();
     inject_delegation_meta(&mut turns, &children);
 
-    Ok(DbConversationDetail {
-        summary,
-        turns,
-        session_stats,
-        in_flight_user_turn_id: None,
-    })
+    Ok((
+        DbConversationDetail {
+            summary,
+            turns,
+            session_stats,
+            in_flight_user_turn_id: None,
+        },
+        parsed_title,
+    ))
 }
 
 /// A normalized, comparable view of a user turn's renderable content. Used to
@@ -730,9 +756,40 @@ fn apply_in_flight_message_id(
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
+    emitter: &EventEmitter,
     conversation_id: i32,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    let mut detail = get_folder_conversation_core(conn, conversation_id).await?;
+    let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+
+    // Per-turn auto-title backfill. The parse `get_folder_conversation_core`
+    // just did already produced the session-file title; adopt it (and broadcast
+    // a sidebar upsert) whenever the user hasn't renamed this conversation by
+    // hand. `refresh_auto_title` re-checks the lock and equality, so once the
+    // title converges this becomes a cheap no-op on every later turn. The
+    // pre-check here just avoids the extra DB round-trip in the common case.
+    if !detail.summary.title_locked {
+        if let Some(parsed) = parsed_title.as_deref().map(str::trim) {
+            if !parsed.is_empty() && detail.summary.title.as_deref() != Some(parsed) {
+                match conversation_service::refresh_auto_title(
+                    conn,
+                    conversation_id,
+                    parsed.to_string(),
+                )
+                .await
+                {
+                    Ok(true) => {
+                        detail.summary.title = Some(parsed.to_string());
+                        emit_conversation_upsert(emitter, conn, conversation_id).await;
+                    }
+                    Ok(false) => {}
+                    Err(e) => eprintln!(
+                        "[conversations] auto-title refresh failed for {conversation_id}: {e}"
+                    ),
+                }
+            }
+        }
+    }
+
     if let Some((pending, started_at)) = manager
         .pending_user_message_for_conversation(conversation_id)
         .await
@@ -746,11 +803,18 @@ pub async fn get_folder_conversation_with_live_core(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_folder_conversation(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
     conversation_id: i32,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    get_folder_conversation_with_live_core(&db.conn, &manager, conversation_id).await
+    get_folder_conversation_with_live_core(
+        &db.conn,
+        &manager,
+        &EventEmitter::Tauri(app),
+        conversation_id,
+    )
+    .await
 }
 
 /// Emit a `conversation://changed` Upsert for `conversation_id` so every
@@ -1038,6 +1102,7 @@ mod tests {
             id,
             folder_id: 1,
             title: None,
+            title_locked: false,
             agent_type: AgentType::Codex,
             status: status.into(),
             model: None,
@@ -1349,7 +1414,7 @@ mod tests {
     fn inject_delegation_meta_populates_completed_child() {
         let mut turns = vec![tool_use_turn(
             Some("tu-1"),
-            "mcp__codeg-delegate__delegate_to_agent",
+            "mcp__codeg-mcp__delegate_to_agent",
         )];
         let children = vec![summary_child(42, "tu-1", "completed")];
         inject_delegation_meta(&mut turns, &children);
@@ -1518,7 +1583,7 @@ mod tests {
         .expect("child");
         // Parent has no external_id → no JSONL → no turns to inject into.
         // The call must still succeed without error.
-        let detail = get_folder_conversation_core(&db.conn, parent_id)
+        let (detail, _parsed_title) = get_folder_conversation_core(&db.conn, parent_id)
             .await
             .expect("load");
         assert_eq!(detail.summary.id, parent_id);
@@ -1982,7 +2047,7 @@ mod tests {
     #[tokio::test]
     async fn import_local_conversations_core_missing_folder_errors() {
         let db = fresh_in_memory_db().await;
-        let err = import_local_conversations_core(&db.conn, 999_999)
+        let err = import_local_conversations_core(&db.conn, &EventEmitter::Noop, 999_999)
             .await
             .expect_err("missing folder must surface as error");
         let msg = format!("{err:?}");

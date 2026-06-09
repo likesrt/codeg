@@ -149,6 +149,21 @@ impl EventEmitter {
 /// Global side-channel for cross-client conversation list/status sync.
 pub const CONVERSATION_CHANGED_EVENT: &str = "conversation://changed";
 
+/// Global side-channel announcing a live-feedback enable/disable. The settings
+/// UI runs in a SEPARATE window (`openSettingsWindow`), so the conversation
+/// feedback bar can't learn about a save through any frontend-only cache — it
+/// relies on this backend broadcast to converge across every window / WS client,
+/// exactly like [`CONVERSATION_CHANGED_EVENT`]. Payload: `FeedbackSettings`
+/// (`{ "enabled": bool }`).
+pub const FEEDBACK_SETTINGS_CHANGED_EVENT: &str = "feedback-settings://changed";
+
+/// Global side-channel announcing an ask-user-question enable/disable. Same
+/// cross-window rationale as [`FEEDBACK_SETTINGS_CHANGED_EVENT`]: the settings UI
+/// runs in a separate window, so a conversation view learns the flag flipped
+/// only via this backend broadcast. Payload: `QuestionSettings` (`{ "enabled":
+/// bool }`).
+pub const QUESTION_SETTINGS_CHANGED_EVENT: &str = "question-settings://changed";
+
 /// Payload for the global [`CONVERSATION_CHANGED_EVENT`] side-channel. Drives
 /// cross-client sidebar sync (membership + status) independent of the
 /// per-connection ACP attach protocol, so clients that are NOT attached to a
@@ -248,8 +263,33 @@ pub async fn emit_with_state(
     emitter: &EventEmitter,
     payload: AcpEvent,
 ) {
+    emit_with_state_gated(state, emitter, payload, |_| true).await;
+}
+
+/// Like [`emit_with_state`], but a `gate` predicate — evaluated under the SAME
+/// write lock, BEFORE `apply_event` — can veto the emit: returning `false`
+/// aborts with no mutation, no seq bump, no broadcast, and returns `false`.
+///
+/// The point is atomicity: the gate, the state mutation, and the seq assignment
+/// all happen in one critical section, so no other event can interleave between
+/// "decide to accept" and "apply + sequence". Used by feedback submit to gate on
+/// `turn_in_flight` together with the append (a `TurnComplete`/`UserMessage`
+/// can't slip in between to strand or re-add the note), and to assign the
+/// `FeedbackSubmitted` seq atomically with the append.
+pub async fn emit_with_state_gated<F>(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    payload: AcpEvent,
+    gate: F,
+) -> bool
+where
+    F: FnOnce(&SessionState) -> bool,
+{
     let (envelope_arc, stream, evicted) = {
         let mut s = state.write().await;
+        if !gate(&s) {
+            return false;
+        }
         s.apply_event(&payload);
         s.event_seq += 1;
         let envelope = Arc::new(EventEnvelope {
@@ -320,6 +360,7 @@ pub async fn emit_with_state(
             );
         }
     }
+    true
 }
 
 #[cfg(test)]

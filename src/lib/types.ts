@@ -152,6 +152,17 @@ export type ContentBlock =
       agent_stats?: AgentExecutionStats | null
     }
   | { type: "thinking"; text: string }
+  /**
+   * Frontend-only, LIVE-stream synthetic block. It is NEVER persisted and
+   * NEVER emitted by the Rust JSONL parsers — the persisted plan path is a
+   * `TodoWrite` tool_use block. It exists purely so a live plan can survive
+   * `buildStreamingTurnsFromLiveMessage` → `adaptContentBlock` without being
+   * down-converted into a `thinking`/reasoning block. Mirrors the reducer's
+   * `LiveContentBlock` plan variant in `acp-connections-context.tsx` (NOT the
+   * `kind`-tagged snapshot type lower in this file). Because it is live-only,
+   * persistence/export switches over `ContentBlock` never receive it.
+   */
+  | { type: "plan"; entries: PlanEntryInfo[] }
 
 export type TurnRole = "user" | "assistant" | "system"
 
@@ -232,6 +243,12 @@ export interface FolderDetail {
   last_opened_at: string
   sort_order: number
   color: string
+  /**
+   * Root folder this one was created under (worktree folders only); null for
+   * top-level folders. Flattened — a worktree of a worktree still points at the
+   * original root. Drives the sidebar merge and worktree-branch detection.
+   */
+  parent_id: number | null
 }
 
 export interface OpenedTab {
@@ -248,6 +265,9 @@ export interface DbConversationSummary {
   id: number
   folder_id: number
   title: string | null
+  /** True once the user renamed this conversation by hand; the backend then
+   *  stops auto-deriving its title from the session file. */
+  title_locked: boolean
   agent_type: AgentType
   status: string
   model: string | null
@@ -270,6 +290,12 @@ export type ConversationChange =
   | { kind: "status"; id: number; status: string }
 
 export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
+
+/** Global side-channel announcing a live-feedback enable/disable (payload is
+ *  `FeedbackSettings`). The settings UI runs in a separate window, so the
+ *  conversation feedback bar converges on this backend broadcast rather than a
+ *  frontend-only cache. Mirrors the Rust `FEEDBACK_SETTINGS_CHANGED_EVENT`. */
+export const FEEDBACK_SETTINGS_CHANGED_EVENT = "feedback-settings://changed"
 
 /** Payload for the global `tabs://changed` side-channel that keeps every
  *  client's open-tab set in sync across desktop + browsers. Mirrors the Rust
@@ -304,6 +330,7 @@ export interface SaveTabsOutcome {
 
 export interface ImportResult {
   imported: number
+  updated: number
   skipped: number
 }
 
@@ -447,6 +474,45 @@ export interface PermissionOptionInfo {
   option_id: string
   name: string
   kind: string
+}
+
+// --- ask_user_question (mirror of Rust `crate::acp::question`) ---
+
+/** One selectable choice in an `ask_user_question` (mirror of `QuestionOption`). */
+export interface QuestionOption {
+  label: string
+  description: string
+}
+
+/** A single multiple-choice question (mirror of Rust `QuestionSpec`). `id` is
+ *  the backend-minted correlation key the answer is submitted against. */
+export interface QuestionSpec {
+  id: string
+  question: string
+  header: string
+  multi_select: boolean
+  options: QuestionOption[]
+}
+
+/** Awaiting-answer question set on the session (mirror of `PendingQuestionState`). */
+export interface PendingQuestionState {
+  question_id: string
+  questions: QuestionSpec[]
+  created_at: string
+}
+
+/** One question's answer submitted to `acp_answer_question`. `labels` carries
+ *  the selected option labels plus any free-text "Other" the user typed. */
+export interface QuestionAnswerItem {
+  questionId: string
+  labels: string[]
+}
+
+/** The full submission to `acp_answer_question`. `declined` is set when the
+ *  user dismissed the card without choosing. */
+export interface QuestionAnswer {
+  answers: QuestionAnswerItem[]
+  declined: boolean
 }
 
 export interface SessionModeInfo {
@@ -699,6 +765,60 @@ export type AcpEvent =
       message_id: string
       blocks: UserMessageBlock[]
     }
+  /**
+   * The user submitted a live-feedback note while the agent is mid-turn (the
+   * `check_user_feedback` steering path). Broadcast so every client viewing
+   * this conversation renders the pending note; also captured in the snapshot.
+   */
+  | {
+      type: "feedback_submitted"
+      item: FeedbackItem
+    }
+  /**
+   * The agent read one or more pending feedback notes via `check_user_feedback`.
+   * Carries the note ids + the delivery instant; clients flip those notes to
+   * `delivered` (they already hold the text from `feedback_submitted` / snapshot).
+   */
+  | {
+      type: "feedback_consumed"
+      ids: string[]
+      delivered_at: string
+    }
+  /**
+   * An agent called `ask_user_question`: a blocking multiple-choice prompt the
+   * user must answer. Broadcast so every client renders the interactive card
+   * above the input box; also captured in the snapshot for mid-turn attach.
+   */
+  | {
+      type: "question_request"
+      question_id: string
+      questions: QuestionSpec[]
+    }
+  /**
+   * A pending question was answered (from any client) or canceled (tool call
+   * aborted / connection drained). Clients clear the matching card.
+   */
+  | {
+      type: "question_resolved"
+      question_id: string
+    }
+  /**
+   * The agent's effective settings (env vars / model provider / native config)
+   * changed AFTER this connection spawned, so the running process is still on
+   * its launch-time config. The frontend shows a "restart to apply" banner.
+   * `stale: false` means a prior drift was reverted (the setting was changed
+   * back) and the banner should clear. Mirrored into `LiveSessionSnapshot` so a
+   * snapshot attach (reconnect, refresh, new tile) recovers the state.
+   */
+  | {
+      type: "session_config_stale"
+      stale: boolean
+      kind: ConfigStaleKind
+    }
+
+/** Which settings surface drifted (mirror of Rust `ConfigStaleKind`), used to
+ *  word the "restart to apply" banner. */
+export type ConfigStaleKind = "agent_config" | "model_provider"
 
 /** A block of a broadcast user prompt (mirror of Rust `UserMessageBlock`).
  *  Narrower than the persisted `ContentBlock`: only what a viewer needs to
@@ -823,6 +943,22 @@ export interface ActiveDelegationState {
   agent_type: AgentType
 }
 
+/** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
+export type FeedbackStatus = "pending" | "delivered"
+
+/**
+ * A user-submitted live-feedback ("steering") note (mirror of Rust
+ * `FeedbackItem`). Turn-scoped: the backend clears the set when the next turn's
+ * `user_message` arrives. `delivered_at` is set once the agent reads it.
+ */
+export interface FeedbackItem {
+  id: string
+  text: string
+  created_at: string
+  status: FeedbackStatus
+  delivered_at?: string | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -832,6 +968,9 @@ export interface LiveSessionSnapshot {
   live_message: LiveMessage | null
   active_tool_calls: ToolCallState[]
   pending_permission: PendingPermissionState | null
+  /** Awaiting-answer `ask_user_question`, recoverable on mid-turn attach.
+   *  Absent (omitted) when no question is pending. */
+  pending_question?: PendingQuestionState | null
   /** In-flight user prompt for the current turn — lets a client attaching
    *  mid-turn render the user turn. Absent (omitted) when no turn is in flight. */
   pending_user_message?: {
@@ -841,6 +980,13 @@ export interface LiveSessionSnapshot {
   /** Live sub-agent delegations recoverable from the snapshot. May be absent
    *  on older server payloads (then treated as `[]`). */
   active_delegations?: ActiveDelegationState[]
+  /** Live-feedback notes for the current turn. Absent on older payloads /
+   *  when empty (then treated as `[]`). */
+  feedback?: FeedbackItem[]
+  /** Whether this agent has the `check_user_feedback` tool (fixed at launch).
+   *  The frontend gates the feedback bar on this — the agent's real capability —
+   *  not the (possibly later-toggled) global setting. Absent → `false`. */
+  feedback_tool_available?: boolean
   modes: SessionModeStateInfo | null
   current_mode: string | null
   config_options: SessionConfigOptionInfo[] | null
@@ -849,6 +995,11 @@ export interface LiveSessionSnapshot {
   fork_supported: boolean
   available_commands: AvailableCommandInfo[]
   selectors_ready: boolean
+  /** Whether the running session is on stale (launch-time) config after a later
+   *  settings save. Absent on older server payloads (then treated as `false`). */
+  config_stale?: boolean
+  /** Which settings surface drifted; present only while `config_stale`. */
+  config_stale_kind?: ConfigStaleKind | null
   event_seq: number
 }
 
@@ -1175,6 +1326,19 @@ export interface GitBranchList {
   local: string[]
   remote: string[]
   worktree_branches: string[]
+}
+
+/**
+ * Where a branch is checked out, resolved against registered folders (mirrors
+ * Rust `WorktreeResolution`). `path` is the canonical worktree/main-tree path
+ * hosting the branch, or null when it is not checked out in any worktree.
+ * `folder_id` is the registered folder owning that path, or null for an
+ * external/unregistered worktree. Drives the branch selector's navigate-vs-
+ * checkout decision.
+ */
+export interface WorktreeResolution {
+  path: string | null
+  folder_id: number | null
 }
 
 export interface GitConflictInfo {
@@ -1560,6 +1724,15 @@ export interface ModelProviderInfo {
   model: string | null
   created_at: string
   updated_at: string
+}
+
+/** Result of `updateModelProvider` (mirror of Rust `UpdateModelProviderResult`):
+ *  the updated provider plus how many running sessions the credential/model
+ *  cascade left on stale (launch-time) config — for the settings-side
+ *  "N sessions need restart" toast. */
+export interface UpdateModelProviderResult {
+  provider: ModelProviderInfo
+  affectedRunningSessions: number
 }
 
 export interface ClaudeProviderModel {

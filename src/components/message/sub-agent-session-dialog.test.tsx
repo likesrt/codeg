@@ -166,6 +166,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     liveMessage: null,
     pendingPermission: null,
     pendingQuestion: null,
+    pendingAskQuestion: null,
     claudeApiRetry: null,
     error: null,
     loadError: null,
@@ -175,6 +176,9 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     parentConnectionId: "p1",
     isViewer: false,
     pendingUserMessage: null,
+    configStale: false,
+    configStaleKind: null,
+    configStaleDismissed: false,
     ...overrides,
   }
 }
