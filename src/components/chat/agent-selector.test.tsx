@@ -36,6 +36,7 @@ function agent(
     codex_auth_json: null,
     codex_config_toml: null,
     cline_secrets_json: null,
+    hermes_config_yaml: null,
     model_provider_id: null,
     ...overrides,
   }

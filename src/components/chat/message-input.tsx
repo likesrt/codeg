@@ -2451,12 +2451,12 @@ export function MessageInput({
                   <Button
                     disabled={disabled}
                     variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0"
+                    size="icon-xs"
+                    className="shrink-0"
                     title={t("addActions")}
                     aria-label={t("addActions")}
                   >
-                    <Plus className="size-4" />
+                    <Plus className="size-3" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -2716,7 +2716,7 @@ export function MessageInput({
                 </DropdownMenuContent>
               </DropdownMenu>
               {hasInlineSelectors && (
-                <div className="hidden min-w-0 items-end gap-1 @[34rem]:flex">
+                <div className="hidden min-w-0 items-end gap-1 @[30rem]:flex">
                   {inlineSelectorItems}
                 </div>
               )}
@@ -2724,22 +2724,22 @@ export function MessageInput({
                 <div
                   className={cn(
                     "flex",
-                    hasInlineSelectors && "@[34rem]:hidden"
+                    hasInlineSelectors && "@[30rem]:hidden"
                   )}
                 >
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
                         variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
+                        size="icon-xs"
+                        className="shrink-0"
                         title={t("agentSettings")}
                         aria-label={t("agentSettings")}
                       >
                         {agentType ? (
-                          <AgentIcon agentType={agentType} className="size-4" />
+                          <AgentIcon agentType={agentType} className="size-3" />
                         ) : (
-                          <Cog className="size-4" />
+                          <Cog className="size-3" />
                         )}
                       </Button>
                     </DropdownMenuTrigger>
@@ -2763,9 +2763,14 @@ export function MessageInput({
           )}
         </div>
         {hasFolderBranchPicker && (
+          // `pl-2` mirrors the action bar's `px-2` so this row lines up with the
+          // composer above. Kept on the rem scale (no px literals) so it tracks
+          // UI zoom; the folder icon then aligns with the centered "+" icon
+          // because both buttons add the same 1px transparent border (paired
+          // with the picker buttons' `px-1.5`).
           <div
             className={cn(
-              "flex items-center gap-1.5 pl-2 text-xs text-muted-foreground",
+              "flex items-center gap-1 pl-2 text-xs text-muted-foreground",
               folderBranchPickerAttached ? "rounded-b-xl pt-1 pr-2" : "mt-1.5"
             )}
           >

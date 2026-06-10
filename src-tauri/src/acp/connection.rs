@@ -377,6 +377,72 @@ async fn build_agent(
                 ),
             )
         }
+        AgentDistribution::Uvx {
+            package,
+            cmd,
+            args,
+            env,
+            python,
+            system_cmd,
+            ..
+        } => {
+            let merged_env = merge_agent_env(env, runtime_env);
+            let mut parts: Vec<String> = Vec::new();
+            for (k, v) in &merged_env {
+                parts.push(format!("{k}={v}"));
+            }
+            if let Some(uvx_path) = crate::commands::acp::resolve_uvx_command() {
+                // Primary: `uvx [--python <ver>] --from <pinned package> <entry
+                // script>`. uvx fetches + caches the pinned package on first use;
+                // the `--python` pin keeps it on an interpreter the agent
+                // supports (see the registry `python` field).
+                parts.push(uvx_path.to_string_lossy().to_string());
+                parts.extend(crate::commands::acp::uvx_python_args(python));
+                parts.push("--from".into());
+                parts.push(package.to_string());
+                parts.push(cmd.to_string());
+                for a in args {
+                    parts.push((*a).into());
+                }
+            } else if let Some((sys_path, sys_args)) = system_cmd.and_then(|(c, a)| {
+                crate::commands::acp::resolve_command_on_path(c).map(|path| (path, a))
+            }) {
+                // Fallback: the agent's own CLI is already on PATH (e.g.
+                // `hermes acp`), installed via its official installer rather
+                // than provisioned through uvx.
+                eprintln!(
+                    "[ACP][{}] uvx unavailable; falling back to system command {:?}",
+                    meta.name, sys_path
+                );
+                // `system_cmd` is a complete launch recipe for the PATH binary;
+                // the uvx entry-script `args` don't necessarily apply to it
+                // (for Hermes both are empty / `["acp"]`, so this is exact).
+                parts.push(sys_path.to_string_lossy().to_string());
+                for a in sys_args {
+                    parts.push((*a).into());
+                }
+            } else {
+                // INVARIANT: the substring "is not installed" is matched
+                // verbatim by the frontend catch block in
+                // `src/contexts/acp-connections-context.tsx` to surface a
+                // localized install prompt. Do not change the wording.
+                return Err(AcpError::SdkNotInstalled(format!(
+                    "{} is not installed. Please install it in Agent Settings.",
+                    meta.name
+                )));
+            }
+            let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+            let agent_name = meta.name.to_string();
+            AcpAgent::from_args(&refs)
+                .map(|a| {
+                    a.with_debug(move |line, dir| {
+                        if dir == sacp_tokio::LineDirection::Stderr {
+                            eprintln!("[ACP][{agent_name}][stderr] {line}");
+                        }
+                    })
+                })
+                .map_err(|e| AcpError::SpawnFailed(e.to_string()))
+        }
     }
 }
 
@@ -428,6 +494,13 @@ pub async fn spawn_agent_connection(
         },
     )
     .await;
+
+    // Align ~/.hermes/.env's base-URL var with config.yaml's model.base_url so
+    // Hermes' auxiliary tasks (title generation, compression, …) resolve the
+    // same endpoint as the main conversation. Best-effort; never blocks launch.
+    if agent_type == AgentType::Hermes {
+        crate::commands::acp::reconcile_hermes_runtime_env(&runtime_env);
+    }
 
     let agent = build_agent(agent_type, &runtime_env).await?;
 
@@ -848,6 +921,14 @@ fn build_load_session_request(
 /// ACP wire format. Errors and unsupported entries are logged and skipped so
 /// a single malformed entry never blocks a session from starting.
 fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
+    // Hermes reads its own `~/.hermes/config.yaml` `mcp_servers` natively at
+    // launch (registering each as an `mcp-<name>` toolset). codeg manages that
+    // section directly via the MCP settings UI, so forwarding the same servers
+    // over the ACP wire here would double-register them — skip it. (The built-in
+    // `codeg-mcp` companion is injected separately by `inject_codeg_mcp`.)
+    if agent_type == AgentType::Hermes {
+        return Vec::new();
+    }
     let entries = match crate::commands::mcp::read_servers_for_agent_type(agent_type) {
         Ok(map) => map,
         Err(err) => {

@@ -573,6 +573,7 @@
       "confirmDelete": "Confirm Delete",
       "confirmUninstall": "Confirm Uninstall",
       "saveClineConfig": "Save Cline Config",
+      "saveHermesConfig": "Save Hermes Config",
       "customInstall": "Custom install"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "Use token-file instead of plain token when possible; configure via openclaw CLI.",
       "sessionKeyHint": "Optional. Specify gateway session key; leave empty to auto-assign isolated session."
     },
+    "hermes": {
+      "configManagement": "Hermes Configuration",
+      "configDescription": "Hermes manages its own credentials in ~/.hermes/.env and settings in ~/.hermes/config.yaml. Pick a provider, then set the API key and model — codeg writes both files for you.",
+      "providerLabel": "Provider",
+      "providerHint": "The provider selects which API key variable and model.provider Hermes uses. OAuth providers are configured through the terminal setup below.",
+      "groupApiKey": "API key providers",
+      "groupOauth": "OAuth providers",
+      "groupAws": "AWS",
+      "apiKeyHint": "Saved to ~/.hermes/.env. It is never injected into the process — Hermes reads it from its own config.",
+      "modelName": "Model",
+      "oauthHint": "This provider uses OAuth. Run the setup below to authenticate in your terminal.",
+      "awsHint": "Bedrock uses your AWS credentials (environment or shared config). Set the model id above and configure AWS access in your environment.",
+      "unsupportedProvider": "This provider isn't editable with structured fields. Use the raw config.yaml editor below or the terminal setup.",
+      "setupTitle": "Self-managed setup",
+      "setupHint": "Hermes's interactive setup needs a terminal. Launch it below, or copy the command to run it yourself.",
+      "runSetup": "Run Hermes setup",
+      "configureModel": "Configure model",
+      "openConfigFolder": "Open ~/.hermes",
+      "copyCommand": "Copy command",
+      "commandCopied": "Command copied to clipboard",
+      "advancedTitle": "Advanced: edit config.yaml",
+      "rawConfigHint": "Edit ~/.hermes/config.yaml directly. Saving here overwrites the file verbatim.",
+      "saveRawConfig": "Save config.yaml"
+    },
     "authModeOfficialSubscription": "Official Subscription",
     "authModeCustomEndpoint": "Custom Endpoint",
     "authModeCustomEndpointHint": "Manually configure API URL and API Key for a custom endpoint.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "Failed to save config management",
       "clineSaved": "Cline config saved",
       "saveClineFailed": "Failed to save Cline config",
+      "hermesSaved": "Hermes config saved",
+      "saveHermesFailed": "Failed to save Hermes config",
       "modelProviderRequired": "Please select a model provider before saving.",
       "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "Not installed",
       "remoteLocal": "Remote: {remoteVersion} · Local: {localVersion}",
       "platformUnsupported": "{versionText}. Current platform does not support this agent.",
+      "uvxNotReady": "{versionText}. The uv runtime isn't installed — install it from the uv check below to use this agent.",
       "clickInstall": "{versionText}. Click Install on the right.",
       "localUnrecognized": "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
       "upgradeAvailable": "{versionText}. Upgrade available.",
@@ -2150,6 +2178,12 @@
         "next": "Next",
         "submit": "Submit",
         "submitError": "Couldn't submit. Please try again."
+      },
+      "feedbackCheckResult": {
+        "count": "{count, plural, =1 {1 feedback note} other {# feedback notes}}",
+        "expand": "Show all feedback",
+        "collapse": "Collapse",
+        "errorTitle": "Feedback check failed"
       },
       "askQuestionResult": {
         "title": "Question",

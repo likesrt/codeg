@@ -287,8 +287,11 @@ const FolderPicker = memo(function FolderPicker({
       variant="ghost"
       size="xs"
       title={title}
+      // `px-1.5` (rem scale, so it tracks UI zoom) matches the composer "+"
+      // button's icon breathing room; paired with the row's `pl-2` it lands the
+      // folder icon on the same column as the centered "+" icon.
       className={cn(
-        "min-w-0",
+        "min-w-0 gap-0.5 px-1.5",
         !editable && "cursor-default opacity-60 hover:bg-transparent"
       )}
     >
@@ -390,7 +393,12 @@ const BranchPicker = memo(function BranchPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="xs" title={title} className="min-w-0">
+        <Button
+          variant="ghost"
+          size="xs"
+          title={title}
+          className="min-w-0 gap-0.5 px-1.5"
+        >
           <GitBranch className="size-3 shrink-0 text-muted-foreground" />
           <span className="max-w-[160px] truncate">
             {currentBranch ?? t("noBranch")}

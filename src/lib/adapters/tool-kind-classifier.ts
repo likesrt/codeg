@@ -42,6 +42,7 @@ const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
 const CREATE_GOAL_SUFFIX_RE = /[^a-z0-9]create_goal$/
 const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
 const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
+const CHECK_USER_FEEDBACK_SUFFIX_RE = /[^a-z0-9]check_user_feedback$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
@@ -58,7 +59,12 @@ export function isAgentLikeToolName(toolName: string): boolean {
     // suffix RE below cover the historical `mcp__<server>__ask_user_question`
     // forms, since this runs pre-normalize.
     name === "question" ||
-    name === "ask_user_question"
+    name === "ask_user_question" ||
+    // codeg-mcp check_user_feedback — owns the FeedbackCheckResultCard capsule,
+    // so the (visible) ones must break the run and render standalone rather than
+    // fold into a tool-group. The no-op polls are dropped upstream by
+    // `dropHiddenFeedbackChecks`, so only received-feedback checks reach here.
+    name === "check_user_feedback"
   )
     return true
   if (DELEGATE_TO_AGENT_SUFFIX_RE.test(name)) return true
@@ -67,6 +73,7 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (CREATE_GOAL_SUFFIX_RE.test(name)) return true
   if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
   if (ASK_USER_QUESTION_SUFFIX_RE.test(name)) return true
+  if (CHECK_USER_FEEDBACK_SUFFIX_RE.test(name)) return true
   return false
 }
 

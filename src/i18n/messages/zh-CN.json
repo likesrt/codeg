@@ -573,6 +573,7 @@
       "confirmDelete": "确认删除",
       "confirmUninstall": "确认卸载",
       "saveClineConfig": "保存 Cline 配置",
+      "saveHermesConfig": "保存 Hermes 配置",
       "customInstall": "自定义安装"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "建议使用 token-file 替代明文 Token，可通过 openclaw 命令行配置。",
       "sessionKeyHint": "可选。指定 Gateway Session Key，留空则自动分配隔离会话。"
     },
+    "hermes": {
+      "configManagement": "Hermes 配置",
+      "configDescription": "Hermes 在 ~/.hermes/.env 中管理自己的凭据，在 ~/.hermes/config.yaml 中管理设置。选择一个供应商，然后设置 API 密钥和模型——codeg 会替你写入这两个文件。",
+      "providerLabel": "供应商",
+      "providerHint": "供应商决定 Hermes 使用哪个 API 密钥变量和 model.provider。OAuth 供应商通过下方的终端设置进行配置。",
+      "groupApiKey": "API 密钥提供商",
+      "groupOauth": "OAuth 提供商",
+      "groupAws": "AWS",
+      "apiKeyHint": "保存到 ~/.hermes/.env。它绝不会被注入进程——Hermes 会从自己的配置中读取它。",
+      "modelName": "模型",
+      "oauthHint": "此供应商使用 OAuth。请运行下方的设置流程，在终端中完成认证。",
+      "awsHint": "Bedrock 使用你的 AWS 凭据（环境变量或共享配置）。请在上方填写模型 ID，并在系统环境中配置 AWS 访问权限。",
+      "unsupportedProvider": "该提供商无法通过结构化字段编辑。请使用下方的 config.yaml 原始编辑器或终端引导设置。",
+      "setupTitle": "自管理设置",
+      "setupHint": "Hermes 的交互式设置需要终端。可在下方启动，或复制命令自行运行。",
+      "runSetup": "运行 Hermes 设置",
+      "configureModel": "配置模型",
+      "openConfigFolder": "打开 ~/.hermes",
+      "copyCommand": "复制命令",
+      "commandCopied": "命令已复制到剪贴板",
+      "advancedTitle": "高级：编辑 config.yaml",
+      "rawConfigHint": "直接编辑 ~/.hermes/config.yaml。在此保存将原样覆盖该文件。",
+      "saveRawConfig": "保存 config.yaml"
+    },
     "authModeOfficialSubscription": "官网订阅",
     "authModeCustomEndpoint": "自定义接口",
     "authModeCustomEndpointHint": "手动配置 API URL 和 API Key 连接自定义接口。",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "保存配置管理失败",
       "clineSaved": "Cline 配置已保存",
       "saveClineFailed": "保存 Cline 配置失败",
+      "hermesSaved": "Hermes 配置已保存",
+      "saveHermesFailed": "保存 Hermes 配置失败",
       "modelProviderRequired": "请先选择一个模型供应商再保存。",
       "affectedRunningSessions": "{count} 个进行中的会话需重连以应用更改"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "未安装",
       "remoteLocal": "远程：{remoteVersion} · 本地：{localVersion}",
       "platformUnsupported": "{versionText}。当前平台不支持该 Agent。",
+      "uvxNotReady": "{versionText}。uv 运行时未安装——请在下方 uv 预检项中安装后再使用该 Agent。",
       "clickInstall": "{versionText}。请点击右侧安装。",
       "localUnrecognized": "{versionText}。本地版本无法识别，可尝试升级覆盖安装。",
       "upgradeAvailable": "{versionText}。发现可升级版本。",
@@ -2150,6 +2178,12 @@
         "next": "下一题",
         "submit": "提交",
         "submitError": "提交失败，请重试。"
+      },
+      "feedbackCheckResult": {
+        "count": "{count} 条反馈",
+        "expand": "展开全部反馈",
+        "collapse": "收起",
+        "errorTitle": "反馈检查失败"
       },
       "askQuestionResult": {
         "title": "提问",

@@ -573,6 +573,7 @@
       "confirmDelete": "削除を確認",
       "confirmUninstall": "アンインストールを確認",
       "saveClineConfig": "Cline設定を保存",
+      "saveHermesConfig": "Hermes設定を保存",
       "customInstall": "カスタムインストール"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "可能な場合は平文トークンではなく token-file の使用を推奨します。openclaw CLI で設定してください。",
       "sessionKeyHint": "任意。gateway の session key を指定します。空欄の場合は分離されたセッションが自動割り当てされます。"
     },
+    "hermes": {
+      "configManagement": "Hermes 設定",
+      "configDescription": "Hermes は認証情報を ~/.hermes/.env に、設定を ~/.hermes/config.yaml に独自に管理します。プロバイダーを選択し、API キーとモデルを設定してください。codeg が両方のファイルを書き込みます。",
+      "providerLabel": "プロバイダー",
+      "providerHint": "プロバイダーによって、Hermes が使用する API キー変数と model.provider が決まります。OAuth プロバイダーは下のターミナルセットアップから設定します。",
+      "groupApiKey": "API キー プロバイダー",
+      "groupOauth": "OAuth プロバイダー",
+      "groupAws": "AWS",
+      "apiKeyHint": "~/.hermes/.env に保存されます。プロセスには注入されません。Hermes が独自の設定から読み取ります。",
+      "modelName": "モデル",
+      "oauthHint": "このプロバイダーは OAuth を使用します。下のセットアップを実行し、ターミナルで認証してください。",
+      "awsHint": "Bedrock は AWS の認証情報（環境変数または共有設定）を使用します。上でモデル ID を設定し、環境で AWS アクセスを構成してください。",
+      "unsupportedProvider": "このプロバイダーは構造化フィールドでは編集できません。下の config.yaml 直接編集またはターミナルセットアップを使用してください。",
+      "setupTitle": "自己管理セットアップ",
+      "setupHint": "Hermes の対話型セットアップにはターミナルが必要です。下から起動するか、コマンドをコピーして自分で実行してください。",
+      "runSetup": "Hermes セットアップを実行",
+      "configureModel": "モデルを設定",
+      "openConfigFolder": "~/.hermes を開く",
+      "copyCommand": "コマンドをコピー",
+      "commandCopied": "コマンドをクリップボードにコピーしました",
+      "advancedTitle": "詳細: config.yaml を編集",
+      "rawConfigHint": "~/.hermes/config.yaml を直接編集します。ここで保存すると、ファイルがそのまま上書きされます。",
+      "saveRawConfig": "config.yaml を保存"
+    },
     "authModeOfficialSubscription": "公式サブスクリプション",
     "authModeCustomEndpoint": "カスタムエンドポイント",
     "authModeCustomEndpointHint": "API URL と API Key を手動で設定してカスタムエンドポイントに接続します。",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "設定管理の保存に失敗しました",
       "clineSaved": "Cline設定を保存しました",
       "saveClineFailed": "Cline設定の保存に失敗しました",
+      "hermesSaved": "Hermes設定を保存しました",
+      "saveHermesFailed": "Hermes設定の保存に失敗しました",
       "modelProviderRequired": "保存する前にモデルプロバイダーを選択してください。",
       "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "未インストール",
       "remoteLocal": "リモート: {remoteVersion} · ローカル: {localVersion}",
       "platformUnsupported": "{versionText}。現在のプラットフォームではこのエージェントをサポートしていません。",
+      "uvxNotReady": "{versionText}。uv ランタイムが未インストールです。下の uv チェックからインストールするとこのエージェントを使用できます。",
       "clickInstall": "{versionText}。右側の「インストール」をクリックしてください。",
       "localUnrecognized": "{versionText}。ローカルバージョンは比較できません。上書きインストールのためアップグレードを試してください。",
       "upgradeAvailable": "{versionText}。アップグレード可能です。",
@@ -2150,6 +2178,12 @@
         "next": "次へ",
         "submit": "送信",
         "submitError": "送信できませんでした。もう一度お試しください。"
+      },
+      "feedbackCheckResult": {
+        "count": "フィードバック {count} 件",
+        "expand": "すべてのフィードバックを表示",
+        "collapse": "折りたたむ",
+        "errorTitle": "フィードバックの確認に失敗しました"
       },
       "askQuestionResult": {
         "title": "質問",

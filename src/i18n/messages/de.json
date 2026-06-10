@@ -573,6 +573,7 @@
       "confirmDelete": "Löschen bestätigen",
       "confirmUninstall": "Deinstallation bestätigen",
       "saveClineConfig": "Cline-Konfiguration speichern",
+      "saveHermesConfig": "Hermes-Konfiguration speichern",
       "customInstall": "Benutzerdefinierte Installation"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "Wenn möglich token-file statt Klartext-Token verwenden; über openclaw CLI konfigurieren.",
       "sessionKeyHint": "Optional. Gateway-Session-Key angeben; leer lassen für automatische Zuweisung einer isolierten Session."
     },
+    "hermes": {
+      "configManagement": "Hermes-Konfiguration",
+      "configDescription": "Hermes verwaltet seine eigenen Anmeldedaten in ~/.hermes/.env und die Einstellungen in ~/.hermes/config.yaml. Wähle einen Anbieter und lege dann den API-Schlüssel und das Modell fest – codeg schreibt beide Dateien für dich.",
+      "providerLabel": "Anbieter",
+      "providerHint": "Der Anbieter legt fest, welche API-Schlüssel-Variable und welchen model.provider Hermes verwendet. OAuth-Anbieter werden über die Terminal-Einrichtung unten konfiguriert.",
+      "groupApiKey": "Anbieter mit API-Schlüssel",
+      "groupOauth": "OAuth-Anbieter",
+      "groupAws": "AWS",
+      "apiKeyHint": "Wird in ~/.hermes/.env gespeichert. Er wird niemals in den Prozess eingeschleust – Hermes liest ihn aus seiner eigenen Konfiguration.",
+      "modelName": "Modell",
+      "oauthHint": "Dieser Anbieter verwendet OAuth. Führe die Einrichtung unten aus, um dich im Terminal zu authentifizieren.",
+      "awsHint": "Bedrock verwendet deine AWS-Anmeldedaten (Umgebung oder gemeinsame Konfiguration). Lege oben die Modell-ID fest und konfiguriere den AWS-Zugriff in deiner Umgebung.",
+      "unsupportedProvider": "Dieser Anbieter lässt sich nicht über strukturierte Felder bearbeiten. Verwende den config.yaml-Editor unten oder die Terminal-Einrichtung.",
+      "setupTitle": "Selbstverwaltete Einrichtung",
+      "setupHint": "Die interaktive Einrichtung von Hermes benötigt ein Terminal. Starte sie unten oder kopiere den Befehl, um sie selbst auszuführen.",
+      "runSetup": "Hermes-Einrichtung ausführen",
+      "configureModel": "Modell konfigurieren",
+      "openConfigFolder": "~/.hermes öffnen",
+      "copyCommand": "Befehl kopieren",
+      "commandCopied": "Befehl in die Zwischenablage kopiert",
+      "advancedTitle": "Erweitert: config.yaml bearbeiten",
+      "rawConfigHint": "Bearbeite ~/.hermes/config.yaml direkt. Das Speichern hier überschreibt die Datei wortwörtlich.",
+      "saveRawConfig": "config.yaml speichern"
+    },
     "authModeOfficialSubscription": "Offizielles Abonnement",
     "authModeCustomEndpoint": "Benutzerdefinierter Endpunkt",
     "authModeCustomEndpointHint": "API-URL und API-Key manuell für einen benutzerdefinierten Endpunkt konfigurieren.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "Speichern der Konfigurationsverwaltung fehlgeschlagen",
       "clineSaved": "Cline-Konfiguration gespeichert",
       "saveClineFailed": "Cline-Konfiguration konnte nicht gespeichert werden",
+      "hermesSaved": "Hermes-Konfiguration gespeichert",
+      "saveHermesFailed": "Hermes-Konfiguration konnte nicht gespeichert werden",
       "modelProviderRequired": "Bitte wählen Sie vor dem Speichern einen Modellanbieter aus.",
       "affectedRunningSessions": "{count, plural, one {# laufende Sitzung muss zum Anwenden neu verbunden werden} other {# laufende Sitzungen müssen zum Anwenden neu verbunden werden}}"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "Nicht installiert",
       "remoteLocal": "Remote: {remoteVersion} · Lokal: {localVersion}",
       "platformUnsupported": "{versionText}. Aktuelle Plattform unterstützt diesen Agenten nicht.",
+      "uvxNotReady": "{versionText}. Die uv-Laufzeit ist nicht installiert – installieren Sie sie über die uv-Prüfung unten, um diesen Agenten zu verwenden.",
       "clickInstall": "{versionText}. Rechts auf Installieren klicken.",
       "localUnrecognized": "{versionText}. Lokale Version ist nicht vergleichbar; zum Überschreiben bitte Upgrade versuchen.",
       "upgradeAvailable": "{versionText}. Upgrade verfügbar.",
@@ -2150,6 +2178,12 @@
         "next": "Weiter",
         "submit": "Senden",
         "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut."
+      },
+      "feedbackCheckResult": {
+        "count": "{count, plural, =1 {1 Rückmeldung} other {# Rückmeldungen}}",
+        "expand": "Alle Rückmeldungen anzeigen",
+        "collapse": "Einklappen",
+        "errorTitle": "Feedback-Prüfung fehlgeschlagen"
       },
       "askQuestionResult": {
         "title": "Frage",

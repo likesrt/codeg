@@ -14,7 +14,8 @@
             "open_code",
             "gemini",
             "cline",
-            "open_claw"
+            "open_claw",
+            "hermes"
           ],
           "description": "Which local agent runs the sub-task. Pick the one best suited to the work."
         },

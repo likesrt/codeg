@@ -573,6 +573,7 @@
       "confirmDelete": "Confirmar exclusão",
       "confirmUninstall": "Confirmar desinstalação",
       "saveClineConfig": "Salvar configuração do Cline",
+      "saveHermesConfig": "Salvar configuração do Hermes",
       "customInstall": "Instalação personalizada"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "Use token-file em vez de token em texto puro quando possível; configure via CLI do openclaw.",
       "sessionKeyHint": "Opcional. Especifique a session key do gateway; deixe vazio para atribuição automática de sessão isolada."
     },
+    "hermes": {
+      "configManagement": "Configuração do Hermes",
+      "configDescription": "O Hermes gerencia suas próprias credenciais em ~/.hermes/.env e as configurações em ~/.hermes/config.yaml. Escolha um provedor e, em seguida, defina a chave de API e o modelo — o codeg grava os dois arquivos para você.",
+      "providerLabel": "Provedor",
+      "providerHint": "O provedor determina qual variável de chave de API e qual model.provider o Hermes usa. Provedores OAuth são configurados pela configuração de terminal abaixo.",
+      "groupApiKey": "Provedores com chave de API",
+      "groupOauth": "Provedores OAuth",
+      "groupAws": "AWS",
+      "apiKeyHint": "Salva em ~/.hermes/.env. Ela nunca é injetada no processo — o Hermes a lê da sua própria configuração.",
+      "modelName": "Modelo",
+      "oauthHint": "Este provedor usa OAuth. Execute a configuração abaixo para autenticar no seu terminal.",
+      "awsHint": "O Bedrock usa suas credenciais da AWS (ambiente ou configuração compartilhada). Defina o ID do modelo acima e configure o acesso à AWS no seu ambiente.",
+      "unsupportedProvider": "Este provedor não pode ser editado com campos estruturados. Use o editor de config.yaml abaixo ou a configuração pelo terminal.",
+      "setupTitle": "Configuração autogerenciada",
+      "setupHint": "A configuração interativa do Hermes precisa de um terminal. Inicie-a abaixo ou copie o comando para executá-lo você mesmo.",
+      "runSetup": "Executar configuração do Hermes",
+      "configureModel": "Configurar modelo",
+      "openConfigFolder": "Abrir ~/.hermes",
+      "copyCommand": "Copiar comando",
+      "commandCopied": "Comando copiado para a área de transferência",
+      "advancedTitle": "Avançado: editar config.yaml",
+      "rawConfigHint": "Edite ~/.hermes/config.yaml diretamente. Salvar aqui sobrescreve o arquivo exatamente como está.",
+      "saveRawConfig": "Salvar config.yaml"
+    },
     "authModeOfficialSubscription": "Assinatura oficial",
     "authModeCustomEndpoint": "Endpoint personalizado",
     "authModeCustomEndpointHint": "Configurar manualmente a URL da API e a chave API para um endpoint personalizado.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "Falha ao salvar o gerenciamento de configuração",
       "clineSaved": "Configuração do Cline salva",
       "saveClineFailed": "Falha ao salvar a configuração do Cline",
+      "hermesSaved": "Configuração do Hermes salva",
+      "saveHermesFailed": "Falha ao salvar a configuração do Hermes",
       "modelProviderRequired": "Selecione um provedor de modelo antes de salvar.",
       "affectedRunningSessions": "{count, plural, one {# sessão ativa precisa reconectar para aplicar a alteração} other {# sessões ativas precisam reconectar para aplicar a alteração}}"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "Não instalado",
       "remoteLocal": "Remoto: {remoteVersion} · Local: {localVersion}",
       "platformUnsupported": "{versionText}. A plataforma atual não suporta este agente.",
+      "uvxNotReady": "{versionText}. O runtime do uv não está instalado — instale-o na verificação do uv abaixo para usar este agente.",
       "clickInstall": "{versionText}. Clique em Instalar à direita.",
       "localUnrecognized": "{versionText}. A versão local não é comparável; tente atualizar para sobrescrever a instalação.",
       "upgradeAvailable": "{versionText}. Atualização disponível.",
@@ -2150,6 +2178,12 @@
         "next": "Próxima",
         "submit": "Enviar",
         "submitError": "Falha ao enviar. Tente novamente."
+      },
+      "feedbackCheckResult": {
+        "count": "{count, plural, =1 {1 comentário} other {# comentários}}",
+        "expand": "Mostrar todos os comentários",
+        "collapse": "Recolher",
+        "errorTitle": "Falha ao verificar comentários"
       },
       "askQuestionResult": {
         "title": "Pergunta",

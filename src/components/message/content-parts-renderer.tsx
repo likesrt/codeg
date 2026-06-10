@@ -40,6 +40,7 @@ import {
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
 import { AskQuestionResultCard } from "./ask-question-result-card"
+import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
@@ -2329,6 +2330,20 @@ const ToolCallPart = memo(function ToolCallPart({
     return (
       <AskQuestionResultCard
         input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+
+  // codeg-mcp check_user_feedback: render the received steering notes as a
+  // capsule. The no-op polls (count: 0) and in-flight checks are dropped upstream
+  // by `dropHiddenFeedbackChecks`, so reaching here means there is feedback to
+  // show (or, rarely, an error).
+  if (toolNameLower === "check_user_feedback") {
+    return (
+      <FeedbackCheckResultCard
         output={part.output ?? null}
         errorText={part.errorText ?? null}
         state={part.state}

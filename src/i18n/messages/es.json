@@ -573,6 +573,7 @@
       "confirmDelete": "Confirmar eliminación",
       "confirmUninstall": "Confirmar desinstalación",
       "saveClineConfig": "Guardar configuración de Cline",
+      "saveHermesConfig": "Guardar configuración de Hermes",
       "customInstall": "Instalación personalizada"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "Usa token-file en lugar de token en texto plano cuando sea posible; configúralo con el CLI de openclaw.",
       "sessionKeyHint": "Opcional. Especifica la session key del gateway; si se deja vacío se asigna automáticamente una sesión aislada."
     },
+    "hermes": {
+      "configManagement": "Configuración de Hermes",
+      "configDescription": "Hermes gestiona sus propias credenciales en ~/.hermes/.env y los ajustes en ~/.hermes/config.yaml. Elige un proveedor y luego establece la clave de API y el modelo: codeg escribe ambos archivos por ti.",
+      "providerLabel": "Proveedor",
+      "providerHint": "El proveedor determina qué variable de clave de API y qué model.provider usa Hermes. Los proveedores de OAuth se configuran mediante la configuración del terminal que aparece a continuación.",
+      "groupApiKey": "Proveedores con clave API",
+      "groupOauth": "Proveedores OAuth",
+      "groupAws": "AWS",
+      "apiKeyHint": "Se guarda en ~/.hermes/.env. Nunca se inyecta en el proceso: Hermes la lee de su propia configuración.",
+      "modelName": "Modelo",
+      "oauthHint": "Este proveedor usa OAuth. Ejecuta la configuración de abajo para autenticarte en tu terminal.",
+      "awsHint": "Bedrock usa tus credenciales de AWS (entorno o configuración compartida). Define el ID del modelo arriba y configura el acceso a AWS en tu entorno.",
+      "unsupportedProvider": "Este proveedor no se puede editar con campos estructurados. Usa el editor de config.yaml de abajo o la configuración por terminal.",
+      "setupTitle": "Configuración autogestionada",
+      "setupHint": "La configuración interactiva de Hermes necesita un terminal. Iníciala abajo o copia el comando para ejecutarlo tú mismo.",
+      "runSetup": "Ejecutar configuración de Hermes",
+      "configureModel": "Configurar modelo",
+      "openConfigFolder": "Abrir ~/.hermes",
+      "copyCommand": "Copiar comando",
+      "commandCopied": "Comando copiado al portapapeles",
+      "advancedTitle": "Avanzado: editar config.yaml",
+      "rawConfigHint": "Edita ~/.hermes/config.yaml directamente. Guardar aquí sobrescribe el archivo tal cual.",
+      "saveRawConfig": "Guardar config.yaml"
+    },
     "authModeOfficialSubscription": "Suscripción oficial",
     "authModeCustomEndpoint": "Endpoint personalizado",
     "authModeCustomEndpointHint": "Configurar manualmente la URL de API y la clave API para un endpoint personalizado.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "No se pudo guardar la gestión de configuración",
       "clineSaved": "Configuración de Cline guardada",
       "saveClineFailed": "Error al guardar la configuración de Cline",
+      "hermesSaved": "Configuración de Hermes guardada",
+      "saveHermesFailed": "Error al guardar la configuración de Hermes",
       "modelProviderRequired": "Seleccione un proveedor de modelo antes de guardar.",
       "affectedRunningSessions": "{count, plural, one {# sesión activa necesita reconectarse para aplicar el cambio} other {# sesiones activas necesitan reconectarse para aplicar el cambio}}"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "No instalado",
       "remoteLocal": "Remota: {remoteVersion} · Local: {localVersion}",
       "platformUnsupported": "{versionText}. La plataforma actual no soporta este agente.",
+      "uvxNotReady": "{versionText}. El runtime de uv no está instalado: instálalo desde la comprobación de uv de abajo para usar este agente.",
       "clickInstall": "{versionText}. Haz clic en Instalar a la derecha.",
       "localUnrecognized": "{versionText}. La versión local no es comparable; intenta actualizar para sobrescribir la instalación.",
       "upgradeAvailable": "{versionText}. Hay actualización disponible.",
@@ -2150,6 +2178,12 @@
         "next": "Siguiente",
         "submit": "Enviar",
         "submitError": "No se pudo enviar. Inténtalo de nuevo."
+      },
+      "feedbackCheckResult": {
+        "count": "{count, plural, =1 {1 comentario} other {# comentarios}}",
+        "expand": "Mostrar todos los comentarios",
+        "collapse": "Contraer",
+        "errorTitle": "Error al comprobar los comentarios"
       },
       "askQuestionResult": {
         "title": "Pregunta",

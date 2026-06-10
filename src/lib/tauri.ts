@@ -198,6 +198,10 @@ export async function acpDownloadAgentBinary(
   })
 }
 
+export async function acpInstallUvTool(taskId: string): Promise<void> {
+  return invoke("acp_install_uv_tool", { taskId })
+}
+
 export async function acpDetectAgentLocalVersion(
   agentType: AgentType
 ): Promise<string | null> {

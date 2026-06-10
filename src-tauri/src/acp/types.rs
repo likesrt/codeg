@@ -499,6 +499,9 @@ pub struct AcpAgentInfo {
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
     pub cline_secrets_json: Option<String>,
+    /// Raw `~/.hermes/config.yaml` text, attached for the Hermes settings panel's
+    /// advanced editor. Only populated for `AgentType::Hermes`.
+    pub hermes_config_yaml: Option<String>,
     pub model_provider_id: Option<i32>,
 }
 

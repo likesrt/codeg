@@ -72,12 +72,12 @@ export function InlineModeSelector({
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="sm"
+          size="xs"
           title={selected?.description ?? selected?.name ?? label}
-          className="min-w-0 text-muted-foreground"
+          className="min-w-0 gap-0.5 px-1 text-muted-foreground"
         >
           <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

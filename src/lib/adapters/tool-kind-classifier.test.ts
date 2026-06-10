@@ -98,6 +98,17 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("codeg-mcp:ask_user_question")).toBe(true)
   })
 
+  it("matches check_user_feedback across host naming conventions", () => {
+    expect(isAgentLikeToolName("check_user_feedback")).toBe(true)
+    expect(isAgentLikeToolName("mcp__codeg-mcp__check_user_feedback")).toBe(
+      true
+    )
+    expect(isAgentLikeToolName("mcp__codeg__check_user_feedback")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp/check_user_feedback")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp.check_user_feedback")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp:check_user_feedback")).toBe(true)
+  })
+
   it("does not match other tools", () => {
     expect(isAgentLikeToolName("task")).toBe(false)
     expect(isAgentLikeToolName("subagent")).toBe(false)
@@ -107,6 +118,7 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("xget_delegation_status")).toBe(false)
     expect(isAgentLikeToolName("xcancel_delegation")).toBe(false)
     expect(isAgentLikeToolName("xask_user_question")).toBe(false)
+    expect(isAgentLikeToolName("xcheck_user_feedback")).toBe(false)
   })
 })
 

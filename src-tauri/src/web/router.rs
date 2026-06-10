@@ -602,8 +602,16 @@ pub fn build_router(
             post(handlers::acp::acp_update_agent_config),
         )
         .route(
+            "/acp_update_hermes_config",
+            post(handlers::acp::acp_update_hermes_config),
+        )
+        .route(
             "/acp_download_agent_binary",
             post(handlers::acp::acp_download_agent_binary),
+        )
+        .route(
+            "/acp_install_uv_tool",
+            post(handlers::acp::acp_install_uv_tool),
         )
         .route(
             "/acp_detect_agent_local_version",

@@ -86,7 +86,7 @@ function FeedbackDialogForm({
           agent: agentName ?? t("agentFallback"),
         })}
         aria-label={t("ariaLabel")}
-        className="min-h-28"
+        className="max-h-40 min-h-28 overflow-y-auto"
       />
       <DialogFooter>
         <Button variant="ghost" onClick={onCancel}>

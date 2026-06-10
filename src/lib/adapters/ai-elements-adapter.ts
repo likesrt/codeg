@@ -12,6 +12,7 @@ import {
   isDelegationStatusToolName,
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import { isPlanLikeToolName, parseTodosFromJson } from "@/lib/plan-parse"
 
 /**
@@ -956,6 +957,26 @@ export function groupConsecutiveToolCalls(
 }
 
 /**
+ * Drop `check_user_feedback` tool-call parts that have nothing to surface — the
+ * no-op polls (count: 0), in-flight checks, and unparseable results. Only checks
+ * that actually received steering notes (or errored) survive, so a turn full of
+ * routine "no new feedback" polls stays clean and the survivors don't fragment
+ * a neighbouring tool run into separate groups. Runs before
+ * `groupConsecutiveToolCalls` so the dropped parts never reach grouping.
+ */
+export function dropHiddenFeedbackChecks(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  return parts.filter((part) => {
+    if (part.type !== "tool-call") return true
+    if (normalizeToolName(part.toolName) !== "check_user_feedback") return true
+    // Surface errors (rare) so a failed check isn't silently swallowed.
+    if (part.state === "output-error" || part.errorText?.trim()) return true
+    return feedbackCheckHasContent(part.output ?? null)
+  })
+}
+
+/**
  * Wrap each run of consecutive `get_delegation_status` poll parts into a single
  * `delegation-status-group` part. Runs after `groupConsecutiveToolCalls`, which
  * leaves delegation (agent-like) tool calls standalone — so the status polls
@@ -1450,7 +1471,7 @@ export function adaptMessageTurn(
     turn.role === "assistant"
       ? groupGoalRuns(
           groupConsecutiveDelegationStatus(
-            groupConsecutiveToolCalls(adaptedContent)
+            groupConsecutiveToolCalls(dropHiddenFeedbackChecks(adaptedContent))
           )
         )
       : adaptedContent

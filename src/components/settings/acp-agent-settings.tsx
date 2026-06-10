@@ -30,7 +30,8 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react"
-import { openUrl } from "@/lib/platform"
+import { isDesktop, openUrl } from "@/lib/platform"
+import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
 import { AgentIcon } from "@/components/agent-icon"
 import {
@@ -49,7 +50,9 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -70,6 +73,8 @@ import {
   acpClearBinaryCache,
   acpDetectAgentLocalVersion,
   acpDownloadAgentBinary,
+  acpInstallUvTool,
+  acpGetAgentStatus,
   acpListAgents,
   acpPreflight,
   acpPrepareNpxAgent,
@@ -77,6 +82,9 @@ import {
   acpUninstallAgent,
   acpUpdateAgentConfig,
   acpUpdateAgentEnv,
+  acpUpdateHermesConfig,
+  acpRevealHermesHome,
+  acpOpenHermesSetupTerminal,
   codexPollDeviceCode,
   codexRequestDeviceCode,
   listModelProviders,
@@ -86,10 +94,11 @@ import type {
   AgentType,
   CheckStatus,
   FixAction,
+  HermesLocalConfig,
   ModelProviderInfo,
   PreflightResult,
 } from "@/lib/types"
-import { parseClaudeProviderModel } from "@/lib/types"
+import { HERMES_PROVIDERS, parseClaudeProviderModel } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
@@ -144,6 +153,13 @@ interface AgentDraft {
   clineApiKey: string
   clineModel: string
   clineBaseUrl: string
+  // Hermes — `apiKey`/`model`/`apiBaseUrl` are reused for the active provider's
+  // key, model.default, and model.base_url. These carry the rest.
+  hermesProvider: string
+  hermesConfigYaml: string
+  hermesHome: string
+  hermesSetupCommand: string
+  hermesModelCommand: string
 }
 
 type RunningActionKind =
@@ -155,6 +171,7 @@ type RunningActionKind =
   | "uninstall_npx"
   | "redownload_binary"
   | "custom_install"
+  | "install_uv"
 
 type UiFixAction =
   | FixAction
@@ -170,6 +187,9 @@ type UiFixAction =
         | "install_opencode_plugins"
         | "custom_install"
       payload: string
+      // When true, the fix renders as a greyed-out button (e.g. the uvx
+      // agent-install action while the uv runtime isn't ready yet).
+      disabled?: boolean
     }
 
 interface UiCheckItem {
@@ -2322,11 +2342,48 @@ function buildImportantPatchFromDraft(draft: AgentDraft): ImportantDraftPatch {
   }
 }
 
+interface HermesDraftValues {
+  provider: string
+  model: string
+  baseUrl: string
+  apiKey: string
+  hermesHome: string
+  setupCommand: string
+  modelCommand: string
+}
+
+/**
+ * Parse the normalized Hermes projection carried in `AcpAgentInfo.config_json`
+ * (produced by the backend from ~/.hermes/.env + config.yaml). Falls back to a
+ * sensible default provider when nothing is configured yet.
+ */
+function parseHermesConfig(configText: string): HermesDraftValues {
+  let parsed: HermesLocalConfig = {}
+  if (configText.trim()) {
+    try {
+      parsed = JSON.parse(configText) as HermesLocalConfig
+    } catch {
+      parsed = {}
+    }
+  }
+  return {
+    provider: parsed.provider ?? "openrouter",
+    model: parsed.model ?? "",
+    baseUrl: parsed.baseUrl ?? "",
+    apiKey: parsed.apiKey ?? "",
+    hermesHome: parsed.hermesHome ?? "",
+    setupCommand: parsed.setupCommand ?? "",
+    modelCommand: parsed.modelCommand ?? "",
+  }
+}
+
 function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
   const configText =
     typeof agent.config_json === "string" && agent.config_json.trim()
       ? agent.config_json
       : ""
+  const hermesValues =
+    agent.agent_type === "hermes" ? parseHermesConfig(configText) : null
   const openCodeAuthJsonText = agent.opencode_auth_json ?? ""
   const codexAuthJsonText = agent.codex_auth_json ?? ""
   const codexConfigTomlText =
@@ -2376,25 +2433,31 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     envText,
     configText,
     apiBaseUrl:
-      agent.agent_type === "codex"
-        ? codexImportant.apiBaseUrl
-        : agent.agent_type === "gemini"
-          ? geminiImportant.apiBaseUrl
-          : important.apiBaseUrl,
+      agent.agent_type === "hermes"
+        ? (hermesValues?.baseUrl ?? "")
+        : agent.agent_type === "codex"
+          ? codexImportant.apiBaseUrl
+          : agent.agent_type === "gemini"
+            ? geminiImportant.apiBaseUrl
+            : important.apiBaseUrl,
     apiKey:
-      agent.agent_type === "codex"
-        ? (codexImportant.apiKey ?? "")
-        : agent.agent_type === "gemini"
-          ? geminiImportant.geminiApiKey || geminiImportant.googleApiKey
-          : important.apiKey,
+      agent.agent_type === "hermes"
+        ? (hermesValues?.apiKey ?? "")
+        : agent.agent_type === "codex"
+          ? (codexImportant.apiKey ?? "")
+          : agent.agent_type === "gemini"
+            ? geminiImportant.geminiApiKey || geminiImportant.googleApiKey
+            : important.apiKey,
     model:
-      agent.agent_type === "codex"
-        ? codexImportant.model
-        : agent.agent_type === "gemini"
-          ? geminiImportant.model
-          : agent.agent_type === "open_code"
-            ? openCodeImportant.model
-            : important.model,
+      agent.agent_type === "hermes"
+        ? (hermesValues?.model ?? "")
+        : agent.agent_type === "codex"
+          ? codexImportant.model
+          : agent.agent_type === "gemini"
+            ? geminiImportant.model
+            : agent.agent_type === "open_code"
+              ? openCodeImportant.model
+              : important.model,
     claudeAuthMode:
       agent.agent_type === "claude_code" && agent.model_provider_id != null
         ? "model_provider"
@@ -2435,6 +2498,11 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     clineApiKey: clineImportant.apiKey,
     clineModel: clineImportant.model,
     clineBaseUrl: clineImportant.baseUrl,
+    hermesProvider: hermesValues?.provider ?? "openrouter",
+    hermesConfigYaml: agent.hermes_config_yaml ?? "",
+    hermesHome: hermesValues?.hermesHome ?? "",
+    hermesSetupCommand: hermesValues?.setupCommand ?? "",
+    hermesModelCommand: hermesValues?.modelCommand ?? "",
   }
 }
 
@@ -2470,8 +2538,20 @@ function isValidCustomVersion(value: string): boolean {
   return /^[0-9][0-9A-Za-z.\-+]*$/.test(normalized) && normalized.includes(".")
 }
 
-function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
-  if (agent.distribution_type !== "binary" && agent.distribution_type !== "npx")
+// `uvReady` reports whether the uv runtime (uvx) is installed — only meaningful
+// for uvx agents (Hermes). Derived from the uv preflight check by the caller.
+// uvx agents need uv installed before their package can be prepared, so when
+// uv isn't ready every managed install/upgrade action is surfaced disabled and
+// the user is pointed at the separate "Install uv" preflight action.
+export function buildVersionCheck(
+  agent: AcpAgentInfo,
+  uvReady: boolean = true
+): UiCheckItem | null {
+  if (
+    agent.distribution_type !== "binary" &&
+    agent.distribution_type !== "npx" &&
+    agent.distribution_type !== "uvx"
+  )
     return null
 
   const remoteVersion = agent.registry_version ?? "unknown"
@@ -2489,7 +2569,47 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
   const uninstallAction: RunningActionKind =
     agent.distribution_type === "binary" ? "uninstall_binary" : "uninstall_npx"
 
-  if (!agent.available) {
+  // uvx agents (Hermes) need the uv runtime before any managed install/upgrade
+  // can run. Surface a single blocked state pointing at the separate "Install
+  // uv" preflight action below, with the agent-install action shown disabled.
+  // This covers both the fresh case (available=false) and the rare system-CLI
+  // case (available=true via a global `hermes`, but uvx still missing).
+  // Uninstall stays available even without uv — it only clears the prepared
+  // marker — so a prepared package can still be removed when uv is gone.
+  if (agent.distribution_type === "uvx" && !uvReady) {
+    const blockedFixes: UiFixAction[] = [
+      {
+        label: acpText("actions.install", "Install"),
+        kind: installAction,
+        payload: agent.agent_type,
+        disabled: true,
+      },
+    ]
+    if (agent.installed_version) {
+      blockedFixes.push({
+        label: acpText("actions.uninstall", "Uninstall"),
+        kind: uninstallAction,
+        payload: agent.agent_type,
+      })
+    }
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "warn",
+      message: acpText(
+        "version.uvxNotReady",
+        "{versionText}. The uv runtime isn't installed — install it from the uv check below to use this agent.",
+        { versionText }
+      ),
+      fixes: blockedFixes,
+    }
+  }
+
+  // Only binary agents can be genuinely platform-unsupported (no binary for
+  // this platform). uvx runs everywhere — a uvx agent that reaches here (uv
+  // treated as ready, i.e. preflight unknown) falls through to an actionable
+  // install rather than a dead-end "unsupported" message.
+  if (!agent.available && agent.distribution_type !== "uvx") {
     return {
       check_id: "version_status",
       label: acpText("version.statusLabel", "Version Status"),
@@ -2506,8 +2626,11 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
   // Custom-version install is offered in every installable state (and stays
   // available after a version is installed, so users can switch versions).
   // Binary agents need the registry version present to template the download URL.
+  // uvx agents pin their version in the package spec, so custom-version
+  // install does not apply (the backend ignores the override).
   const supportsCustomInstall =
-    agent.distribution_type === "npx" || Boolean(agent.registry_version)
+    agent.distribution_type === "npx" ||
+    (agent.distribution_type === "binary" && Boolean(agent.registry_version))
   const customInstallFix: UiFixAction = {
     label: acpText("actions.customInstall", "Custom install"),
     kind: "custom_install",
@@ -2631,11 +2754,22 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
   }
 }
 
-function getAgentChecks(
+export function getAgentChecks(
   agent: AcpAgentInfo,
   current?: AgentCheckState
 ): UiCheckItem[] {
-  const versionCheck = buildVersionCheck(agent)
+  // For uvx agents, only treat uv as not-ready when the preflight result is
+  // present AND its uv check isn't passing. With no result yet (or an errored
+  // preflight) stay optimistic — otherwise we'd block the version-status
+  // install while the "Install uv" button (which lives in that same preflight
+  // result) is absent, a dead end. When the result IS present, the button is
+  // present alongside it, so blocking is always paired with an actionable fix.
+  const uvCheck = current?.result?.checks?.find(
+    (check) => check.check_id === "uv_available"
+  )
+  const uvReady =
+    agent.distribution_type !== "uvx" || !uvCheck || uvCheck.status === "pass"
+  const versionCheck = buildVersionCheck(agent, uvReady)
   const remoteChecks: UiCheckItem[] = (current?.result?.checks ?? []).map(
     (check) => ({
       ...check,
@@ -2864,10 +2998,12 @@ export function AcpAgentSettings() {
     async (agentType: AgentType, forceRefresh?: boolean) => {
       setChecking((prev) => ({ ...prev, [agentType]: true }))
       try {
-        const [resultState, versionState] = await Promise.allSettled([
-          acpPreflight(agentType, forceRefresh),
-          acpDetectAgentLocalVersion(agentType),
-        ])
+        const [resultState, versionState, statusState] =
+          await Promise.allSettled([
+            acpPreflight(agentType, forceRefresh),
+            acpDetectAgentLocalVersion(agentType),
+            acpGetAgentStatus(agentType),
+          ])
 
         if (versionState.status === "fulfilled") {
           setAgents((prev) => {
@@ -2878,6 +3014,24 @@ export function AcpAgentSettings() {
               if (agent.installed_version === versionState.value) return agent
               changed = true
               return { ...agent, installed_version: versionState.value }
+            })
+            return changed ? next : prev
+          })
+        }
+
+        // Re-sync `available` from the authoritative backend status. It is
+        // recomputed live (e.g. `uvx_agent_launchable` for Hermes), so an
+        // install that provisions the runtime flips it true here — otherwise
+        // the version-status panel would stay stuck on the unavailable /
+        // "runtime not ready" branch with the freshly installed version shown.
+        if (statusState.status === "fulfilled") {
+          setAgents((prev) => {
+            let changed = false
+            const next = prev.map((agent) => {
+              if (agent.agent_type !== agentType) return agent
+              if (agent.available === statusState.value.available) return agent
+              changed = true
+              return { ...agent, available: statusState.value.available }
             })
             return changed ? next : prev
           })
@@ -3417,6 +3571,49 @@ export function AcpAgentSettings() {
     [runPreflight, t, installStream.start]
   )
 
+  // Install ONLY the uv runtime (uvx) — separate from preparing a uvx agent's
+  // package. Triggered by the uv preflight check's "Install uv" fix. On success
+  // `runPreflight` re-syncs the uv check + `available`, unblocking the agent's
+  // version-status install action.
+  const runUvInstall = useCallback(
+    async (agent: AcpAgentInfo) => {
+      if (busyActionRef.current.has(agent.agent_type)) return
+      busyActionRef.current.add(agent.agent_type)
+      setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: true }))
+      setRunningActionKind((prev) => ({
+        ...prev,
+        [agent.agent_type]: "install_uv",
+      }))
+      const actionLabel = t("actions.install")
+      const taskId = randomUUID()
+      setStreamAgentType(agent.agent_type)
+      await installStream.start(taskId)
+      try {
+        await acpInstallUvTool(taskId)
+        await runPreflight(agent.agent_type)
+        toast.success(
+          t("toasts.agentActionCompleted", { name: "uv", action: actionLabel })
+        )
+      } catch (err) {
+        const message = toErrorMessage(err)
+        toast.error(
+          t("toasts.agentActionFailed", { name: "uv", action: actionLabel }),
+          { description: message }
+        )
+        throw err
+      } finally {
+        busyActionRef.current.delete(agent.agent_type)
+        setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: false }))
+        setRunningActionKind((prev) => ({
+          ...prev,
+          [agent.agent_type]: undefined,
+        }))
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runPreflight, t, installStream.start]
+  )
+
   const handleFixAction = async (agent: AcpAgentInfo, action: UiFixAction) => {
     if (
       busyBinaryAction[agent.agent_type] ||
@@ -3455,6 +3652,10 @@ export function AcpAgentSettings() {
     if (action.kind === "install_opencode_plugins") {
       setPluginModalAgent(agent.agent_type)
       setPluginModalOpen(true)
+      return
+    }
+    if (action.kind === "install_uv") {
+      await runUvInstall(agent)
       return
     }
     if (action.kind === "custom_install") {
@@ -3571,18 +3772,20 @@ export function AcpAgentSettings() {
                     variant="outline"
                     className="h-6 bg-muted/30 hover:bg-muted/50 disabled:bg-muted/30 disabled:opacity-100"
                     disabled={
-                      Boolean(busyBinaryAction[agent.agent_type]) &&
-                      [
-                        "download_binary",
-                        "upgrade_binary",
-                        "install_npx",
-                        "upgrade_npx",
-                        "uninstall_binary",
-                        "uninstall_npx",
-                        "redownload_binary",
-                        "install_opencode_plugins",
-                        "custom_install",
-                      ].includes(fix.kind)
+                      ("disabled" in fix && fix.disabled === true) ||
+                      (Boolean(busyBinaryAction[agent.agent_type]) &&
+                        [
+                          "download_binary",
+                          "upgrade_binary",
+                          "install_npx",
+                          "upgrade_npx",
+                          "uninstall_binary",
+                          "uninstall_npx",
+                          "redownload_binary",
+                          "install_opencode_plugins",
+                          "custom_install",
+                          "install_uv",
+                        ].includes(fix.kind))
                     }
                     onClick={() => {
                       handleFixAction(agent, fix).catch((err) => {
@@ -3593,7 +3796,8 @@ export function AcpAgentSettings() {
                     {runningActionKind[agent.agent_type] === fix.kind ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
                     ) : fix.kind === "download_binary" ||
-                      fix.kind === "install_npx" ? (
+                      fix.kind === "install_npx" ||
+                      fix.kind === "install_uv" ? (
                       <Download className="h-3 w-3" />
                     ) : fix.kind === "upgrade_binary" ||
                       fix.kind === "upgrade_npx" ||
@@ -3670,6 +3874,13 @@ export function AcpAgentSettings() {
           (option) => option.value === selectedDraft.codexReasoningEffort
         ) ?? null)
       : null
+  const selectedHermesProviderOption =
+    selectedAgent?.agent_type === "hermes" && selectedDraft
+      ? (HERMES_PROVIDERS.find((p) => p.id === selectedDraft.hermesProvider) ??
+        null)
+      : null
+  const hermesCanUseNativeSetup =
+    isDesktop() && getActiveRemoteConnectionId() === null
   const selectedOpenCodeConfig = useMemo(() => {
     if (selectedAgentKind !== "open_code" || !locale) return null
     return extractOpenCodeConfigValues(
@@ -4343,6 +4554,137 @@ export function AcpAgentSettings() {
     },
     [selectedAgent, selectedDraft, updateSelectedDraft]
   )
+
+  const handleHermesFieldChange = useCallback(
+    (
+      key:
+        | "hermesProvider"
+        | "apiKey"
+        | "model"
+        | "apiBaseUrl"
+        | "hermesConfigYaml",
+      value: string
+    ) => {
+      if (
+        !selectedAgent ||
+        !selectedDraft ||
+        selectedAgent.agent_type !== "hermes"
+      )
+        return
+      updateSelectedDraft((current) => {
+        if (key !== "hermesProvider") {
+          return { ...current, [key]: value }
+        }
+        // Switching provider: the projection only carries the *configured*
+        // provider's key, so restore it when returning to that provider and
+        // clear otherwise — never carry one provider's secret into another's
+        // env var. An empty key field then means "leave the stored key as-is".
+        const projected = parseHermesConfig(
+          typeof selectedAgent.config_json === "string"
+            ? selectedAgent.config_json
+            : ""
+        )
+        const sameAsConfigured = value === projected.provider
+        return {
+          ...current,
+          hermesProvider: value,
+          apiKey: sameAsConfigured ? projected.apiKey : "",
+          apiBaseUrl: sameAsConfigured ? projected.baseUrl : "",
+        }
+      })
+    },
+    [selectedAgent, selectedDraft, updateSelectedDraft]
+  )
+
+  const handleSaveHermesConfig = useCallback(
+    async (mode: "structured" | "raw") => {
+      if (
+        !selectedAgent ||
+        !selectedDraft ||
+        selectedAgent.agent_type !== "hermes"
+      )
+        return
+      const agentType = selectedAgent.agent_type
+      const draft = selectedDraft
+      const providerOption = HERMES_PROVIDERS.find(
+        (p) => p.id === draft.hermesProvider
+      )
+      setSavingConfig((prev) => ({ ...prev, [agentType]: true }))
+      try {
+        await acpUpdateHermesConfig(
+          mode === "raw"
+            ? {
+                provider: draft.hermesProvider,
+                rawConfigYaml: draft.hermesConfigYaml,
+              }
+            : {
+                provider: draft.hermesProvider,
+                // Blank key, or a provider with no key field (OAuth / AWS) →
+                // null → backend leaves the stored ~/.hermes/.env value
+                // untouched (so switching providers can't wipe it).
+                apiKey:
+                  providerOption?.kind !== "apiKey" || !draft.apiKey.trim()
+                    ? null
+                    : draft.apiKey,
+                model: draft.model,
+                baseUrl: providerOption?.needsBaseUrl ? draft.apiBaseUrl : null,
+              }
+        )
+        await refreshAgents()
+        // Drop the draft so it rebuilds from the freshly-persisted projection —
+        // otherwise the *other* mode (structured fields vs. raw config.yaml)
+        // keeps stale content and a later save could overwrite this one.
+        setDrafts((prev) => {
+          const next = { ...prev }
+          delete next[agentType]
+          return next
+        })
+        toast.success(t("toasts.hermesSaved"), {
+          description: t("toasts.configSavedHint"),
+        })
+      } catch (err) {
+        console.error("[Settings] save hermes config failed:", err)
+        toast.error(t("toasts.saveHermesFailed"), {
+          description: toErrorMessage(err),
+        })
+      } finally {
+        setSavingConfig((prev) => ({ ...prev, [agentType]: false }))
+      }
+    },
+    [selectedAgent, selectedDraft, refreshAgents, t]
+  )
+
+  // Hermes's interactive setup (`--setup` / `hermes model`) needs a real TTY +
+  // browser, so launch it in an external OS terminal on local desktop (the
+  // backend builds the exact command). Fall back to copying the displayed
+  // command (web / remote, or if the launch fails).
+  const runHermesSetupCommand = useCallback(
+    async (kind: "setup" | "model", displayCommand: string) => {
+      const native = isDesktop() && getActiveRemoteConnectionId() === null
+      if (native) {
+        try {
+          await acpOpenHermesSetupTerminal(kind)
+          return
+        } catch (err) {
+          console.error("[Settings] open hermes setup terminal failed:", err)
+        }
+      }
+      if (displayCommand) {
+        const ok = await copyTextToClipboard(displayCommand)
+        if (ok) toast.success(t("hermes.commandCopied"))
+      }
+    },
+    [t]
+  )
+
+  const handleRevealHermesHome = useCallback(async () => {
+    try {
+      await acpRevealHermesHome()
+    } catch (err) {
+      console.error("[Settings] reveal hermes home failed:", err)
+      toast.error(toErrorMessage(err))
+    }
+  }, [])
 
   const handleClineFieldChange = useCallback(
     (
@@ -7485,6 +7827,314 @@ supports_websockets = true`}
                         )}
                       </Button>
                     </div>
+                  </div>
+                ) : selectedAgent.agent_type === "hermes" ? (
+                  <div className="space-y-3 rounded-md border bg-muted/10 p-3">
+                    <div>
+                      <label className="text-xs font-medium">
+                        {t("hermes.configManagement")}
+                      </label>
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {t("hermes.configDescription")}
+                      </p>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] text-muted-foreground">
+                        {t("hermes.providerLabel")}
+                      </label>
+                      <Select
+                        value={selectedDraft.hermesProvider}
+                        onValueChange={(value) =>
+                          handleHermesFieldChange("hermesProvider", value)
+                        }
+                        disabled={selectedIsSavingConfig}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent align="start">
+                          {/* Preserve an existing config's provider in the list
+                              even when it's outside the curated table, so the
+                              dropdown shows the real value instead of going blank. */}
+                          {selectedDraft.hermesProvider &&
+                            !HERMES_PROVIDERS.some(
+                              (p) => p.id === selectedDraft.hermesProvider
+                            ) && (
+                              <SelectItem value={selectedDraft.hermesProvider}>
+                                {selectedDraft.hermesProvider}
+                              </SelectItem>
+                            )}
+                          {(
+                            [
+                              ["apiKey", t("hermes.groupApiKey")],
+                              ["oauth", t("hermes.groupOauth")],
+                              ["aws", t("hermes.groupAws")],
+                            ] as const
+                          ).map(([kind, groupLabel]) => {
+                            const items = HERMES_PROVIDERS.filter(
+                              (p) => p.kind === kind
+                            )
+                            if (items.length === 0) return null
+                            return (
+                              <SelectGroup key={kind}>
+                                <SelectLabel>{groupLabel}</SelectLabel>
+                                {items.map((provider) => (
+                                  <SelectItem
+                                    key={provider.id}
+                                    value={provider.id}
+                                  >
+                                    {provider.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            )
+                          })}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("hermes.providerHint")}
+                      </p>
+                    </div>
+
+                    {selectedHermesProviderOption?.kind === "apiKey" && (
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">
+                          API Key
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type={
+                              showApiKeys[selectedAgent.agent_type]
+                                ? "text"
+                                : "password"
+                            }
+                            value={selectedDraft.apiKey}
+                            onChange={(event) =>
+                              handleHermesFieldChange(
+                                "apiKey",
+                                event.target.value
+                              )
+                            }
+                            placeholder="sk-..."
+                            disabled={selectedIsSavingConfig}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setShowApiKeys((prev) => ({
+                                ...prev,
+                                [selectedAgent.agent_type]:
+                                  !prev[selectedAgent.agent_type],
+                              }))
+                            }}
+                            title={
+                              showApiKeys[selectedAgent.agent_type]
+                                ? t("actions.hideApiKey")
+                                : t("actions.showApiKey")
+                            }
+                          >
+                            {showApiKeys[selectedAgent.agent_type] ? (
+                              <EyeOff className="h-3.5 w-3.5" />
+                            ) : (
+                              <Eye className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground">
+                          {t("hermes.apiKeyHint")}
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedHermesProviderOption?.needsBaseUrl && (
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-muted-foreground">
+                          API URL
+                        </label>
+                        <Input
+                          value={selectedDraft.apiBaseUrl}
+                          onChange={(event) =>
+                            handleHermesFieldChange(
+                              "apiBaseUrl",
+                              event.target.value
+                            )
+                          }
+                          placeholder="https://api.example.com/v1"
+                          disabled={selectedIsSavingConfig}
+                        />
+                      </div>
+                    )}
+
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] text-muted-foreground">
+                        {t("hermes.modelName")}
+                      </label>
+                      <Input
+                        value={selectedDraft.model}
+                        onChange={(event) =>
+                          handleHermesFieldChange("model", event.target.value)
+                        }
+                        placeholder="moonshotai/kimi-k2"
+                        disabled={selectedIsSavingConfig}
+                      />
+                    </div>
+
+                    {selectedHermesProviderOption?.kind === "oauth" && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("hermes.oauthHint")}
+                      </p>
+                    )}
+
+                    {selectedHermesProviderOption?.kind === "aws" && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("hermes.awsHint")}
+                      </p>
+                    )}
+
+                    {!selectedHermesProviderOption && (
+                      <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                        {t("hermes.unsupportedProvider")}
+                      </p>
+                    )}
+
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveHermesConfig("structured")}
+                        disabled={
+                          selectedIsSavingConfig ||
+                          !selectedHermesProviderOption
+                        }
+                      >
+                        {selectedIsSavingConfig ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            {t("actions.saving")}
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-3.5 w-3.5" />
+                            {t("actions.saveHermesConfig")}
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    <div className="space-y-2 rounded-md border p-3">
+                      <div>
+                        <label className="text-[11px] font-medium">
+                          {t("hermes.setupTitle")}
+                        </label>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {t("hermes.setupHint")}
+                        </p>
+                      </div>
+                      {hermesCanUseNativeSetup && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              runHermesSetupCommand(
+                                "setup",
+                                selectedDraft.hermesSetupCommand
+                              )
+                            }
+                          >
+                            <Wrench className="h-3.5 w-3.5" />
+                            {t("hermes.runSetup")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              runHermesSetupCommand(
+                                "model",
+                                selectedDraft.hermesModelCommand
+                              )
+                            }
+                          >
+                            {t("hermes.configureModel")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleRevealHermesHome}
+                          >
+                            {t("hermes.openConfigFolder")}
+                          </Button>
+                        </div>
+                      )}
+                      {selectedDraft.hermesSetupCommand && (
+                        <div className="flex items-center gap-2">
+                          <code className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-[11px] font-mono whitespace-nowrap">
+                            {selectedDraft.hermesSetupCommand}
+                          </code>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 shrink-0 p-0"
+                            onClick={async () => {
+                              const ok = await copyTextToClipboard(
+                                selectedDraft.hermesSetupCommand
+                              )
+                              if (ok) {
+                                toast.success(t("hermes.commandCopied"))
+                              }
+                            }}
+                            title={t("hermes.copyCommand")}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+
+                    <details className="rounded-md border p-3">
+                      <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground">
+                        {t("hermes.advancedTitle")}
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <p className="text-[11px] text-muted-foreground">
+                          {t("hermes.rawConfigHint")}
+                        </p>
+                        <Textarea
+                          value={selectedDraft.hermesConfigYaml}
+                          onChange={(event) =>
+                            handleHermesFieldChange(
+                              "hermesConfigYaml",
+                              event.target.value
+                            )
+                          }
+                          placeholder={`model:\n  provider: openrouter\n  default: moonshotai/kimi-k2`}
+                          className="min-h-40 max-h-80 font-mono text-xs"
+                          disabled={selectedIsSavingConfig}
+                        />
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSaveHermesConfig("raw")}
+                            disabled={selectedIsSavingConfig}
+                          >
+                            {selectedIsSavingConfig ? (
+                              <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                {t("actions.saving")}
+                              </>
+                            ) : (
+                              <>
+                                <Save className="h-3.5 w-3.5" />
+                                {t("hermes.saveRawConfig")}
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    </details>
                   </div>
                 ) : (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">

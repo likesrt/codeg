@@ -309,6 +309,17 @@ export async function acpDownloadAgentBinary(
   })
 }
 
+export async function acpInstallUvTool(taskId: string): Promise<void> {
+  // uv install downloads + extracts the toolchain from GitHub; allow well
+  // beyond the default 60s web-call timeout so slow networks don't surface a
+  // spurious timeout while the backend is still streaming progress.
+  return getTransport().call(
+    "acp_install_uv_tool",
+    { taskId },
+    { timeoutMs: 600_000 }
+  )
+}
+
 export async function acpDetectAgentLocalVersion(
   agentType: AgentType
 ): Promise<string | null> {
@@ -396,6 +407,44 @@ export async function acpUpdateAgentConfig(
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
   })
+}
+
+/**
+ * Persist a Hermes config update. Writes the active provider's API key to
+ * ~/.hermes/.env and the model/provider/base_url to ~/.hermes/config.yaml.
+ * When `rawConfigYaml` is given, config.yaml is written verbatim (advanced
+ * mode), bypassing the structured merge.
+ */
+export async function acpUpdateHermesConfig(params: {
+  provider: string
+  apiKey?: string | null
+  model?: string | null
+  baseUrl?: string | null
+  rawConfigYaml?: string | null
+}): Promise<void> {
+  return getTransport().call("acp_update_hermes_config", {
+    provider: params.provider,
+    apiKey: params.apiKey ?? null,
+    model: params.model ?? null,
+    baseUrl: params.baseUrl ?? null,
+    rawConfigYaml: params.rawConfigYaml ?? null,
+  })
+}
+
+/**
+ * Launch Hermes's interactive setup in the OS terminal (desktop only). `kind`
+ * picks the flow; the backend constructs the exact command from the registry
+ * recipe (no arbitrary shell text crosses the boundary).
+ */
+export async function acpOpenHermesSetupTerminal(
+  kind: "setup" | "model"
+): Promise<void> {
+  return getTransport().call("acp_open_hermes_setup_terminal", { kind })
+}
+
+/** Ensure ~/.hermes exists and reveal it in the system file manager (desktop). */
+export async function acpRevealHermesHome(): Promise<void> {
+  return getTransport().call("acp_reveal_hermes_home", {})
 }
 
 export async function acpReorderAgents(agentTypes: AgentType[]): Promise<void> {

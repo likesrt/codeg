@@ -1018,7 +1018,7 @@ mod tests {
         assert!(names.contains(&"delegate_to_agent"));
         assert!(names.contains(&"get_delegation_status"));
         assert!(names.contains(&"cancel_delegation"));
-        // delegate_to_agent schema still enumerates all 6 agent types.
+        // delegate_to_agent schema still enumerates all 7 agent types.
         let delegate = tools
             .iter()
             .find(|t| t["name"] == "delegate_to_agent")
@@ -1026,7 +1026,8 @@ mod tests {
         let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(agents.len(), 6);
+        assert_eq!(agents.len(), 7);
+        assert!(agents.iter().any(|a| a == "hermes"));
         // get_delegation_status takes a single id param — task_ids (required) —
         // plus wait_ms. The legacy single `task_id` param is gone.
         let status = tools

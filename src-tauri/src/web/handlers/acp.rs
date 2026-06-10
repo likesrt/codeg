@@ -606,6 +606,39 @@ pub async fn acp_update_agent_config(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpUpdateHermesConfigParams {
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub raw_config_yaml: Option<String>,
+}
+
+pub async fn acp_update_hermes_config(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpUpdateHermesConfigParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    acp_commands::acp_update_hermes_config_core(
+        acp_commands::HermesConfigUpdate {
+            provider: params.provider,
+            api_key: params.api_key,
+            model: params.model,
+            base_url: params.base_url,
+            raw_config_yaml: params.raw_config_yaml,
+        },
+        &emitter,
+    )
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpDownloadAgentBinaryParams {
     pub agent_type: AgentType,
     #[serde(default)]
@@ -626,6 +659,23 @@ pub async fn acp_download_agent_binary(
     )
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpInstallUvToolParams {
+    pub task_id: String,
+}
+
+pub async fn acp_install_uv_tool(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpInstallUvToolParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    acp_commands::acp_install_uv_tool_core(params.task_id, &emitter)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
 }
 

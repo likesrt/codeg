@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
+Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
 
 ![gallery](../images/gallery.svg)
 
@@ -78,6 +78,7 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 | Gemini CLI  | `$GEMINI_CLI_HOME/.gemini`            | `~/.gemini`                           | `%USERPROFILE%\\.gemini`                              |
 | OpenClaw    | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline       | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
+| Hermes      | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
 
 > Nota: as variáveis de ambiente têm prioridade sobre os caminhos padrão.
 

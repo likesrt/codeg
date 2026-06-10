@@ -2,6 +2,7 @@ pub mod claude;
 pub mod cline;
 pub mod codex;
 pub mod gemini;
+pub mod hermes;
 pub mod openclaw;
 pub mod opencode;
 
@@ -76,6 +77,18 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
         ExternalSource {
             agent: "opencode",
             root: opencode::resolve_opencode_base_dir().join("opencode.db"),
+            is_file: true,
+            include_top: None,
+        },
+        ExternalSource {
+            // Hermes self-manages its session store at `~/.hermes/state.db`.
+            // WAL caveat: `is_file` archives only the main DB file, not the
+            // `-wal`/`-shm` sidecars, so a cold backup taken mid-write can miss
+            // the newest un-checkpointed frames (same known limitation as
+            // OpenCode). This does NOT affect live reads — the parser's `mode=ro`
+            // connection sees committed WAL frames.
+            agent: "hermes",
+            root: hermes::resolve_hermes_home_dir().join("state.db"),
             is_file: true,
             include_top: None,
         },

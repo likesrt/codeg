@@ -573,6 +573,7 @@
       "confirmDelete": "تأكيد الحذف",
       "confirmUninstall": "تأكيد إزالة التثبيت",
       "saveClineConfig": "حفظ تكوين Cline",
+      "saveHermesConfig": "حفظ تكوين Hermes",
       "customInstall": "تثبيت مخصص"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "يُفضّل استخدام token-file بدل الرمز النصي متى أمكن؛ قم بالإعداد عبر openclaw CLI.",
       "sessionKeyHint": "اختياري. حدّد مفتاح جلسة gateway؛ واتركه فارغًا للتعيين التلقائي لجلسة معزولة."
     },
+    "hermes": {
+      "configManagement": "تكوين Hermes",
+      "configDescription": "يدير Hermes بيانات اعتماده الخاصة في ~/.hermes/.env والإعدادات في ~/.hermes/config.yaml. اختر مزوّدًا، ثم عيّن مفتاح API والنموذج — وسيكتب codeg كلا الملفين نيابةً عنك.",
+      "providerLabel": "المزوّد",
+      "providerHint": "يحدّد المزوّد متغيّر مفتاح API و model.provider الذي يستخدمه Hermes. تُهيَّأ مزوّدات OAuth عبر إعداد الطرفية أدناه.",
+      "groupApiKey": "مزودو مفاتيح API",
+      "groupOauth": "مزودو OAuth",
+      "groupAws": "AWS",
+      "apiKeyHint": "يُحفظ في ~/.hermes/.env. ولا يُحقَن أبدًا في العملية — إذ يقرؤه Hermes من تكوينه الخاص.",
+      "modelName": "النموذج",
+      "oauthHint": "يستخدم هذا المزوّد OAuth. شغّل الإعداد أدناه للمصادقة في طرفيتك.",
+      "awsHint": "يستخدم Bedrock بيانات اعتماد AWS الخاصة بك (البيئة أو الإعداد المشترك). حدّد معرّف النموذج أعلاه واضبط وصول AWS في بيئتك.",
+      "unsupportedProvider": "لا يمكن تحرير هذا المزود عبر الحقول المنظمة. استخدم محرر config.yaml أدناه أو الإعداد عبر الطرفية.",
+      "setupTitle": "إعداد ذاتي الإدارة",
+      "setupHint": "يحتاج إعداد Hermes التفاعلي إلى طرفية. شغّله أدناه، أو انسخ الأمر لتشغيله بنفسك.",
+      "runSetup": "تشغيل إعداد Hermes",
+      "configureModel": "تهيئة النموذج",
+      "openConfigFolder": "فتح ~/.hermes",
+      "copyCommand": "نسخ الأمر",
+      "commandCopied": "تم نسخ الأمر إلى الحافظة",
+      "advancedTitle": "متقدّم: تحرير config.yaml",
+      "rawConfigHint": "حرّر ~/.hermes/config.yaml مباشرةً. الحفظ هنا يستبدل الملف حرفيًا.",
+      "saveRawConfig": "حفظ config.yaml"
+    },
     "authModeOfficialSubscription": "الاشتراك الرسمي",
     "authModeCustomEndpoint": "نقطة نهاية مخصصة",
     "authModeCustomEndpointHint": "تكوين عنوان API ومفتاح API يدوياً لنقطة نهاية مخصصة.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "فشل حفظ إدارة الإعدادات",
       "clineSaved": "تم حفظ تكوين Cline",
       "saveClineFailed": "فشل في حفظ تكوين Cline",
+      "hermesSaved": "تم حفظ تكوين Hermes",
+      "saveHermesFailed": "فشل في حفظ تكوين Hermes",
       "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ.",
       "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "غير مثبت",
       "remoteLocal": "البعيد: {remoteVersion} · المحلي: {localVersion}",
       "platformUnsupported": "{versionText}. المنصة الحالية لا تدعم هذا الوكيل.",
+      "uvxNotReady": "{versionText}. وقت تشغيل uv غير مثبّت — ثبّته من فحص uv بالأسفل لاستخدام هذا الوكيل.",
       "clickInstall": "{versionText}. انقر تثبيت في الجهة اليمنى.",
       "localUnrecognized": "{versionText}. الإصدار المحلي غير قابل للمقارنة؛ جرّب الترقية للكتابة فوق التثبيت.",
       "upgradeAvailable": "{versionText}. تتوفر ترقية.",
@@ -2150,6 +2178,12 @@
         "next": "التالي",
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
+      },
+      "feedbackCheckResult": {
+        "count": "{count} ملاحظة",
+        "expand": "عرض كل الملاحظات",
+        "collapse": "طي",
+        "errorTitle": "فشل التحقق من الملاحظات"
       },
       "askQuestionResult": {
         "title": "سؤال",

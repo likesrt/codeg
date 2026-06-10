@@ -766,10 +766,20 @@ fn replace_dir(target: &Path, new_src: &Path) -> Result<(), AppCommandError> {
             // cross-filesystem layout): fall back to backup-then-rename. The
             // missing-`web/` window reopens, but it is recoverable — re-running
             // the update restores the directory.
-            std::fs::rename(target, &bak).map_err(AppCommandError::io)?;
-            if let Err(e) = std::fs::rename(&staged, target) {
-                let _ = std::fs::rename(&bak, target);
-                return Err(AppCommandError::io(e));
+            match std::fs::rename(target, &bak) {
+                Ok(()) => {
+                    if let Err(e) = std::fs::rename(&staged, target) {
+                        let _ = std::fs::rename(&bak, target);
+                        return Err(AppCommandError::io(e));
+                    }
+                }
+                // overlayfs (the Docker default) refuses to rename a directory
+                // that originates in a lower image layer — rename(2) returns
+                // EXDEV even within the same mount — so in a container the
+                // live `web/` shipped by the image can never be moved aside.
+                // Swap by copying instead.
+                Err(e) if is_exdev(&e) => swap_dir_via_copy(target, &staged, &bak)?,
+                Err(e) => return Err(AppCommandError::io(e)),
             }
         }
     } else {
@@ -827,6 +837,47 @@ fn exchange_dirs(a: &Path, b: &Path) -> std::io::Result<()> {
         let _ = (a, b);
         Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
+}
+
+/// True for `EXDEV` ("Invalid cross-device link"). Besides genuine
+/// cross-filesystem renames, overlayfs returns it for renaming any directory
+/// that was not created on the upper layer — the permanent state of
+/// image-shipped directories (like `web/`) in a Docker container.
+fn is_exdev(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::CrossesDevices
+}
+
+/// Replace `target` with `staged` on filesystems where the live directory
+/// cannot be renamed (see [`is_exdev`]): back it up by *copying* into `bak`,
+/// then delete it and rename the staged tree into place — deleting and
+/// renaming a runtime-created (pure upper) directory are both permitted on
+/// overlayfs. The backup stages through `<bak>.tmp` so `bak` only ever
+/// appears complete or absent (mirroring `replace_file`'s copy fallback) and
+/// rollback consumes it exactly like a rename-made backup. Non-atomic:
+/// `target` is briefly absent, the same recoverable window the rename
+/// fallback above already accepts.
+fn swap_dir_via_copy(target: &Path, staged: &Path, bak: &Path) -> Result<(), AppCommandError> {
+    let mut bak_tmp = bak.as_os_str().to_os_string();
+    bak_tmp.push(".tmp");
+    let bak_tmp = PathBuf::from(bak_tmp);
+    let _ = std::fs::remove_dir_all(&bak_tmp);
+    if let Err(e) = copy_dir_recursive(target, &bak_tmp) {
+        let _ = std::fs::remove_dir_all(&bak_tmp);
+        return Err(e);
+    }
+    std::fs::rename(&bak_tmp, bak).map_err(AppCommandError::io)?;
+
+    let swap =
+        std::fs::remove_dir_all(target).and_then(|_| std::fs::rename(staged, target));
+    if let Err(e) = swap {
+        // Best-effort restore from the backup made above (pure upper, so its
+        // rename is permitted even on overlayfs). Consumes `.bak`, matching
+        // the rename fallback's recovery semantics.
+        let _ = std::fs::remove_dir_all(target);
+        let _ = std::fs::rename(bak, target);
+        return Err(AppCommandError::io(e));
+    }
+    Ok(())
 }
 
 fn restore_from_bak(target: &Path) -> Result<bool, AppCommandError> {
@@ -987,6 +1038,50 @@ mod tests {
 
         // The swap leaves no `.web.new` scratch dir behind (it became `.bak`).
         assert!(!dir.path().join(".web.new").exists());
+    }
+
+    #[test]
+    fn swap_dir_via_copy_keeps_backup_and_swaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("web");
+        std::fs::create_dir_all(target.join("assets")).unwrap();
+        std::fs::write(target.join("index.html"), b"old").unwrap();
+        std::fs::write(target.join("assets/app.js"), b"old-js").unwrap();
+
+        let staged = dir.path().join(".web.new");
+        std::fs::create_dir_all(staged.join("assets")).unwrap();
+        std::fs::write(staged.join("index.html"), b"new").unwrap();
+        std::fs::write(staged.join("assets/app.js"), b"new-js").unwrap();
+
+        let bak = bak_path(&target);
+        swap_dir_via_copy(&target, &staged, &bak).unwrap();
+
+        assert_eq!(std::fs::read(target.join("index.html")).unwrap(), b"new");
+        assert_eq!(std::fs::read(target.join("assets/app.js")).unwrap(), b"new-js");
+        assert_eq!(std::fs::read(bak.join("index.html")).unwrap(), b"old");
+        assert!(!staged.exists());
+        // The backup staging dir must not survive (it became `.bak`).
+        assert!(!dir.path().join("web.bak.tmp").exists());
+
+        // A copy-made backup rolls back exactly like a rename-made one.
+        assert!(restore_dir_from_bak(&target).unwrap());
+        assert_eq!(std::fs::read(target.join("index.html")).unwrap(), b"old");
+        assert_eq!(
+            std::fs::read(target.join("assets/app.js")).unwrap(),
+            b"old-js"
+        );
+    }
+
+    #[test]
+    fn exdev_is_detected_from_raw_os_error() {
+        // The copy fallback keys off the EXDEV that overlayfs returns when
+        // renaming an image-layer directory; the raw OS error must map to it.
+        #[cfg(unix)]
+        assert!(is_exdev(&std::io::Error::from_raw_os_error(libc::EXDEV)));
+        assert!(is_exdev(&std::io::Error::from(
+            std::io::ErrorKind::CrossesDevices
+        )));
+        assert!(!is_exdev(&std::io::Error::from(std::io::ErrorKind::NotFound)));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

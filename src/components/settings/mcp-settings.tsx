@@ -89,6 +89,7 @@ const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "open_claw", label: "OpenClaw" },
   { value: "open_code", label: "OpenCode" },
   { value: "cline", label: "Cline" },
+  { value: "hermes", label: "Hermes Agent" },
 ]
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -250,6 +251,7 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
     open_claw: appSet.has("open_claw"),
     open_code: appSet.has("open_code"),
     cline: appSet.has("cline"),
+    hermes: appSet.has("hermes"),
   }
 }
 

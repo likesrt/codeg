@@ -54,6 +54,7 @@ pub enum McpAppType {
     OpenClaw,
     OpenCode,
     Cline,
+    Hermes,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,6 +368,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::OpenClaw,
         McpAppType::OpenCode,
         McpAppType::Cline,
+        McpAppType::Hermes,
     ];
 
     for app in all_apps {
@@ -421,6 +423,7 @@ pub async fn mcp_remove_server(
             McpAppType::OpenClaw,
             McpAppType::OpenCode,
             McpAppType::Cline,
+            McpAppType::Hermes,
         ],
     };
 
@@ -2072,6 +2075,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Cline);
     }
 
+    for (id, spec) in read_hermes_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::Hermes);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2095,6 +2105,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Gemini => upsert_gemini_server(id, spec),
         McpAppType::OpenClaw => upsert_openclaw_server(id, spec),
         McpAppType::Cline => upsert_cline_server(id, spec),
+        McpAppType::Hermes => upsert_hermes_server(id, spec),
     }
 }
 
@@ -2109,7 +2120,251 @@ pub fn read_servers_for_agent_type(
         AgentType::Gemini => read_gemini_servers(),
         AgentType::OpenClaw => read_openclaw_servers(),
         AgentType::Cline => read_cline_servers(),
+        AgentType::Hermes => read_hermes_servers(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Hermes Agent  (~/.hermes/config.yaml  →  mcp_servers)
+//
+// Hermes reads the `mcp_servers` section of its own config.yaml natively at
+// launch (registering each as an `mcp-<name>` toolset), so codeg manages that
+// section directly — the same "write the agent's own config file" model used
+// for Codex/OpenCode — rather than forwarding servers over the ACP wire. The
+// ACP forward path (`load_mcp_servers_for_agent`) deliberately skips Hermes to
+// avoid double-registering what Hermes already reads from config.yaml.
+//
+// Hermes' entry shape: stdio = `{command, args, env}`; remote = `{url}` (+
+// `transport: sse` for SSE, optional `headers` / `client_cert` / `client_key`).
+// Translate to/from codeg's canonical spec, whose discriminator is `type`.
+// ---------------------------------------------------------------------------
+
+/// Convert one Hermes `mcp_servers` YAML entry into codeg's canonical spec.
+fn hermes_entry_to_canonical(
+    entry: &serde_yaml::Value,
+    id: &str,
+) -> Result<Value, AppCommandError> {
+    let source = format!("Hermes mcp_servers '{id}'");
+    let mut json = serde_json::to_value(entry)
+        .map_err(|e| mcp_configuration_invalid(format!("{source}: cannot read entry: {e}")))?;
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| mcp_configuration_invalid(format!("{source}: entry must be a mapping")))?;
+    // Hermes encodes SSE via `transport: sse` (not a `type` field); a bare `url`
+    // is StreamableHTTP. Map that onto the canonical `type` so `canonicalize_spec`
+    // classifies it (stdio is inferred from `command`). `transport` stays as a
+    // passthrough key.
+    if obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+        && obj.get("url").is_some()
+    {
+        let is_sse = obj
+            .get("transport")
+            .and_then(Value::as_str)
+            .map(|t| t.eq_ignore_ascii_case("sse"))
+            .unwrap_or(false);
+        obj.insert(
+            "type".to_string(),
+            Value::String(if is_sse { "sse" } else { "http" }.to_string()),
+        );
+    }
+    // `transport` is Hermes' encoding of the remote kind; the canonical `type`
+    // now carries it, so drop the redundant key (keeps round-trips stable and
+    // doesn't leak a Hermes-ism into specs shared with other agents).
+    obj.remove("transport");
+    canonicalize_spec(&json, &source)
+}
+
+/// Convert codeg's canonical spec into a Hermes `mcp_servers` YAML entry.
+fn canonical_to_hermes_entry(spec: &Value) -> Result<serde_yaml::Value, AppCommandError> {
+    let canonical = canonicalize_spec(spec, "Hermes conversion")?;
+    let obj = canonical
+        .as_object()
+        .ok_or_else(|| mcp_invalid_input("Hermes conversion: canonical spec must be an object"))?;
+    let typ = obj.get("type").and_then(Value::as_str).unwrap_or("stdio");
+
+    let mut out = Map::new();
+    match typ {
+        "stdio" => {
+            // Hermes 0.16.0 reads only `command`/`args`/`env` for stdio MCP
+            // (tools/mcp_tool.py → StdioServerParameters); it ignores `cwd`, so
+            // don't write it — a silently-ignored key would misrepresent what
+            // Hermes actually honors.
+            for key in ["command", "args", "env"] {
+                if let Some(value) = obj.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        "http" | "sse" => {
+            if let Some(url) = obj.get("url") {
+                out.insert("url".to_string(), url.clone());
+            }
+            if typ == "sse" {
+                out.insert("transport".to_string(), Value::String("sse".to_string()));
+            }
+            if let Some(headers) = obj.get("headers") {
+                out.insert("headers".to_string(), headers.clone());
+            }
+        }
+        other => {
+            return Err(mcp_invalid_input(format!(
+                "Hermes conversion: unsupported MCP type '{other}'"
+            )));
+        }
+    }
+    // Preserve passthrough keys Hermes understands (mTLS `client_cert`/
+    // `client_key`, an explicit `enabled` flag, etc.) — anything beyond the
+    // transport fields and the `type` discriminator translated above.
+    for (key, value) in obj {
+        if matches!(
+            key.as_str(),
+            "type" | "command" | "args" | "env" | "cwd" | "url" | "headers" | "transport"
+        ) {
+            continue;
+        }
+        if !value.is_null() {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+
+    serde_yaml::to_value(Value::Object(out)).map_err(|e| {
+        mcp_configuration_invalid(format!("Hermes conversion: serialize entry failed: {e}"))
+    })
+}
+
+/// Read Hermes' MCP servers from `~/.hermes/config.yaml` (`mcp_servers`). A
+/// missing or unparseable config.yaml surfaces no servers rather than failing
+/// the whole MCP scan — the file is large and user-owned.
+fn read_hermes_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let path = crate::commands::acp::hermes_config_yaml_path();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(BTreeMap::new());
+    };
+    let root: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("[MCP] skip Hermes mcp_servers: invalid config.yaml: {err}");
+            return Ok(BTreeMap::new());
+        }
+    };
+
+    let mut out = BTreeMap::new();
+    let Some(servers) = root
+        .get("mcp_servers")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(out);
+    };
+    for (key, entry) in servers {
+        let Some(id) = key.as_str() else { continue };
+        match hermes_entry_to_canonical(entry, id) {
+            Ok(spec) => {
+                out.insert(id.to_string(), spec);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid Hermes mcp_servers entry id={id}: {err}");
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Insert/update a Hermes MCP server in `~/.hermes/config.yaml` (`mcp_servers`),
+/// preserving every other key. Written through the Hermes secret writer
+/// (owner-only perms, symlink-preserving) since the file can carry env secrets.
+/// Note: like the structured model save, this round-trips config.yaml through
+/// serde_yaml and so drops comments — consistent with codeg's existing Hermes
+/// config edits.
+fn upsert_hermes_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    use serde_yaml::{Mapping, Value as Yaml};
+    let entry = canonical_to_hermes_entry(spec)?;
+    let path = crate::commands::acp::hermes_config_yaml_path();
+
+    // Only a genuinely absent (or empty) config starts from a fresh mapping.
+    // A permission / invalid-UTF-8 read error must NOT silently discard the
+    // user's real config.yaml by overwriting it with a near-empty document.
+    let mut root: Yaml = match fs::read_to_string(&path) {
+        Ok(raw) if !raw.trim().is_empty() => serde_yaml::from_str(&raw)
+            .map_err(|e| mcp_configuration_invalid(format!("invalid hermes config.yaml: {e}")))?,
+        Ok(_) => Yaml::Mapping(Mapping::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Yaml::Mapping(Mapping::new()),
+        Err(e) => {
+            return Err(mcp_configuration_invalid(format!(
+                "read hermes config.yaml failed: {e}"
+            )));
+        }
+    };
+    if !root.is_mapping() {
+        root = Yaml::Mapping(Mapping::new());
+    }
+    let root_map = root.as_mapping_mut().expect("root is a mapping");
+    let servers_key = Yaml::String("mcp_servers".to_string());
+    if !root_map
+        .get(&servers_key)
+        .map(Yaml::is_mapping)
+        .unwrap_or(false)
+    {
+        root_map.insert(servers_key.clone(), Yaml::Mapping(Mapping::new()));
+    }
+    let servers = root_map
+        .get_mut(&servers_key)
+        .and_then(Yaml::as_mapping_mut)
+        .ok_or_else(|| mcp_configuration_invalid("hermes mcp_servers must be a mapping"))?;
+    servers.insert(Yaml::String(id.to_string()), entry);
+
+    let yaml = serde_yaml::to_string(&root).map_err(|e| {
+        mcp_configuration_invalid(format!("serialize hermes config.yaml failed: {e}"))
+    })?;
+    crate::commands::acp::ensure_hermes_home_secure(&crate::commands::acp::hermes_home_dir())
+        .map_err(|e| mcp_configuration_invalid(format!("prepare hermes home failed: {e}")))?;
+    crate::commands::acp::write_hermes_secret_file(&path, &yaml, "config.yaml")
+        .map_err(|e| mcp_configuration_invalid(format!("write hermes config.yaml failed: {e}")))?;
+    Ok(())
+}
+
+/// Remove a Hermes MCP server from `~/.hermes/config.yaml` (`mcp_servers`).
+fn remove_hermes_server(id: &str) -> Result<bool, AppCommandError> {
+    use serde_yaml::Value as Yaml;
+    let path = crate::commands::acp::hermes_config_yaml_path();
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return Ok(false),
+    };
+    let mut root: Yaml = match serde_yaml::from_str(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("[MCP] Hermes remove '{id}': invalid config.yaml: {err}");
+            return Ok(false);
+        }
+    };
+    let Some(root_map) = root.as_mapping_mut() else {
+        return Ok(false);
+    };
+    let servers_key = Yaml::String("mcp_servers".to_string());
+    let Some(servers) = root_map
+        .get_mut(&servers_key)
+        .and_then(Yaml::as_mapping_mut)
+    else {
+        return Ok(false);
+    };
+    let removed = servers.remove(Yaml::String(id.to_string())).is_some();
+    if servers.is_empty() {
+        root_map.remove(servers_key);
+    }
+    if removed {
+        let yaml = serde_yaml::to_string(&root).map_err(|e| {
+            mcp_configuration_invalid(format!("serialize hermes config.yaml failed: {e}"))
+        })?;
+        crate::commands::acp::write_hermes_secret_file(&path, &yaml, "config.yaml").map_err(
+            |e| mcp_configuration_invalid(format!("write hermes config.yaml failed: {e}")),
+        )?;
+    }
+    Ok(removed)
 }
 
 fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandError> {
@@ -2120,6 +2375,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Gemini => remove_gemini_server(id),
         McpAppType::OpenClaw => remove_openclaw_server(id),
         McpAppType::Cline => remove_cline_server(id),
+        McpAppType::Hermes => remove_hermes_server(id),
     }
 }
 
@@ -4059,5 +4315,101 @@ mod tests {
             smithery_connection_protocol(&make_smithery_connection("ws")),
             "http"
         );
+    }
+
+    fn hermes_entry(yaml_src: &str) -> serde_yaml::Value {
+        serde_yaml::from_str::<serde_yaml::Value>(yaml_src).expect("parse test yaml")
+    }
+
+    #[test]
+    fn hermes_entry_to_canonical_stdio() {
+        let entry = hermes_entry(
+            "command: npx\nargs:\n  - -y\n  - \"@modelcontextprotocol/server-github\"\nenv:\n  GITHUB_TOKEN: ghp_x\n",
+        );
+        let spec = hermes_entry_to_canonical(&entry, "github").expect("canonical");
+        assert_eq!(spec.get("type").and_then(Value::as_str), Some("stdio"));
+        assert_eq!(spec.get("command").and_then(Value::as_str), Some("npx"));
+        let args = spec.get("args").and_then(Value::as_array).expect("args");
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            spec.get("env")
+                .and_then(|e| e.get("GITHUB_TOKEN"))
+                .and_then(Value::as_str),
+            Some("ghp_x")
+        );
+    }
+
+    #[test]
+    fn hermes_entry_to_canonical_http_and_sse() {
+        // A bare `url` is StreamableHTTP.
+        let http = hermes_entry_to_canonical(
+            &hermes_entry("url: https://mcp.example.com/mcp\n"),
+            "remote-http",
+        )
+        .expect("http canonical");
+        assert_eq!(http.get("type").and_then(Value::as_str), Some("http"));
+        assert_eq!(
+            http.get("url").and_then(Value::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+        // `transport: sse` maps to the canonical `sse` type.
+        let sse = hermes_entry_to_canonical(
+            &hermes_entry("url: http://localhost:8000/sse\ntransport: sse\n"),
+            "remote-sse",
+        )
+        .expect("sse canonical");
+        assert_eq!(sse.get("type").and_then(Value::as_str), Some("sse"));
+    }
+
+    #[test]
+    fn canonical_to_hermes_entry_drops_type_and_maps_transport() {
+        // stdio → command/args/env, no `type`/`transport` keys.
+        let stdio = canonical_to_hermes_entry(&json!({
+            "type": "stdio",
+            "command": "uvx",
+            "args": ["some-server"],
+            "env": {"KEY": "v"},
+        }))
+        .expect("stdio entry");
+        let map = stdio.as_mapping().expect("mapping");
+        assert!(map.contains_key(serde_yaml::Value::String("command".into())));
+        assert!(!map.contains_key(serde_yaml::Value::String("type".into())));
+        assert!(!map.contains_key(serde_yaml::Value::String("transport".into())));
+
+        // sse → url + `transport: sse`, no `type`; mTLS keys pass through.
+        let sse = canonical_to_hermes_entry(&json!({
+            "type": "sse",
+            "url": "https://x/sse",
+            "headers": {"Authorization": "Bearer t"},
+            "client_cert": "/tmp/cert.pem",
+        }))
+        .expect("sse entry");
+        let map = sse.as_mapping().expect("mapping");
+        assert_eq!(
+            map.get(serde_yaml::Value::String("transport".into()))
+                .and_then(serde_yaml::Value::as_str),
+            Some("sse")
+        );
+        assert!(!map.contains_key(serde_yaml::Value::String("type".into())));
+        assert_eq!(
+            map.get(serde_yaml::Value::String("client_cert".into()))
+                .and_then(serde_yaml::Value::as_str),
+            Some("/tmp/cert.pem")
+        );
+    }
+
+    #[test]
+    fn hermes_mcp_canonical_round_trips() {
+        // canonical → hermes entry → canonical is stable for both transports.
+        for spec in [
+            json!({"type": "stdio", "command": "npx", "args": ["-y", "srv"], "env": {"A": "b"}}),
+            json!({"type": "sse", "url": "https://x/sse", "headers": {"H": "v"}}),
+            json!({"type": "http", "url": "https://x/mcp"}),
+        ] {
+            let entry = canonical_to_hermes_entry(&spec).expect("to entry");
+            let back = hermes_entry_to_canonical(&entry, "srv").expect("from entry");
+            let canonical = canonicalize_spec(&spec, "expected").expect("canonical");
+            assert_eq!(back, canonical, "round-trip mismatch for {spec}");
+        }
     }
 }

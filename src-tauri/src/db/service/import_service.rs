@@ -11,6 +11,7 @@ use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
+use crate::parsers::hermes::HermesParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser};
@@ -35,6 +36,7 @@ pub async fn import_local_conversations(
             (AgentType::Gemini, Box::new(GeminiParser::new())),
             (AgentType::OpenClaw, Box::new(OpenClawParser::new())),
             (AgentType::Cline, Box::new(ClineParser::new())),
+            (AgentType::Hermes, Box::new(HermesParser::new())),
         ];
 
         let mut matched = Vec::new();

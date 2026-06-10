@@ -257,6 +257,25 @@ describe("normalizeToolName collapses ask_user_question across hosts", () => {
   })
 })
 
+describe("normalizeToolName collapses check_user_feedback across hosts", () => {
+  it.each([
+    "check_user_feedback",
+    "mcp__codeg-mcp__check_user_feedback",
+    "mcp__codeg__check_user_feedback",
+    "codeg-mcp/check_user_feedback",
+    "codeg-mcp.check_user_feedback",
+    "codeg-mcp:check_user_feedback",
+  ])("%s -> check_user_feedback", (input) => {
+    expect(normalizeToolName(input)).toBe("check_user_feedback")
+  })
+
+  it("does not match a suffix without a separator", () => {
+    expect(normalizeToolName("xcheck_user_feedback")).not.toBe(
+      "check_user_feedback"
+    )
+  })
+})
+
 describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
   it.each([
     ["create_goal", "create_goal"],

@@ -573,6 +573,7 @@
       "confirmDelete": "確認刪除",
       "confirmUninstall": "確認卸載",
       "saveClineConfig": "儲存 Cline 配置",
+      "saveHermesConfig": "儲存 Hermes 配置",
       "customInstall": "自訂安裝"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "建議使用 token-file 取代明文 Token，可透過 openclaw 命令列配置。",
       "sessionKeyHint": "可選。指定 Gateway Session Key，留空則自動分配隔離會話。"
     },
+    "hermes": {
+      "configManagement": "Hermes 配置",
+      "configDescription": "Hermes 在 ~/.hermes/.env 中管理自己的憑證，在 ~/.hermes/config.yaml 中管理設定。選擇一個供應商，然後設定 API 金鑰與模型——codeg 會替你寫入這兩個檔案。",
+      "providerLabel": "供應商",
+      "providerHint": "供應商決定 Hermes 使用哪個 API 金鑰變數與 model.provider。OAuth 供應商透過下方的終端機設定進行設定。",
+      "groupApiKey": "API 金鑰供應商",
+      "groupOauth": "OAuth 供應商",
+      "groupAws": "AWS",
+      "apiKeyHint": "儲存到 ~/.hermes/.env。它絕不會被注入行程——Hermes 會從自己的設定中讀取它。",
+      "modelName": "模型",
+      "oauthHint": "此供應商使用 OAuth。請執行下方的設定流程，在終端機中完成驗證。",
+      "awsHint": "Bedrock 使用你的 AWS 憑證（環境變數或共用設定）。請在上方填寫模型 ID，並在系統環境中設定 AWS 存取權限。",
+      "unsupportedProvider": "此供應商無法透過結構化欄位編輯。請使用下方的 config.yaml 原始編輯器或終端機引導設定。",
+      "setupTitle": "自管理設定",
+      "setupHint": "Hermes 的互動式設定需要終端機。可在下方啟動，或複製指令自行執行。",
+      "runSetup": "執行 Hermes 設定",
+      "configureModel": "設定模型",
+      "openConfigFolder": "開啟 ~/.hermes",
+      "copyCommand": "複製指令",
+      "commandCopied": "指令已複製到剪貼簿",
+      "advancedTitle": "進階：編輯 config.yaml",
+      "rawConfigHint": "直接編輯 ~/.hermes/config.yaml。在此儲存將原樣覆寫該檔案。",
+      "saveRawConfig": "儲存 config.yaml"
+    },
     "authModeOfficialSubscription": "官網訂閱",
     "authModeCustomEndpoint": "自定義介面",
     "authModeCustomEndpointHint": "手動配置 API URL 和 API Key 連接自定義介面。",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "儲存配置管理失敗",
       "clineSaved": "Cline 配置已儲存",
       "saveClineFailed": "儲存 Cline 配置失敗",
+      "hermesSaved": "Hermes 配置已儲存",
+      "saveHermesFailed": "儲存 Hermes 配置失敗",
       "modelProviderRequired": "請先選擇一個模型供應商再儲存。",
       "affectedRunningSessions": "{count} 個進行中的工作階段需重新連線以套用變更"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "未安裝",
       "remoteLocal": "遠端：{remoteVersion} · 本地：{localVersion}",
       "platformUnsupported": "{versionText}。目前平台不支援該 Agent。",
+      "uvxNotReady": "{versionText}。uv 執行階段未安裝——請在下方 uv 預檢項中安裝後再使用該 Agent。",
       "clickInstall": "{versionText}。請點擊右側安裝。",
       "localUnrecognized": "{versionText}。本地版本無法識別，可嘗試升級覆蓋安裝。",
       "upgradeAvailable": "{versionText}。發現可升級版本。",
@@ -2150,6 +2178,12 @@
         "next": "下一題",
         "submit": "提交",
         "submitError": "提交失敗，請重試。"
+      },
+      "feedbackCheckResult": {
+        "count": "{count} 則回饋",
+        "expand": "展開全部回饋",
+        "collapse": "收合",
+        "errorTitle": "回饋檢查失敗"
       },
       "askQuestionResult": {
         "title": "提問",

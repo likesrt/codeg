@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg（Code Generation）は、マルチエージェント・コーディングワークスペースです。Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline などの複数のエージェントを 1 つのワークスペースに統合し、会話の集約とマルチエージェント協働に対応します。デスクトップへのインストールに加え、サーバー/Docker デプロイにも対応しています。
+Codeg（Code Generation）は、マルチエージェント・コーディングワークスペースです。Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes などの複数のエージェントを 1 つのワークスペースに統合し、会話の集約とマルチエージェント協働に対応します。デスクトップへのインストールに加え、サーバー/Docker デプロイにも対応しています。
 
 ![gallery](../images/gallery.svg)
 
@@ -78,6 +78,7 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 | Gemini CLI  | `$GEMINI_CLI_HOME/.gemini`            | `~/.gemini`                           | `%USERPROFILE%\\.gemini`                              |
 | OpenClaw    | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline       | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
+| Hermes      | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
 
 > 注: 環境変数はフォールバックパスより優先されます。
 

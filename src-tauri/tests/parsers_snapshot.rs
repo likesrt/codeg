@@ -15,7 +15,7 @@ use std::path::Path;
 
 use codeg_lib::parsers::{
     claude::ClaudeParser, cline::ClineParser, codex::CodexParser, gemini::GeminiParser,
-    openclaw::OpenClawParser, opencode::OpenCodeParser, AgentParser,
+    hermes::HermesParser, openclaw::OpenClawParser, opencode::OpenCodeParser, AgentParser,
 };
 use insta::assert_json_snapshot;
 use serde_json::json;
@@ -481,6 +481,264 @@ fn opencode_minimal_session_snapshot() {
         .get_conversation(session_id)
         .expect("get conversation");
     assert_json_snapshot!("opencode_detail", detail, {
+        ".**.started_at" => "[ts]",
+        ".**.ended_at" => "[ts]",
+        ".**.timestamp" => "[ts]",
+        ".**.completed_at" => "[ts]",
+    });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Hermes (reads ~/.hermes/state.db via sea-orm)
+// ────────────────────────────────────────────────────────────────────────────
+
+async fn hermes_exec(conn: &sea_orm::DatabaseConnection, sql: &str, values: Vec<sea_orm::Value>) {
+    use sea_orm::ConnectionTrait;
+    conn.execute(sea_orm::Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Sqlite,
+        sql,
+        values,
+    ))
+    .await
+    .expect("exec sql");
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn hermes_ins_session(
+    conn: &sea_orm::DatabaseConnection,
+    id: &str,
+    model_config: &str,
+    cwd: &str,
+    title: &str,
+    started_at: f64,
+    ended_at: f64,
+    archived: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+) {
+    hermes_exec(
+        conn,
+        "INSERT INTO sessions (id, source, model, model_config, parent_session_id, \
+         started_at, ended_at, cwd, title, archived, input_tokens, output_tokens, \
+         cache_read_tokens, cache_write_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        vec![
+            id.into(),
+            "acp".into(),
+            "gpt-5.5".into(),
+            model_config.into(),
+            "".into(),
+            started_at.into(),
+            ended_at.into(),
+            cwd.into(),
+            title.into(),
+            archived.into(),
+            input_tokens.into(),
+            output_tokens.into(),
+            0i64.into(),
+            0i64.into(),
+        ],
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn hermes_ins_msg(
+    conn: &sea_orm::DatabaseConnection,
+    session_id: &str,
+    role: &str,
+    content: String,
+    tool_call_id: &str,
+    tool_calls: &str,
+    tool_name: &str,
+    reasoning_content: &str,
+    ts: f64,
+    finish_reason: &str,
+    active: i64,
+) {
+    hermes_exec(
+        conn,
+        "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, \
+         tool_name, reasoning, reasoning_content, timestamp, finish_reason, active) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        vec![
+            session_id.into(),
+            role.into(),
+            content.into(),
+            tool_call_id.into(),
+            tool_calls.into(),
+            tool_name.into(),
+            "".into(),
+            reasoning_content.into(),
+            ts.into(),
+            finish_reason.into(),
+            active.into(),
+        ],
+    )
+    .await;
+}
+
+/// Builds a `state.db` fixture covering Hermes-specific shapes and asserts both
+/// `list_conversations` and `get_conversation`:
+/// - `cwd` resolved from `model_config` JSON (the `cwd` column is empty)
+/// - REAL epoch-**seconds** timestamps
+/// - assistant `reasoning_content` → Thinking, then text, then two `tool_calls`
+///   (one `arguments` string, one object) → ToolUse, with the two `role="tool"`
+///   result rows folded back into the assistant turn
+/// - multimodal user `content` (NUL-sentinel JSON: text + data-URI image)
+/// - an `active = 0` (rewound) row excluded; a `system` row skipped
+/// - an `archived = 1` session and an empty session excluded from the list
+#[test]
+fn hermes_minimal_session_snapshot() {
+    use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
+
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let base = temp.path().to_path_buf();
+    let db_path = base.join("state.db");
+    let session_id = "hermes-sess-001";
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(async {
+        let conn = Database::connect(format!("sqlite:{}?mode=rwc", db_path.display()))
+            .await
+            .expect("open sqlite");
+
+        for ddl in [
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, \
+             model_config TEXT, parent_session_id TEXT, started_at REAL, ended_at REAL, \
+             cwd TEXT, title TEXT, archived INTEGER DEFAULT 0, input_tokens INTEGER, \
+             output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER)",
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, \
+             role TEXT, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, \
+             reasoning TEXT, reasoning_content TEXT, timestamp REAL, finish_reason TEXT, \
+             active INTEGER DEFAULT 1)",
+        ] {
+            conn.execute(Statement::from_string(DatabaseBackend::Sqlite, ddl))
+                .await
+                .expect("create table");
+        }
+
+        let t0 = 1_780_980_974.022845_f64;
+
+        // Primary session: cwd column empty → resolved from model_config JSON.
+        hermes_ins_session(
+            &conn,
+            session_id,
+            r#"{"cwd":"/Users/demo/proj","provider":"openai-api"}"#,
+            "",
+            "助手能力介绍",
+            t0,
+            t0 + 25.5,
+            0,
+            11_446,
+            203,
+        )
+        .await;
+        // Archived session (excluded from list) + one message.
+        hermes_ins_session(
+            &conn,
+            "hermes-sess-archived",
+            "",
+            "/Users/demo/arch",
+            "archived one",
+            t0 - 500.0,
+            t0 - 400.0,
+            1,
+            0,
+            0,
+        )
+        .await;
+        hermes_ins_msg(
+            &conn,
+            "hermes-sess-archived",
+            "user",
+            "hi".to_string(),
+            "",
+            "",
+            "",
+            "",
+            t0 - 450.0,
+            "",
+            1,
+        )
+        .await;
+        // Empty session (only a system message → 0 countable → skipped in list).
+        hermes_ins_session(
+            &conn,
+            "hermes-sess-empty",
+            "",
+            "/Users/demo/empty",
+            "empty",
+            t0 - 1_000.0,
+            t0 - 900.0,
+            0,
+            0,
+            0,
+        )
+        .await;
+        hermes_ins_msg(
+            &conn,
+            "hermes-sess-empty",
+            "system",
+            "SYSTEM PROMPT".to_string(),
+            "",
+            "",
+            "",
+            "",
+            t0 - 950.0,
+            "",
+            1,
+        )
+        .await;
+
+        // Primary transcript (insertion order == id order).
+        // 1) user multimodal: NUL-sentinel JSON content (text + data-URI image).
+        let mm_content = format!(
+            "\u{0000}json:{}",
+            r#"[{"type":"text","text":"看这个并修复"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]"#
+        );
+        hermes_ins_msg(&conn, session_id, "user", mm_content, "", "", "", "", t0 + 1.0, "", 1).await;
+        // 2) assistant: reasoning_content → Thinking, text, two tool_calls
+        //    (call_1 arguments as JSON string, call_2 arguments as object).
+        let tool_calls = r#"[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"call_2","type":"function","function":{"name":"patch","arguments":{"path":"a.txt"}}}]"#;
+        hermes_ins_msg(
+            &conn,
+            session_id,
+            "assistant",
+            "我来读取并修复".to_string(),
+            "",
+            tool_calls,
+            "",
+            "先读文件，再打补丁",
+            t0 + 2.0,
+            "tool_calls",
+            1,
+        )
+        .await;
+        // 3) + 4) tool results matched by tool_call_id.
+        hermes_ins_msg(&conn, session_id, "tool", "line1\nline2".to_string(), "call_1", "", "read_file", "", t0 + 3.0, "", 1).await;
+        hermes_ins_msg(&conn, session_id, "tool", "patched ok".to_string(), "call_2", "", "patch", "", t0 + 4.0, "", 1).await;
+        // 5) assistant final text.
+        hermes_ins_msg(&conn, session_id, "assistant", "完成".to_string(), "", "", "", "", t0 + 5.0, "stop", 1).await;
+        // 6) rewound assistant draft (active = 0 → excluded).
+        hermes_ins_msg(&conn, session_id, "assistant", "(rewound draft)".to_string(), "", "", "", "", t0 + 6.0, "stop", 0).await;
+        // 7) system row (skipped by role).
+        hermes_ins_msg(&conn, session_id, "system", "SYSTEM PROMPT".to_string(), "", "", "", "", t0 + 7.0, "", 1).await;
+    });
+
+    let parser = HermesParser::with_base_dir(base);
+    let conversations = parser.list_conversations().expect("list conversations");
+    assert_json_snapshot!("hermes_list", conversations, {
+        ".**.started_at" => "[ts]",
+        ".**.ended_at" => "[ts]",
+    });
+
+    let detail = parser
+        .get_conversation(session_id)
+        .expect("get conversation");
+    assert_json_snapshot!("hermes_detail", detail, {
         ".**.started_at" => "[ts]",
         ".**.ended_at" => "[ts]",
         ".**.timestamp" => "[ts]",

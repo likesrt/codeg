@@ -573,6 +573,7 @@
       "confirmDelete": "Confirmer la suppression",
       "confirmUninstall": "Confirmer la désinstallation",
       "saveClineConfig": "Enregistrer la configuration Cline",
+      "saveHermesConfig": "Enregistrer la configuration Hermes",
       "customInstall": "Installation personnalisée"
     },
     "status": {
@@ -668,6 +669,30 @@
       "gatewayTokenHint": "Utilisez token-file plutôt qu’un token en clair si possible ; configurez-le via le CLI openclaw.",
       "sessionKeyHint": "Optionnel. Spécifie la session key de la gateway ; laisser vide pour auto-attribuer une session isolée."
     },
+    "hermes": {
+      "configManagement": "Configuration de Hermes",
+      "configDescription": "Hermes gère ses propres identifiants dans ~/.hermes/.env et ses paramètres dans ~/.hermes/config.yaml. Choisissez un fournisseur, puis définissez la clé d'API et le modèle — codeg écrit les deux fichiers pour vous.",
+      "providerLabel": "Fournisseur",
+      "providerHint": "Le fournisseur détermine quelle variable de clé d'API et quel model.provider Hermes utilise. Les fournisseurs OAuth se configurent via la configuration du terminal ci-dessous.",
+      "groupApiKey": "Fournisseurs avec clé API",
+      "groupOauth": "Fournisseurs OAuth",
+      "groupAws": "AWS",
+      "apiKeyHint": "Enregistrée dans ~/.hermes/.env. Elle n'est jamais injectée dans le processus — Hermes la lit depuis sa propre configuration.",
+      "modelName": "Modèle",
+      "oauthHint": "Ce fournisseur utilise OAuth. Exécutez la configuration ci-dessous pour vous authentifier dans votre terminal.",
+      "awsHint": "Bedrock utilise vos identifiants AWS (environnement ou configuration partagée). Définissez l'ID du modèle ci-dessus et configurez l'accès AWS dans votre environnement.",
+      "unsupportedProvider": "Ce fournisseur n'est pas modifiable via les champs structurés. Utilisez l'éditeur config.yaml ci-dessous ou la configuration par terminal.",
+      "setupTitle": "Configuration autogérée",
+      "setupHint": "La configuration interactive de Hermes nécessite un terminal. Lancez-la ci-dessous ou copiez la commande pour l'exécuter vous-même.",
+      "runSetup": "Exécuter la configuration de Hermes",
+      "configureModel": "Configurer le modèle",
+      "openConfigFolder": "Ouvrir ~/.hermes",
+      "copyCommand": "Copier la commande",
+      "commandCopied": "Commande copiée dans le presse-papiers",
+      "advancedTitle": "Avancé : modifier config.yaml",
+      "rawConfigHint": "Modifiez directement ~/.hermes/config.yaml. Enregistrer ici écrase le fichier tel quel.",
+      "saveRawConfig": "Enregistrer config.yaml"
+    },
     "authModeOfficialSubscription": "Abonnement officiel",
     "authModeCustomEndpoint": "Endpoint personnalisé",
     "authModeCustomEndpointHint": "Configurer manuellement l'URL API et la clé API pour un endpoint personnalisé.",
@@ -750,6 +775,8 @@
       "saveConfigManagementFailed": "Échec de l’enregistrement de la gestion de configuration",
       "clineSaved": "Configuration Cline enregistrée",
       "saveClineFailed": "Échec de l'enregistrement de la configuration Cline",
+      "hermesSaved": "Configuration Hermes enregistrée",
+      "saveHermesFailed": "Échec de l'enregistrement de la configuration Hermes",
       "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer.",
       "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}"
     },
@@ -758,6 +785,7 @@
       "notInstalled": "Non installé",
       "remoteLocal": "Distant : {remoteVersion} · Local : {localVersion}",
       "platformUnsupported": "{versionText}. La plateforme actuelle ne prend pas en charge cet agent.",
+      "uvxNotReady": "{versionText}. Le runtime uv n'est pas installé — installez-le depuis la vérification uv ci-dessous pour utiliser cet agent.",
       "clickInstall": "{versionText}. Cliquez sur Installer à droite.",
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
@@ -2150,6 +2178,12 @@
         "next": "Suivant",
         "submit": "Envoyer",
         "submitError": "Échec de l'envoi. Veuillez réessayer."
+      },
+      "feedbackCheckResult": {
+        "count": "{count, plural, =1 {1 retour} other {# retours}}",
+        "expand": "Afficher tous les retours",
+        "collapse": "Réduire",
+        "errorTitle": "Échec de la vérification des retours"
       },
       "askQuestionResult": {
         "title": "Question",
