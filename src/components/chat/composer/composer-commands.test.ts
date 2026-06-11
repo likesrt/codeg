@@ -1,7 +1,13 @@
 import { Editor } from "@tiptap/core"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { applyExpertPrefix, isComposerEmpty } from "./composer-commands"
+import type { PromptInputBlock } from "@/lib/types"
+
+import {
+  applyExpertPrefix,
+  isComposerEmpty,
+  restoreBlocksIntoEditor,
+} from "./composer-commands"
 import { buildComposerExtensions } from "./editor-config"
 
 describe("isComposerEmpty", () => {
@@ -98,5 +104,77 @@ describe("applyExpertPrefix", () => {
     editor.commands.setContent("ship it", { contentType: "markdown" })
     applyExpertPrefix(editor, "$", "deploy", new Set())
     expect(editor.getMarkdown().trimStart()).toMatch(/^\$deploy ship it/)
+  })
+})
+
+describe("restoreBlocksIntoEditor", () => {
+  let editor: Editor
+
+  beforeEach(() => {
+    editor = new Editor({ extensions: buildComposerExtensions() })
+  })
+  afterEach(() => editor?.destroy())
+
+  it("restores prose from a text block (no attachments)", () => {
+    const blocks: PromptInputBlock[] = [
+      { type: "text", text: "hello **world**" },
+    ]
+    const attachments = restoreBlocksIntoEditor(editor, blocks)
+    expect(editor.getMarkdown()).toContain("**world**")
+    expect(attachments).toEqual([])
+  })
+
+  it("restores a file resource_link as a reference badge", () => {
+    const blocks: PromptInputBlock[] = [
+      { type: "text", text: "see" },
+      {
+        type: "resource_link",
+        uri: "file:///repo/app.ts",
+        name: "app.ts",
+        mime_type: null,
+        description: null,
+      },
+    ]
+    const attachments = restoreBlocksIntoEditor(editor, blocks)
+    expect(JSON.stringify(editor.getJSON())).toContain('"type":"reference"')
+    expect(editor.getMarkdown()).toContain("see")
+    expect(attachments).toEqual([])
+  })
+
+  it("restores a non-composer resource_link as an attachment, not a badge", () => {
+    const blocks: PromptInputBlock[] = [
+      {
+        type: "resource_link",
+        uri: "https://example.com/x.pdf",
+        name: "x.pdf",
+        mime_type: "application/pdf",
+        description: null,
+      },
+    ]
+    const attachments = restoreBlocksIntoEditor(editor, blocks)
+    expect(JSON.stringify(editor.getJSON())).not.toContain('"type":"reference"')
+    expect(attachments).toHaveLength(1)
+    expect(attachments[0]).toMatchObject({
+      type: "resource",
+      kind: "link",
+      uri: "https://example.com/x.pdf",
+    })
+  })
+
+  it("returns image blocks as attachments (not editor content)", () => {
+    const blocks: PromptInputBlock[] = [
+      { type: "image", data: "BASE64", mime_type: "image/png", uri: null },
+    ]
+    const attachments = restoreBlocksIntoEditor(editor, blocks)
+    expect(attachments).toHaveLength(1)
+    expect(attachments[0]).toMatchObject({ type: "image", data: "BASE64" })
+  })
+
+  it("clears any prior content before restoring", () => {
+    editor.commands.setContent("stale draft", { contentType: "markdown" })
+    restoreBlocksIntoEditor(editor, [{ type: "text", text: "fresh" }])
+    const md = editor.getMarkdown()
+    expect(md).toContain("fresh")
+    expect(md).not.toContain("stale")
   })
 })

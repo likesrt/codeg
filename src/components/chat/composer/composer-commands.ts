@@ -1,5 +1,10 @@
 import type { Editor } from "@tiptap/core"
 
+import type { PromptInputBlock } from "@/lib/types"
+
+import type { InputAttachment } from "../message-input-attachments"
+import { blocksToRestoredDraft } from "./from-prompt-blocks"
+
 /**
  * Whether the composer has nothing sendable. Stricter than `editor.isEmpty`,
  * which is false for a whitespace-only document (the legacy textarea gated the
@@ -75,4 +80,27 @@ export function applyExpertPrefix(
     .insertContentAt(1, insertion)
     .setTextSelection(1 + insertion.length)
     .run()
+}
+
+/**
+ * Replay a previously-sent `PromptInputBlock[]` (a queued message's draft) back
+ * into the editor: prose + reference badges in order, returning the out-of-band
+ * attachments (images / embedded resources / non-composer links) for the host to
+ * set. Inverse of `docToPromptBlocks` for the queue-edit round-trip. The editor
+ * is cleared first so this fully replaces the current content.
+ */
+export function restoreBlocksIntoEditor(
+  editor: Editor,
+  blocks: PromptInputBlock[]
+): InputAttachment[] {
+  const { segments, attachments } = blocksToRestoredDraft(blocks)
+  let chain = editor.chain().clearContent()
+  for (const segment of segments) {
+    chain =
+      segment.kind === "markdown"
+        ? chain.insertContent(segment.text, { contentType: "markdown" })
+        : chain.insertReference(segment.attrs)
+  }
+  chain.focus("end").run()
+  return attachments
 }

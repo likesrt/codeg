@@ -1019,6 +1019,14 @@ const ConversationTabView = memo(function ConversationTabView({
     return item?.draft.displayText ?? null
   }, [mqEditingItemId, msgQueue])
 
+  // The editing item's full blocks, so the composer can restore inline badges +
+  // attachments (not just the display text) when re-opening a queued message.
+  const editingQueueDraftBlocks = useMemo(() => {
+    if (!mqEditingItemId) return null
+    const item = msgQueue.find((m) => m.id === mqEditingItemId)
+    return item?.draft.blocks ?? null
+  }, [mqEditingItemId, msgQueue])
+
   const handleQueueEdit = useCallback(
     (id: string) => {
       mqStartEditing(id)
@@ -1161,6 +1169,7 @@ const ConversationTabView = memo(function ConversationTabView({
       onQueueDelete={mqRemove}
       editingItemId={mqEditingItemId}
       editingDraftText={editingQueueDraftText}
+      editingDraftBlocks={editingQueueDraftBlocks}
       isEditingQueueItem={mqEditingItemId != null}
       onSaveQueueEdit={handleSaveQueueEdit}
       onCancelQueueEdit={handleQueueCancelEdit}

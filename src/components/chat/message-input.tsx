@@ -114,6 +114,7 @@ import { docToPromptBlocks } from "@/components/chat/composer/to-prompt-blocks"
 import {
   applyExpertPrefix,
   isComposerEmpty,
+  restoreBlocksIntoEditor,
 } from "@/components/chat/composer/composer-commands"
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
 import type {
@@ -146,7 +147,16 @@ interface MessageInputProps {
   draftStorageKey?: string | null
   isActive?: boolean
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
+  /** Id of the queue item being edited — the stable key for (re)hydration, so
+   *  switching between two items with identical display text still reloads. */
+  editingItemId?: string | null
   editingDraftText?: string | null
+  /**
+   * The queued message's full `draft.blocks`, when editing a queue item. Lets
+   * the composer restore inline reference badges + attachments (not just text);
+   * falls back to {@link editingDraftText} when absent.
+   */
+  editingDraftBlocks?: PromptInputBlock[] | null
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
@@ -355,7 +365,9 @@ export function MessageInput({
   draftStorageKey,
   isActive = false,
   onEnqueue,
+  editingItemId,
   editingDraftText,
+  editingDraftBlocks,
   isEditingQueueItem = false,
   onSaveQueueEdit,
   onCancelQueueEdit,
@@ -485,9 +497,10 @@ export function MessageInput({
   const disabledRef = useRef(disabled)
   const isPromptingRef = useRef(isPrompting)
   const hydratedRef = useRef(false)
-  // Tracks the last queue-edit payload hydrated, so a re-edit of the *same* item
-  // doesn't clobber the user's in-progress changes.
-  const prevEditingDraftRef = useRef<string | null>(null)
+  // Tracks the last queue-item id hydrated, so a re-edit of the *same* item
+  // doesn't clobber the user's in-progress changes — keyed on id, not display
+  // text (two attachment-only items share the text "Attached 1 attachment").
+  const prevEditingItemIdRef = useRef<string | null>(null)
   const dragActiveRef = useRef(false)
   // Bridge so the early `onChange` handler can call the editor-driven slash
   // detection that is defined further down (after the slash state).
@@ -556,9 +569,18 @@ export function MessageInput({
     hydratedRef.current = true
     const ed = editorRef.current
     if (!ed) return
-    if (isEditingQueueItem && editingDraftText != null) {
-      ed.setMarkdown(editingDraftText)
-      prevEditingDraftRef.current = editingDraftText
+    if (
+      isEditingQueueItem &&
+      (editingDraftBlocks != null || editingDraftText != null)
+    ) {
+      const editor = ed.getEditor()
+      if (editingDraftBlocks && editingDraftBlocks.length > 0 && editor) {
+        // Full fidelity: restore inline badges + attachments from the blocks.
+        setAttachments(restoreBlocksIntoEditor(editor, editingDraftBlocks))
+      } else if (editingDraftText != null) {
+        ed.setMarkdown(editingDraftText)
+      }
+      prevEditingItemIdRef.current = editingItemId ?? null
     } else if (effectiveDraftStorageKey) {
       const loaded = loadMessageInputDraftV2(effectiveDraftStorageKey)
       if (loaded?.kind === "doc") {
@@ -572,29 +594,36 @@ export function MessageInput({
   }, [
     composerReady,
     isEditingQueueItem,
+    editingItemId,
     editingDraftText,
+    editingDraftBlocks,
     effectiveDraftStorageKey,
   ])
 
   // Re-hydrate when the user (re)edits a *different* queue item after the
-  // initial mount hydration above.
+  // initial mount hydration above. Keyed on the item id (not display text) so
+  // switching between two items with identical text still reloads.
   useEffect(() => {
     if (
       isEditingQueueItem &&
-      editingDraftText != null &&
-      editingDraftText !== prevEditingDraftRef.current
+      editingItemId != null &&
+      editingItemId !== prevEditingItemIdRef.current
     ) {
-      prevEditingDraftRef.current = editingDraftText
-      editorRef.current?.setMarkdown(editingDraftText)
+      prevEditingItemIdRef.current = editingItemId
       const editor = editorRef.current?.getEditor()
+      if (editingDraftBlocks && editingDraftBlocks.length > 0 && editor) {
+        setAttachments(restoreBlocksIntoEditor(editor, editingDraftBlocks))
+      } else if (editingDraftText != null) {
+        editorRef.current?.setMarkdown(editingDraftText)
+      }
       setComposerEmpty(editor ? isComposerEmpty(editor) : true)
       requestAnimationFrame(() => {
         editorRef.current?.focus()
       })
     } else if (!isEditingQueueItem) {
-      prevEditingDraftRef.current = null
+      prevEditingItemIdRef.current = null
     }
-  }, [isEditingQueueItem, editingDraftText])
+  }, [isEditingQueueItem, editingItemId, editingDraftText, editingDraftBlocks])
 
   const setDragActiveIfChanged = useCallback((next: boolean) => {
     if (dragActiveRef.current === next) return
