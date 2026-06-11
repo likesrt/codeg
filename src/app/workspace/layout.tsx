@@ -31,6 +31,7 @@ import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-con
 import { TabProvider, useTabContext } from "@/contexts/tab-context"
 import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
+import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import {
   AuxPanelProvider,
   useAuxPanelContext,
@@ -814,9 +815,11 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                           <SidebarProvider>
                             <AuxPanelProvider>
                               <TerminalProvider>
-                                <FolderLayoutShell>
-                                  {children}
-                                </FolderLayoutShell>
+                                <SearchDialogProvider>
+                                  <FolderLayoutShell>
+                                    {children}
+                                  </FolderLayoutShell>
+                                </SearchDialogProvider>
                               </TerminalProvider>
                             </AuxPanelProvider>
                           </SidebarProvider>

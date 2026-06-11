@@ -1,7 +1,17 @@
 "use client"
 
 import { memo, useState, useCallback } from "react"
-import { Pencil, Trash2, Circle, Plus, Loader2, XCircle } from "lucide-react"
+import {
+  Pencil,
+  Trash2,
+  Circle,
+  Plus,
+  Loader2,
+  XCircle,
+  Pin,
+  PinOff,
+  CheckCircle2,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
@@ -49,6 +59,7 @@ interface SidebarConversationCardProps {
   onDelete: (id: number, agentType: string, folderId: number) => Promise<void>
   onStatusChange: (id: number, status: ConversationStatus) => Promise<void>
   onNewConversation?: (folderId: number) => void
+  onTogglePin?: (id: number, nextPinned: boolean) => void
 }
 
 export const SidebarConversationCard = memo(function SidebarConversationCard({
@@ -62,6 +73,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   onDelete,
   onStatusChange,
   onNewConversation,
+  onTogglePin,
 }: SidebarConversationCardProps) {
   const t = useTranslations("Folder.conversationCard")
   const tSidebar = useTranslations("Folder.sidebar")
@@ -122,6 +134,8 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const status = conversation.status as ConversationStatus
   const isRunning = status === "in_progress"
   const isCancelled = status === "cancelled"
+  const isPinned = conversation.pinned_at != null
+  const isCompleted = status === "completed"
 
   return (
     <>
@@ -131,103 +145,174 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
             className="relative h-[2rem] bg-sidebar"
             data-conv-key={`${conversation.agent_type}:${conversation.id}`}
           >
-            <button
-              data-conversation-id={conversation.id}
-              onClick={handleClick}
-              onDoubleClick={handleDblClick}
+            <div
               className={cn(
-                "relative flex h-[1.9375rem] w-full items-center gap-[0.625rem] text-left outline-none",
+                "group flex h-[1.9375rem] w-full items-center",
                 "rounded-full text-sidebar-foreground",
                 "transition-colors duration-[120ms]",
-                "pr-[0.5rem] pl-7",
                 isSelected
                   ? "bg-sidebar-primary/8"
                   : "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
               )}
             >
-              <span
-                aria-hidden
+              <button
+                data-conversation-id={conversation.id}
+                onClick={handleClick}
+                onDoubleClick={handleDblClick}
                 className={cn(
-                  "pointer-events-none absolute z-0 bg-sidebar-border"
-                )}
-                style={{
-                  top: "-0.0625rem",
-                  bottom: "-0.0625rem",
-                  left: "var(--conv-rail-axis, 0.875rem)",
-                  width: "0.125rem",
-                  transform: "translateX(-50%)",
-                }}
-              />
-              <div
-                className="pointer-events-none absolute top-1/2 z-10 flex items-center justify-center"
-                style={{
-                  left: "var(--conv-rail-axis, 0.875rem)",
-                  width: "0.875rem",
-                  height: "0.875rem",
-                  transform: "translate(-50%, -50%)",
-                }}
-                aria-hidden
-              >
-                <AgentIcon
-                  agentType={conversation.agent_type}
-                  className="h-[0.75rem] w-[0.75rem]"
-                />
-                <ConversationStatusDot
-                  status={status}
-                  size="sm"
-                  className="absolute -right-0.5 -bottom-0.5 ring-2 ring-sidebar"
-                />
-              </div>
-
-              <span
-                className={cn(
-                  "relative min-w-0 flex-1 truncate text-[0.875rem] font-normal",
-                  isOpenInTab && "text-primary"
+                  "relative flex h-full min-w-0 flex-1 items-center gap-[0.625rem] text-left outline-none",
+                  "rounded-full",
+                  "pr-[0.25rem] pl-7"
                 )}
               >
-                {conversation.title || t("untitledConversation")}
-              </span>
+                <span
+                  aria-hidden
+                  className={cn(
+                    "pointer-events-none absolute z-0 bg-sidebar-border"
+                  )}
+                  style={{
+                    top: "-0.0625rem",
+                    bottom: "-0.0625rem",
+                    left: "var(--conv-rail-axis, 0.875rem)",
+                    width: "0.125rem",
+                    transform: "translateX(-50%)",
+                  }}
+                />
+                <div
+                  className="pointer-events-none absolute top-1/2 z-10 flex items-center justify-center"
+                  style={{
+                    left: "var(--conv-rail-axis, 0.875rem)",
+                    width: "0.875rem",
+                    height: "0.875rem",
+                    transform: "translate(-50%, -50%)",
+                  }}
+                  aria-hidden
+                >
+                  <AgentIcon
+                    agentType={conversation.agent_type}
+                    className="h-[0.75rem] w-[0.75rem]"
+                  />
+                  <ConversationStatusDot
+                    status={status}
+                    size="sm"
+                    className="absolute -right-0.5 -bottom-0.5 ring-2 ring-sidebar"
+                  />
+                </div>
 
-              {isRunning ? (
-                <span
-                  className="relative inline-flex shrink-0 items-center justify-center"
-                  title={tSidebar("statusRunningBadge")}
-                >
-                  <Loader2
-                    className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400"
-                    aria-hidden
-                  />
-                  <span className="sr-only">
-                    {tSidebar("statusRunningBadge")}
-                  </span>
-                </span>
-              ) : isCancelled ? (
-                <span
-                  className="relative inline-flex shrink-0 items-center justify-center"
-                  title={tSidebar("statusCancelledBadge")}
-                >
-                  <XCircle
-                    className="h-3.5 w-3.5 text-destructive"
-                    aria-hidden
-                  />
-                  <span className="sr-only">
-                    {tSidebar("statusCancelledBadge")}
-                  </span>
-                </span>
-              ) : timeLabel ? (
                 <span
                   className={cn(
-                    "relative shrink-0 tabular-nums",
-                    "text-[0.71875rem]",
-                    isSelected
-                      ? "font-medium text-muted-foreground"
-                      : "font-normal text-muted-foreground/70"
+                    "relative min-w-0 flex-1 truncate text-[0.875rem] font-normal",
+                    isOpenInTab && "text-primary"
                   )}
                 >
-                  {timeLabel}
+                  {conversation.title || t("untitledConversation")}
                 </span>
-              ) : null}
-            </button>
+              </button>
+
+              {/* Right slot: sizes to its content — the time / status badge
+                  normally, the two quick-action buttons (pin, done) on hover —
+                  so it never reserves more width than what is actually shown
+                  (the title reflows slightly on hover). Meta and buttons swap via
+                  `display` (group-hover:hidden / group-hover:flex), which also
+                  drops the hidden buttons out of the tab order and a11y tree. The
+                  buttons are siblings of the row button — never nested — so their
+                  clicks don't select the conversation; `tabIndex={-1}` keeps them
+                  mouse-only (the context menu Pin/Unpin + Status is the keyboard/
+                  AT-accessible path). */}
+              <div className="flex h-full shrink-0 items-center pr-[0.5rem]">
+                <span className="flex items-center group-hover:hidden">
+                  {isRunning ? (
+                    <span
+                      className="relative inline-flex shrink-0 items-center justify-center"
+                      title={tSidebar("statusRunningBadge")}
+                    >
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400"
+                        aria-hidden
+                      />
+                      <span className="sr-only">
+                        {tSidebar("statusRunningBadge")}
+                      </span>
+                    </span>
+                  ) : isCancelled ? (
+                    <span
+                      className="relative inline-flex shrink-0 items-center justify-center"
+                      title={tSidebar("statusCancelledBadge")}
+                    >
+                      <XCircle
+                        className="h-3.5 w-3.5 text-destructive"
+                        aria-hidden
+                      />
+                      <span className="sr-only">
+                        {tSidebar("statusCancelledBadge")}
+                      </span>
+                    </span>
+                  ) : timeLabel ? (
+                    <span
+                      className={cn(
+                        "relative shrink-0 tabular-nums",
+                        "text-[0.71875rem]",
+                        isSelected
+                          ? "font-medium text-muted-foreground"
+                          : "font-normal text-muted-foreground/70"
+                      )}
+                    >
+                      {timeLabel}
+                    </span>
+                  ) : null}
+                </span>
+                {/* Hover quick actions. Default /90 is the lightest muted shade
+                    that still clears the 3:1 non-text-contrast bar over the row's
+                    hover background; hover deepens to full foreground. The folder
+                    ⋯ button shares this exact palette so all action icons stay a
+                    consistent two colors. */}
+                <div className="hidden items-center gap-px group-hover:flex">
+                  {onTogglePin && (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onTogglePin(conversation.id, !isPinned)
+                      }}
+                      title={isPinned ? t("unpin") : t("pin")}
+                      aria-label={isPinned ? t("unpin") : t("pin")}
+                      className={cn(
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-[0.375rem]",
+                        "cursor-pointer outline-none transition-colors duration-150",
+                        "text-muted-foreground/90 hover:text-sidebar-foreground"
+                      )}
+                    >
+                      {isPinned ? (
+                        <PinOff className="h-[0.875rem] w-[0.875rem]" />
+                      ) : (
+                        <Pin className="h-[0.875rem] w-[0.875rem]" />
+                      )}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onStatusChange(
+                        conversation.id,
+                        isCompleted ? "in_progress" : "completed"
+                      )
+                    }}
+                    title={isCompleted ? t("reopen") : t("markCompleted")}
+                    aria-label={isCompleted ? t("reopen") : t("markCompleted")}
+                    className={cn(
+                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-[0.375rem]",
+                      "cursor-pointer outline-none transition-colors duration-150",
+                      "text-muted-foreground/90 hover:text-sidebar-foreground"
+                    )}
+                  >
+                    <CheckCircle2 className="h-[0.875rem] w-[0.875rem]" />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -246,6 +331,18 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
             <Pencil className="h-4 w-4" />
             {t("rename")}
           </ContextMenuItem>
+          {onTogglePin && (
+            <ContextMenuItem
+              onSelect={() => onTogglePin(conversation.id, !isPinned)}
+            >
+              {isPinned ? (
+                <PinOff className="h-4 w-4" />
+              ) : (
+                <Pin className="h-4 w-4" />
+              )}
+              {isPinned ? t("unpin") : t("pin")}
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuSub>
             <ContextMenuSubTrigger>

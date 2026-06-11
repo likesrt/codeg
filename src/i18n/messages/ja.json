@@ -926,6 +926,8 @@
       "collapseAllGroups": "すべてのグループを折りたたむ",
       "newConversation": "新しい会話",
       "newConversationShort": "新規",
+      "newChat": "新しい会話",
+      "search": "検索",
       "noConversationsFound": "会話が見つかりません。",
       "importLocalSessions": "ローカルセッションをインポート",
       "importing": "インポート中...",
@@ -997,7 +999,9 @@
         "toastDeleted": "{count} 件の会話を削除しました",
         "toastStatusUpdated": "{count} 件の会話のステータスを更新しました",
         "toastOpFailed": "操作に失敗しました: {message}"
-      }
+      },
+      "sectionPinned": "ピン留め",
+      "sectionFolders": "フォルダ"
     },
     "conversation": {
       "reloadFailed": "会話の再読み込みに失敗しました: {message}",
@@ -1051,7 +1055,11 @@
       "deleteConversationTitle": "会話を削除しますか？",
       "deleteConversationDescription": "\"{title}\" を削除します。この操作は元に戻せません。",
       "cancel": "キャンセル",
-      "save": "保存"
+      "save": "保存",
+      "pin": "ピン留め",
+      "unpin": "ピン留めを解除",
+      "markCompleted": "完了にする",
+      "reopen": "再開する"
     },
     "search": {
       "dialogTitle": "検索",
@@ -2468,6 +2476,8 @@
       "errorDesc": "エージェントがエラーに遭遇した時",
       "permissionRequest": "権限リクエスト",
       "permissionRequestDesc": "エージェントが操作の権限を要求した時",
+      "questionRequest": "エージェントからの質問",
+      "questionRequestDesc": "エージェントが質問したとき",
       "userPromptSent": "ユーザーメッセージ",
       "userPromptSentDesc": "メッセージを送信したとき（通知に本文が含まれます）",
       "saved": "イベントフィルターを更新しました。",

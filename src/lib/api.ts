@@ -1551,6 +1551,16 @@ export async function updateConversationTitle(
   })
 }
 
+export async function updateConversationPinned(
+  conversationId: number,
+  pinned: boolean
+): Promise<void> {
+  return getTransport().call("update_conversation_pinned", {
+    conversationId,
+    pinned,
+  })
+}
+
 export async function deleteConversation(
   conversationId: number
 ): Promise<void> {

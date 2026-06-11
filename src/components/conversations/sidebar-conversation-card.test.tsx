@@ -1,5 +1,5 @@
 import { type ReactElement } from "react"
-import { render } from "@testing-library/react"
+import { fireEvent, render } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
@@ -30,6 +30,7 @@ const onDoubleClick = vi.fn()
 const onRename = vi.fn(async () => {})
 const onDelete = vi.fn(async () => {})
 const onStatusChange = vi.fn(async () => {})
+const onTogglePin = vi.fn()
 
 function conv(id: number): DbConversationSummary {
   // 5 minutes ago → label "5m"; one extra minute later it ages to "6m".
@@ -47,6 +48,7 @@ function conv(id: number): DbConversationSummary {
     message_count: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    pinned_at: null,
   }
 }
 
@@ -154,5 +156,112 @@ describe("SidebarConversationCard memo (sidebar perf Phase 1 gate)", () => {
       </NextIntlClientProvider>
     )
     expect(probe.agentIconRenders).toBe(BASE.length)
+  })
+})
+
+describe("SidebarConversationCard pin action", () => {
+  beforeEach(() => {
+    onTogglePin.mockClear()
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+        onTogglePin={onTogglePin}
+      />
+    )
+  }
+
+  it("offers Pin for an unpinned conversation and requests pinning", () => {
+    const { getByText } = renderCard(conv(1)) // pinned_at: null
+    fireEvent.contextMenu(getByText("conv-1"))
+    fireEvent.click(getByText("Pin"))
+    expect(onTogglePin).toHaveBeenCalledWith(1, true)
+  })
+
+  it("offers Unpin for a pinned conversation and requests unpinning", () => {
+    const pinned: DbConversationSummary = {
+      ...conv(2),
+      pinned_at: new Date(NOW).toISOString(),
+    }
+    const { getByText } = renderCard(pinned)
+    fireEvent.contextMenu(getByText("conv-2"))
+    fireEvent.click(getByText("Unpin"))
+    expect(onTogglePin).toHaveBeenCalledWith(2, false)
+  })
+})
+
+// The hover-reveal icon buttons live in the row's right slot as siblings of the
+// clickable row button (never nested). They carry only an aria-label (icon, no
+// text), so getByLabelText addresses them unambiguously — distinct from the
+// context-menu items, which are matched by getByText. CSS hides them until
+// hover, but fireEvent dispatches directly on the node regardless of
+// pointer-events, so the wiring is testable without a real pointer.
+describe("SidebarConversationCard hover quick actions", () => {
+  beforeEach(() => {
+    onTogglePin.mockClear()
+    onStatusChange.mockClear()
+  })
+
+  function renderCard(
+    c: DbConversationSummary,
+    { withPin = true }: { withPin?: boolean } = {}
+  ) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+        onTogglePin={withPin ? onTogglePin : undefined}
+      />
+    )
+  }
+
+  it("pins an unpinned conversation via the hover pin button", () => {
+    const { getByLabelText } = renderCard(conv(1)) // pinned_at: null
+    fireEvent.click(getByLabelText("Pin"))
+    expect(onTogglePin).toHaveBeenCalledWith(1, true)
+  })
+
+  it("unpins a pinned conversation via the hover pin button", () => {
+    const pinned: DbConversationSummary = {
+      ...conv(2),
+      pinned_at: new Date(NOW).toISOString(),
+    }
+    const { getByLabelText } = renderCard(pinned)
+    fireEvent.click(getByLabelText("Unpin"))
+    expect(onTogglePin).toHaveBeenCalledWith(2, false)
+  })
+
+  it("marks an unfinished conversation completed via the hover done button", () => {
+    const { getByLabelText } = renderCard(conv(3)) // status: pending
+    fireEvent.click(getByLabelText("Mark as completed"))
+    expect(onStatusChange).toHaveBeenCalledWith(3, "completed")
+  })
+
+  it("reopens a completed conversation via the hover done button", () => {
+    const done: DbConversationSummary = { ...conv(4), status: "completed" }
+    const { getByLabelText } = renderCard(done)
+    fireEvent.click(getByLabelText("Reopen"))
+    expect(onStatusChange).toHaveBeenCalledWith(4, "in_progress")
+  })
+
+  it("omits the pin button when onTogglePin is absent but keeps the done button", () => {
+    const { queryByLabelText } = renderCard(conv(5), { withPin: false })
+    expect(queryByLabelText("Pin")).toBeNull()
+    expect(queryByLabelText("Mark as completed")).not.toBeNull()
   })
 })

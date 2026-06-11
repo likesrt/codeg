@@ -926,6 +926,8 @@
       "collapseAllGroups": "Alle Gruppen einklappen",
       "newConversation": "Neue Konversation",
       "newConversationShort": "Neu",
+      "newChat": "Neue Konversation",
+      "search": "Suchen",
       "noConversationsFound": "Keine Konversationen gefunden.",
       "importLocalSessions": "Lokale Sitzungen importieren",
       "importing": "Importiere...",
@@ -997,7 +999,9 @@
         "toastDeleted": "{count} Konversation(en) gelöscht",
         "toastStatusUpdated": "Status von {count} Konversation(en) aktualisiert",
         "toastOpFailed": "Aktion fehlgeschlagen: {message}"
-      }
+      },
+      "sectionPinned": "Angeheftet",
+      "sectionFolders": "Ordner"
     },
     "conversation": {
       "reloadFailed": "Konversation konnte nicht neu geladen werden: {message}",
@@ -1051,7 +1055,11 @@
       "deleteConversationTitle": "Konversation löschen?",
       "deleteConversationDescription": "\"{title}\" wird gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
       "cancel": "Abbrechen",
-      "save": "Speichern"
+      "save": "Speichern",
+      "pin": "Anheften",
+      "unpin": "Loslösen",
+      "markCompleted": "Als abgeschlossen markieren",
+      "reopen": "Erneut öffnen"
     },
     "search": {
       "dialogTitle": "Suchen",
@@ -2468,6 +2476,8 @@
       "errorDesc": "Wenn ein Agent einen Fehler feststellt",
       "permissionRequest": "Berechtigungsanfrage",
       "permissionRequestDesc": "Wenn ein Agent eine Berechtigung anfordert",
+      "questionRequest": "Frage des Agenten",
+      "questionRequestDesc": "Wenn ein Agent dir eine Frage stellt",
       "userPromptSent": "Benutzernachricht",
       "userPromptSentDesc": "Wenn du eine Nachricht sendest – der Nachrichtentext ist in der Benachrichtigung enthalten",
       "saved": "Ereignisfilter aktualisiert.",

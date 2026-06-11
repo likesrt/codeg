@@ -63,6 +63,7 @@ function makeSummary(
     message_count: 0,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
+    pinned_at: null,
     parent_id: null,
     parent_tool_use_id: null,
     delegation_call_id: null,

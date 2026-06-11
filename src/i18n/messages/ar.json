@@ -926,6 +926,8 @@
       "collapseAllGroups": "طي كل المجموعات",
       "newConversation": "محادثة جديدة",
       "newConversationShort": "جديدة",
+      "newChat": "محادثة جديدة",
+      "search": "بحث",
       "noConversationsFound": "لم يتم العثور على محادثات.",
       "importLocalSessions": "استيراد الجلسات المحلية",
       "importing": "جارٍ الاستيراد...",
@@ -997,7 +999,9 @@
         "toastDeleted": "تم حذف {count} محادثة",
         "toastStatusUpdated": "تم تحديث حالة {count} محادثة",
         "toastOpFailed": "فشلت العملية: {message}"
-      }
+      },
+      "sectionPinned": "مثبّتة",
+      "sectionFolders": "المجلدات"
     },
     "conversation": {
       "reloadFailed": "فشل إعادة تحميل المحادثة: {message}",
@@ -1051,7 +1055,11 @@
       "deleteConversationTitle": "حذف المحادثة؟",
       "deleteConversationDescription": "سيؤدي ذلك إلى حذف \"{title}\". لا يمكن التراجع عن هذا الإجراء.",
       "cancel": "إلغاء",
-      "save": "حفظ"
+      "save": "حفظ",
+      "pin": "تثبيت",
+      "unpin": "إلغاء التثبيت",
+      "markCompleted": "وضع علامة كمكتمل",
+      "reopen": "إعادة فتح"
     },
     "search": {
       "dialogTitle": "بحث",
@@ -2468,6 +2476,8 @@
       "errorDesc": "عندما يواجه الوكيل خطأ",
       "permissionRequest": "طلب إذن",
       "permissionRequestDesc": "عندما يطلب الوكيل إذنًا لتنفيذ إجراء",
+      "questionRequest": "سؤال من الوكيل",
+      "questionRequestDesc": "عندما يطرح أحد الوكلاء سؤالاً عليك",
       "userPromptSent": "رسالة المستخدم",
       "userPromptSentDesc": "عند إرسالك رسالة — يُضمَّن نص الرسالة في الإشعار",
       "saved": "تم تحديث فلتر الأحداث.",

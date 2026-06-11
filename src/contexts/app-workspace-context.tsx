@@ -48,7 +48,9 @@ interface AppWorkspaceContextValue {
   refreshConversations: () => Promise<void>
   updateConversationLocal: (
     id: number,
-    patch: Partial<Pick<DbConversationSummary, "status" | "title">>
+    patch: Partial<
+      Pick<DbConversationSummary, "status" | "title" | "pinned_at">
+    >
   ) => void
 
   branches: Map<number, string | null>
@@ -201,7 +203,9 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
   const updateConversationLocal = useCallback(
     (
       id: number,
-      patch: Partial<Pick<DbConversationSummary, "status" | "title">>
+      patch: Partial<
+        Pick<DbConversationSummary, "status" | "title" | "pinned_at">
+      >
     ) => {
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c.id === id)
@@ -210,10 +214,14 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
         // consumers don't re-render on a logical no-op.
         if (idx < 0) return prev
         const next = prev.slice()
+        // A pin toggle is a view preference, not activity — mirror the backend
+        // (`update_pin`) and leave `updated_at` untouched so an updated-sorted
+        // folder doesn't briefly float the row. Status/title patches still bump.
+        const bumpUpdatedAt = !("pinned_at" in patch)
         next[idx] = {
           ...next[idx],
           ...patch,
-          updated_at: new Date().toISOString(),
+          ...(bumpUpdatedAt ? { updated_at: new Date().toISOString() } : {}),
         }
         return next
       })

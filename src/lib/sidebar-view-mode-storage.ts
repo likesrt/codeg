@@ -3,8 +3,16 @@
 const FOLDER_EXPANDED_KEY = "workspace:sidebar-folder-expanded"
 const SHOW_COMPLETED_KEY = "workspace:sidebar-show-completed"
 const SORT_MODE_KEY = "workspace:sidebar-sort-mode"
+const SECTION_COLLAPSED_KEY = "workspace:sidebar-section-collapsed"
 
 export type SidebarSortMode = "created" | "updated"
+
+/** Collapsed state of the two top-level sidebar sections. Absent key = expanded
+ *  (the default), so a fresh user sees both sections open. */
+export interface SidebarSectionCollapsed {
+  pinned?: boolean
+  folders?: boolean
+}
 
 export function loadFolderExpanded(): Record<number, boolean> {
   if (typeof window === "undefined") return {}
@@ -70,6 +78,32 @@ export function saveSortMode(value: SidebarSortMode): void {
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(SORT_MODE_KEY, value)
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadSectionCollapsed(): SidebarSectionCollapsed {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = localStorage.getItem(SECTION_COLLAPSED_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return {}
+    const obj = parsed as Record<string, unknown>
+    const result: SidebarSectionCollapsed = {}
+    if (typeof obj.pinned === "boolean") result.pinned = obj.pinned
+    if (typeof obj.folders === "boolean") result.folders = obj.folders
+    return result
+  } catch {
+    return {}
+  }
+}
+
+export function saveSectionCollapsed(state: SidebarSectionCollapsed): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(SECTION_COLLAPSED_KEY, JSON.stringify(state))
   } catch {
     /* ignore */
   }

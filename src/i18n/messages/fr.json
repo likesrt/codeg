@@ -926,6 +926,8 @@
       "collapseAllGroups": "Réduire tous les groupes",
       "newConversation": "Nouvelle conversation",
       "newConversationShort": "Nouvelle",
+      "newChat": "Nouvelle conversation",
+      "search": "Rechercher",
       "noConversationsFound": "Aucune conversation trouvée.",
       "importLocalSessions": "Importer les sessions locales",
       "importing": "Import en cours...",
@@ -997,7 +999,9 @@
         "toastDeleted": "{count} conversation(s) supprimée(s)",
         "toastStatusUpdated": "Statut mis à jour pour {count} conversation(s)",
         "toastOpFailed": "Échec de l'opération : {message}"
-      }
+      },
+      "sectionPinned": "Épinglées",
+      "sectionFolders": "Dossiers"
     },
     "conversation": {
       "reloadFailed": "Échec du rechargement de la conversation : {message}",
@@ -1051,7 +1055,11 @@
       "deleteConversationTitle": "Supprimer la conversation ?",
       "deleteConversationDescription": "Cela supprimera \"{title}\". Cette action est irréversible.",
       "cancel": "Annuler",
-      "save": "Enregistrer"
+      "save": "Enregistrer",
+      "pin": "Épingler",
+      "unpin": "Désépingler",
+      "markCompleted": "Marquer comme terminé",
+      "reopen": "Rouvrir"
     },
     "search": {
       "dialogTitle": "Rechercher",
@@ -2468,6 +2476,8 @@
       "errorDesc": "Lorsqu'un agent rencontre une erreur",
       "permissionRequest": "Demande d'autorisation",
       "permissionRequestDesc": "Lorsqu'un agent demande une autorisation",
+      "questionRequest": "Question de l'agent",
+      "questionRequestDesc": "Quand un agent vous pose une question",
       "userPromptSent": "Message de l'utilisateur",
       "userPromptSentDesc": "Lorsque vous envoyez un message (le texte du message est inclus dans la notification)",
       "saved": "Filtre d'événements mis à jour.",

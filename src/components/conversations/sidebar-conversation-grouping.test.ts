@@ -14,6 +14,7 @@ import {
   pointerYToTargetIndex,
   reuseSelected,
   reuseSet,
+  selectPinnedWithReuse,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 
@@ -38,6 +39,7 @@ function conv(
     message_count: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    pinned_at: null,
     ...overrides,
   }
 }
@@ -220,21 +222,55 @@ describe("reuseSelected", () => {
 })
 
 describe("buildRows", () => {
-  it("emits a single header row for a collapsed folder", () => {
+  const foldersHeader = (count: number) =>
+    ({ kind: "section", section: "folders", expanded: true, count }) as const
+
+  // Folder-only convenience wrapper (no pinned section), matching the original
+  // positional tests but through the new options-object signature.
+  function folderRows(
+    orderedFolderIds: number[],
+    byFolder: Map<number, DbConversationSummary[]>,
+    folderExpanded: Record<number, boolean>,
+    folderTotalCounts: Map<number, number>,
+    foldersExpanded = true
+  ): SidebarRow[] {
+    return buildRows({
+      pinned: [],
+      pinnedExpanded: true,
+      orderedFolderIds,
+      byFolder,
+      folderExpanded,
+      folderTotalCounts,
+      foldersExpanded,
+    })
+  }
+
+  it("emits a Folders section header above the folder rows", () => {
+    const byFolder = new Map([[10, [conv(1, 10)]]])
+    const rows = folderRows([10], byFolder, { 10: true }, new Map([[10, 1]]))
+    expect(rows[0]).toEqual(foldersHeader(1))
+  })
+
+  it("emits header + a single folder row for a collapsed folder", () => {
     const byFolder = new Map([[10, [conv(1, 10), conv(2, 10)]]])
-    const rows = buildRows([10], byFolder, { 10: false }, new Map([[10, 2]]))
-    expect(rows).toEqual([{ kind: "folder", folderId: 10 }])
+    const rows = folderRows([10], byFolder, { 10: false }, new Map([[10, 2]]))
+    expect(rows).toEqual([foldersHeader(1), { kind: "folder", folderId: 10 }])
   })
 
   it("defaults to expanded when folderExpanded has no entry", () => {
     const byFolder = new Map([[10, [conv(1, 10)]]])
-    const rows = buildRows([10], byFolder, {}, new Map([[10, 1]]))
-    expect(rows.map((r) => r.kind)).toEqual(["folder", "conversation"])
+    const rows = folderRows([10], byFolder, {}, new Map([[10, 1]]))
+    expect(rows.map((r) => r.kind)).toEqual([
+      "section",
+      "folder",
+      "conversation",
+    ])
   })
 
   it("emits header + empty-hint row for an expanded folder with no visible rows", () => {
-    const rows = buildRows([10], new Map(), { 10: true }, new Map([[10, 3]]))
+    const rows = folderRows([10], new Map(), { 10: true }, new Map([[10, 3]]))
     expect(rows).toEqual([
+      foldersHeader(1),
       { kind: "folder", folderId: 10 },
       { kind: "empty", folderId: 10, totalConversationCount: 3 },
     ])
@@ -243,7 +279,7 @@ describe("buildRows", () => {
   it("carries the unfiltered total count on the empty-hint row", () => {
     // byFolder is empty (all filtered out) but the folder has 5 conversations
     // total → renderer shows "no unfinished conversations", not "empty folder".
-    const rows = buildRows([10], new Map(), { 10: true }, new Map([[10, 5]]))
+    const rows = folderRows([10], new Map(), { 10: true }, new Map([[10, 5]]))
     const empty = rows.find((r) => r.kind === "empty")
     expect(empty).toMatchObject({ totalConversationCount: 5 })
   })
@@ -252,17 +288,17 @@ describe("buildRows", () => {
     const a = conv(1, 10)
     const b = conv(2, 10)
     const byFolder = new Map([[10, [a, b]]])
-    const rows = buildRows([10], byFolder, { 10: true }, new Map([[10, 2]]))
-    expect(rows).toHaveLength(3)
-    expect(rows[0]).toEqual({ kind: "folder", folderId: 10 })
+    const rows = folderRows([10], byFolder, { 10: true }, new Map([[10, 2]]))
+    // [folders-header, folder, conv a, conv b]
+    expect(rows).toHaveLength(4)
+    expect(rows[1]).toEqual({ kind: "folder", folderId: 10 })
     // The exact summary object references survive (identity, not a copy) — this
     // is what keeps the card memo alive through the flat row model.
-    expect(rows[1]).toEqual({ kind: "conversation", conversation: a })
-    expect(
-      (rows[1] as { conversation: DbConversationSummary }).conversation
-    ).toBe(a)
     expect(
       (rows[2] as { conversation: DbConversationSummary }).conversation
+    ).toBe(a)
+    expect(
+      (rows[3] as { conversation: DbConversationSummary }).conversation
     ).toBe(b)
   })
 
@@ -277,12 +313,110 @@ describe("buildRows", () => {
       [20, 1],
     ])
     // Folder 20 first (collapsed → header only), then 10 (expanded).
-    const rows = buildRows([20, 10], byFolder, expanded, counts)
+    const rows = folderRows([20, 10], byFolder, expanded, counts)
     expect(rows).toEqual([
+      foldersHeader(2),
       { kind: "folder", folderId: 20 },
       { kind: "folder", folderId: 10 },
       { kind: "conversation", conversation: byFolder.get(10)![0] },
     ])
+  })
+
+  it("returns an empty array when there are no folders and nothing pinned", () => {
+    expect(folderRows([], new Map(), {}, new Map())).toEqual([])
+  })
+
+  it("hides every folder row when the Folders section is collapsed", () => {
+    const byFolder = new Map([[10, [conv(1, 10)]]])
+    const rows = folderRows(
+      [10],
+      byFolder,
+      { 10: true },
+      new Map([[10, 1]]),
+      false
+    )
+    expect(rows).toEqual([
+      { kind: "section", section: "folders", expanded: false, count: 1 },
+    ])
+  })
+
+  it("emits a Pinned section above Folders when conversations are pinned", () => {
+    const p1 = conv(1, 10, { pinned_at: new Date(2000).toISOString() })
+    const byFolder = new Map([[10, [conv(2, 10)]]])
+    const rows = buildRows({
+      pinned: [p1],
+      pinnedExpanded: true,
+      orderedFolderIds: [10],
+      byFolder,
+      folderExpanded: { 10: true },
+      folderTotalCounts: new Map([[10, 1]]),
+      foldersExpanded: true,
+    })
+    expect(rows[0]).toEqual({
+      kind: "section",
+      section: "pinned",
+      expanded: true,
+      count: 1,
+    })
+    expect(rows[1]).toEqual({ kind: "conversation", conversation: p1 })
+    expect(rows[2]).toEqual({
+      kind: "section",
+      section: "folders",
+      expanded: true,
+      count: 1,
+    })
+  })
+
+  it("hides pinned conversations when the Pinned section is collapsed", () => {
+    const p1 = conv(1, 10, { pinned_at: new Date(2000).toISOString() })
+    const rows = buildRows({
+      pinned: [p1],
+      pinnedExpanded: false,
+      orderedFolderIds: [],
+      byFolder: new Map(),
+      folderExpanded: {},
+      folderTotalCounts: new Map(),
+      foldersExpanded: true,
+    })
+    expect(rows).toEqual([
+      { kind: "section", section: "pinned", expanded: false, count: 1 },
+    ])
+  })
+
+  it("omits the Pinned section entirely when nothing is pinned", () => {
+    const byFolder = new Map([[10, [conv(1, 10)]]])
+    const rows = folderRows([10], byFolder, { 10: true }, new Map([[10, 1]]))
+    expect(
+      rows.some((r) => r.kind === "section" && r.section === "pinned")
+    ).toBe(false)
+  })
+})
+
+describe("selectPinnedWithReuse", () => {
+  it("selects only pinned conversations, most-recently-pinned first", () => {
+    const a = conv(1, 10, { pinned_at: new Date(1000).toISOString() })
+    const b = conv(2, 10, { pinned_at: new Date(3000).toISOString() })
+    const c = conv(3, 20) // not pinned
+    const pinned = selectPinnedWithReuse([a, b, c], [])
+    expect(pinned.map((p) => p.id)).toEqual([2, 1])
+  })
+
+  it("reuses the previous array when pinned membership is unchanged", () => {
+    const a = conv(1, 10, { pinned_at: new Date(1000).toISOString() })
+    const first = selectPinnedWithReuse([a], [])
+    const second = selectPinnedWithReuse([a], first)
+    expect(second).toBe(first)
+  })
+
+  it("returns a fresh array when a conversation is pinned or unpinned", () => {
+    const a = conv(1, 10, { pinned_at: new Date(1000).toISOString() })
+    const b = conv(2, 10) // unpinned
+    const first = selectPinnedWithReuse([a, b], [])
+    const bPinned = { ...b, pinned_at: new Date(2000).toISOString() }
+    const second = selectPinnedWithReuse([a, bPinned], first)
+    expect(second).not.toBe(first)
+    // newest pin (b @ 2000) first, then a (@ 1000)
+    expect(second.map((p) => p.id)).toEqual([2, 1])
   })
 })
 
@@ -353,11 +487,37 @@ describe("sticky overlay helpers", () => {
     it("returns an empty array for no rows", () => {
       expect(Array.from(buildOwnerHeaderIndex([]))).toEqual([])
     })
+
+    it("treats section headers and pre-folder pinned rows as ownerless (-1)", () => {
+      // Pinned section + its conversation precede any folder header, so they
+      // must never resolve a folder sticky overlay.
+      const withSections: SidebarRow[] = [
+        { kind: "section", section: "pinned", expanded: true, count: 1 }, // 0
+        { kind: "conversation", conversation: conv(5, 10) }, // 1 (pinned)
+        { kind: "section", section: "folders", expanded: true, count: 1 }, // 2
+        { kind: "folder", folderId: 10 }, // 3
+        { kind: "conversation", conversation: conv(1, 10) }, // 4
+      ]
+      expect(Array.from(buildOwnerHeaderIndex(withSections))).toEqual([
+        -1, -1, -1, 3, 3,
+      ])
+    })
   })
 
   describe("folderHeaderFlatIndices", () => {
     it("lists folder header indices in ascending order", () => {
       expect(folderHeaderFlatIndices(rows)).toEqual([0, 3, 4])
+    })
+
+    it("ignores section headers, listing only folder header indices", () => {
+      const withSections: SidebarRow[] = [
+        { kind: "section", section: "pinned", expanded: true, count: 1 },
+        { kind: "conversation", conversation: conv(5, 10) },
+        { kind: "section", section: "folders", expanded: true, count: 2 },
+        { kind: "folder", folderId: 10 },
+        { kind: "folder", folderId: 20 },
+      ]
+      expect(folderHeaderFlatIndices(withSections)).toEqual([3, 4])
     })
   })
 

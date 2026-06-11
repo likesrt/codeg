@@ -128,13 +128,13 @@ vi.mock("virtua", () => ({
   },
 }))
 
-// FolderHeader renders exactly one of Folder/FolderOpen in its body → folder
-// re-render probe. Every other icon stays real.
+// FolderHeader renders exactly one of FolderClosed/FolderOpen in its body →
+// folder re-render probe. Every other icon stays real.
 vi.mock("lucide-react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("lucide-react")>()
   return {
     ...actual,
-    Folder: () => {
+    FolderClosed: () => {
       probes.folder++
       return null
     },
@@ -244,6 +244,7 @@ function conv(
     message_count: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    pinned_at: null,
     ...overrides,
   }
 }
@@ -363,6 +364,50 @@ describe("SidebarConversationList — single status event re-render scope", () =
 
     expect(probes.card).toBe(0)
     expect(probes.folder).toBe(0)
+  })
+})
+
+describe("SidebarConversationList — Pinned section (migration semantics)", () => {
+  beforeEach(() => {
+    probes.card = 0
+    probes.folder = 0
+    store.folders = [folder(1, "Folder 1"), folder(2, "Folder 2")]
+    store.allFolders = store.folders
+    store.activeTabId = null
+    store.tabSpec = []
+    store.conversations = [
+      conv(11, 1),
+      conv(12, 1, { pinned_at: new Date(FIXED).toISOString() }), // pinned
+      conv(21, 2),
+    ]
+  })
+
+  it("moves a pinned conversation into the Pinned section above Folders, without duplicating it", () => {
+    render(tree())
+    const text = document.body.textContent ?? ""
+    // The Pinned section header exists only because something is pinned, and it
+    // sits above the Folders section.
+    expect(text).toContain("Pinned")
+    expect(text).toContain("Folders")
+    const iPinned = text.indexOf("Pinned")
+    const iFolders = text.indexOf("Folders")
+    const iConv12 = text.indexOf("conv-12") // the pinned conversation
+    const iConv11 = text.indexOf("conv-11") // unpinned → stays in its folder
+    // conv-12 renders under the Pinned header and above the Folders section…
+    expect(iPinned).toBeLessThan(iConv12)
+    expect(iConv12).toBeLessThan(iFolders)
+    // …while the unpinned conv-11 lives down in the folders section.
+    expect(iFolders).toBeLessThan(iConv11)
+    // Migration, not duplication: 3 conversations → exactly 3 rendered cards.
+    expect(probes.card).toBe(3)
+  })
+
+  it("omits the Pinned section entirely when nothing is pinned", () => {
+    store.conversations = [conv(11, 1), conv(21, 2)]
+    render(tree())
+    const text = document.body.textContent ?? ""
+    expect(text).not.toContain("Pinned")
+    expect(text).toContain("Folders")
   })
 })
 
@@ -578,9 +623,10 @@ describe("SidebarConversationList — sticky folder header overlay", () => {
       })
       // The folder collapsed (its conversation rows are gone).
       expect(document.body.textContent).not.toContain("conv-21")
-      // Folder 2's header is flat index 3 → scrolled to the top, instant.
+      // The "Folders" section header occupies flat index 0, so folder 2's header
+      // is flat index 4 → scrolled to the top, instant.
       expect(virtuaCtl.scrollToIndex).toHaveBeenCalledWith(
-        3,
+        4,
         expect.objectContaining({ align: "start" })
       )
     } finally {
@@ -673,5 +719,34 @@ describe("SidebarConversationList — scrollToActive across a worktree merge", (
     // because it checked/expanded the child folder id (2) — never a rendered
     // group — so the row never entered the flat model.
     expect(virtuaCtl.scrollToIndex).toHaveBeenCalled()
+  })
+})
+
+describe("SidebarConversationList — folder ⋯ opens the same menu as right-click", () => {
+  beforeEach(() => {
+    probes.card = 0
+    probes.folder = 0
+    store.folders = [folder(1, "Folder 1")]
+    store.allFolders = store.folders
+    store.conversations = [conv(11, 1)]
+    store.activeTabId = null
+    store.tabSpec = []
+  })
+
+  it("opens the folder context menu via the ⋯ button — no right-click needed", () => {
+    render(tree())
+    // Closed: Radix mounts the menu content lazily, so its items aren't present.
+    expect(document.body.textContent).not.toContain("Manage conversations")
+
+    // The ⋯ button dispatches a synthetic `contextmenu` event that bubbles to the
+    // same <ContextMenuTrigger> the right-click uses — single source of truth.
+    const moreBtn = document.querySelector('[aria-label="More options"]')
+    expect(moreBtn).not.toBeNull()
+    act(() => {
+      fireEvent.click(moreBtn as HTMLElement)
+    })
+
+    // The identical menu is now open — assert a label unique to the folder menu.
+    expect(document.body.textContent).toContain("Manage conversations")
   })
 })

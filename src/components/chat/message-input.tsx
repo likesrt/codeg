@@ -2456,7 +2456,7 @@ export function MessageInput({
                     title={t("addActions")}
                     aria-label={t("addActions")}
                   >
-                    <Plus className="size-3" />
+                    <Plus className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent

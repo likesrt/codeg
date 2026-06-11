@@ -220,6 +220,54 @@ pub fn user_message_title(lang: Lang) -> &'static str {
     }
 }
 
+// ── Agent question (global event push) ──
+
+pub fn question_request_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "智能体提问",
+        Lang::ZhTw => "智慧代理提問",
+        Lang::Ja => "エージェントからの質問",
+        Lang::Ko => "에이전트 질문",
+        Lang::Es => "Pregunta del agente",
+        Lang::De => "Frage des Agenten",
+        Lang::Fr => "Question de l'agent",
+        Lang::Pt => "Pergunta do agente",
+        Lang::Ar => "سؤال من الوكيل",
+        Lang::En => "Agent Question",
+    }
+}
+
+pub fn question_request_body(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "智能体正在向你提问，请在 Codeg 中回答。",
+        Lang::ZhTw => "智慧代理正在向你提問，請在 Codeg 中回答。",
+        Lang::Ja => "エージェントが質問しています。Codeg で回答してください。",
+        Lang::Ko => "에이전트가 질문하고 있습니다. Codeg에서 답변하세요.",
+        Lang::Es => "Un agente te hace una pregunta. Respóndela en Codeg.",
+        Lang::De => "Ein Agent stellt eine Frage. Bitte in Codeg beantworten.",
+        Lang::Fr => "Un agent vous pose une question. Répondez-y dans Codeg.",
+        Lang::Pt => "Um agente está fazendo uma pergunta. Responda no Codeg.",
+        Lang::Ar => "يطرح أحد الوكلاء سؤالاً. يرجى الإجابة عليه في Codeg.",
+        Lang::En => "An agent is asking a question. Answer it in Codeg.",
+    }
+}
+
+/// Field-label fallback for a question whose `header` chip is empty.
+pub fn question_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "问题",
+        Lang::ZhTw => "問題",
+        Lang::Ja => "質問",
+        Lang::Ko => "질문",
+        Lang::Es => "Pregunta",
+        Lang::De => "Frage",
+        Lang::Fr => "Question",
+        Lang::Pt => "Pergunta",
+        Lang::Ar => "سؤال",
+        Lang::En => "Question",
+    }
+}
+
 // ── Daily report ──
 
 pub fn daily_report_title(lang: Lang) -> &'static str {

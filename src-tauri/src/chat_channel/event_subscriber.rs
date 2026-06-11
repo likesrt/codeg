@@ -330,9 +330,12 @@ async fn process_envelope(
     //   - user_prompt_sent: each user message is a distinct action a consumer
     //     wants to see; coalescing two messages sent within 5s would silently
     //     swallow the second.
+    //   - question_request: like permission_request, a blocking interactive
+    //     gate (the agent is parked on ask_user_question); a second gate within
+    //     the 5s window would be dropped with no later event to re-trigger it.
     let debounced = !matches!(
         event_type.as_str(),
-        "permission_request" | "user_prompt_sent"
+        "permission_request" | "user_prompt_sent" | "question_request"
     );
 
     for ch in &config.enabled_channels {
@@ -419,6 +422,10 @@ fn parse_acp_event(payload: &AcpEvent, lang: Lang) -> Option<(String, RichMessag
         AcpEvent::UserPromptSent { text_preview } => Some((
             "user_prompt_sent".to_string(),
             message_formatter::format_user_prompt_sent(text_preview, lang),
+        )),
+        AcpEvent::QuestionRequest { questions, .. } => Some((
+            "question_request".to_string(),
+            message_formatter::format_question_request(questions, lang),
         )),
         _ => None,
     }
@@ -589,6 +596,33 @@ mod permission_push_tests {
             connection_id: connection_id.into(),
             payload: AcpEvent::UserPromptSent {
                 text_preview: text.into(),
+            },
+        }
+    }
+
+    fn question_request_envelope(connection_id: &str) -> EventEnvelope {
+        use crate::acp::question::{QuestionOption, QuestionSpec};
+        EventEnvelope {
+            seq: 1,
+            connection_id: connection_id.into(),
+            payload: AcpEvent::QuestionRequest {
+                question_id: "q-1".into(),
+                questions: vec![QuestionSpec {
+                    id: "q1".into(),
+                    question: "Which approach?".into(),
+                    header: "Approach".into(),
+                    multi_select: false,
+                    options: vec![
+                        QuestionOption {
+                            label: "MVP first".into(),
+                            description: String::new(),
+                        },
+                        QuestionOption {
+                            label: "Risk first".into(),
+                            description: String::new(),
+                        },
+                    ],
+                }],
             },
         }
     }
@@ -1517,6 +1551,172 @@ mod permission_push_tests {
         assert!(
             config.filter_known,
             "a clean read for the change restores the known state (delivery resumes)"
+        );
+    }
+
+    // ── question_request (ask_user_question) global push ──
+
+    /// AskUserQuestion is a default-ON event: under the null (default) filter it
+    /// is pushed, carrying the localized title and the question text. Contrast
+    /// `user_prompt_sent_off_by_default`, which is opt-in under the same filter.
+    #[tokio::test]
+    async fn question_request_pushed_by_default() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let config = config_all_on(7); // global_filter = None (the default)
+        let mut last_push = HashMap::new();
+
+        process_envelope(
+            &question_request_envelope("desktop-conn"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "expected one push, got {msgs:?}");
+        assert!(msgs[0].contains("Agent Question"), "got {:?}", msgs[0]);
+        assert!(msgs[0].contains("Which approach?"), "got {:?}", msgs[0]);
+    }
+
+    /// Unlike permission_request, a question from a chat-channel-bridged
+    /// connection is NOT suppressed: there is no IM `/answer` flow, so the push
+    /// is the only signal the user gets that the agent is blocked.
+    #[tokio::test]
+    async fn question_request_bridged_is_still_pushed() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        bridge
+            .lock()
+            .await
+            .register("im-conn".into(), bridged_session("im-conn", 7));
+        let config = config_all_on(7);
+        let mut last_push = HashMap::new();
+
+        process_envelope(
+            &question_request_envelope("im-conn"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(
+            sent(&rec).await.len(),
+            1,
+            "a bridged question must still notify (no IM answer flow to defer to)"
+        );
+    }
+
+    /// Question requests bypass the debounce: two gates back-to-back inside the
+    /// 5s window must BOTH deliver (a blocked agent emits no further event).
+    #[tokio::test]
+    async fn question_requests_are_not_debounced() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let config = config_all_on(7);
+        let mut last_push = HashMap::new();
+
+        process_envelope(
+            &question_request_envelope("conn-a"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        process_envelope(
+            &question_request_envelope("conn-b"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(
+            sent(&rec).await.len(),
+            2,
+            "both question gates within 5s must be delivered"
+        );
+    }
+
+    /// The global event filter still gates question_request: with the id toggled
+    /// off (filter present, not containing it), nothing is pushed.
+    #[tokio::test]
+    async fn question_request_respects_global_filter() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(7);
+        config.global_filter = Some(vec!["turn_complete".to_string()]);
+        let mut last_push = HashMap::new();
+
+        process_envelope(
+            &question_request_envelope("desktop-conn"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert!(sent(&rec).await.is_empty());
+    }
+
+    /// A configured webhook receives the question_request POST under the default
+    /// filter — proving default-on plus webhook fan-out end to end.
+    #[tokio::test]
+    async fn question_request_reaches_webhook() {
+        use tokio::net::TcpListener;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, _rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut last_push = HashMap::new();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { accept_request(&listener).await });
+
+        let mut config = config_all_on(7);
+        config.webhooks = vec![format!("http://{addr}/hook")];
+
+        process_envelope(
+            &question_request_envelope("desktop-conn"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        let request = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("webhook should be delivered within 5s")
+            .unwrap();
+        assert!(request.starts_with("POST /hook"), "got: {request}");
+        assert!(
+            request.contains("\"event\":\"question_request\""),
+            "got: {request}"
         );
     }
 }

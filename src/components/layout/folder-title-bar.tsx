@@ -7,7 +7,6 @@ import {
   PanelLeft,
   PanelRight,
   PawPrint,
-  Search,
   Settings,
   SquareTerminal,
 } from "lucide-react"
@@ -23,6 +22,7 @@ import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import {
@@ -55,7 +55,10 @@ export function FolderTitleBar() {
   const { openNewConversationTab } = useTabContext()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
-  const [searchOpen, setSearchOpen] = useState(false)
+  // Search open-state is shared (see search-dialog-context): the trigger now
+  // lives in the sidebar, but this always-mounted bar keeps owning the dialog
+  // and the ⌘K shortcut so search works even when the sidebar is collapsed.
+  const { open: searchOpen, setOpen: setSearchOpen } = useSearchDialog()
   const [browserOpen, setBrowserOpen] = useState(false)
 
   const handleOpenPet = useCallback(async () => {
@@ -151,6 +154,7 @@ export function FolderTitleBar() {
     handleOpenFolder,
     handleOpenSettings,
     openNewConversationTab,
+    setSearchOpen,
     shortcuts,
     toggle,
     toggleAuxPanel,
@@ -215,15 +219,9 @@ export function FolderTitleBar() {
           isMobile ? (
             <div className="flex items-center gap-1">
               <CommandDropdown />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => setSearchOpen(true)}
-                title={tTitleBar("search")}
-              >
-                <Search className="h-4 w-4" />
-              </Button>
+              {/* Search lives only in the left sidebar's fixed actions region
+                  now (desktop + mobile sheet); no title-bar search entry on any
+                  width. The ⌘K shortcut + SearchCommandDialog stay wired here. */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8">
@@ -290,21 +288,8 @@ export function FolderTitleBar() {
                 >
                   <PanelRight className="h-3.5 w-3.5" />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 hover:text-foreground/80"
-                  onClick={() => setSearchOpen(true)}
-                  title={tTitleBar("withShortcut", {
-                    label: tTitleBar("search"),
-                    shortcut: formatShortcutLabel(
-                      shortcuts.toggle_search,
-                      isMac
-                    ),
-                  })}
-                >
-                  <Search className="h-3.5 w-3.5" />
-                </Button>
+                {/* Desktop search moved into the sidebar's fixed top region;
+                    the dialog + ⌘K shortcut still live here. */}
                 <Button
                   variant="ghost"
                   size="icon"

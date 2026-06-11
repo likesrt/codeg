@@ -277,6 +277,10 @@ export interface DbConversationSummary {
   message_count: number
   created_at: string
   updated_at: string
+  /** When the user pinned this conversation (ISO string), or null if not pinned.
+   *  Drives the sidebar's "Pinned" section (sorted by this descending); a pinned
+   *  conversation is shown there instead of in its folder group. */
+  pinned_at: string | null
   parent_id?: number | null
   parent_tool_use_id?: string | null
   delegation_call_id?: string | null
