@@ -9,6 +9,7 @@ import { useTerminalContext } from "@/contexts/terminal-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
+import { handleMiddleClickClose } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
@@ -79,6 +80,10 @@ export function TerminalTabBar() {
                   : "text-muted-foreground hover:text-foreground hover:bg-muted"
               }`}
               onClick={() => switchTerminal(tab.id)}
+              onMouseDown={(event) => {
+                if (editingId === tab.id) return
+                handleMiddleClickClose(event, () => closeTerminal(tab.id))
+              }}
               title={`${folderIndex.get(tab.folderId) ?? String(tab.folderId)}  —  ${tab.title}`}
             >
               {editingId === tab.id ? (

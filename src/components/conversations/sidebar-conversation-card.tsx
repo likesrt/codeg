@@ -5,7 +5,7 @@ import {
   Pencil,
   Trash2,
   Circle,
-  Plus,
+  SquarePen,
   Loader2,
   XCircle,
   Pin,
@@ -219,7 +219,12 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                   clicks don't select the conversation; `tabIndex={-1}` keeps them
                   mouse-only (the context menu Pin/Unpin + Status is the keyboard/
                   AT-accessible path). */}
-              <div className="flex h-full shrink-0 items-center pr-[0.5rem]">
+              {/* pr-[0.375rem] + the list's px-1.5 (0.375rem) puts the time
+                  badge / hover action buttons at a uniform 0.75rem inset from the
+                  sidebar border — the same right edge as the section-header
+                  actions, folder-header actions, and New chat / Search shortcut
+                  badges. */}
+              <div className="flex h-full shrink-0 items-center pr-[0.375rem]">
                 <span className="flex items-center group-hover:hidden">
                   {isRunning ? (
                     <span
@@ -265,7 +270,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     that still clears the 3:1 non-text-contrast bar over the row's
                     hover background; hover deepens to full foreground. The folder
                     ⋯ button shares this exact palette so all action icons stay a
-                    consistent two colors. */}
+                    consistent two colors. Each button is justify-end so its 14px
+                    glyph flushes to the slot's right edge (0.75rem) — the same edge
+                    the default time/status badge fills — instead of sitting ~5px in
+                    as a centred icon in a transparent box would. */}
                 <div className="hidden items-center gap-px group-hover:flex">
                   {onTogglePin && (
                     <button
@@ -278,7 +286,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       title={isPinned ? t("unpin") : t("pin")}
                       aria-label={isPinned ? t("unpin") : t("pin")}
                       className={cn(
-                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-[0.375rem]",
+                        "flex h-6 w-6 shrink-0 items-center justify-end rounded-[0.375rem]",
                         "cursor-pointer outline-none transition-colors duration-150",
                         "text-muted-foreground/90 hover:text-sidebar-foreground"
                       )}
@@ -303,7 +311,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     title={isCompleted ? t("reopen") : t("markCompleted")}
                     aria-label={isCompleted ? t("reopen") : t("markCompleted")}
                     className={cn(
-                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-[0.375rem]",
+                      "flex h-6 w-6 shrink-0 items-center justify-end rounded-[0.375rem]",
                       "cursor-pointer outline-none transition-colors duration-150",
                       "text-muted-foreground/90 hover:text-sidebar-foreground"
                     )}
@@ -321,7 +329,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               <ContextMenuItem
                 onSelect={() => onNewConversation(conversation.folder_id)}
               >
-                <Plus className="h-4 w-4" />
+                <SquarePen className="h-4 w-4" />
                 {t("newConversation")}
               </ContextMenuItem>
               <ContextMenuSeparator />

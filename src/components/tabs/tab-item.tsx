@@ -4,7 +4,7 @@ import { memo, useCallback, useMemo, useRef } from "react"
 import { Reorder } from "motion/react"
 import { X } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { cn } from "@/lib/utils"
+import { cn, handleMiddleClickClose } from "@/lib/utils"
 import type { ConversationStatus } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
@@ -126,6 +126,7 @@ export const TabItem = memo(function TabItem({
             aria-selected={isActive}
             onClick={handleClick}
             onDoubleClick={handleDoubleClick}
+            onMouseDown={(event) => handleMiddleClickClose(event, handleClose)}
             className={cn(
               "group/tab relative flex items-center h-full gap-1.5 px-3 text-xs rounded-full",
               "cursor-pointer select-none shrink-0",

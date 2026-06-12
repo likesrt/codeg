@@ -129,7 +129,9 @@ vi.mock("virtua", () => ({
 }))
 
 // FolderHeader renders exactly one of FolderClosed/FolderOpen in its body →
-// folder re-render probe. Every other icon stays real.
+// folder re-render probe. Every other icon stays real. (The Folders section
+// header's Open Folder / Clone Repository actions use FolderOpenDot / FolderGit2,
+// which are NOT mocked here, so they never inflate this probe.)
 vi.mock("lucide-react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("lucide-react")>()
   return {

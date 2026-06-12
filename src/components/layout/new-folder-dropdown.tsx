@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { FolderOpen, FolderPlus, GitBranch, Rocket } from "lucide-react"
+import { FolderGit2, FolderOpenDot, FolderPlus, Rocket } from "lucide-react"
 import { useTranslations } from "next-intl"
 import {
   DropdownMenu,
@@ -57,11 +57,11 @@ export function NewFolderDropdown() {
         </DropdownMenuTrigger>
         <DropdownMenuContent className="min-w-56" align="start">
           <DropdownMenuItem onSelect={handleOpenFolder}>
-            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+            <FolderOpenDot className="h-3.5 w-3.5 shrink-0" />
             {t("openFolder")}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setCloneOpen(true)}>
-            <GitBranch className="h-3.5 w-3.5 shrink-0" />
+            <FolderGit2 className="h-3.5 w-3.5 shrink-0" />
             {t("cloneRepository")}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openProjectBootWindow()}>

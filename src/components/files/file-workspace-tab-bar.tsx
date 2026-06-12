@@ -23,7 +23,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
-import { cn } from "@/lib/utils"
+import { cn, handleMiddleClickClose } from "@/lib/utils"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -316,6 +316,9 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
             role="tab"
             aria-selected={active}
             onClick={handleSwitch}
+            onMouseDown={(event) =>
+              handleMiddleClickClose(event, () => onClose(tab.id))
+            }
             className={cn(
               "group/filetab relative flex items-center h-full gap-1.5 px-3 text-xs rounded-full",
               "cursor-pointer select-none shrink-0 hover:bg-primary/8 transition-colors",

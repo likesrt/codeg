@@ -1,8 +1,26 @@
+import type { MouseEvent } from "react"
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
+}
+
+/**
+ * Close a tab when it is middle-clicked, matching the browser/editor
+ * convention. Wire this to a tab element's `onMouseDown`. Only the middle
+ * button (`event.button === 1`) acts; left-click select and right-click context
+ * menus fall through untouched. `preventDefault()` suppresses the default
+ * middle-button behaviour (autoscroll on Windows, primary-selection paste on
+ * Linux/X11).
+ */
+export function handleMiddleClickClose(
+  event: MouseEvent,
+  onClose: () => void
+): void {
+  if (event.button !== 1) return
+  event.preventDefault()
+  onClose()
 }
 
 /**

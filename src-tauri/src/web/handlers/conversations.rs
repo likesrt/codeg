@@ -203,6 +203,43 @@ pub async fn create_conversation(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateChatConversationParams {
+    pub agent_type: AgentType,
+    pub title: Option<String>,
+    /// Reuse an eagerly-created scratch dir (from `create_chat_dir`) instead of
+    /// minting a new one, so the ACP cwd stays put across the first send.
+    pub existing_dir: Option<String>,
+}
+
+pub async fn create_chat_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CreateChatConversationParams>,
+) -> Result<Json<conv_commands::CreateChatConversationResult>, AppCommandError> {
+    let result = conv_commands::create_chat_conversation_core(
+        &state.db.conn,
+        &state.data_dir,
+        params.agent_type,
+        params.title,
+        params.existing_dir.as_deref(),
+    )
+    .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, result.conversation_id)
+        .await;
+    Ok(Json(result))
+}
+
+/// Eagerly create a chat-mode scratch directory (no DB rows) and return its
+/// path. Web twin of the `create_chat_dir` Tauri command — lets the browser
+/// client connect ACP at a real cwd the instant "no-folder mode" is selected.
+pub async fn create_chat_dir(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<conv_commands::CreateChatDirResult>, AppCommandError> {
+    let path = conv_commands::create_chat_dir_core(&state.data_dir)?;
+    Ok(Json(conv_commands::CreateChatDirResult { path }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateConversationStatusParams {
     pub conversation_id: i32,
     pub status: String,
@@ -277,13 +314,11 @@ pub async fn delete_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<DeleteConversationParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    conv_commands::delete_conversation_core(&state.db.conn, params.conversation_id).await?;
-    conv_commands::emit_conversation_deleted(&state.emitter, params.conversation_id);
-    conv_commands::cleanup_tabs_for_deleted_conversation(
+    conv_commands::delete_conversation_with_cleanup_core(
         &state.emitter,
         &state.db.conn,
         params.conversation_id,
     )
-    .await;
+    .await?;
     Ok(Json(()))
 }
