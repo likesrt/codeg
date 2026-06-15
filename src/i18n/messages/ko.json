@@ -1190,6 +1190,9 @@
       "recentOpen": "최근 연 항목"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "선택 영역을 대화에 추가",
+      "addToChat": "대화에 추가",
+      "addSelectionToChatDone": "{label}을(를) 대화에 추가했습니다",
       "viewDiff": "Diff 보기",
       "openFile": "파일 열기",
       "fileCount": "{count, plural, one {#개 파일} other {#개 파일}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names}이(가) {limit}MB 업로드 한도를 초과하여 건너뛰었습니다.",
         "attachUploadFailed": "{names} 업로드 실패.",
         "attachUploadNotAFile": "{names} 은(는) 일반 파일이 아니므로(디렉터리 또는 특수 파일) 건너뛰었습니다.",
-        "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다."
+        "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다.",
+        "mentionEmpty": "일치하는 항목 없음",
+        "mentionLoading": "검색 중…",
+        "mentionListLabel": "멘션",
+        "mentionMore": "결과가 더 있습니다. 계속 입력하여 필터링하세요",
+        "mentionCount": "{count, plural, other {결과 #개}}",
+        "mentionGroupFile": "파일",
+        "mentionGroupAgent": "에이전트",
+        "mentionGroupSession": "세션",
+        "mentionGroupCommit": "커밋",
+        "mentionGroupSkill": "스킬"
       },
       "messageQueue": {
         "addToQueue": "대기열에 추가",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "턴이 종료되어 새 메시지로 보냈습니다.",
     "turnEnded": "턴이 이미 종료되었습니다.",
     "submitFailed": "메모를 보내지 못했습니다"
+  },
+  "SessionInfoSettings": {
+    "title": "세션 정보 가져오기",
+    "description": "메시지에서 참조한 세션(세션 배지)을 에이전트가 조회하여 제목, 에이전트, 상태, 작업 공간, 토큰 사용량, 최근 메시지를 읽을 수 있도록 합니다.",
+    "enable": "세션 정보 가져오기 사용",
+    "enableHint": "사용 설정한 후 시작된 에이전트에 get_session_info 도구를 추가합니다.",
+    "save": "저장",
+    "saving": "저장 중…",
+    "saved": "세션 정보 설정이 저장되었습니다",
+    "saveFailed": "세션 정보 설정 저장에 실패했습니다",
+    "loadFailed": "불러오기 실패: {detail}"
   },
   "AskQuestionSettings": {
     "title": "사용자에게 질문",

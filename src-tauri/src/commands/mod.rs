@@ -23,6 +23,7 @@ pub mod quick_messages;
 pub mod remote_proxy;
 #[cfg(feature = "tauri-runtime")]
 pub mod remote_workspace;
+pub mod session_info;
 pub mod system_settings;
 pub mod terminal;
 pub mod version_control;

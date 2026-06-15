@@ -5,14 +5,16 @@
 //! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
 //! one request → one response per line, with concurrent dispatch so
 //! `notifications/cancelled` can race an in-flight `tools/call`. It exposes up
-//! to four tools — `delegate_to_agent` (async; returns a `task_id` ack),
+//! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
-//! and `check_user_feedback` (pull the user's mid-turn steering notes) — whose
-//! schemas are embedded at compile time from [`TOOL_SCHEMA_JSON`] and gated by
-//! the `--features` groups (delegation / feedback). Only `delegate_to_agent`
-//! registers a broker-side cancel handle; canceling a status / cancel / feedback
-//! round-trip merely suppresses its response — and for `check_user_feedback`
-//! also skips the delivery commit, so a cancelled note stays pending.
+//! `check_user_feedback` (pull the user's mid-turn steering notes),
+//! `ask_user_question` (block on a multiple-choice card), and `get_session_info`
+//! (resolve a referenced session by id) — whose schemas are embedded at compile
+//! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
+//! / feedback / ask / sessions). Only `delegate_to_agent` registers a broker-side
+//! cancel handle; canceling a status / cancel / feedback / session round-trip
+//! merely suppresses its response — and for `check_user_feedback` also skips the
+//! delivery commit, so a cancelled note stays pending.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
 //! that `notifications/initialized` etc. are fire-and-forget.
@@ -41,11 +43,13 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
-    client_feedback_round_trip, client_round_trip, client_status_round_trip, BrokerAskRequest,
-    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerFeedbackRequest,
-    BrokerRequest, BrokerResponse, BrokerStatusRequest,
+    client_feedback_round_trip, client_round_trip, client_session_round_trip,
+    client_status_round_trip, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
+    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
+    BrokerSessionRequest, BrokerStatusRequest,
 };
 use crate::acp::question::parse_questions;
+use crate::acp::session_info::MAX_SESSION_MESSAGES;
 
 /// Upper bound on one broker-side cancel round-trip. Bounds both
 /// `handle_cancel_notification` (so stdin dispatch can't stall behind a
@@ -133,32 +137,36 @@ pub struct CompanionFeatures {
     pub delegation: bool,
     pub feedback: bool,
     pub ask: bool,
+    pub sessions: bool,
 }
 
 impl CompanionFeatures {
-    /// Parse the comma-joined `--features` value (e.g. `delegation,feedback,ask`).
-    /// Unknown tokens are ignored. An absent value (`None`) defaults to
-    /// delegation-only — backward compatible with a parent that predates
-    /// feature gating (companion + listener ship together, so post-upgrade the
-    /// parent always passes an explicit `--features`).
+    /// Parse the comma-joined `--features` value (e.g.
+    /// `delegation,feedback,ask,sessions`). Unknown tokens are ignored. An absent
+    /// value (`None`) defaults to delegation-only — backward compatible with a
+    /// parent that predates feature gating (companion + listener ship together, so
+    /// post-upgrade the parent always passes an explicit `--features`).
     pub fn parse(raw: Option<&str>) -> Self {
         let Some(s) = raw else {
             return Self {
                 delegation: true,
                 feedback: false,
                 ask: false,
+                sessions: false,
             };
         };
         let mut f = Self {
             delegation: false,
             feedback: false,
             ask: false,
+            sessions: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
                 "delegation" => f.delegation = true,
                 "feedback" => f.feedback = true,
                 "ask" => f.ask = true,
+                "sessions" => f.sessions = true,
                 _ => {}
             }
         }
@@ -170,6 +178,7 @@ impl CompanionFeatures {
         match name {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
+            "get_session_info" => self.sessions,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
             _ => false,
         }
@@ -499,6 +508,36 @@ async fn build_tools_call_spawn(
             // pending question down — no broker-side cancel to dispatch.
             let round_trip = Box::pin(async move { client_ask_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_ask_result).await
+        }
+        "get_session_info" => {
+            // `session_id` is the codeg conversation id the agent read out of a
+            // `codeg://session/<id>` reference. Accept a JSON number or a numeric
+            // string (some hosts stringify integer args); reject anything else
+            // synchronously so the LLM can fix it.
+            let session_id = match parse_session_id(&arguments) {
+                Some(id) => id,
+                None => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "get_session_info requires an integer `session_id` \
+                         (the number in the codeg://session/<id> reference)",
+                    ));
+                }
+            };
+            // Default to a modest recent-message window; `0` means metadata-only.
+            // Robust against stringified / oversized values (see helper).
+            let max_messages = parse_max_messages(&arguments);
+            let req = BrokerSessionRequest {
+                token: ctx.token.clone(),
+                session_id,
+                max_messages: Some(max_messages),
+            };
+            // No external_handle: a read-only lookup has nothing to cancel
+            // broker-side — canceling only suppresses the response.
+            let round_trip =
+                Box::pin(async move { client_session_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_session_result).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -929,6 +968,160 @@ pub fn render_ask_result(outcome: &Value) -> Value {
     })
 }
 
+/// Extract the `session_id` integer from the `get_session_info` arguments,
+/// tolerating a JSON number (int or whole float) or a numeric string — some MCP
+/// hosts stringify integer args. `None` for missing / non-integer / out-of-range,
+/// which the dispatcher maps to a synchronous `-32602` the LLM can fix.
+fn parse_session_id(arguments: &Value) -> Option<i32> {
+    let v = arguments.get("session_id")?;
+    if let Some(n) = v.as_i64() {
+        return i32::try_from(n).ok();
+    }
+    if let Some(f) = v.as_f64() {
+        if f.fract() == 0.0 && f >= f64::from(i32::MIN) && f <= f64::from(i32::MAX) {
+            return Some(f as i32);
+        }
+    }
+    if let Some(s) = v.as_str() {
+        return s.trim().parse::<i32>().ok();
+    }
+    None
+}
+
+/// Parse the optional `max_messages` tuning arg robustly: a JSON number (integer
+/// or whole non-negative float) or a numeric string — consistent with how
+/// `session_id` tolerates stringified ints. Clamps in `u64` space BEFORE narrowing
+/// to `u32`, so a huge value (e.g. `4294967296`) saturates to the cap instead of
+/// wrapping to a small number. An absent OR unparseable value falls back to the
+/// default window — it is an optional knob, not a hard error — while an explicit
+/// `0` (or `"0"`) is preserved to mean metadata-only.
+fn parse_max_messages(arguments: &Value) -> u32 {
+    const DEFAULT_MAX_MESSAGES: u32 = 20;
+    let Some(v) = arguments.get("max_messages") else {
+        return DEFAULT_MAX_MESSAGES;
+    };
+    let raw: Option<u64> = if let Some(n) = v.as_u64() {
+        Some(n)
+    } else if let Some(f) = v.as_f64() {
+        // Reject negatives / fractions; `f as u64` saturates a huge float.
+        (f.fract() == 0.0 && f >= 0.0).then_some(f as u64)
+    } else if let Some(s) = v.as_str() {
+        s.trim().parse::<u64>().ok()
+    } else {
+        None
+    };
+    match raw {
+        Some(n) => n.min(u64::from(MAX_SESSION_MESSAGES)) as u32,
+        None => DEFAULT_MAX_MESSAGES,
+    }
+}
+
+/// Map the `get_session_info` round-trip outcome (a serialized
+/// [`crate::acp::session_info::SessionInfo`]) into an MCP `tools/call` result. A
+/// not-found result is surfaced as readable text with `isError: false` (the LLM
+/// reads it and proceeds), never as a tool error. The full structured envelope
+/// rides along in `structuredContent` for hosts that keep it.
+pub fn render_session_result(outcome: &Value) -> Value {
+    let found = outcome
+        .get("found")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = if found {
+        render_session_summary_text(outcome)
+    } else {
+        outcome
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No matching session was found.")
+            .to_string()
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
+/// Build the human-readable summary block for a found session: a metadata header
+/// plus, when present, a "Recent messages" section.
+fn render_session_summary_text(o: &Value) -> String {
+    let s = |k: &str| o.get(k).and_then(|v| v.as_str());
+    let id = o.get("session_id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let agent = s("agent_type").unwrap_or("unknown");
+    let mut out = format!("Session #{id} ({agent})\n");
+    if let Some(t) = s("title") {
+        out.push_str(&format!("Title: {t}\n"));
+    }
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(v) = s("status") {
+        meta.push(format!("status: {v}"));
+    }
+    if let Some(v) = s("git_branch") {
+        meta.push(format!("branch: {v}"));
+    }
+    if let Some(v) = s("model") {
+        meta.push(format!("model: {v}"));
+    }
+    if !meta.is_empty() {
+        out.push_str(&meta.join(" | "));
+        out.push('\n');
+    }
+    if let Some(v) = s("workspace_path") {
+        out.push_str(&format!("Workspace: {v}\n"));
+    }
+    if let Some(n) = o.get("message_count").and_then(|v| v.as_u64()) {
+        out.push_str(&format!("Messages: {n}\n"));
+    }
+    if o.get("is_delegation_child")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        if let Some(p) = o.get("parent_id").and_then(|v| v.as_i64()) {
+            out.push_str(&format!("Delegation child of session #{p}\n"));
+        }
+    }
+    if let Some(tokens) = o
+        .get("stats")
+        .and_then(|st| st.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+    {
+        out.push_str(&format!("Total tokens: {tokens}\n"));
+    }
+    if let Some(note) = s("note") {
+        out.push_str(&format!("Note: {note}\n"));
+    }
+    if let Some(messages) = o.get("messages") {
+        let total = messages.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+        let included = messages
+            .get("included")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let truncated = messages
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let suffix = if truncated { ", older turns omitted" } else { "" };
+        out.push_str(&format!("\nRecent messages ({included}/{total}{suffix}):\n"));
+        if let Some(items) = messages.get("items").and_then(|v| v.as_array()) {
+            for item in items {
+                let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                let body = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let tools: Vec<&str> = item
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                out.push_str(&format!("- [{role}] {body}"));
+                if !tools.is_empty() {
+                    out.push_str(&format!(" (tools: {})", tools.join(", ")));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 pub fn render_task_report(report: &Value) -> Value {
     let status = report.get("status").and_then(|v| v.as_str()).unwrap_or("");
     let is_error = status == "failed";
@@ -970,6 +1163,7 @@ mod tests {
             delegation: true,
             feedback: false,
             ask: false,
+            sessions: false,
         })
     }
 
@@ -1436,16 +1630,25 @@ mod tests {
         delegation: false,
         feedback: true,
         ask: false,
+        sessions: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
         feedback: true,
         ask: false,
+        sessions: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
         feedback: false,
         ask: true,
+        sessions: false,
+    };
+    const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: true,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -1464,16 +1667,19 @@ mod tests {
         let def = CompanionFeatures::parse(None);
         assert!(def.delegation && !def.feedback);
         assert!(!def.ask);
+        assert!(!def.sessions);
         // Explicit list, whitespace + unknown tokens tolerated.
-        let all = CompanionFeatures::parse(Some(" delegation , feedback , ask ,bogus"));
-        assert!(all.delegation && all.feedback && all.ask);
+        let all = CompanionFeatures::parse(Some(" delegation , feedback , ask , sessions ,bogus"));
+        assert!(all.delegation && all.feedback && all.ask && all.sessions);
         let fb = CompanionFeatures::parse(Some("feedback"));
         assert!(!fb.delegation && fb.feedback && !fb.ask);
         let ask = CompanionFeatures::parse(Some("ask"));
         assert!(!ask.delegation && !ask.feedback && ask.ask);
+        let sessions = CompanionFeatures::parse(Some("sessions"));
+        assert!(!sessions.delegation && !sessions.feedback && !sessions.ask && sessions.sessions);
         // Empty string → nothing enabled.
         let none = CompanionFeatures::parse(Some(""));
-        assert!(!none.delegation && !none.feedback && !none.ask);
+        assert!(!none.delegation && !none.feedback && !none.ask && !none.sessions);
     }
 
     #[tokio::test]
@@ -1637,6 +1843,171 @@ mod tests {
         assert_eq!(rendered["isError"], false);
         let text = rendered["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("dismissed"));
+    }
+
+    // -- get_session_info feature gating + parsing + rendering -------------
+
+    #[tokio::test]
+    async fn tools_list_includes_session_only_when_enabled() {
+        // Default ctx is delegation-only: get_session_info must NOT appear.
+        let names = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!names.contains(&"get_session_info".to_string()));
+        // sessions feature on → exactly that one tool surfaces.
+        let names = list_tool_names(
+            dispatch_with_features(
+                SESSIONS_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+        assert_eq!(names, vec!["get_session_info".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn get_session_info_spawns_when_valid_and_enabled() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": { "name": "get_session_info", "arguments": { "session_id": 214 } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(SESSIONS_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_session_info_accepts_numeric_string_id() {
+        // Some hosts stringify integer args — still resolves to a Spawn.
+        let line = json!({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": { "name": "get_session_info", "arguments": { "session_id": "214" } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(SESSIONS_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_session_info_missing_or_bad_id_rejected_synchronously() {
+        for args in [json!({}), json!({ "session_id": "abc" }), json!({ "session_id": true })] {
+            let line = json!({
+                "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+                "params": { "name": "get_session_info", "arguments": args }
+            })
+            .to_string();
+            let resp = unwrap_respond(dispatch_with_features(SESSIONS_ONLY, &line).await);
+            let e = resp.error.expect("bad session_id must be rejected");
+            assert_eq!(e.code, -32602);
+            assert!(e.message.contains("session_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_session_info_rejected_as_unknown_when_feature_off() {
+        // Default ctx is delegation-only — calling the tool by name is rejected
+        // uniformly as an unknown tool (no leak that the feature exists but is off).
+        let line = json!({
+            "jsonrpc": "2.0", "id": 33, "method": "tools/call",
+            "params": { "name": "get_session_info", "arguments": { "session_id": 1 } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[test]
+    fn parse_session_id_tolerates_number_string_and_whole_float() {
+        assert_eq!(parse_session_id(&json!({ "session_id": 7 })), Some(7));
+        assert_eq!(parse_session_id(&json!({ "session_id": " 7 " })), Some(7));
+        assert_eq!(parse_session_id(&json!({ "session_id": 7.0 })), Some(7));
+        assert_eq!(parse_session_id(&json!({ "session_id": "abc" })), None);
+        assert_eq!(parse_session_id(&json!({ "session_id": 7.5 })), None);
+        assert_eq!(parse_session_id(&json!({})), None);
+    }
+
+    #[test]
+    fn parse_max_messages_is_robust() {
+        // Omitted → default.
+        assert_eq!(parse_max_messages(&json!({})), 20);
+        // Explicit 0 (number AND string) is preserved → metadata-only.
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 0 })), 0);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": "0" })), 0);
+        // Plain value within range.
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 5 })), 5);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": "5" })), 5);
+        // Whole float ok; over the cap clamps to MAX_SESSION_MESSAGES.
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 50.0 })), 50);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 999 })), 200);
+        // A huge value must SATURATE to the cap, not wrap to a small number.
+        assert_eq!(
+            parse_max_messages(&json!({ "max_messages": 4_294_967_296_u64 })),
+            200
+        );
+        assert_eq!(
+            parse_max_messages(&json!({ "max_messages": 1e30 })),
+            200
+        );
+        // Invalid / negative / fractional → default (optional knob, not an error).
+        assert_eq!(parse_max_messages(&json!({ "max_messages": "abc" })), 20);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": -5 })), 20);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 5.5 })), 20);
+        assert_eq!(parse_max_messages(&json!({ "max_messages": true })), 20);
+    }
+
+    #[test]
+    fn render_session_result_not_found_is_soft_with_note_text() {
+        let outcome = json!({
+            "found": false, "session_id": 9,
+            "note": "No session matches id 9. It may have been deleted, or never imported into codeg."
+        });
+        let rendered = render_session_result(&outcome);
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("No session matches id 9"));
+        assert_eq!(rendered["structuredContent"]["found"], false);
+    }
+
+    #[test]
+    fn render_session_result_found_renders_metadata_and_messages() {
+        let outcome = json!({
+            "found": true,
+            "session_id": 214,
+            "agent_type": "claude_code",
+            "title": "Fix auth flow",
+            "status": "completed",
+            "git_branch": "main",
+            "model": "claude-opus-4-8",
+            "workspace_path": "/home/me/proj",
+            "message_count": 12,
+            "is_delegation_child": false,
+            "stats": { "total_tokens": 4242 },
+            "messages": {
+                "total": 12, "included": 2, "truncated": true,
+                "items": [
+                    { "role": "user", "text": "fix the login", "tools": [] },
+                    { "role": "assistant", "text": "done", "tools": ["Read", "Edit"] }
+                ]
+            }
+        });
+        let rendered = render_session_result(&outcome);
+        assert_eq!(rendered["isError"], false);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Session #214 (claude_code)"));
+        assert!(text.contains("Fix auth flow"));
+        assert!(text.contains("status: completed"));
+        assert!(text.contains("Workspace: /home/me/proj"));
+        assert!(text.contains("Total tokens: 4242"));
+        assert!(text.contains("Recent messages (2/12, older turns omitted)"));
+        assert!(text.contains("- [assistant] done (tools: Read, Edit)"));
+        // Full structured envelope preserved for hosts that keep it.
+        assert_eq!(rendered["structuredContent"]["session_id"], 214);
     }
 
     #[test]

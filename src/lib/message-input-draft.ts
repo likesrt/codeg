@@ -1,12 +1,23 @@
 "use client"
 
+import type { JSONContent } from "@tiptap/core"
+
 interface PersistedDraftState {
   text: string
 }
 
+/** v2 draft payload: the composer's Tiptap document (preserves reference badges,
+ *  which a Markdown round-trip would downgrade to plain links). */
+interface PersistedDraftStateV2 {
+  doc: JSONContent
+}
+
 const STORAGE_PREFIX = "codeg:message-input-draft:v1"
+const STORAGE_PREFIX_V2 = "codeg:message-input-draft:v2"
 const draftTextCache = new Map<string, string>()
+const draftDocCache = new Map<string, JSONContent>()
 const pendingPersistDrafts = new Map<string, string>()
+const pendingPersistDocs = new Map<string, JSONContent>()
 let idlePersistHandle: number | null = null
 let persistenceListenersBound = false
 
@@ -14,18 +25,37 @@ function storageKeyForDraftKey(draftKey: string): string {
   return `${STORAGE_PREFIX}:${draftKey}`
 }
 
+function storageKeyForDraftKeyV2(draftKey: string): string {
+  return `${STORAGE_PREFIX_V2}:${draftKey}`
+}
+
+/** A persisted v2 payload's `doc` is only trusted when it is a ProseMirror doc
+ *  root (a non-array object whose `type` is "doc"); anything else (corrupt or
+ *  partial payload, array, …) is rejected so we fall back to v1 / null rather
+ *  than hand garbage to the editor. */
+function isTiptapDoc(value: unknown): value is JSONContent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "doc"
+  )
+}
+
 function flushPendingDraftPersistence(): void {
   if (typeof window === "undefined") return
-  if (pendingPersistDrafts.size === 0) {
+  if (pendingPersistDrafts.size === 0 && pendingPersistDocs.size === 0) {
     idlePersistHandle = null
     return
   }
 
-  const entries = Array.from(pendingPersistDrafts.entries())
+  const textEntries = Array.from(pendingPersistDrafts.entries())
   pendingPersistDrafts.clear()
+  const docEntries = Array.from(pendingPersistDocs.entries())
+  pendingPersistDocs.clear()
   idlePersistHandle = null
 
-  for (const [draftKey, text] of entries) {
+  for (const [draftKey, text] of textEntries) {
     try {
       localStorage.setItem(
         storageKeyForDraftKey(draftKey),
@@ -34,6 +64,21 @@ function flushPendingDraftPersistence(): void {
     } catch {
       // Ignore storage quota/permission failures.
     }
+  }
+  for (const [draftKey, doc] of docEntries) {
+    let persisted = false
+    try {
+      localStorage.setItem(
+        storageKeyForDraftKeyV2(draftKey),
+        JSON.stringify({ doc } satisfies PersistedDraftStateV2)
+      )
+      persisted = true
+    } catch {
+      // Keep the legacy v1 draft as a fallback when the v2 write fails
+      // (quota / permission / serialization), so the draft is not lost.
+    }
+    // Only retire the legacy v1 draft once the v2 document is durably written.
+    if (persisted) clearMessageInputDraft(draftKey)
   }
 }
 
@@ -128,6 +173,80 @@ export function clearMessageInputDraft(draftKey: string): void {
 
   try {
     localStorage.removeItem(storageKeyForDraftKey(draftKey))
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Result of loading a v2 draft: a parsed composer document, a legacy v1 Markdown
+ * string to hydrate via `setMarkdown` (migration), or null when no draft exists.
+ */
+export type LoadedDraftV2 =
+  | { kind: "doc"; doc: JSONContent }
+  | { kind: "legacyMarkdown"; markdown: string }
+  | null
+
+/**
+ * Load the persisted composer draft for a key. Prefers the v2 document; falls
+ * back to a v1 text draft (returned as `legacyMarkdown` for the host to hydrate
+ * as Markdown), or null. The v1 draft is left in place on read — it is only
+ * cleared once a v2 document is actually saved ({@link saveMessageInputDraftV2}),
+ * so an unedited migration is never lost.
+ */
+export function loadMessageInputDraftV2(draftKey: string): LoadedDraftV2 {
+  const cached = draftDocCache.get(draftKey)
+  if (cached) return { kind: "doc", doc: cached }
+
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem(storageKeyForDraftKeyV2(draftKey))
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<PersistedDraftStateV2>
+        if (isTiptapDoc(parsed?.doc)) {
+          draftDocCache.set(draftKey, parsed.doc)
+          return { kind: "doc", doc: parsed.doc }
+        }
+      }
+    } catch {
+      // Fall through to the legacy v1 draft.
+    }
+  }
+
+  const legacy = loadMessageInputDraft(draftKey)
+  if (legacy != null && legacy.length > 0) {
+    return { kind: "legacyMarkdown", markdown: legacy }
+  }
+  return null
+}
+
+/**
+ * Persist the composer document for a key (v2). The host calls this only for a
+ * non-empty document and {@link clearMessageInputDraftV2} otherwise. The in-memory
+ * `draftDocCache` makes the v2 document win immediately; any legacy v1 text draft
+ * is only removed once the v2 write is durably flushed (see the flush path), so a
+ * deferred write that later fails cannot lose the draft.
+ */
+export function saveMessageInputDraftV2(
+  draftKey: string,
+  doc: JSONContent
+): void {
+  draftDocCache.set(draftKey, doc)
+  if (typeof window === "undefined") return
+
+  pendingPersistDocs.set(draftKey, doc)
+  scheduleDraftPersistence()
+}
+
+export function clearMessageInputDraftV2(draftKey: string): void {
+  draftDocCache.delete(draftKey)
+  pendingPersistDocs.delete(draftKey)
+  // Also drop any legacy v1 draft so a cleared composer stays cleared.
+  clearMessageInputDraft(draftKey)
+  if (typeof window === "undefined") return
+
+  try {
+    localStorage.removeItem(storageKeyForDraftKeyV2(draftKey))
   } catch {
     /* ignore */
   }

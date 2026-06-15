@@ -9,7 +9,9 @@ use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::models::*;
-use crate::parsers::{folder_name_from_path, truncate_str, AgentParser, ParseError};
+use crate::parsers::{
+    folder_name_from_path, title_from_user_text, truncate_str, AgentParser, ParseError,
+};
 
 pub struct CodexParser {
     base_dir: PathBuf,
@@ -1593,7 +1595,7 @@ fn extract_codex_title_candidate(input: &str, fallback_attached: bool) -> Option
             None
         }
     } else {
-        Some(truncate_str(&cleaned, 100))
+        Some(title_from_user_text(&cleaned))
     }
 }
 

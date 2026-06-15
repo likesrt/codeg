@@ -3,9 +3,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, ChevronRight, FileCode2, FileIcon } from "lucide-react"
-import type { editor as MonacoEditorNs } from "monaco-editor"
+import type {
+  editor as MonacoEditorNs,
+  IDisposable,
+  IPosition,
+} from "monaco-editor"
+import type { Monaco, OnMount } from "@monaco-editor/react"
+import { toast } from "sonner"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useTabContext } from "@/contexts/tab-context"
+import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import { formatFileRangeLabel } from "@/lib/reference-link"
+import { joinFsPath } from "@/lib/path-utils"
 import {
   useWorkspaceContext,
   type FileWorkspaceTab,
@@ -205,6 +215,77 @@ function buildMonacoModelPath(path: string | null, id: string): string {
   const normalized = path.replace(/\\/g, "/")
   const encoded = normalized.split("/").map(encodeURIComponent).join("/")
   return `file:///${encoded}`
+}
+
+interface AddToChatPill {
+  widget: MonacoEditorNs.IContentWidget
+  setVisible: (visible: boolean, position: IPosition | null) => void
+  /** Re-read the label (e.g. after a locale change) even while already shown. */
+  refreshLabel: () => void
+}
+
+/**
+ * The floating "Add to Chat" pill shown next to a text selection, built as a
+ * Monaco content widget. Raw DOM (not React) so it lives in Monaco's own
+ * overflow layer; `allowEditorOverflow` keeps it un-clipped at the viewport edge
+ * and during horizontal scroll, and `suppressMouseDown` stops a click from
+ * collapsing the selection before `addSelectionToChat` reads it. `getPosition`
+ * returns null while hidden — Monaco unmounts the widget on a null position, so
+ * visibility is driven entirely through {@link AddToChatPill.setVisible} +
+ * `layoutContentWidget`.
+ */
+function createAddToChatPill(
+  monaco: Monaco,
+  onActivate: () => void,
+  getLabel: () => string
+): AddToChatPill {
+  const dom = document.createElement("button")
+  dom.type = "button"
+  dom.className =
+    "codeg-add-to-chat-pill inline-flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-0.5 text-xs font-medium text-popover-foreground shadow-md cursor-pointer select-none hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+  // Hand-written SVG (lucide "message-square-plus"): raw DOM can't host a React
+  // lucide component. `currentColor` + the blue text class echoes the file badge.
+  dom.innerHTML =
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="text-blue-600 dark:text-blue-400"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h6"/><path d="M12 7v6"/></svg><span></span>'
+  const labelSpan = dom.querySelector("span")
+  if (labelSpan) labelSpan.textContent = getLabel()
+  dom.addEventListener("click", (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onActivate()
+  })
+
+  let visible = false
+  let position: IPosition | null = null
+
+  const widget: MonacoEditorNs.IContentWidget = {
+    getId: () => "codeg.addToChatPill",
+    getDomNode: () => dom,
+    getPosition: () =>
+      visible && position
+        ? {
+            position,
+            preference: [
+              monaco.editor.ContentWidgetPositionPreference.ABOVE,
+              monaco.editor.ContentWidgetPositionPreference.BELOW,
+            ],
+          }
+        : null,
+    allowEditorOverflow: true,
+    suppressMouseDown: true,
+  }
+
+  return {
+    widget,
+    setVisible: (next, pos) => {
+      visible = next
+      position = pos
+      if (next && labelSpan) labelSpan.textContent = getLabel()
+    },
+    refreshLabel: () => {
+      if (labelSpan) labelSpan.textContent = getLabel()
+    },
+  }
 }
 
 // True once a tab has *something* to render. Drives the rendering predicate
@@ -784,12 +865,36 @@ export function FileWorkspacePanel() {
     saveActiveFile,
     updateActiveFileContent,
   } = useWorkspaceContext()
+  const { tabs, activeTabId } = useTabContext()
   const { activeFolder: folder } = useActiveFolder()
   const folderPath = folder?.path ?? null
   const activeScope = activeFileTab?.id ?? "__default__"
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null)
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null)
   const gitChangeDecorationsRef = useRef<string[]>([])
+  // "Add selection to chat" plumbing. The Monaco action + content widget are
+  // registered once at mount (the editor instance persists across file-tab
+  // switches), so everything they read at activation time lives in refs to dodge
+  // stale closures: the resolved target (folder/file/session), the attachable
+  // flag (also mirrored into a Monaco context key that gates the triggers),
+  // translations, and the disposables torn down on editor disposal.
+  const attachContextRef = useRef<{
+    folderPath: string | null
+    filePath: string | null
+    fileName: string
+    sessionTabId: string | null
+  }>({ folderPath: null, filePath: null, fileName: "", sessionTabId: null })
+  const attachableRef = useRef(false)
+  const attachableKeyRef = useRef<MonacoEditorNs.IContextKey<boolean> | null>(
+    null
+  )
+  const addToChatActionRef = useRef<IDisposable | null>(null)
+  const addToChatPillRef = useRef<AddToChatPill | null>(null)
+  const selectionListenerRef = useRef<IDisposable | null>(null)
+  const focusListenerRef = useRef<IDisposable | null>(null)
+  const blurListenerRef = useRef<IDisposable | null>(null)
+  const tRef = useRef(t)
+  const monacoRef = useRef<Monaco | null>(null)
   const editorTheme = useMonacoThemeSync()
   const { zoomLevel } = useZoomLevel()
   const { editorFontStack, editorFontSize, editorLigatures } = useEditorFont()
@@ -807,6 +912,154 @@ export function FileWorkspacePanel() {
   const fileSaveState = isFileTab ? (activeFileTab.saveState ?? "idle") : "idle"
   const fileIsDirty = isFileTab ? Boolean(activeFileTab.isDirty) : false
   const canEdit = isFileTab && !fileReadonly
+  // The conversation a selection attaches to: the active top-bar tab when it is
+  // a conversation (mirrors aux-panel-file-tree-tab's "Attach to Current
+  // Session"). Null when no conversation is focused.
+  const activeSessionTabId = useMemo(() => {
+    const activeTab = tabs.find((tab) => tab.id === activeTabId)
+    return activeTab && activeTab.kind === "conversation" ? activeTab.id : null
+  }, [tabs, activeTabId])
+  // Gate every trigger (menu item, ⌘L, pill) on a real file tab with a
+  // resolvable absolute path AND a conversation to receive it. The same Monaco
+  // instance also renders some diff tabs, so this guard is required.
+  const isAttachable =
+    isFileTab &&
+    Boolean(activeFileTab?.path) &&
+    Boolean(folderPath) &&
+    Boolean(activeSessionTabId)
+
+  // Read the live selection and emit it to the composer as a ranged file badge.
+  // Reads only refs so it stays stable for the once-registered Monaco action.
+  const addSelectionToChat = useCallback(() => {
+    const editor = editorRef.current
+    const ctx = attachContextRef.current
+    if (!editor || !ctx.sessionTabId || !ctx.folderPath || !ctx.filePath) return
+    const selection = editor.getSelection()
+    // The single gate for the empty case: the action's precondition claims ⌘L
+    // even with no selection (to swallow the built-in expandLineSelection), so
+    // every trigger (menu, ⌘L, pill, programmatic) silently no-ops here when
+    // nothing is selected — never an accidental current-line badge.
+    if (!selection || selection.isEmpty()) return
+    const start = selection.startLineNumber
+    let end = selection.endLineNumber
+    // A full-line drag ends at column 1 of the line below the last selected
+    // line; trim that trailing boundary so selecting lines 10–25 yields 10-25.
+    if (end > start && selection.endColumn === 1) end -= 1
+    if (end < start) end = start
+    const range = { start, end }
+    emitAttachFileToSession({
+      tabId: ctx.sessionTabId,
+      path: joinFsPath(ctx.folderPath, ctx.filePath),
+      range,
+    })
+    toast(
+      tRef.current("addSelectionToChatDone", {
+        label: formatFileRangeLabel(ctx.fileName, range),
+      })
+    )
+  }, [])
+
+  // Register (or re-register) the context-menu action + ⌘L. Re-registerable so
+  // the label can follow an in-app locale change — Monaco caches an action's
+  // label at registration time, and the editor instance outlives a tab switch.
+  const registerAddToChatAction = useCallback(
+    (
+      editor: MonacoEditorNs.IStandaloneCodeEditor,
+      monaco: Monaco,
+      label: string
+    ) => {
+      addToChatActionRef.current?.dispose()
+      addToChatActionRef.current = editor.addAction({
+        id: "codeg.addSelectionToChat",
+        label,
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 1.5,
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyL],
+        // Gate on attachability only — NOT `editorHasSelection`. Monaco's
+        // addAction drives the context menu, the F1 palette, AND the keybinding
+        // from this one precondition. Claiming ⌘L even without a selection is
+        // deliberate: it stops ⌘L from falling through to the built-in
+        // `expandLineSelection` (which would let a second ⌘L attach the current
+        // line), honoring the user's choice of ⌘L as "add to chat". The empty
+        // case is handled in `run` by `addSelectionToChat`'s `selection.isEmpty`
+        // guard, so the action/menu/⌘L silently no-op with nothing selected —
+        // no accidental badge. (Gating the menu on selection would also ungate
+        // the keybinding, reintroducing the fall-through; a second keybinding-
+        // only action would resurface as a no-op F1 palette entry.)
+        precondition: "codegSelectionAttachable",
+        run: () => addSelectionToChat(),
+      })
+    },
+    [addSelectionToChat]
+  )
+
+  // Single teardown for the action, listeners, pill widget, and context key —
+  // called from both the editor's onDidDispose and the React unmount effect.
+  // `removeContentWidget` guards its view call internally, so it's a safe no-op
+  // once disposed; the optional editor arg lets onDidDispose target the exact
+  // disposing instance rather than a possibly-reassigned `editorRef`.
+  const teardownAddToChat = useCallback(
+    (editor?: MonacoEditorNs.IStandaloneCodeEditor | null) => {
+      const target = editor ?? editorRef.current
+      addToChatActionRef.current?.dispose()
+      addToChatActionRef.current = null
+      selectionListenerRef.current?.dispose()
+      selectionListenerRef.current = null
+      focusListenerRef.current?.dispose()
+      focusListenerRef.current = null
+      blurListenerRef.current?.dispose()
+      blurListenerRef.current = null
+      if (addToChatPillRef.current) {
+        target?.removeContentWidget(addToChatPillRef.current.widget)
+        addToChatPillRef.current = null
+      }
+      attachableKeyRef.current = null
+    },
+    []
+  )
+
+  // Keep the activation refs + Monaco context key in sync with React state, and
+  // hide the pill the moment the tab stops being attachable.
+  useEffect(() => {
+    tRef.current = t
+    attachContextRef.current = {
+      folderPath,
+      filePath: activeFileTab?.path ?? null,
+      fileName: activeFileTab?.title ?? "",
+      sessionTabId: activeSessionTabId,
+    }
+    attachableRef.current = isAttachable
+    attachableKeyRef.current?.set(isAttachable)
+    if (!isAttachable && editorRef.current && addToChatPillRef.current) {
+      addToChatPillRef.current.setVisible(false, null)
+      editorRef.current.layoutContentWidget(addToChatPillRef.current.widget)
+    }
+  }, [
+    t,
+    folderPath,
+    activeFileTab?.path,
+    activeFileTab?.title,
+    activeSessionTabId,
+    isAttachable,
+  ])
+
+  // Refresh the cached action label when the locale changes. The initial
+  // registration happens in handleEditorMount (the editor isn't mounted yet on
+  // first render); this only re-fires once the label string actually changes.
+  const addSelectionLabel = t("addSelectionToChat")
+  useEffect(() => {
+    // The sync effect above runs first, so tRef.current is the fresh locale here
+    // — refresh the (registration-cached) action label and the live pill label.
+    if (editorRef.current && monacoRef.current) {
+      registerAddToChatAction(
+        editorRef.current,
+        monacoRef.current,
+        addSelectionLabel
+      )
+    }
+    addToChatPillRef.current?.refreshLabel()
+  }, [addSelectionLabel, registerAddToChatAction])
+
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveGuardRef = useRef({
     canEdit: false,
@@ -1024,8 +1277,8 @@ export function FileWorkspacePanel() {
     diffOutline,
   ])
 
-  const handleEditorMount = useCallback(
-    (editorInstance: MonacoEditorNs.IStandaloneCodeEditor) => {
+  const handleEditorMount: OnMount = useCallback(
+    (editorInstance, monaco) => {
       editorRef.current = editorInstance
       cursorListenerRef.current?.dispose()
       cursorListenerRef.current = editorInstance.onDidChangeCursorPosition(
@@ -1037,6 +1290,58 @@ export function FileWorkspacePanel() {
       setCursorLine(editorInstance.getPosition()?.lineNumber ?? 1)
       applyHiddenAreas()
       applyGitChangeDecorations()
+
+      // --- "Add selection to chat": context-menu action, ⌘L shortcut, and the
+      // floating pill. All three are gated by the `codegSelectionAttachable`
+      // context key so they only appear for a real file tab with an active
+      // conversation to attach to.
+      const attachableKey = editorInstance.createContextKey<boolean>(
+        "codegSelectionAttachable",
+        false
+      )
+      attachableKeyRef.current = attachableKey
+      attachableKey.set(attachableRef.current)
+
+      monacoRef.current = monaco
+      registerAddToChatAction(
+        editorInstance,
+        monaco,
+        tRef.current("addSelectionToChat")
+      )
+      const pill = createAddToChatPill(
+        monaco,
+        () => addSelectionToChat(),
+        () => tRef.current("addToChat")
+      )
+      addToChatPillRef.current = pill
+      editorInstance.addContentWidget(pill.widget)
+
+      const refreshPill = () => {
+        const selection = editorInstance.getSelection()
+        const show =
+          attachableRef.current &&
+          editorInstance.hasTextFocus() &&
+          Boolean(selection) &&
+          !selection?.isEmpty()
+        pill.setVisible(
+          show,
+          show && selection ? selection.getStartPosition() : null
+        )
+        editorInstance.layoutContentWidget(pill.widget)
+      }
+      selectionListenerRef.current?.dispose()
+      selectionListenerRef.current =
+        editorInstance.onDidChangeCursorSelection(refreshPill)
+      focusListenerRef.current?.dispose()
+      focusListenerRef.current =
+        editorInstance.onDidFocusEditorText(refreshPill)
+      blurListenerRef.current?.dispose()
+      blurListenerRef.current = editorInstance.onDidBlurEditorText(() => {
+        pill.setVisible(false, null)
+        editorInstance.layoutContentWidget(pill.widget)
+      })
+
+      editorInstance.onDidDispose(() => teardownAddToChat(editorInstance))
 
       // Set CSS custom properties so hover tooltips can use position:fixed
       // to escape overflow:hidden clipping on ancestor elements.
@@ -1053,7 +1358,13 @@ export function FileWorkspacePanel() {
         editorInstance.onDidDispose(() => ro.disconnect())
       }
     },
-    [applyGitChangeDecorations, applyHiddenAreas]
+    [
+      addSelectionToChat,
+      registerAddToChatAction,
+      teardownAddToChat,
+      applyGitChangeDecorations,
+      applyHiddenAreas,
+    ]
   )
 
   const jumpToLine = useCallback((lineNumber: number) => {
@@ -1244,8 +1555,11 @@ export function FileWorkspacePanel() {
       gitChangeDecorationsRef.current = []
       cursorListenerRef.current?.dispose()
       cursorListenerRef.current = null
+      // Full add-to-chat teardown (action, listeners, pill widget, context key)
+      // in case React unmounts the panel before the editor's own onDidDispose.
+      teardownAddToChat()
     },
-    []
+    [teardownAddToChat]
   )
 
   if (!activeFileTab) {

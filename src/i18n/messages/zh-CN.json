@@ -1190,6 +1190,9 @@
       "recentOpen": "最近打开"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "添加选区到会话",
+      "addToChat": "加入会话",
+      "addSelectionToChatDone": "已将 {label} 加入会话",
       "viewDiff": "查看差异",
       "openFile": "打开文件",
       "fileCount": "{count} 个文件",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} 超过 {limit}MB 上传上限，已跳过。",
         "attachUploadFailed": "上传失败：{names}。",
         "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。",
-        "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。"
+        "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。",
+        "mentionEmpty": "无匹配项",
+        "mentionLoading": "搜索中…",
+        "mentionListLabel": "提及",
+        "mentionMore": "还有更多结果，继续输入以筛选",
+        "mentionCount": "{count, plural, other {# 项结果}}",
+        "mentionGroupFile": "文件",
+        "mentionGroupAgent": "智能体",
+        "mentionGroupSession": "会话",
+        "mentionGroupCommit": "提交",
+        "mentionGroupSkill": "技能"
       },
       "messageQueue": {
         "addToQueue": "加入队列",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "本轮已结束——已改为作为新消息发送。",
     "turnEnded": "本轮已结束。",
     "submitFailed": "留言发送失败"
+  },
+  "SessionInfoSettings": {
+    "title": "获取会话信息",
+    "description": "允许智能体查询你在消息中提及的会话（会话徽章），读取其标题、智能体、状态、工作区、Token 用量和最近消息。",
+    "enable": "启用获取会话信息",
+    "enableHint": "在开启后启动的智能体将获得 get_session_info 工具。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "会话信息设置已保存",
+    "saveFailed": "保存会话信息设置失败",
+    "loadFailed": "加载失败：{detail}"
   },
   "AskQuestionSettings": {
     "title": "向用户提问",

@@ -15,6 +15,7 @@ vi.mock("streamdown", () => ({
     </div>
   ),
   defaultRemarkPlugins: {},
+  defaultRehypePlugins: {},
 }))
 
 vi.mock("@streamdown/cjk", () => ({ cjk: {} }))

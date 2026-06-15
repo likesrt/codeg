@@ -1190,6 +1190,9 @@
       "recentOpen": "المفتوح مؤخرًا"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "إضافة التحديد إلى المحادثة",
+      "addToChat": "إضافة إلى المحادثة",
+      "addSelectionToChatDone": "تمت إضافة {label} إلى المحادثة",
       "viewDiff": "عرض Diff",
       "openFile": "فتح الملف",
       "fileCount": "{count, plural, one {# ملف} other {# ملفات}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} يتجاوز حد التحميل {limit}MB وتم تخطيه.",
         "attachUploadFailed": "فشل تحميل {names}.",
         "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه.",
-        "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}."
+        "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}.",
+        "mentionEmpty": "لا توجد نتائج مطابقة",
+        "mentionLoading": "جارٍ البحث…",
+        "mentionListLabel": "الإشارات",
+        "mentionMore": "مزيد من النتائج — تابع الكتابة للتصفية",
+        "mentionCount": "{count, plural, zero {لا نتائج} one {نتيجة واحدة} two {نتيجتان} few {# نتائج} many {# نتيجة} other {# نتيجة}}",
+        "mentionGroupFile": "الملفات",
+        "mentionGroupAgent": "الوكلاء",
+        "mentionGroupSession": "الجلسات",
+        "mentionGroupCommit": "عمليات الإيداع",
+        "mentionGroupSkill": "المهارات"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "انتهت الجولة — تم الإرسال كرسالة جديدة بدلاً من ذلك.",
     "turnEnded": "انتهت الجولة بالفعل.",
     "submitFailed": "تعذّر إرسال ملاحظتك"
+  },
+  "SessionInfoSettings": {
+    "title": "الحصول على معلومات الجلسة",
+    "description": "يتيح للوكلاء البحث عن جلسة تشير إليها في رسالتك (شارة جلسة) لقراءة عنوانها والوكيل والحالة ومساحة العمل واستهلاك الرموز وأحدث الرسائل.",
+    "enable": "تفعيل الحصول على معلومات الجلسة",
+    "enableHint": "يضيف أداة get_session_info إلى الوكلاء الذين يبدؤون بعد تفعيل هذا.",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "saved": "تم حفظ إعدادات معلومات الجلسة",
+    "saveFailed": "فشل حفظ إعدادات معلومات الجلسة",
+    "loadFailed": "فشل التحميل: {detail}"
   },
   "AskQuestionSettings": {
     "title": "سؤال المستخدم",

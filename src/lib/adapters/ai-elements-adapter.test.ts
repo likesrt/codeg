@@ -4,6 +4,7 @@ import {
   adaptMessageTurn,
   createMessageTurnAdapter,
   dropHiddenFeedbackChecks,
+  extractUserResourcesFromText,
   groupConsecutiveDelegationStatus,
   groupGoalRuns,
   groupConsecutiveToolCalls,
@@ -720,5 +721,269 @@ describe("adaptMessageTurn plan handling", () => {
     )
 
     expect(adapted.content.every((p) => p.type !== "plan")).toBe(true)
+  })
+})
+
+describe("extractUserResourcesFromText — codeg references stay inline", () => {
+  it("keeps a codeg://agent link inline (the @-prefixed label no longer lifts it to a chip)", () => {
+    const input = "ask [@Codex](codeg://agent/codex) to review"
+    const { text, resources } = extractUserResourcesFromText(input)
+    expect(resources).toEqual([])
+    expect(text).toBe(input)
+  })
+
+  it("keeps codeg://session and codeg://commit links inline", () => {
+    const session = extractUserResourcesFromText(
+      "see [#42](codeg://session/claude_code_abc)"
+    )
+    expect(session.resources).toEqual([])
+    expect(session.text).toBe("see [#42](codeg://session/claude_code_abc)")
+
+    const commit = extractUserResourcesFromText(
+      "from [a1b2c3d](codeg://commit/%2Frepo@a1b2c3ddeadbeef)"
+    )
+    expect(commit.resources).toEqual([])
+    expect(commit.text).toBe(
+      "from [a1b2c3d](codeg://commit/%2Frepo@a1b2c3ddeadbeef)"
+    )
+  })
+
+  it("keeps a codeg://session link inline even when its label starts with @ (a session titled '@…')", () => {
+    const input = "ping [@周报](codeg://session/codex_99)"
+    const { text, resources } = extractUserResourcesFromText(input)
+    expect(resources).toEqual([])
+    expect(text).toBe(input)
+  })
+
+  it("keeps a file:// link inline AND copies it to the resource row", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      "look at [foo.ts](file:///x/foo.ts) here"
+    )
+    // Copied to the row (original grey-chip attachment list)…
+    expect(resources).toEqual([
+      { name: "foo.ts", uri: "file:///x/foo.ts", mime_type: null },
+    ])
+    // …and left in place in the prose so it still renders as an inline badge.
+    expect(text).toBe("look at [foo.ts](file:///x/foo.ts) here")
+  })
+
+  it("chips a file:// link with a space (CommonMark angle-bracket destination)", () => {
+    // `referenceToMarkdown` wraps uris with spaces/parens in <…>; the row must
+    // still pick the file up (the bare-destination regex would have missed it).
+    const { text, resources } = extractUserResourcesFromText(
+      "see [a b.ts](<file:///x/a b.ts>) please"
+    )
+    expect(resources).toEqual([
+      { name: "a b.ts", uri: "file:///x/a b.ts", mime_type: null },
+    ])
+    // The original bracketed form is preserved inline (Streamdown parses it).
+    expect(text).toBe("see [a b.ts](<file:///x/a b.ts>) please")
+  })
+
+  it("unescapes a filename with parentheses for the row chip (e.g. `Screenshot (1).png`)", () => {
+    // `referenceToMarkdown` backslash-escapes label punctuation and wraps the
+    // space/paren uri in <…>, so the text carries `[Screenshot \(1\).png](<…>)`.
+    // The chip name must read cleanly, not leak the escaping backslashes.
+    const { text, resources } = extractUserResourcesFromText(
+      "look at [Screenshot \\(1\\).png](<file:///x/Screenshot (1).png>) here"
+    )
+    expect(resources).toEqual([
+      {
+        name: "Screenshot (1).png",
+        uri: "file:///x/Screenshot (1).png",
+        mime_type: null,
+      },
+    ])
+    // Inline form (with its escaping) is preserved for Streamdown to render.
+    expect(text).toBe(
+      "look at [Screenshot \\(1\\).png](<file:///x/Screenshot (1).png>) here"
+    )
+  })
+
+  it("chips a filename containing `]` (escaped as `\\]` in the label)", () => {
+    // The escaped `]` would defeat a `[^\]]+` label regex, dropping the chip; the
+    // escape-aware regex matches it and the unescaped name reads `a]b.ts`.
+    const { text, resources } = extractUserResourcesFromText(
+      "open [a\\]b.ts](file:///x/a]b.ts) now"
+    )
+    expect(resources).toEqual([
+      { name: "a]b.ts", uri: "file:///x/a]b.ts", mime_type: null },
+    ])
+    expect(text).toBe("open [a\\]b.ts](file:///x/a]b.ts) now")
+  })
+
+  it("preserves consecutive spaces in a file path verbatim (no whitespace collapse)", () => {
+    // A filename with two spaces must round-trip byte-for-byte: collapsing the
+    // run would rewrite the inline link's path and break the badge target.
+    const { text, resources } = extractUserResourcesFromText(
+      "open [a  b.ts](<file:///x/a  b.ts>) now"
+    )
+    expect(resources).toEqual([
+      { name: "a  b.ts", uri: "file:///x/a  b.ts", mime_type: null },
+    ])
+    expect(text).toBe("open [a  b.ts](<file:///x/a  b.ts>) now")
+  })
+
+  it("keeps a leading `@` in a file name (scoped-package path), not a mention", () => {
+    // A file whose name starts with `@` (e.g. a scoped-package dir) must keep the
+    // `@` — the file uri takes precedence over the `@`-mention heuristic.
+    const { text, resources } = extractUserResourcesFromText(
+      "see [@scope](file:///repo/node_modules/@scope) here"
+    )
+    expect(resources).toEqual([
+      {
+        name: "@scope",
+        uri: "file:///repo/node_modules/@scope",
+        mime_type: null,
+      },
+    ])
+    expect(text).toBe("see [@scope](file:///repo/node_modules/@scope) here")
+  })
+
+  it("does not let the blocked-mention pass corrupt a file link containing `[blocked]`", () => {
+    // Pathological filename `@foo [blocked].txt`: the blocked-`@mention` pre-pass
+    // must NOT run inside the kept file link, so the inline link survives verbatim
+    // and the chip name is the real (unescaped) filename.
+    const { text, resources } = extractUserResourcesFromText(
+      "see [@foo \\[blocked\\].txt](<file:///x/@foo [blocked].txt>) ok"
+    )
+    expect(resources).toEqual([
+      {
+        name: "@foo [blocked].txt",
+        uri: "file:///x/@foo [blocked].txt",
+        mime_type: null,
+      },
+    ])
+    expect(text).toBe(
+      "see [@foo \\[blocked\\].txt](<file:///x/@foo [blocked].txt>) ok"
+    )
+  })
+
+  it("strips a real blocked @-mention in prose while keeping an adjacent file link", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      "@secret.txt [blocked: outside] see [foo.ts](file:///x/foo.ts)"
+    )
+    expect(resources).toEqual([
+      { name: "secret.txt", uri: "secret.txt", mime_type: null },
+      { name: "foo.ts", uri: "file:///x/foo.ts", mime_type: null },
+    ])
+    expect(text).toBe("see [foo.ts](file:///x/foo.ts)")
+  })
+
+  it("does not corrupt a typed <file://…> angle-string containing [blocked]", () => {
+    // A bare angle-wrapped uri is not a Markdown link; the blocked-mention pass
+    // must skip `<…>` spans so it can't strip an `@…[blocked…]` substring out of
+    // a typed uri and rewrite the path.
+    const { text, resources } = extractUserResourcesFromText(
+      "raw <file:///x/@foo [blocked].txt> ok"
+    )
+    expect(resources).toEqual([])
+    expect(text).toBe("raw <file:///x/@foo [blocked].txt> ok")
+  })
+
+  it("chips a codeg://embedded attachment while keeping its inert badge inline", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      "here [report.pdf](codeg://embedded/abc-123) ok"
+    )
+    expect(resources).toEqual([
+      { name: "report.pdf", uri: "codeg://embedded/abc-123", mime_type: null },
+    ])
+    expect(text).toBe("here [report.pdf](codeg://embedded/abc-123) ok")
+  })
+
+  it("still lifts blocked @-mentions to the resource list", () => {
+    const { resources } = extractUserResourcesFromText(
+      "@secret.txt [blocked: outside workspace]"
+    )
+    expect(resources).toEqual([
+      { name: "secret.txt", uri: "secret.txt", mime_type: null },
+    ])
+  })
+
+  it("keeps both file:// and session links inline; only the file is also chipped", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      "compare [foo.ts](file:///x/foo.ts) with [#42](codeg://session/codex_abc)"
+    )
+    expect(resources).toEqual([
+      { name: "foo.ts", uri: "file:///x/foo.ts", mime_type: null },
+    ])
+    expect(text).toContain("[#42](codeg://session/codex_abc)")
+    expect(text).toContain("[foo.ts](file:///x/foo.ts)")
+  })
+
+  it("recovers a file chip after stray/unbalanced brackets in prose", () => {
+    // The unmatched `[oops` must not swallow the later real file reference.
+    const { text, resources } = extractUserResourcesFromText(
+      "text [oops [still open] [foo.ts](file:///x/foo.ts)"
+    )
+    expect(resources).toEqual([
+      { name: "foo.ts", uri: "file:///x/foo.ts", mime_type: null },
+    ])
+    expect(text).toContain("[foo.ts](file:///x/foo.ts)")
+  })
+
+  it("ignores an empty-label [](file://…) link, adding no chip", () => {
+    const { text, resources } = extractUserResourcesFromText(
+      "see [](file:///x/foo.ts) ok"
+    )
+    expect(resources).toEqual([])
+    expect(text).toBe("see [](file:///x/foo.ts) ok")
+  })
+})
+
+describe("adaptMessageTurn — user reference resources", () => {
+  const msgText = {
+    attachedResources: "Attached resources",
+    toolCallFailed: "Tool failed",
+  }
+
+  it("keeps an agent reference inline in the user turn (no chip row)", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "u1",
+        role: "user",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [
+          { type: "text", text: "ask [@Codex](codeg://agent/codex) to review" },
+        ],
+      },
+      msgText
+    )
+
+    expect(adapted.userResources).toBeUndefined()
+    expect(adapted.content).toHaveLength(1)
+    const part = adapted.content[0]
+    if (part.type !== "text") throw new Error("expected a text part")
+    expect(part.text).toContain("[@Codex](codeg://agent/codex)")
+  })
+
+  it("chips a folded file link AND keeps it inline as a badge; session stays inline", () => {
+    // Mirrors the backend fold: prose+session in one text block, the file
+    // resource_link folded to a trailing `[name](uri)` text block. The file is
+    // copied to the row AND kept inline (rendered as an inline file badge).
+    const adapted = adaptMessageTurn(
+      {
+        id: "u2",
+        role: "user",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [
+          {
+            type: "text",
+            text: "compare these [#42](codeg://session/codex_abc)",
+          },
+          { type: "text", text: "[foo.ts](file:///x/foo.ts)" },
+        ],
+      },
+      msgText
+    )
+
+    expect(adapted.userResources).toEqual([
+      { name: "foo.ts", uri: "file:///x/foo.ts", mime_type: null },
+    ])
+    const joined = adapted.content
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("\n")
+    expect(joined).toContain("[#42](codeg://session/codex_abc)")
+    expect(joined).toContain("[foo.ts](file:///x/foo.ts)")
   })
 })

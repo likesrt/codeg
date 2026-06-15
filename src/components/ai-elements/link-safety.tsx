@@ -60,8 +60,10 @@ function parseLineValue(raw: string | undefined): number | null {
 function parseHashLine(hash: string): number | null {
   const normalized = hash.startsWith("#") ? hash.slice(1) : hash
   if (!normalized) return null
+  // `L<start>` / `L<start>-<end>` / `L<start>-L<end>` (GitHub-style) — a range
+  // (e.g. the editor's "add selection" badge `#L10-25`) jumps to its start line.
   return (
-    parseLineValue(normalized.match(/^L(\d+)$/i)?.[1]) ??
+    parseLineValue(normalized.match(/^L(\d+)(?:-L?\d+)?$/i)?.[1]) ??
     parseLineValue(normalized.match(/^line=(\d+)$/i)?.[1]) ??
     parseLineValue(normalized.match(/^(\d+)$/)?.[1])
   )
@@ -283,7 +285,13 @@ function DirectLinkOpen({
   return null
 }
 
-function useOpenLinkOrFile() {
+/**
+ * Hook returning an async opener for a link or local-file uri: `file://` (and
+ * bare local paths) open in the workspace file panel; http(s)/mailto/tel route
+ * to the browser / OS handler. Used by the Streamdown link-safety modal and by
+ * standalone clickable file affordances (e.g. user-message resource badges).
+ */
+export function useOpenLinkOrFile() {
   const t = useTranslations("Folder.chat.linkSafety")
   const { activeFolder: folder } = useActiveFolder()
   const folderPath = folder?.path

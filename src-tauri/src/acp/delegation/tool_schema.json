@@ -127,5 +127,24 @@
         }
       }
     }
+  },
+  {
+    "name": "get_session_info",
+    "description": "Look up a session/conversation the user referenced in their message and return what it is: its title, which agent ran it, its status, workspace folder, git branch, model, message count, and token-usage stats — and, on request, a compact view of its most recent messages. Call this whenever the user's message contains a `codeg://session/<number>` reference (a mentioned session) and you need to know what that session is about or what happened in it (e.g. to continue its work or summarize it). Pass the NUMBER from the reference as `session_id` (it is codeg's internal conversation id, NOT the agent's own session id). The result is read-only and never modifies the session. A session that no longer exists returns a `found: false` result you can act on — it is not an error.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["session_id"],
+      "properties": {
+        "session_id": {
+          "type": "integer",
+          "description": "The number in the `codeg://session/<number>` reference from the user's message (codeg's internal conversation id). For example, given `[Fix auth](codeg://session/214)`, pass 214."
+        },
+        "max_messages": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many of the session's most recent turns to include as compact text. Defaults to 20; pass 0 for metadata only (faster, no transcript read). Capped at 200."
+        }
+      }
+    }
   }
 ]

@@ -1190,6 +1190,9 @@
       "recentOpen": "最近開いたフォルダ"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "選択範囲をチャットに追加",
+      "addToChat": "チャットに追加",
+      "addSelectionToChatDone": "{label} を会話に追加しました",
       "viewDiff": "差分を見る",
       "openFile": "ファイルを開く",
       "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} は {limit}MB のアップロード上限を超えたためスキップしました。",
         "attachUploadFailed": "{names} のアップロードに失敗しました。",
         "attachUploadNotAFile": "{names} は通常ファイルではなく（ディレクトリまたは特殊ファイル）、スキップされました。",
-        "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。"
+        "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。",
+        "mentionEmpty": "一致する項目がありません",
+        "mentionLoading": "検索中…",
+        "mentionListLabel": "メンション",
+        "mentionMore": "他にも結果があります。入力して絞り込んでください",
+        "mentionCount": "{count, plural, other {# 件の結果}}",
+        "mentionGroupFile": "ファイル",
+        "mentionGroupAgent": "エージェント",
+        "mentionGroupSession": "セッション",
+        "mentionGroupCommit": "コミット",
+        "mentionGroupSkill": "スキル"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "ターンが終了したため、新しいメッセージとして送信しました。",
     "turnEnded": "ターンはすでに終了しています。",
     "submitFailed": "メモを送信できませんでした"
+  },
+  "SessionInfoSettings": {
+    "title": "セッション情報の取得",
+    "description": "メッセージ内で参照したセッション（セッションバッジ）をエージェントが照会し、タイトル・エージェント・ステータス・ワークスペース・トークン使用量・最近のメッセージを読み取れるようにします。",
+    "enable": "セッション情報の取得を有効にする",
+    "enableHint": "有効化後に起動したエージェントに get_session_info ツールを追加します。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "セッション情報の設定を保存しました",
+    "saveFailed": "セッション情報の設定の保存に失敗しました",
+    "loadFailed": "読み込みに失敗しました: {detail}"
   },
   "AskQuestionSettings": {
     "title": "ユーザーに質問",

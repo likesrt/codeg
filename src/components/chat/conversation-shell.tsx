@@ -6,6 +6,7 @@ import type {
   PendingQuestionState,
   PromptCapabilitiesInfo,
   PromptDraft,
+  PromptInputBlock,
   QuestionAnswer,
   SessionConfigOptionInfo,
   SessionModeInfo,
@@ -74,6 +75,7 @@ interface ConversationShellProps {
   onQueueDelete?: (id: string) => void
   editingItemId?: string | null
   editingDraftText?: string | null
+  editingDraftBlocks?: PromptInputBlock[] | null
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
@@ -125,6 +127,7 @@ export function ConversationShell({
   onQueueDelete,
   editingItemId,
   editingDraftText,
+  editingDraftBlocks,
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
@@ -248,6 +251,7 @@ export function ConversationShell({
               onQueueDelete={onQueueDelete}
               editingItemId={editingItemId}
               editingDraftText={editingDraftText}
+              editingDraftBlocks={editingDraftBlocks}
               isEditingQueueItem={isEditingQueueItem}
               onSaveQueueEdit={onSaveQueueEdit}
               onCancelQueueEdit={onCancelQueueEdit}

@@ -60,6 +60,7 @@ import type {
 } from "@/lib/types"
 import { AGENT_LABELS, ALL_AGENT_TYPES, STATUS_ORDER } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { formatConversationTitle } from "@/lib/conversation-title"
 import { toErrorMessage } from "@/lib/app-error"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 
@@ -374,7 +375,8 @@ export function ConversationManageDialog({
                           className="h-4 w-4 shrink-0"
                         />
                         <span className="flex-1 min-w-0 truncate text-sm">
-                          {conv.title || t("untitledConversation")}
+                          {formatConversationTitle(conv.title) ||
+                            t("untitledConversation")}
                         </span>
                         <span className="shrink-0 text-xs text-muted-foreground tabular-nums w-14 text-right">
                           {t("messagesShort", { count: conv.message_count })}

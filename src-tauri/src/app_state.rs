@@ -54,6 +54,11 @@ pub struct AppState {
     /// the question settings command on save. Populated at startup by
     /// `apply_persisted_question_config`.
     pub question_config: crate::acp::question::QuestionRuntimeConfig,
+    /// Hot-swappable get-session-info (`get_session_info`) enable flag. Shared
+    /// with the `DelegationInjection` so MCP injection reads it, and updated by
+    /// the session-info settings command on save. Populated at startup by
+    /// `apply_persisted_session_info_config`.
+    pub session_info_config: crate::acp::session_info::SessionInfoRuntimeConfig,
     /// Serializes mutually-exclusive system operations — in-place
     /// self-update, restart, rollback — so a second click can't race a
     /// download/swap already in flight. Handlers `try_lock` and reject when
@@ -103,6 +108,7 @@ pub fn build_delegation_stack(
     PathBuf,
     crate::acp::feedback::FeedbackRuntimeConfig,
     crate::acp::question::QuestionRuntimeConfig,
+    crate::acp::session_info::SessionInfoRuntimeConfig,
 ) {
     use crate::acp::connection::DelegationInjection;
     use crate::acp::delegation::broker::{
@@ -148,6 +154,7 @@ pub fn build_delegation_stack(
     let socket_path = default_socket_path(&std::env::temp_dir());
     let feedback = crate::acp::feedback::FeedbackRuntimeConfig::new();
     let ask = crate::acp::question::QuestionRuntimeConfig::new();
+    let sessions = crate::acp::session_info::SessionInfoRuntimeConfig::new();
 
     // Install the injection on the manager so spawn_agent picks it up
     // without an extra parameter at every call site.
@@ -157,6 +164,7 @@ pub fn build_delegation_stack(
         socket_path: socket_path.clone(),
         feedback: feedback.clone(),
         ask: ask.clone(),
+        sessions: sessions.clone(),
         // Same backing manager as the listener's question lookup; used only by
         // the run_connection teardown guard to reclaim a parked ask.
         questions: Arc::new(crate::acp::manager::ConnectionManagerQuestionLookup {
@@ -164,7 +172,7 @@ pub fn build_delegation_stack(
         }) as Arc<dyn crate::acp::question::SessionQuestionAccess>,
     });
 
-    (broker, tokens, socket_path, feedback, ask)
+    (broker, tokens, socket_path, feedback, ask, sessions)
 }
 
 impl AppState {
@@ -191,6 +199,7 @@ impl AppState {
             delegation_socket_path,
             feedback_config,
             question_config,
+            session_info_config,
         ) = build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
 
         Self {
@@ -214,6 +223,7 @@ impl AppState {
             delegation_socket_path,
             feedback_config,
             question_config,
+            session_info_config,
             system_op_lock: default_system_op_lock(),
             update_state: default_update_state(),
         }

@@ -50,7 +50,8 @@ mod tauri_app {
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, system_settings, terminal as terminal_commands,
+        remote_workspace as remote_workspace_commands, session_info as session_info_commands,
+        system_settings, terminal as terminal_commands,
         version_control, windows, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -436,26 +437,34 @@ mod tauri_app {
                 let broker_for_lifecycle = {
                     let cm_state = app.state::<ConnectionManager>();
                     let db_conn = app.state::<db::AppDatabase>().conn.clone();
-                    let (broker, tokens, socket_path, feedback_config, question_config) =
-                        crate::app_state::build_delegation_stack(
-                            &cm_state,
-                            db_conn.clone(),
-                            effective_data_dir.clone(),
-                        );
+                    let (
+                        broker,
+                        tokens,
+                        socket_path,
+                        feedback_config,
+                        question_config,
+                        session_info_config,
+                    ) = crate::app_state::build_delegation_stack(
+                        &cm_state,
+                        db_conn.clone(),
+                        effective_data_dir.clone(),
+                    );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
                     app.manage(feedback_config.clone());
                     app.manage(question_config.clone());
+                    app.manage(session_info_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
                     ));
 
                     // Push persisted settings into the broker + feedback + question
-                    // config before listener accept.
+                    // + session-info config before listener accept.
                     let broker_for_init = broker.clone();
                     let db_for_init = db_conn.clone();
                     let feedback_for_init = feedback_config.clone();
                     let question_for_init = question_config.clone();
+                    let session_info_for_init = session_info_config.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
@@ -470,6 +479,11 @@ mod tauri_app {
                         crate::commands::question::apply_persisted_question_config(
                             &db_for_init,
                             &question_for_init,
+                        )
+                        .await;
+                        crate::commands::session_info::apply_persisted_session_info_config(
+                            &db_for_init,
+                            &session_info_for_init,
                         )
                         .await;
                     });
@@ -492,6 +506,13 @@ mod tauri_app {
                             crate::acp::manager::ConnectionManagerQuestionLookup {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
+                        ),
+                        std::sync::Arc::new(
+                            crate::commands::session_info::DbSessionInfoLookup::new(
+                                std::sync::Arc::new(db::AppDatabase {
+                                    conn: db_conn.clone(),
+                                }),
+                            ),
                         ),
                     );
                     tauri::async_runtime::spawn(async move {
@@ -932,6 +953,8 @@ mod tauri_app {
                 feedback_commands::submit_session_feedback,
                 question_commands::get_question_settings,
                 question_commands::set_question_settings,
+                session_info_commands::get_session_info_settings,
+                session_info_commands::set_session_info_settings,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,

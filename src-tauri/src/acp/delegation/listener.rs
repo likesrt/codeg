@@ -19,11 +19,12 @@ use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
     BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerMessage, BrokerRequest,
-    BrokerResponse, BrokerStatusRequest,
+    BrokerResponse, BrokerSessionRequest, BrokerStatusRequest,
 };
 use crate::acp::delegation::types::{DelegationRequest, DelegationTaskReport, TaskStatus};
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
+use crate::acp::session_info::{SessionInfo, SessionInfoAccess};
 use crate::models::AgentType;
 use serde_json::Value;
 
@@ -90,15 +91,21 @@ pub struct DelegationListener {
     /// Registers / cancels the blocking `ask_user_question` tool's pending
     /// questions. Same `tokens` registry and parent-connection scoping.
     pub questions: Arc<dyn SessionQuestionAccess>,
+    /// Resolves a referenced session for the `get_session_info` tool. Unlike the
+    /// other arms this is NOT parent-scoped — it looks any non-deleted session up
+    /// by its codeg conversation id (still token-gated against an invalid caller).
+    pub session_info: Arc<dyn SessionInfoAccess>,
 }
 
 impl DelegationListener {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         broker: Arc<DelegationBroker>,
         tokens: Arc<TokenRegistry>,
         parent_lookup: Arc<dyn ParentSessionLookup>,
         feedback: Arc<dyn SessionFeedbackAccess>,
         questions: Arc<dyn SessionQuestionAccess>,
+        session_info: Arc<dyn SessionInfoAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -106,6 +113,7 @@ impl DelegationListener {
             parent_lookup,
             feedback,
             questions,
+            session_info,
         })
     }
 
@@ -296,6 +304,13 @@ impl DelegationListener {
                 write_frame(conn, &resp).await?;
                 return Ok(());
             }
+            BrokerMessage::SessionInfo(req) => {
+                // Read-only resolution (DB + a bounded transcript parse). No
+                // peer-close race needed: unlike Status/Ask this never blocks on
+                // a long-poll or a human — the bounded parse always completes —
+                // and there is nothing to tear down on cancel.
+                session_response(self.process_session_info(req).await)?
+            }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -403,6 +418,30 @@ impl DelegationListener {
         self.broker
             .cancel_by_external_handle(&cancel.external_handle, reason)
             .await;
+    }
+
+    /// Validate the token and resolve the `get_session_info` target. An invalid
+    /// token yields a `found:false` outcome (the LLM can't usefully distinguish it
+    /// from a deleted session, and we don't leak which).
+    ///
+    /// SCOPE (deliberate, user-confirmed): the lookup is by codeg conversation id
+    /// and is intentionally NOT scoped to the caller's parent connection or to the
+    /// session ids actually referenced in the prompt — any non-deleted session
+    /// resolves. This is sound in codeg's single-tenant trust model: there is no
+    /// per-user isolation anywhere (desktop is one local user; server mode shares
+    /// one `CODEG_TOKEN` + one data dir across an operator's devices), the user can
+    /// already open every session in the UI, and the agent already has full
+    /// filesystem access to every agent's raw session files via its own tools — so
+    /// reading session metadata by id is strictly less capability than the agent
+    /// already holds, not an escalation. The token gate above still prevents an
+    /// unrelated process from reaching the broker at all.
+    async fn process_session_info(&self, req: BrokerSessionRequest) -> SessionInfo {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return SessionInfo::not_found(req.session_id);
+        }
+        self.session_info
+            .resolve(req.session_id, req.max_messages.unwrap_or(0))
+            .await
     }
 
     async fn process(&self, req: BrokerRequest) -> DelegationTaskReport {
@@ -519,6 +558,17 @@ fn feedback_response(items: &[PendingFeedback]) -> std::io::Result<BrokerRespons
 fn ask_response(outcome: &QuestionOutcome) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(outcome).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a resolved [`SessionInfo`] into a [`BrokerResponse`] for the
+/// `SessionInfo` arm — the companion renders it into the `get_session_info`
+/// tool result.
+fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&info).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
         })?,
     })
@@ -715,6 +765,31 @@ mod tests {
         }
     }
 
+    /// In-memory session-info stub. Records every `(session_id, max_messages)` it
+    /// was asked to resolve and returns a seeded outcome — `found` sessions echo
+    /// their id, unknown ids return `not_found`. Default knows about no sessions.
+    #[derive(Default)]
+    struct StubSessionInfo {
+        known: std::collections::HashSet<i32>,
+        calls: tokio::sync::Mutex<Vec<(i32, u32)>>,
+    }
+    #[async_trait]
+    impl SessionInfoAccess for StubSessionInfo {
+        async fn resolve(&self, session_id: i32, max_messages: u32) -> SessionInfo {
+            self.calls.lock().await.push((session_id, max_messages));
+            if self.known.contains(&session_id) {
+                SessionInfo {
+                    found: true,
+                    session_id,
+                    title: Some(format!("session {session_id}")),
+                    ..Default::default()
+                }
+            } else {
+                SessionInfo::not_found(session_id)
+            }
+        }
+    }
+
     use tokio::sync::oneshot;
 
     async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
@@ -746,6 +821,7 @@ mod tests {
             Arc::new(StaticParentLookup(parent_conversation)),
             Arc::new(StubFeedback::default()),
             Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
         )
     }
 
@@ -765,6 +841,7 @@ mod tests {
             Arc::new(StaticParentLookup(Some(1))),
             feedback,
             Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
         )
     }
 
@@ -785,6 +862,27 @@ mod tests {
             Arc::new(StaticParentLookup(Some(1))),
             Arc::new(StubFeedback::default()),
             questions,
+            Arc::new(StubSessionInfo::default()),
+        )
+    }
+
+    /// Build a listener whose session-info access is the given stub, so
+    /// `get_session_info` tests can seed known sessions and assert the round-trip.
+    fn make_session_listener(
+        tokens: Arc<TokenRegistry>,
+        session_info: Arc<StubSessionInfo>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            session_info,
         )
     }
 
@@ -1500,6 +1598,117 @@ mod tests {
         // The Feedback arm is READ-ONLY — it does NOT commit (delivery is
         // committed later, by the companion's CommitFeedback).
         assert!(feedback.committed.lock().await.is_empty());
+    }
+
+    /// A valid `get_session_info` resolves the session by id and returns its
+    /// metadata; the resolver is called with the requested id + max_messages.
+    #[tokio::test]
+    async fn session_info_valid_token_resolves_by_id() {
+        let session_info = Arc::new(StubSessionInfo {
+            known: std::collections::HashSet::from([42]),
+            ..Default::default()
+        });
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_session_listener(tokens, session_info.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SessionInfo(BrokerSessionRequest {
+            token: "tok".into(),
+            session_id: 42,
+            max_messages: Some(15),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["found"], true);
+        assert_eq!(resp.outcome["session_id"], 42);
+        assert_eq!(resp.outcome["title"], "session 42");
+        // The resolver saw the id + the requested message budget.
+        assert_eq!(session_info.calls.lock().await.as_slice(), &[(42, 15)]);
+    }
+
+    /// Accepted-policy coverage (deliberate single-tenant scope): a single valid
+    /// token resolves ANY non-deleted session id — not only ids "referenced" in the
+    /// prompt. Three unrelated ids all resolve through one token.
+    #[tokio::test]
+    async fn session_info_resolves_any_session_id_not_just_referenced() {
+        let session_info = Arc::new(StubSessionInfo {
+            known: std::collections::HashSet::from([7, 42, 1000]),
+            ..Default::default()
+        });
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_session_listener(tokens, session_info.clone());
+
+        for id in [7, 42, 1000] {
+            let (mut client, mut server) = duplex(8 * 1024);
+            let l = listener.clone();
+            let server_task = tokio::spawn(async move {
+                l.serve_one(&mut server).await.unwrap();
+            });
+            let msg = BrokerMessage::SessionInfo(BrokerSessionRequest {
+                token: "tok".into(),
+                session_id: id,
+                max_messages: Some(0),
+            });
+            write_frame(&mut client, &msg).await.unwrap();
+            let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+            server_task.await.unwrap();
+            assert_eq!(resp.outcome["found"], true, "id {id} should resolve");
+            assert_eq!(resp.outcome["session_id"], id);
+        }
+    }
+
+    /// An invalid token yields a `found:false` outcome WITHOUT touching the
+    /// resolver (no leak of whether the session exists).
+    #[tokio::test]
+    async fn session_info_invalid_token_is_not_found_without_resolving() {
+        let session_info = Arc::new(StubSessionInfo {
+            known: std::collections::HashSet::from([42]),
+            ..Default::default()
+        });
+        // No token registered.
+        let tokens = Arc::new(TokenRegistry::default());
+        let listener = make_session_listener(tokens, session_info.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SessionInfo(BrokerSessionRequest {
+            token: "bogus".into(),
+            session_id: 42,
+            max_messages: None,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["found"], false);
+        assert_eq!(resp.outcome["session_id"], 42);
+        // The resolver was never consulted for an unauthenticated caller.
+        assert!(session_info.calls.lock().await.is_empty());
     }
 
     /// `CommitFeedback` marks the named ids delivered, scoped (via the token) to

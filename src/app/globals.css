@@ -11,11 +11,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* 默认界面字体 = 系统 UI 字体，运行时由 AppearanceProvider 覆盖 --font-sans。
-     会话消息区等普通文本均跟随 --font-sans；--font-mono 不在此自定义，
-     由 Tailwind 默认等宽栈兜底（与代码编辑器字体相互独立）。 */
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, sans-serif;
+  /* 默认界面字体 = 系统等宽字体（与 DEFAULT_UI_FONT_ID = "system-mono" 一致，
+     须等于 font-presets.ts 的 MONO_FALLBACK，否则首屏到水合会闪字），运行时由
+     AppearanceProvider 覆盖 --font-sans。会话消息区等普通文本均跟随 --font-sans；
+     --font-mono 不在此自定义，由 Tailwind 默认等宽栈兜底（与代码编辑器字体相互独立）。 */
+  --font-sans: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 
   font-family: var(--font-sans);
   font-size: 16px;
@@ -1456,4 +1457,116 @@
   :root:not(.light) .merge-gutter-arrow-conflict:hover {
     background-color: rgba(248, 81, 73, 0.35);
   }
+}
+
+/* ───────────────── Rich-text composer (Tiptap) ─────────────────
+   Live WYSIWYG Markdown styling for the message composer. Scoped to
+   `.codeg-composer` so it never leaks into Streamdown message rendering. */
+
+/* The composer box reads as one editable surface: clicking its blank chrome
+   (padding, the dead space below a short message, the action-bar gaps) focuses
+   the editor, so the I-beam should show across all of it. `cursor` inherits, so
+   the contenteditable already gets `text`; interactive controls inside the box
+   re-assert a pointer (buttons carry no explicit cursor of their own). Disabled
+   buttons keep `pointer-events: none`, so the box's I-beam shows through them —
+   intended: clicking a disabled control still focuses the editor. */
+.codeg-composer-chrome {
+  cursor: text;
+}
+.codeg-composer-chrome :is(button, a[href], [role="button"], [role="menuitem"], [role="combobox"]) {
+  cursor: pointer;
+}
+
+.codeg-composer .ProseMirror {
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+/* Tight block rhythm — a chat input, not a document. */
+.codeg-composer .ProseMirror > * {
+  margin: 0;
+}
+.codeg-composer .ProseMirror > * + * {
+  margin-top: 0.5rem;
+}
+
+.codeg-composer .ProseMirror :is(h1, h2, h3, h4) {
+  font-weight: 600;
+  line-height: 1.3;
+}
+.codeg-composer .ProseMirror h1 {
+  font-size: 1.25rem;
+}
+.codeg-composer .ProseMirror h2 {
+  font-size: 1.125rem;
+}
+.codeg-composer .ProseMirror :is(h3, h4) {
+  font-size: 1rem;
+}
+
+.codeg-composer .ProseMirror :is(ul, ol) {
+  padding-left: 1.25rem;
+}
+.codeg-composer .ProseMirror ul {
+  list-style: disc;
+}
+.codeg-composer .ProseMirror ol {
+  list-style: decimal;
+}
+.codeg-composer .ProseMirror li > p {
+  margin: 0;
+}
+
+.codeg-composer .ProseMirror blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.codeg-composer .ProseMirror code {
+  font-family:
+    var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.85em;
+  background: var(--muted);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+}
+.codeg-composer .ProseMirror pre {
+  background: var(--muted);
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+}
+.codeg-composer .ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.8125rem;
+}
+
+.codeg-composer .ProseMirror a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Placeholder painted by @tiptap/extension-placeholder on the empty doc. */
+.codeg-composer .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Inline reference badges (atom node view). */
+.codeg-composer .codeg-reference {
+  cursor: default;
+  user-select: none;
+  white-space: normal;
+}
+.codeg-composer .codeg-reference.ProseMirror-selectednode [data-reference-badge] {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }

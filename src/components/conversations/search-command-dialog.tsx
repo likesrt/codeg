@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { formatConversationTitle } from "@/lib/conversation-title"
 
 type SearchTranslator = (key: string, values?: Record<string, string>) => string
 
@@ -1435,14 +1436,15 @@ function ConversationItem({
   conv: DbConversationSummary
   model: ReturnType<typeof useSearchDialogModel>
 }) {
+  const title = formatConversationTitle(conv.title)
   return (
     <CommandItem
-      value={`${conv.id}-${conv.title ?? ""}`}
+      value={`${conv.id}-${title}`}
       onSelect={() => model.handleSelectConversation(conv)}
     >
       <ConversationStatusDot status={conv.status as ConversationStatus} />
       <span className="flex-1 truncate">
-        {conv.title || model.t("untitledConversation")}
+        {title || model.t("untitledConversation")}
       </span>
       <span className="text-xs text-muted-foreground shrink-0">
         {AGENT_LABELS[conv.agent_type]}

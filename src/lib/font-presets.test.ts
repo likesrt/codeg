@@ -65,9 +65,9 @@ describe("defaults", () => {
     }
   })
 
-  it("default UI font is the system sans font", () => {
-    expect(DEFAULT_UI_FONT_ID).toBe("system-ui")
-    expect(FONT_BY_ID[DEFAULT_UI_FONT_ID].category).toBe("sans")
+  it("default UI font is the system monospace font", () => {
+    expect(DEFAULT_UI_FONT_ID).toBe("system-mono")
+    expect(FONT_BY_ID[DEFAULT_UI_FONT_ID].category).toBe("mono")
     expect(FONT_BY_ID[DEFAULT_UI_FONT_ID].source).toBe("system")
   })
 

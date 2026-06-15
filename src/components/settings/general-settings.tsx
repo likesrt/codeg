@@ -32,6 +32,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { SessionFeedbackSettingsSection } from "@/components/settings/session-feedback-settings"
 import { AskQuestionSettingsSection } from "@/components/settings/ask-question-settings"
+import { SessionInfoSettingsSection } from "@/components/settings/session-info-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
 const TERMINAL_SHELL_OPTION_CUSTOM = "custom"
@@ -392,6 +393,8 @@ export function GeneralSettings() {
         <SessionFeedbackSettingsSection />
 
         <AskQuestionSettingsSection />
+
+        <SessionInfoSettingsSection />
       </div>
     </ScrollArea>
   )

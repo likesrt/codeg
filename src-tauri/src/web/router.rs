@@ -85,6 +85,14 @@ pub fn build_router(
             post(handlers::question::set_question_settings),
         )
         .route(
+            "/get_session_info_settings",
+            post(handlers::session_info::get_session_info_settings),
+        )
+        .route(
+            "/set_session_info_settings",
+            post(handlers::session_info::set_session_info_settings),
+        )
+        .route(
             "/get_folder_conversation",
             post(handlers::conversations::get_folder_conversation),
         )

@@ -164,6 +164,12 @@ pub const FEEDBACK_SETTINGS_CHANGED_EVENT: &str = "feedback-settings://changed";
 /// bool }`).
 pub const QUESTION_SETTINGS_CHANGED_EVENT: &str = "question-settings://changed";
 
+/// Global side-channel announcing a `get_session_info` enable/disable. Same
+/// cross-window rationale as [`QUESTION_SETTINGS_CHANGED_EVENT`]: the settings UI
+/// runs in a separate window, so other views learn the flag flipped only via this
+/// backend broadcast. Payload: `SessionInfoSettings` (`{ "enabled": bool }`).
+pub const SESSION_INFO_SETTINGS_CHANGED_EVENT: &str = "session-info-settings://changed";
+
 /// Payload for the global [`CONVERSATION_CHANGED_EVENT`] side-channel. Drives
 /// cross-client sidebar sync (membership + status) independent of the
 /// per-connection ACP attach protocol, so clients that are NOT attached to a

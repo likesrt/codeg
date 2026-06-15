@@ -127,6 +127,19 @@ describe("link safety direct opening", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
   })
 
+  it("jumps to the start line of a ranged file link (#L<start>-<end>)", async () => {
+    render(<LinkSafetyHarness url="file:///repo/src/app.ts#L10-25" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("src/app.ts", {
+        line: 10,
+      })
+    })
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
   it("blocks unsupported markdown link protocols without rendering a confirmation dialog", async () => {
     render(<LinkSafetyHarness url="vscode://file/repo/src/app.ts" />)
 

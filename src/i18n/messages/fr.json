@@ -1190,6 +1190,9 @@
       "recentOpen": "Ouvert récemment"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "Ajouter la sélection au chat",
+      "addToChat": "Ajouter au chat",
+      "addSelectionToChatDone": "{label} ajouté à la conversation",
       "viewDiff": "Voir le Diff",
       "openFile": "Ouvrir le fichier",
       "fileCount": "{count, plural, one {# fichier} other {# fichiers}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} dépasse la limite de téléversement de {limit} Mo et a été ignoré.",
         "attachUploadFailed": "Échec du téléversement de {names}.",
         "attachUploadNotAFile": "{names} n'est pas un fichier régulier (répertoire ou fichier spécial) et a été ignoré.",
-        "attachUploadQuotaExceeded": "Le serveur n'a plus d'espace pour les téléversements ; {names} n'a pas pu être envoyé."
+        "attachUploadQuotaExceeded": "Le serveur n'a plus d'espace pour les téléversements ; {names} n'a pas pu être envoyé.",
+        "mentionEmpty": "Aucune correspondance",
+        "mentionLoading": "Recherche…",
+        "mentionListLabel": "Mentions",
+        "mentionMore": "Plus de résultats — continuez à taper pour filtrer",
+        "mentionCount": "{count, plural, one {# résultat} other {# résultats}}",
+        "mentionGroupFile": "Fichiers",
+        "mentionGroupAgent": "Agents",
+        "mentionGroupSession": "Sessions",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Compétences"
       },
       "messageQueue": {
         "addToQueue": "Mettre en file",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "Le tour est terminé : envoyé comme nouveau message.",
     "turnEnded": "Le tour est déjà terminé.",
     "submitFailed": "Impossible d'envoyer votre note"
+  },
+  "SessionInfoSettings": {
+    "title": "Obtenir les infos de session",
+    "description": "Permet aux agents de consulter une session que vous mentionnez dans votre message (un badge de session) pour lire son titre, son agent, son statut, son espace de travail, sa consommation de jetons et ses messages récents.",
+    "enable": "Activer l'obtention des infos de session",
+    "enableHint": "Ajoute l'outil get_session_info aux agents démarrés après l'activation.",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres d'infos de session enregistrés",
+    "saveFailed": "Échec de l'enregistrement des paramètres d'infos de session",
+    "loadFailed": "Échec du chargement : {detail}"
   },
   "AskQuestionSettings": {
     "title": "Poser une question à l'utilisateur",

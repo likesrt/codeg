@@ -64,6 +64,19 @@ impl codeg_lib::acp::feedback::SessionFeedbackAccess for NoFeedback {
     async fn commit_feedback_delivered(&self, _parent_connection_id: &str, _ids: Vec<String>) {}
 }
 
+/// No-op session-info access — this e2e suite never drives `get_session_info`.
+struct NoSessionInfo;
+#[async_trait]
+impl codeg_lib::acp::session_info::SessionInfoAccess for NoSessionInfo {
+    async fn resolve(
+        &self,
+        session_id: i32,
+        _max_messages: u32,
+    ) -> codeg_lib::acp::session_info::SessionInfo {
+        codeg_lib::acp::session_info::SessionInfo::not_found(session_id)
+    }
+}
+
 /// Controllable question access for the ask round-trip test: `register_question`
 /// parks a sender keyed by a freshly-minted id; the test pops it via
 /// `take_pending` and resolves it, exactly as a user answering the card would.
@@ -150,6 +163,7 @@ async fn end_to_end_uds_happy_path() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     // PID-scoped socket inside the OS temp dir — no clashes across test bins.
@@ -264,6 +278,7 @@ async fn end_to_end_uds_batch_status() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -349,6 +364,7 @@ async fn end_to_end_uds_invalid_token_rejected() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -413,6 +429,7 @@ async fn end_to_end_uds_ask_question_round_trip() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         questions.clone() as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -550,6 +567,7 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         questions as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();

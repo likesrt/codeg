@@ -16,6 +16,7 @@ import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { formatConversationTitle } from "@/lib/conversation-title"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -205,7 +206,8 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                     isOpenInTab && "text-primary"
                   )}
                 >
-                  {conversation.title || t("untitledConversation")}
+                  {formatConversationTitle(conversation.title) ||
+                    t("untitledConversation")}
                 </span>
               </button>
 
@@ -411,7 +413,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
             <AlertDialogTitle>{t("deleteConversationTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
               {t("deleteConversationDescription", {
-                title: conversation.title || t("untitledConversation"),
+                title:
+                  formatConversationTitle(conversation.title) ||
+                  t("untitledConversation"),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>

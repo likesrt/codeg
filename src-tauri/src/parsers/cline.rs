@@ -9,7 +9,10 @@ use crate::models::{
     TurnUsage,
 };
 
-use super::{compute_session_stats, folder_name_from_path, truncate_str, AgentParser, ParseError};
+use super::{
+    compute_session_stats, folder_name_from_path, title_from_user_text, truncate_str, AgentParser,
+    ParseError,
+};
 
 // ---------------------------------------------------------------------------
 // On-disk JSON structures
@@ -158,7 +161,7 @@ impl AgentParser for ClineParser {
             let folder_path = entry.cwd_on_task_initialization.clone();
             let folder_name = folder_path.as_deref().map(folder_name_from_path);
 
-            let title = entry.task.as_deref().map(|t| truncate_str(t.trim(), 100));
+            let title = entry.task.as_deref().map(|t| title_from_user_text(t.trim()));
 
             // Count messages from api_conversation_history.json
             let api_path = tasks_dir.join("api_conversation_history.json");
@@ -239,7 +242,7 @@ impl AgentParser for ClineParser {
         let title = history_entry
             .as_ref()
             .and_then(|e| e.task.as_deref())
-            .map(|t| truncate_str(t.trim(), 100));
+            .map(|t| title_from_user_text(t.trim()));
 
         let mut turns: Vec<MessageTurn> = Vec::new();
         let mut turn_counter = 0u32;

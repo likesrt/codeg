@@ -1,7 +1,9 @@
 //! `codeg-mcp` — the per-launch stdio MCP companion that an agent CLI runs
 //! to surface codeg's tools to its LLM: the multi-agent delegation tools
-//! (`delegate_to_agent` etc.) and/or `check_user_feedback` (pull the user's
-//! mid-turn steering notes), gated by the `--features` groups.
+//! (`delegate_to_agent` etc.), `check_user_feedback` (pull the user's mid-turn
+//! steering notes), `ask_user_question` (block on a multiple-choice card), and
+//! `get_session_info` (resolve a referenced session by id), gated by the
+//! `--features` groups (`delegation` / `feedback` / `ask` / `sessions`).
 //!
 //! The agent's MCP config (injected by codeg via `load_mcp_servers_for_agent`)
 //! spawns this binary with three required flags:
@@ -46,9 +48,10 @@ struct Args {
     /// upgrade failure) or hold open a UDS / pipe nobody will ever read
     /// from. Omitted by older parents — backward compatible.
     parent_pid: Option<u32>,
-    /// Comma-joined tool groups to expose (e.g. `delegation,feedback`). Omitted
-    /// by parents that predate feature gating; see `CompanionFeatures::parse`
-    /// (defaults to delegation-only).
+    /// Comma-joined tool groups to expose (e.g.
+    /// `delegation,feedback,ask,sessions`). Omitted by parents that predate
+    /// feature gating; see `CompanionFeatures::parse` (defaults to
+    /// delegation-only).
     features: Option<String>,
 }
 
@@ -97,7 +100,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback]"
+                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,sessions]"
                 );
                 std::process::exit(0);
             }

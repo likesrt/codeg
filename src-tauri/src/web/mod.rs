@@ -824,6 +824,12 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<crate::acp::question::QuestionRuntimeConfig>()
             .inner()
             .clone(),
+        // Reuse the same get-session-info config handle the desktop MCP injection
+        // reads, so HTTP-side session-info settings target the same flag.
+        session_info_config: app
+            .state::<crate::acp::session_info::SessionInfoRuntimeConfig>()
+            .inner()
+            .clone(),
         system_op_lock: crate::app_state::default_system_op_lock(),
         // Reuse the same handle the desktop `app_update` commands write to so
         // HTTP and webview readers see the identical update snapshot.

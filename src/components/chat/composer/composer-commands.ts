@@ -1,0 +1,124 @@
+import type { Editor } from "@tiptap/core"
+
+import type { PromptInputBlock } from "@/lib/types"
+
+import type { InputAttachment } from "../message-input-attachments"
+import { blocksToRestoredDraft } from "./from-prompt-blocks"
+import type { ReferenceAttrs } from "./types"
+
+/**
+ * Whether the composer has nothing sendable. Stricter than `editor.isEmpty`,
+ * which is false for a whitespace-only document (the legacy textarea gated the
+ * send button on `text.trim()`), but still treats a document holding only an
+ * inline reference badge (e.g. an `@file` mention with no prose) as sendable.
+ */
+export function isComposerEmpty(editor: Editor): boolean {
+  if (editor.isEmpty) return true
+  if (editor.getText().trim().length > 0) return false
+  let hasReference = false
+  editor.state.doc.descendants((node) => {
+    if (hasReference) return false
+    if (node.type.name === "reference") {
+      hasReference = true
+      return false
+    }
+    return true
+  })
+  return !hasReference
+}
+
+// Elements that own their own click behavior: the editor surface, interactive
+// controls, and inline badges. A mousedown landing on any of these (or a
+// descendant) is NOT an "empty chrome" click.
+const NON_CHROME_SELECTOR =
+  '.ProseMirror, button, a, input, textarea, select, [role="button"], [role="combobox"], [role="menuitem"], [data-reference-badge], [contenteditable]'
+
+/**
+ * Whether a mousedown `target` landed on the message input's empty chrome — its
+ * padding, the blank space below a short message, or the gaps in the action bar
+ * — rather than on the editor surface or an interactive control. The host uses
+ * this to focus the editor when the user clicks the otherwise-dead space around
+ * it (only the editor surface itself used to be clickable).
+ */
+export function isComposerChromeClick(target: EventTarget | null): boolean {
+  return target instanceof Element && !target.closest(NON_CHROME_SELECTOR)
+}
+
+/**
+ * Insert an expert as the leading inline badge of the message — experts are
+ * whole-turn directives the agent inspects first, so the badge goes at the very
+ * front (and serializes to `${prefix}${id}` as the first token), never at the
+ * caret. `attrs` is an expert reference (refType `skill`, `meta.scope === "expert"`).
+ *
+ * The badge must be the FIRST inline node of the FIRST block. Inserting at
+ * position 1 only achieves that when the first block is a paragraph; for a
+ * heading/list/quote/code block the Markdown marker (`# `, `- `, `> `, …) would
+ * serialize before it, so a fresh paragraph is prepended instead. When the first
+ * block already opens with an expert badge (from a prior pick), it is replaced
+ * rather than stacked — the agent only honors the first directive.
+ */
+export function applyExpertReference(
+  editor: Editor,
+  attrs: ReferenceAttrs
+): void {
+  const badge = [
+    { type: "reference", attrs },
+    { type: "text", text: " " },
+  ]
+  const first = editor.state.doc.firstChild
+
+  // First block isn't a paragraph: prepend a fresh one so the badge is the very
+  // first inline content (cursor lands just after the badge + its space, pos 3).
+  if (!first || first.type.name !== "paragraph") {
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(0, { type: "paragraph", content: badge })
+      .setTextSelection(3)
+      .run()
+    return
+  }
+
+  // Paragraph: replace an existing leading expert badge (atom at pos 1) if any,
+  // taking one following space with it so the replacement doesn't stack spaces.
+  // `meta.scope === "expert"` is the unambiguous marker — only expert references
+  // carry it (commands/skills don't), so no extra id allow-list is needed (and
+  // an allow-list would false-negative on agent-linked experts → stacking).
+  const firstChild = first.firstChild
+  const isExpertBadge =
+    firstChild?.type.name === "reference" &&
+    firstChild.attrs.refType === "skill" &&
+    firstChild.attrs.meta?.scope === "expert"
+
+  let chain = editor.chain().focus()
+  if (isExpertBadge) {
+    const afterBadge = first.maybeChild(1)
+    const trailingSpace =
+      afterBadge?.isText && afterBadge.text?.startsWith(" ") ? 1 : 0
+    chain = chain.deleteRange({ from: 1, to: 2 + trailingSpace })
+  }
+  chain.insertContentAt(1, badge).setTextSelection(3).run()
+}
+
+/**
+ * Replay a previously-sent `PromptInputBlock[]` (a queued message's draft) back
+ * into the editor: prose + reference badges in order, returning the out-of-band
+ * attachments (images / embedded resources / non-composer links) for the host to
+ * set. Inverse of `docToPromptBlocks` for the queue-edit round-trip. The editor
+ * is cleared first so this fully replaces the current content.
+ */
+export function restoreBlocksIntoEditor(
+  editor: Editor,
+  blocks: PromptInputBlock[]
+): InputAttachment[] {
+  const { segments, attachments } = blocksToRestoredDraft(blocks)
+  let chain = editor.chain().clearContent()
+  for (const segment of segments) {
+    chain =
+      segment.kind === "markdown"
+        ? chain.insertContent(segment.text, { contentType: "markdown" })
+        : chain.insertReference(segment.attrs)
+  }
+  chain.focus("end").run()
+  return attachments
+}

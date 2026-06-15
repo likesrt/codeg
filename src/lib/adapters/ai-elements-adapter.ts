@@ -14,6 +14,10 @@ import {
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import { isPlanLikeToolName, parseTodosFromJson } from "@/lib/plan-parse"
+import {
+  tokenizeReferenceLinks,
+  unescapeReferenceLabel,
+} from "@/lib/reference-link"
 
 /**
  * Adapted content part types for AI SDK Elements components
@@ -132,7 +136,6 @@ export interface UserImageDisplay {
 }
 
 const BLOCKED_RESOURCE_MENTION_RE = /@([^\s@]+)\s*\[blocked[^\]]*\]/gi
-const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 
 /**
  * Adapted message format for AI SDK Elements
@@ -642,12 +645,15 @@ function sanitizeMentionName(raw: string): string {
   return raw.replace(/[),.;:!?]+$/g, "")
 }
 
+// Tidy the prose AFTER resources were lifted/removed, WITHOUT mutating a
+// `file://` link kept inline (the COPY case). Collapsing internal `[ \t]{2,}`
+// runs would rewrite a path that legitimately contains consecutive spaces
+// (e.g. `a  b.ts`) and break the inline badge's target, so only newline-adjacent
+// whitespace is normalized — a kept link never contains a newline
+// (`referenceToMarkdown` strips them), so these can't touch it. Stray double
+// spaces a removed `@`-mention may leave behind collapse harmlessly at render.
 function normalizeResourceText(text: string): string {
-  return text
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\s+\n/g, "\n")
-    .replace(/\n\s+/g, "\n")
-    .trim()
+  return text.replace(/\s+\n/g, "\n").replace(/\n\s+/g, "\n").trim()
 }
 
 function fileNameFromUri(uri: string): string {
@@ -688,51 +694,138 @@ function addImage(images: UserImageDisplay[], image: UserImageDisplay) {
   images.push(image)
 }
 
+// A `<…>` span (an autolink, a typed bare uri, or a tag). A genuine blocked
+// marker is plain `@name [blocked: …]` prose, never angle-wrapped, so the
+// blocked-mention pass skips these spans rather than mangle a uri/tag that
+// coincidentally contains the `[blocked]` sentinel.
+const ANGLE_SPAN_RE = /<[^<>]*>/g
+
+/** Run the blocked-`@mention` removal over a stretch of non-angle-wrapped prose,
+ *  lifting each `@name [blocked: …]` marker the backend injected to the row. */
+function liftBlockedMentions(
+  prose: string,
+  resources: UserResourceDisplay[]
+): string {
+  return prose.replace(
+    BLOCKED_RESOURCE_MENTION_RE,
+    (_match: string, mention: string) => {
+      const name = sanitizeMentionName(mention)
+      if (name.length > 0) {
+        addResource(resources, { name, uri: name, mime_type: null })
+      }
+      return ""
+    }
+  )
+}
+
+/** Apply the blocked-`@mention` rule to a run of PLAIN PROSE (never the inside of
+ *  a Markdown link — the caller has already split those out). `<…>` spans within
+ *  the prose are kept verbatim so a typed uri/tag can't be corrupted. */
+function stripBlockedMentions(
+  segment: string,
+  resources: UserResourceDisplay[]
+): string {
+  let out = ""
+  let cursor = 0
+  for (const m of segment.matchAll(ANGLE_SPAN_RE)) {
+    const start = m.index ?? cursor
+    out += liftBlockedMentions(segment.slice(cursor, start), resources)
+    out += m[0]
+    cursor = start + m[0].length
+  }
+  out += liftBlockedMentions(segment.slice(cursor), resources)
+  return out
+}
+
+/** Apply the per-scheme rule to ONE Markdown link, mutating `resources`. Returns
+ *  the text to keep in place of the link: the original `match` for an inline-kept
+ *  ref (file / codeg / non-resource link), or "" for a moved-out `@mention`. */
+function handleMarkdownLink(
+  match: string,
+  label: string,
+  uri: string,
+  resources: UserResourceDisplay[]
+): string {
+  const normalizedLabel = label.trim()
+  // Unwrap a CommonMark angle-bracket destination (`<uri>`) to the bare uri so
+  // scheme tests and the stored value are clean. `match` (returned for
+  // inline-kept refs) keeps the original bracketed form untouched.
+  const rawUri = uri.trim()
+  const normalizedUri =
+    rawUri.startsWith("<") && rawUri.endsWith(">")
+      ? rawUri.slice(1, -1).trim()
+      : rawUri
+  // A `codeg://` reference (session / commit / agent) renders as an inline badge
+  // in the transcript (markdown-link → ReferenceBadge); never lift it to the
+  // bottom resource-chip row. The guard mirrors markdown-link's interception
+  // (`href.startsWith("codeg:")`): an unrecognized codeg path is parsed back to
+  // null there and degrades to a plain inline link — still in-flow, never a chip.
+  // (The `@`-prefixed agent link `[@label](codeg://agent/…)` would otherwise be
+  // caught by `hasMentionLabel` below.)
+  if (normalizedUri.toLowerCase().startsWith("codeg:")) {
+    // A `codeg://embedded/…` ref is a path-less pasted attachment — still an
+    // attached file, so it is COPIED to the row too (kept inline as its inert
+    // badge). Other codeg refs are not attachments: inline only.
+    if (normalizedUri.toLowerCase().startsWith("codeg://embedded/")) {
+      addResource(resources, {
+        name: unescapeReferenceLabel(normalizedLabel) || "attachment",
+        uri: normalizedUri,
+        mime_type: null,
+      })
+    }
+    return match
+  }
+  const hasMentionLabel = normalizedLabel.startsWith("@")
+  const isFileUri = normalizedUri.toLowerCase().startsWith("file://")
+  if (!hasMentionLabel && !isFileUri) {
+    return match
+  }
+
+  // `referenceToMarkdown` backslash-escapes label punctuation, so unescape it for
+  // the chip name. A real file takes precedence: its label is the filename, which
+  // can legitimately start with `@` (a scoped-package path like
+  // `node_modules/@scope`) or end in `)`/`.`, so it is used verbatim — never run
+  // through the mention trimming. Only a NON-file `@`-mention gets its `@`
+  // stripped and trailing sentence punctuation trimmed.
+  const name = isFileUri
+    ? unescapeReferenceLabel(normalizedLabel) || fileNameFromUri(normalizedUri)
+    : sanitizeMentionName(unescapeReferenceLabel(normalizedLabel.slice(1))) ||
+      fileNameFromUri(normalizedUri)
+  addResource(resources, { name, uri: normalizedUri, mime_type: null })
+  // A real `file://` attachment is COPIED, not moved: it stays inline in the
+  // prose (so markdown-link renders it as an inline file badge at the position
+  // the sender typed it) AND is listed in the attachment row below the message
+  // (the original grey-chip style). A bare blocked `@mention` link carries no
+  // openable uri, so there is no inline badge to keep — it is still lifted out
+  // (moved) to the row only.
+  return isFileUri ? match : ""
+}
+
 export function extractUserResourcesFromText(text: string): {
   text: string
   resources: UserResourceDisplay[]
 } {
   const resources: UserResourceDisplay[] = []
-  const withoutBlocked = text.replace(
-    BLOCKED_RESOURCE_MENTION_RE,
-    (_match: string, mention: string) => {
-      const name = sanitizeMentionName(mention)
-      if (name.length > 0) {
-        addResource(resources, {
-          name,
-          uri: name,
-          mime_type: null,
-        })
-      }
-      return ""
-    }
-  )
-  const cleaned = withoutBlocked.replace(
-    MARKDOWN_LINK_RE,
-    (match: string, label: string, uri: string) => {
-      const normalizedLabel = label.trim()
-      const normalizedUri = uri.trim()
-      const hasMentionLabel = normalizedLabel.startsWith("@")
-      const isFileUri = normalizedUri.toLowerCase().startsWith("file://")
-      if (!hasMentionLabel && !isFileUri) {
-        return match
-      }
-
-      const candidateName = hasMentionLabel
-        ? normalizedLabel.slice(1)
-        : normalizedLabel
-      const name = sanitizeMentionName(candidateName) || fileNameFromUri(uri)
-      addResource(resources, {
-        name,
-        uri: normalizedUri,
-        mime_type: null,
-      })
-      return ""
-    }
-  )
+  // Tokenize into alternating [prose, link, prose, link, …] so the
+  // blocked-mention pass only ever touches PLAIN PROSE — never the inside of a
+  // kept Markdown file link, whose label/uri could otherwise coincidentally
+  // contain an `@…[blocked…]` pattern and be mutated before extraction. The link
+  // segments are handled verbatim by `handleMarkdownLink`.
+  let out = ""
+  for (const token of tokenizeReferenceLinks(text)) {
+    out +=
+      token.type === "link"
+        ? handleMarkdownLink(
+            token.raw,
+            token.label,
+            token.destination,
+            resources
+          )
+        : stripBlockedMentions(token.value, resources)
+  }
 
   return {
-    text: normalizeResourceText(cleaned),
+    text: normalizeResourceText(out),
     resources,
   }
 }

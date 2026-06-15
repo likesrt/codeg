@@ -18,6 +18,7 @@ pub mod pet;
 pub mod project_boot;
 pub mod question;
 pub mod quick_messages;
+pub mod session_info;
 pub mod system_settings;
 pub mod terminal;
 mod upload_jail;

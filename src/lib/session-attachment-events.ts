@@ -3,6 +3,13 @@ export const ATTACH_FILE_TO_SESSION_EVENT = "codeg:attach-file-to-session"
 export interface AttachFileToSessionDetail {
   tabId: string
   path: string
+  /**
+   * Optional 1-based, inclusive line span to attach as a ranged file badge
+   * (`foo.ts:10-25`). Omitted by whole-file callers (file tree, git changes);
+   * supplied by the editor's "add selection to chat". When present the consumer
+   * encodes it into the badge uri (`file://…#L10-25`) and label.
+   */
+  range?: { start: number; end: number }
 }
 
 export function emitAttachFileToSession(

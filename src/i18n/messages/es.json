@@ -1190,6 +1190,9 @@
       "recentOpen": "Abiertos recientemente"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "Añadir selección al chat",
+      "addToChat": "Añadir al chat",
+      "addSelectionToChatDone": "Se añadió {label} a la conversación",
       "viewDiff": "Ver Diff",
       "openFile": "Abrir archivo",
       "fileCount": "{count, plural, one {# archivo} other {# archivos}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} supera el límite de carga de {limit}MB y se omitió.",
         "attachUploadFailed": "Error al subir {names}.",
         "attachUploadNotAFile": "{names} no es un archivo regular (directorio o archivo especial) y se omitió.",
-        "attachUploadQuotaExceeded": "El servidor se quedó sin espacio para subidas; no se pudo cargar {names}."
+        "attachUploadQuotaExceeded": "El servidor se quedó sin espacio para subidas; no se pudo cargar {names}.",
+        "mentionEmpty": "Sin coincidencias",
+        "mentionLoading": "Buscando…",
+        "mentionListLabel": "Menciones",
+        "mentionMore": "Más resultados: sigue escribiendo para filtrar",
+        "mentionCount": "{count, plural, one {# resultado} other {# resultados}}",
+        "mentionGroupFile": "Archivos",
+        "mentionGroupAgent": "Agentes",
+        "mentionGroupSession": "Sesiones",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Habilidades"
       },
       "messageQueue": {
         "addToQueue": "Agregar a la cola",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "El turno terminó: se envió como un mensaje nuevo.",
     "turnEnded": "El turno ya terminó.",
     "submitFailed": "No se pudo enviar tu nota"
+  },
+  "SessionInfoSettings": {
+    "title": "Obtener información de sesión",
+    "description": "Permite que los agentes consulten una sesión que mencionas en tu mensaje (una insignia de sesión) para leer su título, agente, estado, espacio de trabajo, uso de tokens y mensajes recientes.",
+    "enable": "Activar obtener información de sesión",
+    "enableHint": "Añade la herramienta get_session_info a los agentes iniciados después de activarla.",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Ajustes de información de sesión guardados",
+    "saveFailed": "No se pudieron guardar los ajustes de información de sesión",
+    "loadFailed": "Error al cargar: {detail}"
   },
   "AskQuestionSettings": {
     "title": "Preguntar al usuario",

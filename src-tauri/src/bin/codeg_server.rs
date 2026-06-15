@@ -233,6 +233,7 @@ async fn async_main() {
         delegation_socket_path,
         feedback_config,
         question_config,
+        session_info_config,
     ) = codeg_lib::app_state::build_delegation_stack(
         &connection_manager,
         db.conn.clone(),
@@ -257,6 +258,7 @@ async fn async_main() {
         delegation_socket_path: delegation_socket_path.clone(),
         feedback_config: feedback_config.clone(),
         question_config: question_config.clone(),
+        session_info_config: session_info_config.clone(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
         update_state: codeg_lib::app_state::default_update_state(),
     });
@@ -281,6 +283,12 @@ async fn async_main() {
         &question_config,
     )
     .await;
+    // Same for the get-session-info enable flag.
+    codeg_lib::commands::session_info::apply_persisted_session_info_config(
+        &state.db.conn,
+        &session_info_config,
+    )
+    .await;
 
     // Spawn the delegation listener so companion processes can round-trip
     // through the broker. Path is PID-scoped, so the listener owns it for
@@ -298,6 +306,11 @@ async fn async_main() {
             Arc::new(codeg_lib::acp::manager::ConnectionManagerQuestionLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
+            Arc::new(codeg_lib::commands::session_info::DbSessionInfoLookup::new(
+                Arc::new(codeg_lib::db::AppDatabase {
+                    conn: state.db.conn.clone(),
+                }),
+            )),
         );
         let socket = delegation_socket_path.clone();
         tokio::spawn(async move {

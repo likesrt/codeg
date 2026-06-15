@@ -70,6 +70,19 @@ impl SessionQuestionAccess for NoQuestions {
     async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
 }
 
+/// No-op session-info access — this e2e suite never drives `get_session_info`.
+struct NoSessionInfo;
+#[async_trait]
+impl codeg_lib::acp::session_info::SessionInfoAccess for NoSessionInfo {
+    async fn resolve(
+        &self,
+        session_id: i32,
+        _max_messages: u32,
+    ) -> codeg_lib::acp::session_info::SessionInfo {
+        codeg_lib::acp::session_info::SessionInfo::not_found(session_id)
+    }
+}
+
 fn unique_pipe(tag: &str) -> String {
     format!(
         r"\\.\pipe\codeg-e2e-{}-{}-{}",
@@ -157,6 +170,7 @@ async fn end_to_end_named_pipe_happy_path() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let pipe = unique_pipe("happy");
@@ -257,6 +271,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
     );
 
     let pipe = unique_pipe("repeat");

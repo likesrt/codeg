@@ -1190,6 +1190,9 @@
       "recentOpen": "Recently Opened"
     },
     "fileWorkspacePanel": {
+      "addSelectionToChat": "Add Selection to Chat",
+      "addToChat": "Add to Chat",
+      "addSelectionToChatDone": "Added {label} to the conversation",
       "viewDiff": "View Diff",
       "openFile": "Open File",
       "fileCount": "{count, plural, one {# file} other {# files}}",
@@ -1850,7 +1853,17 @@
         "attachUploadTooLarge": "{names} exceeds the {limit}MB upload limit and was skipped.",
         "attachUploadFailed": "Failed to upload {names}.",
         "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
-        "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded."
+        "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded.",
+        "mentionEmpty": "No matches",
+        "mentionLoading": "Searching…",
+        "mentionListLabel": "Mentions",
+        "mentionMore": "More results — keep typing to filter",
+        "mentionCount": "{count, plural, one {# result} other {# results}}",
+        "mentionGroupFile": "Files",
+        "mentionGroupAgent": "Agents",
+        "mentionGroupSession": "Sessions",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Skills"
       },
       "messageQueue": {
         "addToQueue": "Queue message",
@@ -2936,6 +2949,17 @@
     "turnEndedResent": "The turn ended — sent as a new message instead.",
     "turnEnded": "The turn already ended.",
     "submitFailed": "Couldn't send your note"
+  },
+  "SessionInfoSettings": {
+    "title": "Get session info",
+    "description": "Let agents look up a session you reference in your message (a session badge) to read its title, agent, status, workspace, token usage, and recent messages.",
+    "enable": "Enable get session info",
+    "enableHint": "Adds the get_session_info tool to agents started after this is turned on.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Session info settings saved",
+    "saveFailed": "Failed to save session info settings",
+    "loadFailed": "Failed to load: {detail}"
   },
   "AskQuestionSettings": {
     "title": "Ask user question",

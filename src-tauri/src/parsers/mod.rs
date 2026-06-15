@@ -139,6 +139,185 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Punctuation the serializer escapes with a leading backslash inside a
+/// reference label (mirrors `escapeMarkdownText` in `src/lib/reference-text.ts`
+/// and the class in the frontend `unescapeReferenceLabel`).
+fn is_escapable_reference_punct(c: char) -> bool {
+    matches!(
+        c,
+        '\\' | '`' | '*' | '_' | '~' | '[' | ']' | '(' | ')' | '<' | '>'
+    )
+}
+
+/// Reverse the serializer's label escaping: drop the backslash from each escaped
+/// inline-significant punctuation char so the recovered label reads literally.
+/// Mirrors the frontend `unescapeReferenceLabel`.
+fn unescape_reference_label(label: &[char]) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut i = 0;
+    while i < label.len() {
+        if label[i] == '\\' && i + 1 < label.len() && is_escapable_reference_punct(label[i + 1]) {
+            out.push(label[i + 1]);
+            i += 2;
+        } else {
+            out.push(label[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Mirror ECMAScript's `/\s/` — the whitespace class the frontend
+/// `foldReferenceLinks` (`src/lib/reference-link.ts`) scans destinations with —
+/// so this port stays in step with it. It deliberately differs from Rust's
+/// `char::is_whitespace()` in exactly two code points: `U+FEFF` (BOM) is
+/// whitespace to JS but not to Rust, and `U+0085` (NEL) is whitespace to Rust
+/// but not to JS. The set is ECMAScript WhiteSpace + LineTerminator.
+fn is_markdown_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'..='\u{000D}'      // tab, LF, VT, FF, CR
+            | '\u{0020}'             // space
+            | '\u{00A0}'             // no-break space
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'             // line separator
+            | '\u{2029}'             // paragraph separator
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'             // zero-width no-break space (BOM)
+    )
+}
+
+/// Whether the backslash at `k` escapes the next character. CommonMark never
+/// lets a backslash escape whitespace, so `\` + whitespace ENDS (not extends) a
+/// label/destination scan — only `\` + a non-whitespace char is a real escape.
+fn reference_escapes_next(chars: &[char], k: usize) -> bool {
+    chars.get(k) == Some(&'\\') && chars.get(k + 1).is_some_and(|c| !is_markdown_whitespace(*c))
+}
+
+/// If a well-formed `(destination)` begins at `start`, return the index just
+/// past its closing `)`; otherwise `None`. Mirrors the frontend `destinationEnd`
+/// and the serializer's two forms: a `<…>`-wrapped destination (interior `\`,
+/// `<`, `>` backslash-escaped) or a bare run with no `(`, `)`, whitespace, `<` or
+/// `>`.
+fn reference_destination_end(chars: &[char], start: usize) -> Option<usize> {
+    let n = chars.len();
+    if start >= n || chars[start] != '(' {
+        return None;
+    }
+    let mut k = start + 1;
+    if chars.get(k) == Some(&'<') {
+        k += 1;
+        while k < n {
+            if reference_escapes_next(chars, k) {
+                k += 2;
+                continue;
+            }
+            match chars[k] {
+                '>' => {
+                    return if chars.get(k + 1) == Some(&')') {
+                        Some(k + 2)
+                    } else {
+                        None
+                    };
+                }
+                // An unescaped `<` or a line break is forbidden inside `<…>`;
+                // bailing here also bounds the scan so a missing `>` stops at the
+                // next `<` instead of running to EOF (keeps adversarial input
+                // linear).
+                '<' | '\n' | '\r' => return None,
+                _ => k += 1,
+            }
+        }
+        return None;
+    }
+    while k < n {
+        if reference_escapes_next(chars, k) {
+            k += 2;
+            continue;
+        }
+        let c = chars[k];
+        if c == ')' {
+            return Some(k + 1);
+        }
+        if c == '(' || c == '<' || c == '>' || is_markdown_whitespace(c) {
+            return None;
+        }
+        k += 1;
+    }
+    None
+}
+
+/// Replace every inline `[label](destination)` reference link in `text` with its
+/// unescaped `label`, leaving all other prose (including malformed `[…]`/`(…)`
+/// fragments and invocation tokens like `@Codex`) untouched.
+///
+/// This is the Rust counterpart of the frontend canonical fold
+/// (`foldReferenceLinks` in `src/lib/reference-link.ts`) and MUST stay in step
+/// with it: a single O(n) left-to-right scan over a stack of unmatched `[`
+/// positions, matching each `]` against the most recent opener so a balanced
+/// nested label closes at the right bracket, requiring a non-empty label and a
+/// well-formed `(dest)` for a link, and recovering later links after a
+/// stray/unbalanced `[`. Used to derive conversation titles from a user's first
+/// message: folding BEFORE truncation means a long `file://` destination can
+/// never be sliced mid-link into an unterminable `[label](file://…` fragment.
+pub fn fold_reference_links(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(text.len());
+    // Start of the pending prose run; flushed before each link and at the end.
+    let mut text_start = 0usize;
+    // Indices of `[` seen but not yet matched by a `]` (most recent on top).
+    let mut openers: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+
+    while i < n {
+        if reference_escapes_next(&chars, i) {
+            // `\[` / `\]` (and any `\x`) is literal — skip both chars.
+            i += 2;
+            continue;
+        }
+        match chars[i] {
+            '[' => {
+                openers.push(i);
+                i += 1;
+            }
+            ']' if !openers.is_empty() => {
+                let open = openers.pop().expect("openers is non-empty");
+                match reference_destination_end(&chars, i + 1) {
+                    // A link needs a well-formed `(dest)` right after `]` and a
+                    // non-empty label between the brackets.
+                    Some(end) if i > open + 1 => {
+                        out.extend(chars[text_start..open].iter());
+                        out.push_str(&unescape_reference_label(&chars[open + 1..i]));
+                        // Everything up to `open` is committed, so any still-open
+                        // outer `[` can no longer span a link.
+                        openers.clear();
+                        i = end;
+                        text_start = end;
+                    }
+                    // Not a link: keep the brackets in the pending prose run and
+                    // keep scanning so a later valid link is still found.
+                    _ => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out.extend(chars[text_start..n].iter());
+    out
+}
+
+/// Derive a conversation title from a user's first message: fold inline
+/// reference links to their labels, then cap the length. Folding first ensures a
+/// `[name](file://<long path>)` mention becomes `name` instead of a raw — and,
+/// once truncated, unterminable — Markdown link.
+pub fn title_from_user_text(text: &str) -> String {
+    truncate_str(&fold_reference_links(text), 100)
+}
+
 /// Aggregate turn-level usage and duration into a single `SessionStats`.
 pub fn compute_session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
     let mut total_in = 0u64;
@@ -785,10 +964,100 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        infer_context_window_max_tokens, latest_turn_total_usage_tokens,
-        merge_context_window_stats, path_eq_for_matching,
+        fold_reference_links, infer_context_window_max_tokens, latest_turn_total_usage_tokens,
+        merge_context_window_stats, path_eq_for_matching, title_from_user_text,
     };
     use crate::models::{MessageTurn, SessionStats, TurnRole, TurnUsage};
+
+    #[test]
+    fn fold_reference_links_reduces_links_to_labels() {
+        // Plain prose is untouched.
+        assert_eq!(fold_reference_links("hello world"), "hello world");
+        // A file link folds to its label; surrounding text is preserved.
+        assert_eq!(
+            fold_reference_links("看看 [README.md](file:///Users/x/README.md) 这是什么"),
+            "看看 README.md 这是什么"
+        );
+        // codeg:// links fold too; an agent mention keeps its `@`.
+        assert_eq!(
+            fold_reference_links("调用 [@Codex CLI](codeg://agent/codex) 执行"),
+            "调用 @Codex CLI 执行"
+        );
+        // Multiple links in one string.
+        assert_eq!(
+            fold_reference_links("compare [a.ts](file:///a.ts) and [b.ts](file:///b.ts)"),
+            "compare a.ts and b.ts"
+        );
+    }
+
+    #[test]
+    fn fold_reference_links_handles_escapes_and_angle_destinations() {
+        // A `<…>`-wrapped destination (spaces/parens in the path) still folds.
+        assert_eq!(
+            fold_reference_links("[report (1).pdf](<file:///tmp/report (1).pdf>)"),
+            "report (1).pdf"
+        );
+        // Escaped punctuation in the label is unescaped.
+        assert_eq!(fold_reference_links("[a\\]b\\(c](file:///x)"), "a]b(c");
+        // A balanced nested-bracket label closes at the outer `]`.
+        assert_eq!(fold_reference_links("[a [b]](https://x)"), "a [b]");
+        // A later link is recovered after a stray/unbalanced `[`.
+        assert_eq!(fold_reference_links("[a [b](url)"), "[a b");
+    }
+
+    #[test]
+    fn fold_reference_links_matches_js_whitespace_class() {
+        // Parity with the frontend `foldReferenceLinks`, whose destination scan
+        // uses ECMAScript `/\s/` rather than Rust's `char::is_whitespace()`. The
+        // two classes differ on exactly these code points (verified against the
+        // TS module): U+FEFF (BOM) and U+00A0 (NBSP) ARE JS whitespace, so a bare
+        // destination containing them is malformed and the text stays raw…
+        assert_eq!(
+            fold_reference_links("[a](foo\u{FEFF}bar)"),
+            "[a](foo\u{FEFF}bar)"
+        );
+        assert_eq!(
+            fold_reference_links("[a](foo\u{00A0}bar)"),
+            "[a](foo\u{00A0}bar)"
+        );
+        // …while U+0085 (NEL) is NOT JS whitespace, so it is an ordinary
+        // destination char and the link folds (Rust's is_whitespace would have
+        // wrongly rejected it).
+        assert_eq!(fold_reference_links("[a](foo\u{0085}bar)"), "a");
+    }
+
+    #[test]
+    fn fold_reference_links_leaves_malformed_fragments_raw() {
+        // An unterminated link (no closing `)`) is left verbatim — exactly the
+        // truncated-title shape this fix keeps from ever being stored.
+        assert_eq!(
+            fold_reference_links("[oops no close](file:///x"),
+            "[oops no close](file:///x"
+        );
+        // An empty-label `[](x)` is not a link.
+        assert_eq!(fold_reference_links("[](x)"), "[](x)");
+        // A bare destination with an unescaped space is malformed.
+        assert_eq!(fold_reference_links("[a](foo bar)"), "[a](foo bar)");
+    }
+
+    #[test]
+    fn title_from_user_text_folds_before_truncating() {
+        // The regression: a long percent-encoded file mention used to be
+        // truncated mid-destination into an unterminable `[label](file://…`
+        // fragment. Folding first yields the short, clean filename.
+        let long_path = "%E5%85%A8".repeat(40); // > 100 chars when raw
+        let raw = format!("[全天候运维.xlsx](file:///Users/xggz/Desktop/{long_path}.xlsx)");
+        assert!(raw.chars().count() > 100, "fixture must exceed the cap");
+        assert_eq!(title_from_user_text(&raw), "全天候运维.xlsx");
+    }
+
+    #[test]
+    fn title_from_user_text_still_caps_plain_prose() {
+        let long = "x".repeat(250);
+        let title = title_from_user_text(&long);
+        assert_eq!(title.chars().count(), 103); // 100 + "..."
+        assert!(title.ends_with("..."));
+    }
 
     #[test]
     fn infers_model_context_limits() {

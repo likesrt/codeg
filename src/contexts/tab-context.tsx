@@ -19,6 +19,7 @@ import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { listOpenedTabs, saveOpenedTabs } from "@/lib/api"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { resolveDefaultAgent } from "@/lib/resolve-default-agent"
+import { formatConversationTitle } from "@/lib/conversation-title"
 import {
   loadLastActiveContext,
   saveLastActiveContext,
@@ -694,7 +695,8 @@ export function TabProvider({ children }: TabProviderProps) {
           `${tab.folderId}-${tab.agentType}-${tab.conversationId}`
         )
         if (conv) {
-          const newTitle = conv.title || t("untitledConversation")
+          const newTitle =
+            formatConversationTitle(conv.title) || t("untitledConversation")
           const newStatus = conv.status as ConversationStatus | undefined
           if (tab.title !== newTitle || tab.status !== newStatus) {
             return { ...tab, title: newTitle, status: newStatus }
@@ -738,15 +740,20 @@ export function TabProvider({ children }: TabProviderProps) {
           return { ...prevState, activeTabId: activateTabId }
         }
 
+        // Format the seed title so a draft/conversation title carrying an
+        // inline reference link (`[README.md](file://…)`) shows its label, not
+        // raw Markdown, before the `tabs` memo re-derives it from the refreshed
+        // conversation list.
         const resolvedTitle =
-          title ??
-          conversationsRef.current.find(
-            (c) =>
-              c.id === conversationId &&
-              c.agent_type === agentType &&
-              c.folder_id === folderId
-          )?.title ??
-          t("untitledConversation")
+          formatConversationTitle(
+            title ??
+              conversationsRef.current.find(
+                (c) =>
+                  c.id === conversationId &&
+                  c.agent_type === agentType &&
+                  c.folder_id === folderId
+              )?.title
+          ) || t("untitledConversation")
 
         const tabId = makeConversationTabId(folderId, agentType, conversationId)
         const newTab: TabItemInternal = {
@@ -1539,7 +1546,10 @@ export function TabProvider({ children }: TabProviderProps) {
               ...tab,
               conversationId,
               agentType,
-              title,
+              // The bind title is the first message's display text, which can
+              // carry an inline reference link — fold it to the label so the
+              // tab never flashes raw `[name](file://…)` Markdown.
+              title: formatConversationTitle(title) || tab.title,
               runtimeConversationId,
               // Bound to a real conversation now — drop the provisional
               // hint so the correction effect never revisits it.

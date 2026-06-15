@@ -165,6 +165,24 @@ pub struct BrokerAskRequest {
     pub questions: Vec<QuestionSpec>,
 }
 
+/// Resolve a session the user referenced (`codeg://session/<id>`) into its
+/// metadata + stats, optionally with its recent messages. Backs the
+/// `get_session_info` MCP tool. Authenticated by the same per-launch `token`; the
+/// lookup is by codeg's internal conversation id (the number in the reference),
+/// so — unlike the delegation arms — it is NOT scoped to the parent connection
+/// (any non-deleted session the user references can be read).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerSessionRequest {
+    pub token: String,
+    /// codeg's internal conversation PK (the number in `codeg://session/<id>`).
+    pub session_id: i32,
+    /// How many of the most recent turns to include as compacted text. `None` /
+    /// `0` → metadata only (no transcript parse); a positive value is clamped to
+    /// [`crate::acp::session_info::MAX_SESSION_MESSAGES`] by the resolver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_messages: Option<u32>,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -178,6 +196,7 @@ pub enum BrokerMessage {
     Feedback(BrokerFeedbackRequest),
     CommitFeedback(BrokerCommitFeedbackRequest),
     Ask(BrokerAskRequest),
+    SessionInfo(BrokerSessionRequest),
 }
 
 /// The wrapped outcome the main process returns over the same socket.
@@ -317,6 +336,16 @@ pub async fn client_ask_round_trip(
     message_round_trip(socket_path, &BrokerMessage::Ask(req.clone())).await
 }
 
+/// Dispatch a `get_session_info` request and read back the serialized
+/// [`crate::acp::session_info::SessionInfo`] envelope (metadata + stats, and the
+/// recent messages when `max_messages > 0`).
+pub async fn client_session_round_trip(
+    socket_path: &str,
+    req: &BrokerSessionRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::SessionInfo(req.clone())).await
+}
+
 /// Total budget for `open()` retries on Windows named pipes. Has to be
 /// short enough that it nests comfortably inside the companion's
 /// `BROKER_CANCEL_BUDGET` (500 ms) — leaving ≥ 300 ms for the actual
@@ -418,6 +447,26 @@ mod tests {
                 assert_eq!(req.external_handle.as_deref(), Some("h1"));
             }
             other => panic!("expected Call variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_message_round_trip_in_memory() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::SessionInfo(BrokerSessionRequest {
+            token: "tok".into(),
+            session_id: 42,
+            max_messages: Some(20),
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::SessionInfo(req) => {
+                assert_eq!(req.token, "tok");
+                assert_eq!(req.session_id, 42);
+                assert_eq!(req.max_messages, Some(20));
+            }
+            other => panic!("expected SessionInfo variant, got {other:?}"),
         }
     }
 

@@ -2827,6 +2827,23 @@ export async function setQuestionSettings(
   return getTransport().call("set_question_settings", { settings })
 }
 
+// ─── Get-session-info settings ─────────────────────────────────────────────
+
+/** Mirror of Rust `SessionInfoSettings` (default ON). */
+export interface SessionInfoSettings {
+  enabled: boolean
+}
+
+export async function getSessionInfoSettings(): Promise<SessionInfoSettings> {
+  return getTransport().call("get_session_info_settings")
+}
+
+export async function setSessionInfoSettings(
+  settings: SessionInfoSettings
+): Promise<SessionInfoSettings> {
+  return getTransport().call("set_session_info_settings", { settings })
+}
+
 /** Live probe — opens a transient ACP connection to `agent_type`, reads what
  * it advertises (modes / config_options), and tears down. Used by the
  * delegation-settings UI so the option set on screen matches exactly what

@@ -1,10 +1,13 @@
 "use client"
 
-import type { ComponentProps, MouseEvent } from "react"
+import type { ComponentProps, MouseEvent, ReactNode } from "react"
 import { useCallback, useState } from "react"
 import { FileText, Globe, Mail, Phone, type LucideIcon } from "lucide-react"
 import type { Components, LinkSafetyModalProps } from "streamdown"
 
+import { ReferenceBadge } from "@/components/chat/composer/badges/reference-badge"
+import { parseCodegReferenceUri } from "@/components/chat/composer/reference-uri"
+import type { ReferenceAttrs } from "@/components/chat/composer/types"
 import { classifyResourceKind, type ResourceKind } from "@/lib/resource-kind"
 import { cn } from "@/lib/utils"
 import { useStreamdownLinkSafety } from "./link-safety"
@@ -23,6 +26,17 @@ const INCOMPLETE_LINK = "streamdown:incomplete-link"
 type MarkdownLinkProps = ComponentProps<"a"> & {
   // react-markdown passes the originating hast node; it must not reach the DOM.
   node?: unknown
+}
+
+/** Flatten a markdown link's children to plain text (used as the badge label). */
+function nodeText(children: ReactNode): string {
+  if (typeof children === "string") return children
+  if (Array.isArray(children)) {
+    return children
+      .map((child) => (typeof child === "string" ? child : ""))
+      .join("")
+  }
+  return ""
 }
 
 /**
@@ -79,6 +93,17 @@ export function MarkdownLink({
     )
   }
 
+  // A codeg:// reference link renders as an inline badge, mirroring the
+  // composer's reference chips: session / commit / agent links, plus the inert
+  // `codeg://embedded/…` badge a path-less pasted attachment serializes to (its
+  // bytes travel out of band, so it has no openable target). The same parser the
+  // editor uses on draft restore recovers refType/id/meta from the uri; the link
+  // text is the label.
+  if (!isIncomplete && href.toLowerCase().startsWith("codeg:")) {
+    const reference = parseCodegReferenceUri(href, nodeText(children))
+    if (reference) return <ReferenceBadge data={reference} />
+  }
+
   const kind = isIncomplete ? null : classifyResourceKind(href)
   const Icon = kind ? RESOURCE_KIND_ICON[kind] : null
 
@@ -87,6 +112,54 @@ export function MarkdownLink({
     isOpen: modalOpen,
     onClose: () => setModalOpen(false),
     onConfirm: () => window.open(href, "_blank", "noreferrer"),
+  }
+
+  // A file reference — a `file://` uri (rewritten to a local path by
+  // remark-file-uri-links before it reaches us) or a bare local path — renders
+  // as an inline file badge, visually matching the composer's `@`-file chips and
+  // the inline session/commit/agent badges above, while staying clickable: the
+  // same link-safety flow (`handleClick` → modal → `useOpenLinkOrFile`) opens it
+  // in the workspace file panel.
+  //
+  // Vertical centering happens in two steps:
+  //
+  // 1. Equalize with the bare `<ReferenceBadge>` span used for the
+  //    session/commit/agent badges above. A `<button>` inherits two metrics a
+  //    span never gets from Tailwind's preflight — `appearance: button` (a UA
+  //    inline strut) and `font: inherit`, which resets its `line-height` to the
+  //    message body's inherited value (the `text-sm` wrapper, ~20px) instead of
+  //    the badge's own tighter `leading-snug`. In WebKit (the macOS Tauri
+  //    webview) that taller, UA-strutted inline box pulls the badge low.
+  //    `appearance-none` + `leading-none` strip both so the button lays out like
+  //    the bare badge.
+  // 2. Lift onto the line's optical center. `align-middle` centers the chip on
+  //    the parent's x-height, which sits ~1.5px below the optical center of a
+  //    line that also carries ascenders, caps and full-height CJK glyphs — so
+  //    the chip still reads slightly low (most visible next to Chinese text).
+  //    A small upward `-translate-y` nudge (purely visual, no layout shift)
+  //    seats it on that optical center.
+  if (kind === "file") {
+    const fileData: ReferenceAttrs = {
+      refType: "file",
+      id: href,
+      label: nodeText(children) || href,
+      uri: href,
+      meta: { fileKind: "file" },
+    }
+    return (
+      <>
+        <button
+          type="button"
+          data-resource-kind="file"
+          title={href}
+          onClick={handleClick}
+          className="inline-flex max-w-full -translate-y-[1.5px] cursor-pointer appearance-none items-center align-middle leading-none hover:opacity-80"
+        >
+          <ReferenceBadge data={fileData} />
+        </button>
+        {linkSafety.renderModal ? linkSafety.renderModal(modalProps) : null}
+      </>
+    )
   }
 
   return (
