@@ -3,6 +3,7 @@ import { Markdown } from "@tiptap/markdown"
 import { Placeholder } from "@tiptap/extension-placeholder"
 import StarterKit from "@tiptap/starter-kit"
 
+import { InactiveSelectionHighlight } from "./inactive-selection"
 import { Reference } from "./nodes/reference-node"
 import {
   MentionSuggestion,
@@ -48,6 +49,8 @@ export function buildComposerExtensions(
     }),
     Markdown,
     Reference,
+    // Keeps the selection visible when focus moves to the right-click menu.
+    InactiveSelectionHighlight,
   ]
   if (options.mentionController) {
     extensions.push(

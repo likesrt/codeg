@@ -114,7 +114,11 @@ export function buildReferenceGroups(
     }
   }
 
+  // Only enabled agents are mentionable — a disabled agent (toggled off in
+  // settings) can't be referenced, so it never appears in the `@` panel (its
+  // tab count and `truncated` flag follow from this filtered set too).
   const agentMatches = sources.agents
+    .filter((agent) => agent.enabled)
     .map(agentToSuggestion)
     .filter((item) => suggestionMatches(item, q))
   const agentItems = agentMatches.slice(0, MAX_PER_GROUP)

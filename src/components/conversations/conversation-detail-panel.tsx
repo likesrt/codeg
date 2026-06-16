@@ -16,6 +16,7 @@ import {
   FileImage,
   FileText,
   Focus,
+  Info,
   RefreshCw,
   SquarePen,
   X,
@@ -100,6 +101,8 @@ import {
   ExportTooLongError,
   type ExportLabels,
 } from "@/lib/export-conversation"
+import { resolveActiveSessionDetails } from "./active-session-details"
+import { SessionDetailsDialog } from "./session-details-dialog"
 
 interface ConversationTabViewProps {
   tabId: string
@@ -1492,6 +1495,7 @@ export function ConversationDetailPanel() {
   const t = useTranslations("Folder.conversation")
   const tStatus = useTranslations("Folder.statusLabels")
   const tExport = useTranslations("Folder.conversation.exportLabels")
+  const tDetails = useTranslations("Folder.sessionDetails")
   const {
     completeTurn: runtimeCompleteTurn,
     getConversationIdByExternalId,
@@ -1519,6 +1523,7 @@ export function ConversationDetailPanel() {
   const { disconnect: disconnectByKey } = useAcpActions()
   const { addTask, updateTask } = useTaskContext()
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   const exportLabels = useMemo<ExportLabels>(
     () => ({
@@ -1713,6 +1718,20 @@ export function ConversationDetailPanel() {
     activeConversationTab?.conversationId != null &&
     getSession(activeConversationTab.conversationId)?.detail != null
 
+  // Resolve the active conversation's summary + live token usage the same way
+  // the tab view renders them — a new conversation streams under a virtual
+  // `runtimeConversationId` with its usage on `sessionStats`. Extracted so the
+  // resolution is unit-tested (see active-session-details.test.ts).
+  const {
+    summary: activeSessionSummary,
+    stats: activeSessionStats,
+    model: activeSessionModel,
+  } = resolveActiveSessionDetails(
+    activeConversationTab,
+    getSession,
+    conversations
+  )
+
   const getExportData = useCallback(() => {
     if (!activeConversationTab?.conversationId) return null
     const session = getSession(activeConversationTab.conversationId)
@@ -1852,81 +1871,99 @@ export function ConversationDetailPanel() {
   })
 
   return (
-    <ContextMenu onOpenChange={handleContextMenuOpenChange}>
-      <ContextMenuTrigger asChild>
-        <div
-          className="relative h-full min-h-0 overflow-hidden"
-          onPointerDown={handleContextMenuTriggerPointerDown}
-        >
-          {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
-          <ScrollArea
-            x={canTile ? "scroll" : "hidden"}
-            y="hidden"
-            className="h-full w-full"
+    <>
+      <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+        <ContextMenuTrigger asChild>
+          <div
+            className="relative h-full min-h-0 overflow-hidden"
+            onPointerDown={handleContextMenuTriggerPointerDown}
           >
-            <div
-              className={cn(
-                "relative h-full",
-                canTile && "flex min-w-full flex-row"
-              )}
+            {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
+            <ScrollArea
+              x={canTile ? "scroll" : "hidden"}
+              y="hidden"
+              className="h-full w-full"
             >
-              {tabElements}
-            </div>
-          </ScrollArea>
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem
-          disabled={!contextMenuSelectedText}
-          onSelect={handleCopySelectedText}
-        >
-          <Copy className="h-4 w-4" />
-          {t("copyText")}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          disabled={!folder?.path}
-          onSelect={handleNewConversation}
-        >
-          <SquarePen className="h-4 w-4" />
-          {t("newConversation")}
-        </ContextMenuItem>
-        <ContextMenuSub>
-          <ContextMenuSubTrigger disabled={!canExport}>
-            <Download className="h-4 w-4" />
-            {t("exportConversation")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem onSelect={handleExportImage}>
-              <FileImage className="h-4 w-4" />
-              {t("exportImage")}
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={handleExportMarkdown}>
-              <FileText className="h-4 w-4" />
-              {t("exportMarkdown")}
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={handleExportHtml}>
-              <FileCode className="h-4 w-4" />
-              {t("exportHtml")}
-            </ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuItem
-          disabled={!canReloadActiveConversation}
-          onSelect={handleReloadActiveConversation}
-        >
-          <RefreshCw className="h-4 w-4" />
-          {t("reload")}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          disabled={!activeTabId}
-          onSelect={handleCloseActiveTab}
-        >
-          <X className="h-4 w-4" />
-          {t("closeConversation")}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+              <div
+                className={cn(
+                  "relative h-full",
+                  canTile && "flex min-w-full flex-row"
+                )}
+              >
+                {tabElements}
+              </div>
+            </ScrollArea>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            disabled={!contextMenuSelectedText}
+            onSelect={handleCopySelectedText}
+          >
+            <Copy className="h-4 w-4" />
+            {t("copyText")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!folder?.path}
+            onSelect={handleNewConversation}
+          >
+            <SquarePen className="h-4 w-4" />
+            {t("newConversation")}
+          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger disabled={!canExport}>
+              <Download className="h-4 w-4" />
+              {t("exportConversation")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onSelect={handleExportImage}>
+                <FileImage className="h-4 w-4" />
+                {t("exportImage")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={handleExportMarkdown}>
+                <FileText className="h-4 w-4" />
+                {t("exportMarkdown")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={handleExportHtml}>
+                <FileCode className="h-4 w-4" />
+                {t("exportHtml")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuItem
+            disabled={!canReloadActiveConversation}
+            onSelect={handleReloadActiveConversation}
+          >
+            <RefreshCw className="h-4 w-4" />
+            {t("reload")}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!activeSessionSummary}
+            onSelect={() => setDetailsOpen(true)}
+          >
+            <Info className="h-4 w-4" />
+            {tDetails("menuLabel")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!activeTabId}
+            onSelect={handleCloseActiveTab}
+          >
+            <X className="h-4 w-4" />
+            {t("closeConversation")}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      {activeSessionSummary && (
+        <SessionDetailsDialog
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          summary={activeSessionSummary}
+          stats={activeSessionStats}
+          model={activeSessionModel}
+        />
+      )}
+    </>
   )
 }

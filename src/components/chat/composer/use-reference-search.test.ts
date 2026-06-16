@@ -35,13 +35,14 @@ function makeFile(
 
 function makeAgent(
   agentType: string,
-  over: { name?: string; description?: string } = {}
+  over: { name?: string; description?: string; enabled?: boolean } = {}
 ): AcpAgentInfo {
   return {
     agent_type: agentType,
     name: over.name ?? agentType,
     description: over.description ?? "",
     available: true,
+    enabled: over.enabled ?? true,
     sort_order: 0,
   } as unknown as AcpAgentInfo
 }
@@ -175,6 +176,21 @@ describe("buildReferenceGroups", () => {
         agents: [
           makeAgent("codex", { name: "Codex" }),
           makeAgent("gemini", { name: "Gemini" }),
+        ],
+      })
+    )
+    const agents = itemsOf(groups, "agent")
+    expect(agents).toHaveLength(1)
+    expect(agents[0].reference.id).toBe("codex")
+  })
+
+  it("excludes disabled agents (only enabled agents are mentionable)", () => {
+    const groups = buildReferenceGroups(
+      "",
+      emptySources({
+        agents: [
+          makeAgent("codex", { name: "Codex" }),
+          makeAgent("gemini", { name: "Gemini", enabled: false }),
         ],
       })
     )

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   AlertTriangle,
   Check,
@@ -42,6 +42,7 @@ import {
 const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
+import { useCopiedFlag } from "@/hooks/use-copied-flag"
 
 // Remembers which reachable address the user last chose to display/open.
 // Keyed by host (IP) only, so the choice survives a port change.
@@ -65,28 +66,6 @@ function readSavedDisplayHost(): string | null {
   } catch {
     return null
   }
-}
-
-// Briefly flips a "copied" flag, auto-resetting after `resetMs`. The pending
-// reset is tracked in a ref so it is cleared on unmount (and coalesced when copy
-// is triggered repeatedly), avoiding a setState on an unmounted component.
-function useCopiedFlag(resetMs = 1500): [boolean, () => void] {
-  const [copied, setCopied] = useState(false)
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    }
-  }, [])
-
-  const markCopied = useCallback(() => {
-    setCopied(true)
-    if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    timeoutRef.current = setTimeout(() => setCopied(false), resetMs)
-  }, [resetMs])
-
-  return [copied, markCopied]
 }
 
 const ADDRESS_ICON_BUTTON_CLASS =

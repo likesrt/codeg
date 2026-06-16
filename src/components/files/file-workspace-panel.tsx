@@ -241,13 +241,22 @@ function createAddToChatPill(
 ): AddToChatPill {
   const dom = document.createElement("button")
   dom.type = "button"
+  // No `display` utility on the button: Monaco's content-widget renderer writes
+  // an inline `display: block` onto this node to show it (and `display: none` to
+  // hide it — contentWidgets.js wraps `getDomNode()` directly), which beats any
+  // `inline-flex` class and stacks the icon above the label. So the flex row
+  // lives on an inner <span> Monaco never touches; the button keeps only the
+  // pill chrome and shrink-wraps it (Monaco positions the button absolutely).
   dom.className =
-    "codeg-add-to-chat-pill inline-flex items-center gap-1 rounded-md border border-border bg-popover px-2 py-0.5 text-xs font-medium text-popover-foreground shadow-md cursor-pointer select-none hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    "codeg-add-to-chat-pill rounded-md border border-border bg-popover px-2 py-0.5 text-xs font-medium text-popover-foreground shadow-md cursor-pointer select-none hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
   // Hand-written SVG (lucide "message-square-plus"): raw DOM can't host a React
   // lucide component. `currentColor` + the blue text class echoes the file badge.
   dom.innerHTML =
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="text-blue-600 dark:text-blue-400"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h6"/><path d="M12 7v6"/></svg><span></span>'
-  const labelSpan = dom.querySelector("span")
+    '<span class="inline-flex items-center gap-1">' +
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="text-blue-600 dark:text-blue-400"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h6"/><path d="M12 7v6"/></svg>' +
+    '<span class="codeg-add-to-chat-label"></span>' +
+    "</span>"
+  const labelSpan = dom.querySelector(".codeg-add-to-chat-label")
   if (labelSpan) labelSpan.textContent = getLabel()
   dom.addEventListener("click", (event) => {
     event.preventDefault()
@@ -889,6 +898,7 @@ export function FileWorkspacePanel() {
     null
   )
   const addToChatActionRef = useRef<IDisposable | null>(null)
+  const addFileToChatActionRef = useRef<IDisposable | null>(null)
   const addToChatPillRef = useRef<AddToChatPill | null>(null)
   const selectionListenerRef = useRef<IDisposable | null>(null)
   const focusListenerRef = useRef<IDisposable | null>(null)
@@ -935,11 +945,14 @@ export function FileWorkspacePanel() {
     const ctx = attachContextRef.current
     if (!editor || !ctx.sessionTabId || !ctx.folderPath || !ctx.filePath) return
     const selection = editor.getSelection()
-    // The single gate for the empty case: the action's precondition claims ⌘L
-    // even with no selection (to swallow the built-in expandLineSelection), so
-    // every trigger (menu, ⌘L, pill, programmatic) silently no-ops here when
-    // nothing is selected — never an accidental current-line badge.
-    if (!selection || selection.isEmpty()) return
+    if (!selection) return
+    // With nothing selected the caret is an empty selection whose start and end
+    // are both the cursor line, so the range below resolves to that single line
+    // (`foo.ts:5`) — i.e. "add the current line" instead of the old silent
+    // no-op. ⌘L shares this action (its precondition deliberately omits
+    // `editorHasSelection` to swallow the built-in expandLineSelection), so ⌘L
+    // with no selection now attaches the current line too. The pill is only ever
+    // shown for a non-empty selection, so it is unaffected.
     const start = selection.startLineNumber
     let end = selection.endLineNumber
     // A full-line drag ends at column 1 of the line below the last selected
@@ -959,19 +972,35 @@ export function FileWorkspacePanel() {
     )
   }, [])
 
-  // Register (or re-register) the context-menu action + ⌘L. Re-registerable so
-  // the label can follow an in-app locale change — Monaco caches an action's
-  // label at registration time, and the editor instance outlives a tab switch.
-  const registerAddToChatAction = useCallback(
+  // Attach the whole active file (no line range) — the context-menu sibling of
+  // "add selection to chat". Reads only refs so it stays stable for the
+  // once-registered Monaco action. A missing range makes the composer append it
+  // as a plain whole-file resource (same path file-tree / git-changes take).
+  const addFileToChat = useCallback(() => {
+    const ctx = attachContextRef.current
+    if (!ctx.sessionTabId || !ctx.folderPath || !ctx.filePath) return
+    emitAttachFileToSession({
+      tabId: ctx.sessionTabId,
+      path: joinFsPath(ctx.folderPath, ctx.filePath),
+    })
+    toast(tRef.current("addFileToChatDone", { label: ctx.fileName }))
+  }, [])
+
+  // Register (or re-register) the two context-menu actions (+ ⌘L for the
+  // selection one). Re-registerable so the labels can follow an in-app locale
+  // change — Monaco caches an action's label at registration time, and the
+  // editor instance outlives a tab switch.
+  const registerAddToChatActions = useCallback(
     (
       editor: MonacoEditorNs.IStandaloneCodeEditor,
       monaco: Monaco,
-      label: string
+      selectionLabel: string,
+      fileLabel: string
     ) => {
       addToChatActionRef.current?.dispose()
       addToChatActionRef.current = editor.addAction({
         id: "codeg.addSelectionToChat",
-        label,
+        label: selectionLabel,
         contextMenuGroupId: "navigation",
         contextMenuOrder: 1.5,
         keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyL],
@@ -979,18 +1008,25 @@ export function FileWorkspacePanel() {
         // addAction drives the context menu, the F1 palette, AND the keybinding
         // from this one precondition. Claiming ⌘L even without a selection is
         // deliberate: it stops ⌘L from falling through to the built-in
-        // `expandLineSelection` (which would let a second ⌘L attach the current
-        // line), honoring the user's choice of ⌘L as "add to chat". The empty
-        // case is handled in `run` by `addSelectionToChat`'s `selection.isEmpty`
-        // guard, so the action/menu/⌘L silently no-op with nothing selected —
-        // no accidental badge. (Gating the menu on selection would also ungate
-        // the keybinding, reintroducing the fall-through; a second keybinding-
-        // only action would resurface as a no-op F1 palette entry.)
+        // `expandLineSelection`, honoring the user's choice of ⌘L as "add to
+        // chat". The empty case is handled in `run` — `addSelectionToChat`
+        // attaches the current line — so menu / ⌘L always do something useful.
         precondition: "codegSelectionAttachable",
         run: () => addSelectionToChat(),
       })
+      addFileToChatActionRef.current?.dispose()
+      addFileToChatActionRef.current = editor.addAction({
+        id: "codeg.addFileToChat",
+        label: fileLabel,
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 1.6,
+        // Whole-file attach is independent of any selection; share the same
+        // attachability gate (real file tab + folder + active conversation).
+        precondition: "codegSelectionAttachable",
+        run: () => addFileToChat(),
+      })
     },
-    [addSelectionToChat]
+    [addSelectionToChat, addFileToChat]
   )
 
   // Single teardown for the action, listeners, pill widget, and context key —
@@ -1003,6 +1039,8 @@ export function FileWorkspacePanel() {
       const target = editor ?? editorRef.current
       addToChatActionRef.current?.dispose()
       addToChatActionRef.current = null
+      addFileToChatActionRef.current?.dispose()
+      addFileToChatActionRef.current = null
       selectionListenerRef.current?.dispose()
       selectionListenerRef.current = null
       focusListenerRef.current?.dispose()
@@ -1047,18 +1085,20 @@ export function FileWorkspacePanel() {
   // registration happens in handleEditorMount (the editor isn't mounted yet on
   // first render); this only re-fires once the label string actually changes.
   const addSelectionLabel = t("addSelectionToChat")
+  const addFileLabel = t("addFileToChat")
   useEffect(() => {
     // The sync effect above runs first, so tRef.current is the fresh locale here
-    // — refresh the (registration-cached) action label and the live pill label.
+    // — refresh the (registration-cached) action labels and the live pill label.
     if (editorRef.current && monacoRef.current) {
-      registerAddToChatAction(
+      registerAddToChatActions(
         editorRef.current,
         monacoRef.current,
-        addSelectionLabel
+        addSelectionLabel,
+        addFileLabel
       )
     }
     addToChatPillRef.current?.refreshLabel()
-  }, [addSelectionLabel, registerAddToChatAction])
+  }, [addSelectionLabel, addFileLabel, registerAddToChatActions])
 
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveGuardRef = useRef({
@@ -1303,10 +1343,11 @@ export function FileWorkspacePanel() {
       attachableKey.set(attachableRef.current)
 
       monacoRef.current = monaco
-      registerAddToChatAction(
+      registerAddToChatActions(
         editorInstance,
         monaco,
-        tRef.current("addSelectionToChat")
+        tRef.current("addSelectionToChat"),
+        tRef.current("addFileToChat")
       )
       const pill = createAddToChatPill(
         monaco,
@@ -1360,7 +1401,7 @@ export function FileWorkspacePanel() {
     },
     [
       addSelectionToChat,
-      registerAddToChatAction,
+      registerAddToChatActions,
       teardownAddToChat,
       applyGitChangeDecorations,
       applyHiddenAreas,

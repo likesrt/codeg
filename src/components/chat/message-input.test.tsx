@@ -1,6 +1,44 @@
-import { render, waitFor, cleanup, fireEvent } from "@testing-library/react"
+import {
+  render,
+  waitFor,
+  cleanup,
+  fireEvent,
+  act,
+} from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
+import type { ComponentProps } from "react"
+import type { Editor } from "@tiptap/core"
 import { afterEach, describe, expect, it, vi } from "vitest"
+
+import type { RichComposerHandle } from "./composer/rich-composer"
+import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+
+// MessageInput holds its RichComposer handle internally and does not forward a
+// ref, so capture that handle through a partial mock that still renders the real
+// composer. The "insertion position" tests below drive the very Tiptap editor
+// the attach-to-chat event writes into — setting its content + caret — then
+// assert where the badge lands.
+const composerHandle = vi.hoisted(() => ({
+  current: null as RichComposerHandle | null,
+}))
+vi.mock("./composer/rich-composer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./composer/rich-composer")>()
+  const React = await import("react")
+  const Captured = React.forwardRef<
+    RichComposerHandle,
+    ComponentProps<typeof actual.RichComposer>
+  >((props, ref) => {
+    const assign = (handle: RichComposerHandle | null) => {
+      composerHandle.current = handle
+      if (typeof ref === "function") ref(handle)
+      else if (ref) ref.current = handle
+    }
+    return React.createElement(actual.RichComposer, { ...props, ref: assign })
+  })
+  Captured.displayName = "CapturedRichComposer"
+  return { ...actual, RichComposer: Captured }
+})
 
 // Mock the data hooks / platform so MessageInput mounts without hitting the
 // backend. The reference-search provider and slash sources are all empty: this
@@ -95,5 +133,69 @@ describe("MessageInput (RichComposer integration)", () => {
     // `.codeg-composer-chrome` rule in globals.css).
     expect(card.className).toContain("codeg-composer-chrome")
     expect(fireEvent.mouseDown(card)).toBe(false)
+  })
+})
+
+describe("MessageInput attach-to-chat insertion position", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  async function mountWithEditor() {
+    renderInput({ attachmentTabId: "tab-1" })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  // Seed "hello world" and drop the caret right after "hello" (pos 6), so an
+  // insertion at the caret lands between the two words while an append would
+  // land after "world".
+  function seedWithMidCaret(editor: Editor) {
+    act(() => {
+      editor.commands.setContent("hello world", { contentType: "markdown" })
+      editor.commands.setTextSelection(6)
+    })
+  }
+
+  function assertBetweenHelloAndWorld(markdown: string, link: string) {
+    const at = markdown.indexOf(link)
+    expect(at).toBeGreaterThanOrEqual(0)
+    // Caret insertion: "hello" precedes the badge and "world" follows it.
+    // (An end-of-doc append would put "world" before the link, failing the
+    // second assertion.)
+    expect(markdown.slice(0, at)).toContain("hello")
+    expect(markdown.slice(at + link.length)).toContain("world")
+  }
+
+  it("drops an attached whole-file badge at the caret, not the end", async () => {
+    const editor = await mountWithEditor()
+    seedWithMidCaret(editor)
+    act(() => {
+      emitAttachFileToSession({ tabId: "tab-1", path: "/repo/app.ts" })
+    })
+    const link = "[app.ts](file:///repo/app.ts)"
+    await waitFor(() => expect(editor.getMarkdown()).toContain(link))
+    assertBetweenHelloAndWorld(editor.getMarkdown(), link)
+  })
+
+  it("drops a ranged selection badge at the caret, not the end", async () => {
+    const editor = await mountWithEditor()
+    seedWithMidCaret(editor)
+    act(() => {
+      emitAttachFileToSession({
+        tabId: "tab-1",
+        path: "/repo/app.ts",
+        range: { start: 10, end: 25 },
+      })
+    })
+    const link = "[app.ts:10-25](file:///repo/app.ts#L10-25)"
+    await waitFor(() => expect(editor.getMarkdown()).toContain(link))
+    assertBetweenHelloAndWorld(editor.getMarkdown(), link)
   })
 })

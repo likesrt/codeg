@@ -11,6 +11,7 @@ import {
   Pin,
   PinOff,
   CheckCircle2,
+  Info,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
@@ -47,6 +48,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
+import { SessionDetailsDialog } from "./session-details-dialog"
 import { AgentIcon } from "@/components/agent-icon"
 
 interface SidebarConversationCardProps {
@@ -79,8 +81,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const t = useTranslations("Folder.conversationCard")
   const tSidebar = useTranslations("Folder.sidebar")
   const tStatus = useTranslations("Folder.statusLabels")
+  const tDetails = useTranslations("Folder.sessionDetails")
   const [renameOpen, setRenameOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [renameValue, setRenameValue] = useState("")
 
   const handleClick = useCallback(() => {
@@ -353,6 +357,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               {isPinned ? t("unpin") : t("pin")}
             </ContextMenuItem>
           )}
+          <ContextMenuItem onSelect={() => setDetailsOpen(true)}>
+            <Info className="h-4 w-4" />
+            {tDetails("menuLabel")}
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuSub>
             <ContextMenuSubTrigger>
@@ -427,6 +435,14 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {detailsOpen && (
+        <SessionDetailsDialog
+          open
+          onOpenChange={setDetailsOpen}
+          summary={conversation}
+        />
+      )}
     </>
   )
 })

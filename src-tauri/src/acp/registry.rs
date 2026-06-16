@@ -193,8 +193,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Gemini CLI",
             description: "Google's official CLI for Gemini",
             distribution: AgentDistribution::Npx {
-                version: "0.45.2",
-                package: "@google/gemini-cli@0.45.2",
+                version: "0.46.0",
+                package: "@google/gemini-cli@0.46.0",
                 cmd: "gemini",
                 args: &["--acp", "--skip-trust"],
                 env: &[],
@@ -232,34 +232,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.16.2",
+                version: "1.17.7",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-darwin-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-darwin-x64.zip",
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-linux-arm64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-linux-x64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-windows-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.16.2/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.7/opencode-windows-x64.zip",
                     },
                 ],
             },
@@ -376,8 +376,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::Gemini,
-            "0.45.2",
-            "@google/gemini-cli@0.45.2",
+            "0.46.0",
+            "@google/gemini-cli@0.46.0",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -388,7 +388,7 @@ mod tests {
         );
         assert_npx_version(AgentType::Cline, "3.0.9", "cline@3.0.9", None);
         assert_binary_version(AgentType::Codex, "0.16.0", "/releases/download/v0.16.0/");
-        assert_binary_version(AgentType::OpenCode, "1.16.2", "/releases/download/v1.16.2/");
+        assert_binary_version(AgentType::OpenCode, "1.17.7", "/releases/download/v1.17.7/");
         assert_uvx_version(
             AgentType::Hermes,
             "0.16.0",

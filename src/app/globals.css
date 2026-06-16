@@ -1484,6 +1484,23 @@
   line-height: 1.55;
 }
 
+/* Keep the text selection visible after the editor loses focus to an overlay
+   that preserves it — most visibly the custom right-click menu, whose radix
+   content takes focus. Browsers stop painting the active selection then
+   (Chromium/Firefox dim it; WebKit drops it entirely, so a `::selection` rule
+   has nothing to restyle), so `InactiveSelectionHighlight` paints the selected
+   range as this real decoration span instead — see composer/inactive-selection.ts.
+   System highlight colors match the native focused selection (no visible jump).
+   `::selection` is suppressed inside the decoration so the two don't double up
+   where the browser still paints an inactive selection. */
+.codeg-composer .codeg-inactive-selection {
+  background-color: Highlight;
+  color: HighlightText;
+}
+.codeg-composer .codeg-inactive-selection::selection {
+  background-color: transparent;
+}
+
 /* Tight block rhythm — a chat input, not a document. */
 .codeg-composer .ProseMirror > * {
   margin: 0;
