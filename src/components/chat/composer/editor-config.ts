@@ -35,12 +35,49 @@ export interface ComposerExtensionOptions {
  * code/codeBlock/blockquote/link/history/hardBreak and the relevant input
  * rules, which gives us live WYSIWYG Markdown. `Markdown` adds
  * `editor.getMarkdown()` / `editor.markdown.parse()` for serialization.
+ *
+ * The bundled Link mark is kept (genuine `[label](uri)` markdown must still
+ * round-trip — references downgraded to markdown, hydrated drafts, quick
+ * messages), but every path that fabricates a link from plain text — or
+ * navigates on click — is turned off, all wrong for a message composer:
+ *  - `shouldAutoLink: () => false` is the key lever. linkifyjs wraps any
+ *    domain-shaped token, so a filename like `lib.rs`, `notes.md` or `setup.io`
+ *    gets linkified because its extension is a real TLD (`.rs`/`.md`/`.io`/
+ *    `.sh`/`.py`/… match; `.ts`/`.tsx`/`.json` don't, which is why it only bit
+ *    *some* files). That opens a browser on click AND silently rewrites the
+ *    message to `[lib.rs](http://lib.rs)` on serialize — the reported bug.
+ *    `shouldAutoLink` gates BOTH of linkifyjs's entry points: the
+ *    autolink-on-type plugin and the always-installed paste rule
+ *    (`addPasteRules`). That paste rule ignores `autolink`/`linkOnPaste` and
+ *    consults only `shouldAutoLink`, so turning off `autolink` alone would
+ *    still linkify a real *paste* — the exact reported action — which is why
+ *    the gate, not just the flags, is required.
+ *  - `autolink: false` / `linkOnPaste: false` additionally remove the
+ *    autolink-on-type and paste-URL-onto-selection plugins outright.
+ *  - `openOnClick: false`: a click inside the editor places the caret instead
+ *    of navigating away.
+ * None of this touches the `@tiptap/markdown` parser (built on `marked`, which
+ * never consults `shouldAutoLink`). That parser runs only when *authored*
+ * markdown is hydrated — drafts, queue-edits, quick messages, `setMarkdown` —
+ * never when plain text is typed or pasted. It parses explicit `[label](uri)`
+ * links, and GFM-autolinks a *real* bare URL / email (`https://…`, `www.…`,
+ * `a@b.com`) but never a bare filename like `lib.rs`. So the reported file-path
+ * bug is closed on every path, while a genuine URL in restored content still
+ * renders as a (now non-navigating) link — intended, and consistent with how
+ * it was authored.
  */
 export function buildComposerExtensions(
   options: ComposerExtensionOptions = {}
 ): Extensions {
   const extensions: Extensions = [
-    StarterKit,
+    StarterKit.configure({
+      link: {
+        autolink: false,
+        linkOnPaste: false,
+        openOnClick: false,
+        shouldAutoLink: () => false,
+      },
+    }),
     Placeholder.configure({
       placeholder: options.placeholder ?? "",
       // Only paint the placeholder while the editor is editable so a disabled

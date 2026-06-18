@@ -248,6 +248,21 @@ jobs:
 
           sudo dpkg --add-architecture arm64
           sudo apt-get update
+          # libgraphite2-3 / libharfbuzz0b / libfreetype6 / libssl3 are
+          # Multi-Arch: same — their :arm64 and :amd64 copies must be the
+          # EXACT same version. The runner ships stale :amd64 copies, and a
+          # jammy security bump (e.g. graphite2 1.3.14-1ubuntu0.1) made the
+          # :arm64 webkit dev chain demand a newer version than the preinstalled
+          # :amd64. apt then refuses the :arm64 copy ("not going to be
+          # installed" / held broken packages). Upgrading the preinstalled
+          # :amd64 copies first lets both arches land on the same version.
+          # --only-upgrade never installs new packages, so any lib that is
+          # absent is simply skipped.
+          sudo apt-get install -y --only-upgrade \
+            libgraphite2-3 \
+            libharfbuzz0b \
+            libfreetype6 \
+            libssl3
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
@@ -455,6 +470,11 @@ jobs:
 
           sudo dpkg --add-architecture arm64
           sudo apt-get update
+          # libssl3 is Multi-Arch: same; align the preinstalled :amd64 copy
+          # with the version libssl-dev:arm64 pins so the cross install isn't
+          # blocked by a held-back amd64 copy (same failure mode as the desktop
+          # arm64 build — see the build-tauri step for the full rationale).
+          sudo apt-get install -y --only-upgrade libssl3
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
