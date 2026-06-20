@@ -64,7 +64,7 @@ interface TabItemInternal {
   /**
    * Marks a draft tab as "chat mode" (folderless). Set by `openChatModeTab`,
    * cleared implicitly once the draft binds to a real conversation (whose hidden
-   * `is_chat` folder then drives chat-mode chrome via `useIsActiveChatMode`).
+   * hidden chat folder then drives chat-mode chrome via `useIsActiveChatMode`).
    * **Internal-only and never persisted** — drafts (`conversationId == null`) are
    * not written to opened_tabs, so this flag only ever lives in memory for the
    * pre-send draft. While set, the draft has no resolvable folder, so the
@@ -130,7 +130,7 @@ interface TabContextValue {
   /**
    * Re-target the singleton draft tab into folderless "chat mode" — no DB write
    * and no working dir yet (the backend creates the dated scratch dir + hidden
-   * `is_chat` folder lazily on first send, in `createChatConversation`). Sets
+   * hidden chat folder lazily on first send, in `createChatConversation`). Sets
    * the draft's `isChat` flag, drops its `workingDir`, and disconnects any live
    * ACP session bound to the draft (its cwd is about to change). Wired from the
    * composer folder picker's "no-folder mode" item.
@@ -172,7 +172,7 @@ interface TabContextValue {
     runtimeConversationId?: number,
     /**
      * When a chat-mode draft binds, the backend has just created its hidden
-     * `is_chat` folder; pass the new `folderId`/`workingDir` so the tab points at
+     * hidden chat folder; pass the new `folderId`/`workingDir` so the tab points at
      * the real per-conversation scratch dir (cwd) and `activeFolderId` syncs to
      * the hidden folder (which drives chat-mode chrome). Omit for normal binds —
      * the tab keeps its existing folder.
@@ -367,7 +367,7 @@ export function TabProvider({ children }: TabProviderProps) {
     foldersRef.current = folders
   }, [folders])
 
-  // `allFolders` includes hidden `is_chat` folders (the user-facing `folders`
+  // `allFolders` includes hidden chat folders (the user-facing `folders`
   // list filters them out, and drops them on refetch), so chat-folder detection
   // must read this ref — never `foldersRef`.
   const allFoldersRef = useRef(allFolders)
@@ -804,7 +804,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
   const makeReplacementDraftTab = useCallback(
     (preferred?: TabItemInternal): TabItemInternal => {
-      // A closing chat-mode tab (its hidden `is_chat` folder, or the in-memory
+      // A closing chat-mode tab (its hidden chat folder, or the in-memory
       // draft flag) must not seed the replacement draft — that folder is hidden
       // from folder lists and has no real project cwd. Fall back to a real
       // folder. Detection reads `allFoldersRef` (the in-memory draft flag is
@@ -813,9 +813,9 @@ export function TabProvider({ children }: TabProviderProps) {
       const preferredIsChat =
         preferred?.isChat === true ||
         allFoldersRef.current.find((f) => f.id === preferred?.folderId)
-          ?.is_chat === true
+          ?.kind === "chat"
       const nonChatFallbackId =
-        foldersRef.current.find((f) => !f.is_chat)?.id ?? 0
+        foldersRef.current.find((f) => f.kind !== "chat")?.id ?? 0
       const folderId = preferredIsChat
         ? nonChatFallbackId
         : (preferred?.folderId ?? nonChatFallbackId)
@@ -1268,7 +1268,9 @@ export function TabProvider({ children }: TabProviderProps) {
       // per-conversation chat folder — its delete cleanup retires the folder and
       // it has no real project cwd — so start a fresh folderless chat draft
       // instead. Single choke point for every "new conversation" entry point.
-      if (allFoldersRef.current.find((f) => f.id === folderId)?.is_chat) {
+      if (
+        allFoldersRef.current.find((f) => f.id === folderId)?.kind === "chat"
+      ) {
         openChatModeTabRef.current()
         return
       }
@@ -1554,10 +1556,10 @@ export function TabProvider({ children }: TabProviderProps) {
               // Bound to a real conversation now — drop the provisional
               // hint so the correction effect never revisits it.
               agentTypeProvisional: false,
-              // Chat-mode bind: point at the backend-created hidden `is_chat`
+              // Chat-mode bind: point at the backend-created hidden chat
               // folder and its scratch cwd. `isChat` stays set so chrome stays
               // hidden through the brief window before the folder lands in
-              // `allFolders` (after which `activeFolder.is_chat` takes over).
+              // `allFolders` (after which `activeFolder.kind === "chat"` takes over).
               ...(folderId != null ? { folderId } : {}),
               ...(workingDir != null ? { workingDir } : {}),
             }

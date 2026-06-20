@@ -858,7 +858,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // pinned. This prevents the backend's send_prompt_linked from racing
       // us to create its own conversation row. A folderless chat draft creates
       // via createChatConversation (reusing the eager scratch dir) and binds to
-      // its hidden is_chat folder; every other step — the optimistic turn
+      // its hidden chat folder; every other step — the optimistic turn
       // appended above, the inline lifecycleSend, the rollback — is identical to
       // a normal new conversation. This is the whole point of the fix: after the
       // scratch dir exists, chat mode shares the normal send path and never
@@ -876,7 +876,7 @@ const ConversationTabView = memo(function ConversationTabView({
         try {
           let newConversationId: number
           // The send's folderId defaults to the active folder; a chat send
-          // overrides it with the backend-created hidden is_chat folder.
+          // overrides it with the backend-created hidden chat folder.
           let sendFolderId = folderId
           if (chatSend) {
             const res = await createChatConversation(

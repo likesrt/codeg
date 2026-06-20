@@ -25,6 +25,7 @@ async fn delegation_columns_round_trip() {
         title_locked: Set(false),
         agent_type: Set(agent_type_str),
         status: Set(conversation::ConversationStatus::InProgress),
+        kind: Set(conversation::ConversationKind::Delegate),
         model: Set(None),
         git_branch: Set(None),
         external_id: Set(None),

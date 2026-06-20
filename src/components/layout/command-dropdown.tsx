@@ -115,10 +115,18 @@ export function CommandDropdown() {
     setSelectedCommandIdState(getSelectedCommandId(folderId))
   }, [folderId])
 
+  // Monotonic epoch guarding async command loads: bumped on every folder change
+  // (load effect below) and on every refreshCommands call, so a slow response
+  // for a previous folder or a superseded refresh can't overwrite newer state.
+  const loadEpochRef = useRef(0)
+
   const refreshCommands = useCallback(async () => {
     if (!folderId) return
+    const epoch = (loadEpochRef.current += 1)
     try {
-      setCommands(await listFolderCommands(folderId))
+      const list = await listFolderCommands(folderId)
+      if (epoch !== loadEpochRef.current) return
+      setCommands(list)
     } catch (err) {
       console.error("Failed to load commands:", err)
     }
@@ -126,6 +134,7 @@ export function CommandDropdown() {
 
   useEffect(() => {
     if (!folderId) return
+    loadEpochRef.current += 1
     let ignore = false
     const loadCommands = async () => {
       try {
@@ -226,10 +235,14 @@ export function CommandDropdown() {
 
   if (!folder) return null
 
-  // No commands → show add command button
-  if (commands.length === 0) {
-    return (
-      <>
+  // The trigger varies with command count, but the manage dialog is rendered
+  // once outside the branch so saving the first command (which flips the
+  // trigger from the add-button to the split-button) never remounts and closes
+  // the dialog mid-edit.
+  return (
+    <>
+      {commands.length === 0 ? (
+        // No commands → show add command button
         <Button
           variant="ghost"
           size="sm"
@@ -240,78 +253,66 @@ export function CommandDropdown() {
           <Plus className="h-3 w-3" />
           {bootstrapping ? t("loading") : t("addCommand")}
         </Button>
-        <CommandManageDialog
-          open={manageOpen}
-          onOpenChange={setManageOpen}
-          folderId={folderId}
-          commands={commands}
-          onSaved={refreshCommands}
-        />
-      </>
-    )
-  }
-
-  // Has commands → split button: [name ▼] [run/stop]
-  return (
-    <>
-      <div className="flex items-center">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-6 hover:text-foreground/80">
-              <span className="max-w-24 truncate">{activeCmd?.name}</span>
-              <ChevronDown className="h-3 w-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-56">
-            {commands.map((cmd) => (
-              <DropdownMenuItem
-                key={cmd.id}
-                onClick={() => handleSelectCommand(cmd)}
-                className={`flex items-center justify-between gap-4 ${
-                  cmd.id === activeCmd?.id ? "bg-accent/60" : ""
-                }`}
-              >
-                <span className="truncate">{cmd.name}</span>
-                <span className="text-xs text-muted-foreground font-mono truncate max-w-32">
-                  {cmd.command}
-                </span>
+      ) : (
+        // Has commands → split button: [name ▼] [run/stop]
+        <div className="flex items-center">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="h-6 hover:text-foreground/80">
+                <span className="max-w-24 truncate">{activeCmd?.name}</span>
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-56">
+              {commands.map((cmd) => (
+                <DropdownMenuItem
+                  key={cmd.id}
+                  onClick={() => handleSelectCommand(cmd)}
+                  className={`flex items-center justify-between gap-4 ${
+                    cmd.id === activeCmd?.id ? "bg-accent/60" : ""
+                  }`}
+                >
+                  <span className="truncate">{cmd.name}</span>
+                  <span className="text-xs text-muted-foreground font-mono truncate max-w-32">
+                    {cmd.command}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setManageOpen(true)}>
+                {t("manageCommands")}
               </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setManageOpen(true)}>
-              {t("manageCommands")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={`h-6 px-2 text-xs gap-1 ${
-            isActiveCommandRunning
-              ? "text-destructive hover:text-destructive"
-              : "hover:text-foreground/80"
-          }`}
-          onClick={handleRunOrStop}
-          title={
-            isActiveCommandRunning
-              ? t("stopCommandTitle", { command: activeCmd?.command ?? "" })
-              : t("runCommandTitle", { command: activeCmd?.command ?? "" })
-          }
-        >
-          {isActiveCommandRunning ? (
-            <Square className="h-3 w-3" />
-          ) : (
-            <Play className="h-3 w-3" />
-          )}
-        </Button>
-      </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`h-6 px-2 text-xs gap-1 ${
+              isActiveCommandRunning
+                ? "text-destructive hover:text-destructive"
+                : "hover:text-foreground/80"
+            }`}
+            onClick={handleRunOrStop}
+            title={
+              isActiveCommandRunning
+                ? t("stopCommandTitle", { command: activeCmd?.command ?? "" })
+                : t("runCommandTitle", { command: activeCmd?.command ?? "" })
+            }
+          >
+            {isActiveCommandRunning ? (
+              <Square className="h-3 w-3" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+          </Button>
+        </div>
+      )}
 
       <CommandManageDialog
         open={manageOpen}
         onOpenChange={setManageOpen}
         folderId={folderId}
-        commands={commands}
-        onSaved={refreshCommands}
+        onChanged={refreshCommands}
       />
     </>
   )

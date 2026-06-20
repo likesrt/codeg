@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "Manage Commands",
         "empty": "No commands yet",
-        "namePlaceholder": "Name",
-        "commandPlaceholder": "Command",
-        "add": "Add",
-        "saving": "Saving..."
+        "noResults": "No matching commands",
+        "searchPlaceholder": "Search commands",
+        "newCommand": "New command",
+        "nameLabel": "Name",
+        "commandLabel": "Command",
+        "dragSort": "Drag to sort",
+        "dragSortCommand": "Drag to sort {name}",
+        "orderFailed": "Failed to save command order",
+        "loadFailed": "Failed to load commands",
+        "saveFailed": "Failed to save command",
+        "deleteFailed": "Failed to delete command",
+        "confirmDelete": {
+          "title": "Delete command?",
+          "message": "This will remove \"{name}\". This action cannot be undone."
+        }
       }
     },
     "workspaceContext": {

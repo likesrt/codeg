@@ -207,29 +207,25 @@ export function selectPinnedWithReuse(
 }
 
 /**
- * Select the folderless "chat mode" conversations — those whose `folder_id` is a
- * hidden `is_chat` folder — for the flat "Chat" sidebar section. Sorted
- * most-recently-updated first, with reference reuse (same motivation as
- * {@link selectPinnedWithReuse}).
+ * Select the folderless "chat mode" conversations (`kind === "chat"`) for the
+ * flat "Chat" sidebar section. Sorted most-recently-updated first, with
+ * reference reuse (same motivation as {@link selectPinnedWithReuse}).
  *
  * Excludes pinned conversations (they surface in the Pinned section, an explicit
  * override) and — unless `showCompleted` — completed ones, matching how
  * `folderConversations` is filtered for the folders section.
  *
- * `chatFolderIds` is the set of hidden chat folder ids (from
- * `allFolders.filter(f => f.is_chat)`). `prev` is the array returned last call
- * (threaded via a ref by the caller).
+ * `prev` is the array returned last call (threaded via a ref by the caller).
  */
 export function selectChatConversationsWithReuse(
   conversations: readonly DbConversationSummary[],
-  chatFolderIds: ReadonlySet<number>,
   showCompleted: boolean,
   prev: DbConversationSummary[]
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
     if (conv.pinned_at != null) continue
-    if (!chatFolderIds.has(conv.folder_id)) continue
+    if (conv.kind !== "chat") continue
     if (!showCompleted && conv.status === "completed") continue
     next.push(conv)
   }

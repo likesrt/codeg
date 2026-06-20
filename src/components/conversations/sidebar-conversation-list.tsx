@@ -815,25 +815,16 @@ export function SidebarConversationList({
     return () => clearInterval(interval)
   }, [])
 
-  // Hidden chat-mode folders (one per folderless conversation). Their
-  // conversations are routed to the flat "Chat" section and excluded from the
-  // folders grouping; the folders themselves are excluded from the folder list
-  // (orderedFolderIds) below.
-  const chatFolderIds = useMemo(
-    () => new Set(allFolders.filter((f) => f.is_chat).map((f) => f.id)),
-    [allFolders]
-  )
-
   // Folder grouping source: pinned conversations are surfaced in the dedicated
   // Pinned section, and folderless chat conversations in the dedicated Chat
   // section, so exclude both here; then apply the completed filter as before.
   const folderConversations = useMemo(() => {
     const base = conversations.filter(
-      (c) => c.pinned_at == null && !chatFolderIds.has(c.folder_id)
+      (c) => c.pinned_at == null && c.kind !== "chat"
     )
     if (showCompleted) return base
     return base.filter((c) => c.status !== "completed")
-  }, [conversations, showCompleted, chatFolderIds])
+  }, [conversations, showCompleted])
 
   // Flat "Chat" bucket: folderless chat-mode conversations, most-recently-updated
   // first, with reference reuse (so an unrelated status event doesn't rebuild it
@@ -842,13 +833,12 @@ export function SidebarConversationList({
   const chatConversations = useMemo(() => {
     const next = selectChatConversationsWithReuse(
       conversations,
-      chatFolderIds,
       showCompleted,
       chatConvsRef.current
     )
     chatConvsRef.current = next
     return next
-  }, [conversations, chatFolderIds, showCompleted])
+  }, [conversations, showCompleted])
 
   // Pinned bucket: the FULL conversation list (ignores "Show completed" — a
   // pinned conversation stays visible regardless), sorted most-recently-pinned
@@ -907,11 +897,11 @@ export function SidebarConversationList({
 
   const orderedFolderIds = useMemo(() => {
     const folderIdSet = new Set(folders.map((f) => f.id))
-    // Worktree child folders are merged into their parent group, and hidden
-    // chat folders belong to the flat "Chat" section — neither gets its own
-    // header row in the folders list.
-    const isHidden = (id: number) =>
-      childToParent.has(id) || chatFolderIds.has(id)
+    // Worktree child folders are merged into their parent group, so they get no
+    // header row of their own. Hidden chat folders never reach this list — the
+    // backend already excludes them from the open-folder set
+    // (`folder_service::list_open_folder_details`).
+    const isHidden = (id: number) => childToParent.has(id)
     // During drag we honour the optimistic order so sibling folders shift live
     // as the user hovers over slots. We still filter/append against the source
     // of truth so newly-added or -removed folders don't disappear mid-drag.
@@ -942,7 +932,7 @@ export function SidebarConversationList({
       }
     }
     return ids
-  }, [folders, dragOrder, childToParent, chatFolderIds])
+  }, [folders, dragOrder, childToParent])
 
   const darkMode = resolvedTheme === "dark"
 
@@ -1043,7 +1033,7 @@ export function SidebarConversationList({
           pendingScrollRef.current = true
           return
         }
-      } else if (chatFolderIds.has(conv.folder_id)) {
+      } else if (conv.kind === "chat") {
         // Chat conversations live in the flat Chat section — gated only by that
         // section's collapse, never by any folder.
         if (!chatsExpanded) {
@@ -1107,7 +1097,6 @@ export function SidebarConversationList({
     childToParent,
     pinnedExpanded,
     foldersExpanded,
-    chatFolderIds,
     chatsExpanded,
   ])
 

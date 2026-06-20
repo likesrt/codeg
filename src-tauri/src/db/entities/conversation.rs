@@ -15,6 +15,27 @@ pub enum ConversationStatus {
     Cancelled,
 }
 
+/// What kind of row this conversation is — drives sidebar visibility and
+/// grouping. `regular` renders under its folder group; `chat` renders in the
+/// flat "Chat" section; `loop` belongs to the Loop Engineering workbench and is
+/// excluded from the sidebar list entirely (no write path yet — reserved for
+/// the loop engine); `delegate` is a delegation child nested under its
+/// parent's tool-call view. Invariant: `kind == Delegate` ⟺ `parent_id IS NOT
+/// NULL`. Written once at insert, never updated.
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationKind {
+    #[sea_orm(string_value = "regular")]
+    Regular,
+    #[sea_orm(string_value = "chat")]
+    Chat,
+    #[sea_orm(string_value = "loop")]
+    Loop,
+    #[sea_orm(string_value = "delegate")]
+    Delegate,
+}
+
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "conversation")]
 pub struct Model {
@@ -28,6 +49,7 @@ pub struct Model {
     pub title_locked: bool,
     pub agent_type: String,
     pub status: ConversationStatus,
+    pub kind: ConversationKind,
     pub model: Option<String>,
     pub git_branch: Option<String>,
     pub external_id: Option<String>,

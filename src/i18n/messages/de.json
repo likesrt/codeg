@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "Befehle verwalten",
         "empty": "Noch keine Befehle",
-        "namePlaceholder": "Bezeichnung",
-        "commandPlaceholder": "Befehl",
-        "add": "Hinzufügen",
-        "saving": "Speichern..."
+        "noResults": "Keine passenden Befehle",
+        "searchPlaceholder": "Befehle suchen",
+        "newCommand": "Neuer Befehl",
+        "nameLabel": "Bezeichnung",
+        "commandLabel": "Befehl",
+        "dragSort": "Zum Sortieren ziehen",
+        "dragSortCommand": "{name} zum Sortieren ziehen",
+        "orderFailed": "Befehlsreihenfolge konnte nicht gespeichert werden",
+        "loadFailed": "Befehle konnten nicht geladen werden",
+        "saveFailed": "Befehl konnte nicht gespeichert werden",
+        "deleteFailed": "Befehl konnte nicht gelöscht werden",
+        "confirmDelete": {
+          "title": "Befehl löschen?",
+          "message": "Dadurch wird \"{name}\" entfernt. Diese Aktion kann nicht rückgängig gemacht werden."
+        }
       }
     },
     "workspaceContext": {

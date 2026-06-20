@@ -24,7 +24,7 @@ use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
     ForkResultInfo, PromptInputBlock,
 };
-use crate::db::entities::conversation::{self, ConversationStatus};
+use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
 use crate::db::service::conversation_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
@@ -1370,6 +1370,15 @@ impl ConnectionManager {
                     let folder_id = current.folder_id;
                     let agent_type_str = current.agent_type.clone();
                     let git_branch = current.git_branch.clone();
+                    // The sibling keeps the original's sidebar routing (a forked
+                    // chat conversation must stay in the Chat group). `Delegate`
+                    // is unreachable here — children are never forked from the
+                    // UI — but the invariant `delegate ⟺ parent_id set` wins
+                    // over inheritance, so it degrades to `Regular`.
+                    let sibling_kind = match current.kind {
+                        ConversationKind::Delegate => ConversationKind::Regular,
+                        ref kind => kind.clone(),
+                    };
                     let now = chrono::Utc::now();
 
                     // UPDATE current row → S2. Writing external_id explicitly
@@ -1393,6 +1402,7 @@ impl ConnectionManager {
                         title_locked: Set(false),
                         agent_type: Set(agent_type_str),
                         status: Set(ConversationStatus::PendingReview),
+                        kind: Set(sibling_kind),
                         model: Set(None),
                         git_branch: Set(git_branch),
                         external_id: Set(Some(original_session_id)),

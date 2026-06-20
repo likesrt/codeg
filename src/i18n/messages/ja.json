@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "コマンド管理",
         "empty": "コマンドはまだありません",
-        "namePlaceholder": "名前",
-        "commandPlaceholder": "コマンド",
-        "add": "追加",
-        "saving": "保存中..."
+        "noResults": "一致するコマンドがありません",
+        "searchPlaceholder": "コマンドを検索",
+        "newCommand": "新しいコマンド",
+        "nameLabel": "名前",
+        "commandLabel": "コマンド",
+        "dragSort": "ドラッグして並び替え",
+        "dragSortCommand": "{name} をドラッグして並び替え",
+        "orderFailed": "コマンドの並び順の保存に失敗しました",
+        "loadFailed": "コマンドの読み込みに失敗しました",
+        "saveFailed": "コマンドの保存に失敗しました",
+        "deleteFailed": "コマンドの削除に失敗しました",
+        "confirmDelete": {
+          "title": "コマンドを削除しますか？",
+          "message": "「{name}」を削除します。この操作は元に戻せません。"
+        }
       }
     },
     "workspaceContext": {

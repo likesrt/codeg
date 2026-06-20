@@ -57,6 +57,12 @@ interface AppWorkspaceContextValue {
   getBranch: (folderId: number) => string | null | undefined
   setBranch: (folderId: number, branch: string | null) => void
 
+  /**
+   * Insert/replace a folder in local state, mirroring the backend's list
+   * split: a `kind === "chat"` folder goes into `allFolders` only (matching
+   * `list_open_folder_details`, which excludes chat folders from the
+   * user-facing list), every other kind into both lists.
+   */
   upsertFolder: (detail: FolderDetail) => void
   openFolder: (path: string) => Promise<FolderDetail>
   openWorktreeFolder: (
@@ -339,7 +345,14 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       }
       return [...prev, detail]
     }
-    setFolders(upsert)
+    // Mirror the backend's list split: hidden chat folders are excluded from
+    // `list_open_folder_details` (the user-facing `folders` list) but kept in
+    // `list_all_folder_details` (`allFolders`, for by-id cwd / active-folder
+    // lookups). Seeding a chat folder into `folders` would render a "Chat"
+    // header row in the sidebar until the next refetch.
+    if (detail.kind !== "chat") {
+      setFolders(upsert)
+    }
     setAllFolders(upsert)
   }, [])
 

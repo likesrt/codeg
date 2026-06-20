@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "Gérer les commandes",
         "empty": "Aucune commande pour le moment",
-        "namePlaceholder": "Nom",
-        "commandPlaceholder": "Commande",
-        "add": "Ajouter",
-        "saving": "Enregistrement..."
+        "noResults": "Aucune commande correspondante",
+        "searchPlaceholder": "Rechercher des commandes",
+        "newCommand": "Nouvelle commande",
+        "nameLabel": "Nom",
+        "commandLabel": "Commande",
+        "dragSort": "Glisser pour trier",
+        "dragSortCommand": "Glisser pour trier {name}",
+        "orderFailed": "Échec de l'enregistrement de l'ordre des commandes",
+        "loadFailed": "Échec du chargement des commandes",
+        "saveFailed": "Échec de l'enregistrement de la commande",
+        "deleteFailed": "Échec de la suppression de la commande",
+        "confirmDelete": {
+          "title": "Supprimer la commande ?",
+          "message": "Cela supprimera \"{name}\". Cette action est irréversible."
+        }
       }
     },
     "workspaceContext": {

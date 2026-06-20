@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "管理命令",
         "empty": "暫無命令",
-        "namePlaceholder": "名稱",
-        "commandPlaceholder": "命令",
-        "add": "新增",
-        "saving": "儲存中..."
+        "noResults": "沒有符合的命令",
+        "searchPlaceholder": "搜尋命令",
+        "newCommand": "新增命令",
+        "nameLabel": "名稱",
+        "commandLabel": "命令",
+        "dragSort": "拖曳排序",
+        "dragSortCommand": "拖曳排序 {name}",
+        "orderFailed": "儲存命令排序失敗",
+        "loadFailed": "載入命令失敗",
+        "saveFailed": "儲存命令失敗",
+        "deleteFailed": "刪除命令失敗",
+        "confirmDelete": {
+          "title": "刪除命令？",
+          "message": "這會移除「{name}」，此操作無法復原。"
+        }
       }
     },
     "workspaceContext": {

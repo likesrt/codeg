@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "Gerenciar comandos",
         "empty": "Ainda não há comandos",
-        "namePlaceholder": "Nome",
-        "commandPlaceholder": "Comando",
-        "add": "Adicionar",
-        "saving": "Salvando..."
+        "noResults": "Nenhum comando correspondente",
+        "searchPlaceholder": "Pesquisar comandos",
+        "newCommand": "Novo comando",
+        "nameLabel": "Nome",
+        "commandLabel": "Comando",
+        "dragSort": "Arraste para ordenar",
+        "dragSortCommand": "Arraste para ordenar {name}",
+        "orderFailed": "Falha ao salvar a ordem dos comandos",
+        "loadFailed": "Falha ao carregar os comandos",
+        "saveFailed": "Falha ao salvar o comando",
+        "deleteFailed": "Falha ao excluir o comando",
+        "confirmDelete": {
+          "title": "Excluir comando?",
+          "message": "Isso removerá \"{name}\". Esta ação não pode ser desfeita."
+        }
       }
     },
     "workspaceContext": {

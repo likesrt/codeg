@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "명령 관리",
         "empty": "아직 명령이 없습니다",
-        "namePlaceholder": "이름",
-        "commandPlaceholder": "명령",
-        "add": "추가",
-        "saving": "저장 중..."
+        "noResults": "일치하는 명령이 없습니다",
+        "searchPlaceholder": "명령 검색",
+        "newCommand": "새 명령",
+        "nameLabel": "이름",
+        "commandLabel": "명령",
+        "dragSort": "드래그하여 정렬",
+        "dragSortCommand": "{name} 드래그하여 정렬",
+        "orderFailed": "명령 순서 저장에 실패했습니다",
+        "loadFailed": "명령을 불러오지 못했습니다",
+        "saveFailed": "명령을 저장하지 못했습니다",
+        "deleteFailed": "명령을 삭제하지 못했습니다",
+        "confirmDelete": {
+          "title": "명령을 삭제하시겠습니까?",
+          "message": "\"{name}\"을(를) 제거합니다. 이 작업은 되돌릴 수 없습니다."
+        }
       }
     },
     "workspaceContext": {

@@ -34,6 +34,7 @@ function conv(
     title_locked: false,
     agent_type: "claude_code",
     status: "pending",
+    kind: "regular",
     model: null,
     git_branch: null,
     external_id: null,
@@ -513,15 +514,16 @@ describe("buildRows", () => {
 })
 
 describe("selectChatConversationsWithReuse", () => {
-  it("selects only chat-folder conversations, newest-updated first, excluding pinned", () => {
-    const chatIds = new Set([99])
-    const a = conv(1, 99)
-    const b = conv(2, 99) // higher id → later updated_at
-    const pinnedChat = conv(3, 99, { pinned_at: new Date(5000).toISOString() })
+  it("selects only chat-kind conversations, newest-updated first, excluding pinned", () => {
+    const a = conv(1, 99, { kind: "chat" })
+    const b = conv(2, 99, { kind: "chat" }) // higher id → later updated_at
+    const pinnedChat = conv(3, 99, {
+      kind: "chat",
+      pinned_at: new Date(5000).toISOString(),
+    })
     const folderConv = conv(4, 10)
     const out = selectChatConversationsWithReuse(
       [a, b, pinnedChat, folderConv],
-      chatIds,
       true,
       []
     )
@@ -529,26 +531,24 @@ describe("selectChatConversationsWithReuse", () => {
   })
 
   it("excludes completed conversations unless showCompleted", () => {
-    const chatIds = new Set([99])
-    const done = conv(1, 99, { status: "completed" })
-    const active = conv(2, 99)
+    const done = conv(1, 99, { kind: "chat", status: "completed" })
+    const active = conv(2, 99, { kind: "chat" })
     expect(
-      selectChatConversationsWithReuse([done, active], chatIds, false, []).map(
+      selectChatConversationsWithReuse([done, active], false, []).map(
         (c) => c.id
       )
     ).toEqual([2])
     expect(
-      selectChatConversationsWithReuse([done, active], chatIds, true, [])
+      selectChatConversationsWithReuse([done, active], true, [])
         .map((c) => c.id)
         .sort()
     ).toEqual([1, 2])
   })
 
   it("returns the prev array when membership is referentially unchanged", () => {
-    const chatIds = new Set([99])
-    const a = conv(1, 99)
-    const first = selectChatConversationsWithReuse([a], chatIds, true, [])
-    const second = selectChatConversationsWithReuse([a], chatIds, true, first)
+    const a = conv(1, 99, { kind: "chat" })
+    const first = selectChatConversationsWithReuse([a], true, [])
+    const second = selectChatConversationsWithReuse([a], true, first)
     expect(second).toBe(first)
   })
 })

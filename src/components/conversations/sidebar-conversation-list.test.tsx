@@ -240,6 +240,7 @@ function conv(
     title_locked: false,
     agent_type: "claude_code",
     status: "pending",
+    kind: "regular",
     model: null,
     git_branch: null,
     external_id: null,

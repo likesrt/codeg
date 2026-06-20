@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "管理命令",
         "empty": "暂无命令",
-        "namePlaceholder": "名称",
-        "commandPlaceholder": "命令",
-        "add": "添加",
-        "saving": "保存中..."
+        "noResults": "没有匹配的命令",
+        "searchPlaceholder": "搜索命令",
+        "newCommand": "新建命令",
+        "nameLabel": "名称",
+        "commandLabel": "命令",
+        "dragSort": "拖拽排序",
+        "dragSortCommand": "拖拽排序 {name}",
+        "orderFailed": "保存命令排序失败",
+        "loadFailed": "加载命令失败",
+        "saveFailed": "保存命令失败",
+        "deleteFailed": "删除命令失败",
+        "confirmDelete": {
+          "title": "删除命令？",
+          "message": "这会移除“{name}”，此操作不可撤销。"
+        }
       }
     },
     "workspaceContext": {

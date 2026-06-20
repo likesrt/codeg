@@ -251,12 +251,12 @@ export interface FolderDetail {
    */
   parent_id: number | null
   /**
-   * True for the dedicated hidden folder backing a single chat-mode (folderless)
-   * conversation. Kept in `allFolders` so cwd / active-folder resolve, but hidden
-   * from user-facing folder lists; its conversation routes to the sidebar "Chat"
-   * group and folder-bound chrome is hidden while it is active.
+   * Folder classification. `chat` folders back folderless chat-mode
+   * conversations: kept in `allFolders` so cwd / active-folder resolve, but
+   * hidden from user-facing folder lists; their conversations route to the
+   * sidebar "Chat" group and folder-bound chrome is hidden while one is active.
    */
-  is_chat: boolean
+  kind: FolderKind
 }
 
 /**
@@ -299,6 +299,8 @@ export interface DbConversationSummary {
   title_locked: boolean
   agent_type: AgentType
   status: string
+  /** Mirrors `conversation.kind` — drives sidebar visibility and grouping. */
+  kind: ConversationKind
   model: string | null
   git_branch: string | null
   external_id: string | null
@@ -386,6 +388,15 @@ export type ConversationStatus =
   | "pending_review"
   | "completed"
   | "cancelled"
+
+/** Mirrors Rust `ConversationKind` (src-tauri/src/db/entities/conversation.rs).
+ *  `loop` rows belong to the Loop Engineering workbench and never appear in
+ *  the sidebar list; `delegate` rows nest under their parent's tool-call view. */
+export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
+
+/** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
+ *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
+export type FolderKind = "regular" | "chat"
 
 export const STATUS_ORDER: ConversationStatus[] = [
   "in_progress",

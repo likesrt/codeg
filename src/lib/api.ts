@@ -1515,7 +1515,7 @@ export async function createConversation(
 
 /**
  * Create a folderless "chat mode" conversation. The backend lazily creates a
- * dated per-conversation scratch dir and a dedicated hidden `is_chat` folder
+ * dated per-conversation scratch dir and a dedicated hidden chat folder
  * backing it, then the conversation. Returns the new conversation id plus that
  * folder so the caller can seed `allFolders` (cwd / active-folder) immediately.
  */

@@ -1,10 +1,15 @@
 import { act, render, screen } from "@testing-library/react"
+import { useEffect } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AppWorkspaceProvider,
   useAppWorkspace,
 } from "@/contexts/app-workspace-context"
-import type { ConversationChange, DbConversationSummary } from "@/lib/types"
+import type {
+  ConversationChange,
+  DbConversationSummary,
+  FolderDetail,
+} from "@/lib/types"
 
 // Capture the `conversation://changed` handler + reconnect callback the
 // provider registers, plus dispose/unsub spies, so tests can drive events and
@@ -57,6 +62,7 @@ function makeSummary(
     title_locked: false,
     agent_type: "claude_code",
     status: "in_progress",
+    kind: "regular",
     model: null,
     git_branch: null,
     external_id: null,
@@ -71,8 +77,33 @@ function makeSummary(
   }
 }
 
+function makeFolder(
+  overrides: Partial<FolderDetail> & { id: number }
+): FolderDetail {
+  return {
+    name: `folder-${overrides.id}`,
+    path: `/repo/folder-${overrides.id}`,
+    git_branch: null,
+    default_agent_type: null,
+    last_opened_at: "2026-01-01T00:00:00.000Z",
+    sort_order: overrides.id,
+    color: "inherit",
+    parent_id: null,
+    kind: "regular",
+    ...overrides,
+  }
+}
+
+// Captured context so tests can drive imperative actions (upsertFolder) the
+// way real consumers do; reset on every mount via Probe's render.
+let ctx: ReturnType<typeof useAppWorkspace> | null = null
+
 function Probe() {
-  const { conversations, stats } = useAppWorkspace()
+  const workspace = useAppWorkspace()
+  useEffect(() => {
+    ctx = workspace
+  }, [workspace])
+  const { conversations, stats, folders, allFolders } = workspace
   return (
     <div>
       <output data-testid="ids">
@@ -86,6 +117,12 @@ function Probe() {
         {stats?.total_conversations ?? 0}
       </output>
       <output data-testid="stat-messages">{stats?.total_messages ?? 0}</output>
+      <output data-testid="folder-ids">
+        {folders.map((f) => f.id).join(",")}
+      </output>
+      <output data-testid="all-folder-ids">
+        {allFolders.map((f) => f.id).join(",")}
+      </output>
     </div>
   )
 }
@@ -115,6 +152,7 @@ beforeEach(() => {
   h.reconnectUnsubSpy.mockClear()
   h.listAll.mockClear()
   h.listAll.mockResolvedValue([])
+  ctx = null
 })
 
 describe("AppWorkspaceProvider conversation://changed sync", () => {
@@ -214,5 +252,43 @@ describe("AppWorkspaceProvider conversation://changed sync", () => {
     unmount()
     expect(h.disposeSpy).toHaveBeenCalledTimes(1)
     expect(h.reconnectUnsubSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("upsertFolder list routing", () => {
+  it("seeds a chat folder into allFolders only — never the user-facing folders list", async () => {
+    // Regression: the first chat send hands the backend-created hidden chat
+    // folder to upsertFolder; putting it in `folders` rendered a "Chat" header
+    // row in the sidebar until the next refetch/restart.
+    await mountProvider()
+    act(() => {
+      ctx?.upsertFolder(makeFolder({ id: 7, kind: "chat", name: "Chat" }))
+    })
+    expect(screen.getByTestId("folder-ids").textContent).toBe("")
+    expect(screen.getByTestId("all-folder-ids")).toHaveTextContent("7")
+  })
+
+  it("seeds a regular folder into both lists", async () => {
+    await mountProvider()
+    act(() => {
+      ctx?.upsertFolder(makeFolder({ id: 8 }))
+    })
+    expect(screen.getByTestId("folder-ids")).toHaveTextContent("8")
+    expect(screen.getByTestId("all-folder-ids")).toHaveTextContent("8")
+  })
+
+  it("replaces an existing chat folder in allFolders in place", async () => {
+    await mountProvider()
+    act(() => {
+      ctx?.upsertFolder(makeFolder({ id: 7, kind: "chat", name: "Chat" }))
+    })
+    act(() => {
+      ctx?.upsertFolder(makeFolder({ id: 9, kind: "chat", name: "Chat" }))
+    })
+    act(() => {
+      ctx?.upsertFolder(makeFolder({ id: 7, kind: "chat", name: "Chat 2" }))
+    })
+    expect(screen.getByTestId("all-folder-ids")).toHaveTextContent("7,9")
+    expect(screen.getByTestId("folder-ids").textContent).toBe("")
   })
 })

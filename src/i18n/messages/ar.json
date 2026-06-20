@@ -1720,10 +1720,21 @@
       "manageDialog": {
         "title": "إدارة الأوامر",
         "empty": "لا توجد أوامر بعد",
-        "namePlaceholder": "الاسم",
-        "commandPlaceholder": "الأمر",
-        "add": "إضافة",
-        "saving": "جارٍ الحفظ..."
+        "noResults": "لا توجد أوامر مطابقة",
+        "searchPlaceholder": "البحث في الأوامر",
+        "newCommand": "أمر جديد",
+        "nameLabel": "الاسم",
+        "commandLabel": "الأمر",
+        "dragSort": "اسحب للترتيب",
+        "dragSortCommand": "اسحب لترتيب {name}",
+        "orderFailed": "فشل حفظ ترتيب الأوامر",
+        "loadFailed": "فشل تحميل الأوامر",
+        "saveFailed": "فشل حفظ الأمر",
+        "deleteFailed": "فشل حذف الأمر",
+        "confirmDelete": {
+          "title": "حذف الأمر؟",
+          "message": "سيؤدي هذا إلى إزالة \"{name}\". لا يمكن التراجع عن هذا الإجراء."
+        }
       }
     },
     "workspaceContext": {
