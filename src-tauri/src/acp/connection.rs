@@ -244,7 +244,7 @@ async fn build_agent(
                 .map(|a| {
                     a.with_debug(move |line, dir| {
                         if dir == sacp_tokio::LineDirection::Stderr {
-                            tracing::info!("[ACP][{agent_name}][stderr] {line}");
+                            tracing::debug!("[ACP][{agent_name}][stderr] {line}");
                         }
                     })
                 })
@@ -365,13 +365,13 @@ async fn build_agent(
                                 .last()
                                 .map(|(i, c)| i + c.len_utf8())
                                 .unwrap_or(MAX);
-                            tracing::info!(
+                            tracing::debug!(
                                 "[ACP][{agent_name}][{tag}] {}... <truncated {} bytes>",
                                 &line[..head],
                                 line.len() - head
                             );
                         } else {
-                            tracing::info!("[ACP][{agent_name}][{tag}] {line}");
+                            tracing::debug!("[ACP][{agent_name}][{tag}] {line}");
                         }
                     },
                 ),
@@ -437,7 +437,7 @@ async fn build_agent(
                 .map(|a| {
                     a.with_debug(move |line, dir| {
                         if dir == sacp_tokio::LineDirection::Stderr {
-                            tracing::info!("[ACP][{agent_name}][stderr] {line}");
+                            tracing::debug!("[ACP][{agent_name}][stderr] {line}");
                         }
                     })
                 })

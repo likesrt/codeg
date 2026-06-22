@@ -502,7 +502,10 @@ async fn handle_lark_event(
             .unwrap_or("unknown")
             .to_string();
 
-        tracing::info!("[Lark] incoming message from {}: {}", sender_id, clean_text);
+        // Keep a safe breadcrumb (who sent it) at the default level; the message
+        // body itself only logs at debug so it never lands on disk by default.
+        tracing::info!("[Lark] incoming message from {sender_id}");
+        tracing::debug!("[Lark] incoming message from {sender_id}: {clean_text}");
 
         let _ = command_tx
             .send(IncomingCommand {

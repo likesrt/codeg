@@ -470,7 +470,8 @@ impl ChatChannelBackend for WeixinBackend {
             .await
             .map_err(|e| ChatChannelError::ConnectionFailed(e.to_string()))?;
 
-        tracing::info!("[Weixin] verify response status={status_code}, body={resp_text}");
+        tracing::info!("[Weixin] verify response status={status_code}");
+        tracing::debug!("[Weixin] verify response body={resp_text}");
 
         let verify_result: serde_json::Value = serde_json::from_str(&resp_text)
             .map_err(|e| ChatChannelError::ConnectionFailed(format!("JSON parse failed: {e}")))?;
@@ -692,7 +693,7 @@ impl ChatChannelBackend for WeixinBackend {
                                         }
                                     }
 
-                                    tracing::info!("[Weixin] dispatching: {text}");
+                                    tracing::debug!("[Weixin] dispatching: {text}");
                                     let send_result = command_tx
                                         .send(IncomingCommand {
                                             channel_id,
@@ -773,7 +774,8 @@ impl ChatChannelBackend for WeixinBackend {
             .await
             .map_err(|e| ChatChannelError::ConnectionFailed(e.to_string()))?;
 
-        tracing::info!("[Weixin] test_connection: status={status_code}, body={resp_text}");
+        tracing::info!("[Weixin] test_connection: status={status_code}");
+        tracing::debug!("[Weixin] test_connection body={resp_text}");
 
         let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
             .map_err(|e| ChatChannelError::ConnectionFailed(format!("Not valid JSON: {e}")))?;

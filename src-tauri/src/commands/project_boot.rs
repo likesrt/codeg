@@ -230,10 +230,10 @@ pub async fn create_shadcn_project(
         stderr.len()
     );
     if !stdout.is_empty() {
-        tracing::info!("[ProjectBoot] stdout: {stdout}");
+        tracing::debug!("[ProjectBoot] stdout: {stdout}");
     }
     if !stderr.is_empty() {
-        tracing::info!("[ProjectBoot] stderr: {stderr}");
+        tracing::debug!("[ProjectBoot] stderr: {stderr}");
     }
 
     if !output.status.success() {
@@ -595,10 +595,10 @@ pub async fn create_hyperframes_project(
         stderr.len()
     );
     if !stdout.is_empty() {
-        tracing::info!("[ProjectBoot] stdout: {stdout}");
+        tracing::debug!("[ProjectBoot] stdout: {stdout}");
     }
     if !stderr.is_empty() {
-        tracing::info!("[ProjectBoot] stderr: {stderr}");
+        tracing::debug!("[ProjectBoot] stderr: {stderr}");
     }
 
     if !output.status.success() {

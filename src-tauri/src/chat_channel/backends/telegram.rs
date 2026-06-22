@@ -182,7 +182,7 @@ impl ChatChannelBackend for TelegramBackend {
                                         {
                                             let at_bot = format!("@{}", bot_username);
                                             if !text.to_lowercase().contains(&at_bot) {
-                                                tracing::warn!("[Telegram] skipped group msg without @bot: {text}");
+                                                tracing::debug!("[Telegram] skipped group msg without @bot: {text}");
                                                 continue;
                                             }
                                         }
@@ -195,7 +195,7 @@ impl ChatChannelBackend for TelegramBackend {
                                             .and_then(|i| i.as_i64())
                                             .map(|i| i.to_string())
                                             .unwrap_or_default();
-                                        tracing::info!("[Telegram] dispatching: {clean_text}");
+                                        tracing::debug!("[Telegram] dispatching: {clean_text}");
                                         let send_result = command_tx
                                             .send(IncomingCommand {
                                                 channel_id,
