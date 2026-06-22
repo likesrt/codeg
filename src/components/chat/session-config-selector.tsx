@@ -10,106 +10,52 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
+import type { ModelOptionGroup } from "@/lib/model-config-groups"
 import type { SessionConfigOptionInfo } from "@/lib/types"
 
 interface SessionConfigSelectorProps {
   option: SessionConfigOptionInfo
   onSelect: (configId: string, valueId: string) => void
-}
-
-export function SessionConfigSelector({
-  option,
-  onSelect,
-}: SessionConfigSelectorProps) {
-  if (option.kind.type !== "select") return null
-
-  const allOptions =
-    option.kind.groups.length > 0
-      ? option.kind.groups.flatMap((group) => group.options)
-      : option.kind.options
-  const selected = allOptions.find(
-    (item) => item.value === option.kind.current_value
-  )
-  const currentLabel = selected?.name ?? option.kind.current_value
-
-  return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger title={option.description ?? option.name}>
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {option.name}
-        </span>
-        <span
-          className="max-w-[10rem] shrink-0 truncate text-xs text-muted-foreground"
-          title={currentLabel}
-        >
-          {currentLabel}
-        </span>
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent
-        className="min-w-72 max-w-xs overflow-y-auto"
-        style={{
-          maxHeight:
-            "min(60vh, var(--radix-dropdown-menu-content-available-height))",
-        }}
-      >
-        <DropdownMenuRadioGroup
-          value={option.kind.current_value}
-          onValueChange={(value) => onSelect(option.id, value)}
-        >
-          {option.kind.groups.length > 0
-            ? option.kind.groups.map((group, index) => (
-                <Fragment key={group.group}>
-                  {index > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuLabel>{group.name}</DropdownMenuLabel>
-                  {group.options.map((item) => (
-                    <DropdownMenuRadioItem
-                      key={`${group.group}-${item.value}`}
-                      value={item.value}
-                      title={item.name}
-                    >
-                      <DropdownRadioItemContent
-                        label={item.name}
-                        description={item.description}
-                      />
-                    </DropdownMenuRadioItem>
-                  ))}
-                </Fragment>
-              ))
-            : option.kind.options.map((item) => (
-                <DropdownMenuRadioItem
-                  key={item.value}
-                  value={item.value}
-                  title={item.name}
-                >
-                  <DropdownRadioItemContent
-                    label={item.name}
-                    description={item.description}
-                  />
-                </DropdownMenuRadioItem>
-              ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
-  )
+  /**
+   * Frontend-derived grouping for the model picker (split on the `provider/`
+   * prefix). When provided, it overrides the option's own (flat) value list;
+   * a group with `name === null` renders its options with no header. `null`
+   * means "no grouping" — fall back to server groups, else the flat list.
+   */
+  derivedGroups?: ModelOptionGroup[] | null
 }
 
 export function InlineSessionConfigSelector({
   option,
   onSelect,
+  derivedGroups,
 }: SessionConfigSelectorProps) {
   if (option.kind.type !== "select") return null
 
-  const allOptions =
-    option.kind.groups.length > 0
-      ? option.kind.groups.flatMap((group) => group.options)
-      : option.kind.options
-  const selected = allOptions.find(
+  // Unified group list rendered in the dropdown body. Derived (model) groups
+  // win; otherwise server-provided groups; otherwise `null` → flat options.
+  // `name === null` is a headerless bucket (the leading prefix-less models).
+  const renderGroups: ModelOptionGroup[] | null =
+    derivedGroups && derivedGroups.length > 0
+      ? derivedGroups
+      : option.kind.groups.length > 0
+        ? option.kind.groups.map((group) => ({
+            key: group.group,
+            name: group.name,
+            options: group.options,
+          }))
+        : null
+
+  // Resolve the trigger label against the *rendered* options so the selected
+  // model shows its prefix-stripped name (its provider is already implied by
+  // the group it sits in) rather than repeating `provider/`.
+  const renderedOptions = renderGroups
+    ? renderGroups.flatMap((group) => group.options)
+    : option.kind.options
+  const selected = renderedOptions.find(
     (item) => item.value === option.kind.current_value
   )
   const currentLabel = selected?.name ?? option.kind.current_value
@@ -121,6 +67,9 @@ export function InlineSessionConfigSelector({
           variant="ghost"
           size="xs"
           title={currentLabel}
+          aria-label={
+            currentLabel ? `${option.name}: ${currentLabel}` : option.name
+          }
           className="min-w-0 gap-0.5 px-1 text-muted-foreground"
         >
           <span className="max-w-[10rem] truncate">{currentLabel}</span>
@@ -141,14 +90,16 @@ export function InlineSessionConfigSelector({
           value={option.kind.current_value}
           onValueChange={(value) => onSelect(option.id, value)}
         >
-          {option.kind.groups.length > 0
-            ? option.kind.groups.map((group, index) => (
-                <Fragment key={group.group}>
+          {renderGroups
+            ? renderGroups.map((group, index) => (
+                <Fragment key={group.key}>
                   {index > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuLabel>{group.name}</DropdownMenuLabel>
+                  {group.name !== null && (
+                    <DropdownMenuLabel>{group.name}</DropdownMenuLabel>
+                  )}
                   {group.options.map((item) => (
                     <DropdownMenuRadioItem
-                      key={`${group.group}-${item.value}`}
+                      key={`${group.key}-${item.value}`}
                       value={item.value}
                       title={item.name}
                     >

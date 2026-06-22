@@ -6,6 +6,7 @@ use sea_orm::{
 };
 
 use crate::db::entities::folder;
+use crate::db::entities::folder::FolderKind;
 use crate::db::error::DbError;
 use crate::models::agent::AgentType;
 use crate::models::{FolderDetail, FolderHistoryEntry};
@@ -40,7 +41,7 @@ fn to_detail(m: folder::Model) -> FolderDetail {
         sort_order: m.sort_order,
         color: m.color,
         parent_id: m.parent_id,
-        is_chat: m.is_chat,
+        kind: m.kind,
     }
 }
 
@@ -142,7 +143,7 @@ async fn add_folder_inner(
                 ParentWrite::Preserve => None,
                 ParentWrite::Set(parent_id) => parent_id,
             }),
-            is_chat: Set(false),
+            kind: Set(FolderKind::Regular),
         };
         active.insert(conn).await?
     };
@@ -153,9 +154,9 @@ async fn add_folder_inner(
 /// Create a dedicated hidden folder backing a single chat-mode conversation.
 ///
 /// Unlike [`add_folder`], the display name is a fixed sentinel ("Chat") rather
-/// than derived from the path, and `is_chat` is set so the frontend routes this
-/// folder's conversations to the sidebar "Chat" group and hides folder-bound
-/// chrome. `path` is a freshly generated per-conversation scratch dir, so it
+/// than derived from the path, and `kind = chat` is set so the frontend routes
+/// this folder's conversations to the sidebar "Chat" group and hides
+/// folder-bound chrome. `path` is a freshly generated per-conversation scratch dir, so it
 /// never collides on the `UNIQUE(path)` constraint. Returns the full
 /// [`FolderDetail`] so the caller can hand it straight to the frontend.
 pub async fn add_chat_folder(
@@ -183,7 +184,7 @@ pub async fn add_chat_folder(
         sort_order: Set(max_order + 1),
         color: Set(DEFAULT_FOLDER_COLOR.to_string()),
         parent_id: Set(None),
-        is_chat: Set(true),
+        kind: Set(FolderKind::Chat),
     };
     let model = active.insert(conn).await?;
     Ok(to_detail(model))
@@ -240,9 +241,10 @@ pub async fn update_folder_default_agent(
 pub async fn list_folders(conn: &DatabaseConnection) -> Result<Vec<FolderHistoryEntry>, DbError> {
     let rows = folder::Entity::find()
         .filter(folder::Column::DeletedAt.is_null())
-        // Hidden chat folders are an implementation detail, never user-facing in
-        // folder history / open-folder pickers.
-        .filter(folder::Column::IsChat.eq(false))
+        // Only regular folders are user-facing in folder history / open-folder
+        // pickers — hidden chat folders (and future engine-created kinds) are an
+        // implementation detail.
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
         .order_by_desc(folder::Column::LastOpenedAt)
         .all(conn)
         .await?;
@@ -289,7 +291,7 @@ pub async fn list_open_folders(
     let rows = folder::Entity::find()
         .filter(folder::Column::DeletedAt.is_null())
         .filter(folder::Column::IsOpen.eq(true))
-        .filter(folder::Column::IsChat.eq(false))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
         .order_by_desc(folder::Column::LastOpenedAt)
         .all(conn)
         .await?;
@@ -306,7 +308,7 @@ pub async fn list_open_folder_details(
     let rows = folder::Entity::find()
         .filter(folder::Column::DeletedAt.is_null())
         .filter(folder::Column::IsOpen.eq(true))
-        .filter(folder::Column::IsChat.eq(false))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
         .order_by_asc(folder::Column::SortOrder)
         .order_by_desc(folder::Column::LastOpenedAt)
         .all(conn)
@@ -337,7 +339,7 @@ pub async fn list_live_chat_folder_paths(
 ) -> Result<Vec<String>, DbError> {
     let rows = folder::Entity::find()
         .filter(folder::Column::DeletedAt.is_null())
-        .filter(folder::Column::IsChat.eq(true))
+        .filter(folder::Column::Kind.eq(FolderKind::Chat))
         .all(conn)
         .await?;
 

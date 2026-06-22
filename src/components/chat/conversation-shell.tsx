@@ -202,18 +202,17 @@ export function ConversationShell({
 
       <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />
 
-      {/* Composer dock — the ask-question card floats above it as an overlay so
-          it never squeezes the message list above it, and aligns to the input
-          width. */}
-      <div className="relative">
+      {/* Composer dock. The ask-question card sits in normal flow just above the
+          feedback list and input — like the permission/question dialogs — so it
+          shrinks the message list instead of covering it, while staying aligned
+          to the input width. */}
+      <div>
         {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-full z-20">
-            <div className="pointer-events-auto mx-auto w-full max-w-3xl px-4">
-              <AskQuestionCard
-                question={pendingAskQuestion}
-                onAnswer={onAnswerAskQuestion}
-              />
-            </div>
+          <div className="mx-auto w-full max-w-3xl px-4">
+            <AskQuestionCard
+              question={pendingAskQuestion}
+              onAnswer={onAnswerAskQuestion}
+            />
           </div>
         )}
 

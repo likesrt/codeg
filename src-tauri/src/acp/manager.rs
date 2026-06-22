@@ -24,7 +24,7 @@ use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
     ForkResultInfo, PromptInputBlock,
 };
-use crate::db::entities::conversation::{self, ConversationStatus};
+use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
 use crate::db::service::conversation_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
@@ -386,7 +386,7 @@ impl ConnectionManager {
             .find_connection_for_reuse(agent_type, working_dir_path.as_ref(), session_id.as_deref())
             .await
         {
-            eprintln!(
+            tracing::info!(
                 "[ACP] reusing connection id={} for session_id={}",
                 existing,
                 session_id.as_deref().unwrap_or("")
@@ -395,7 +395,7 @@ impl ConnectionManager {
         }
 
         let connection_id = uuid::Uuid::new_v4().to_string();
-        eprintln!(
+        tracing::info!(
             "[ACP] spawning connection id={} owner_window={} agent={:?}",
             connection_id, owner_window_label, agent_type
         );
@@ -427,7 +427,7 @@ impl ConnectionManager {
         if dedup_lock.is_some() {
             let timeout = self.spawn_handshake_timeout;
             let (outcome, elapsed) = wait_for_session_started(session_started_rx, timeout).await;
-            eprintln!(
+            tracing::info!(
                 "[ACP] dedup_wait connection_id={} session_id={} outcome={} \
                  elapsed_ms={} timeout_ms={}",
                 connection_id,
@@ -508,7 +508,7 @@ impl ConnectionManager {
         };
         let mut disconnected = 0;
         for id in to_disconnect {
-            eprintln!("[ACP] idle sweep disconnecting connection={}", id);
+            tracing::info!("[ACP] idle sweep disconnecting connection={}", id);
             if self.disconnect(&id).await.is_ok() {
                 disconnected += 1;
             }
@@ -926,7 +926,7 @@ impl ConnectionManager {
                 crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, cid)
                     .await;
             } else if cid_opt.is_some() {
-                eprintln!(
+                tracing::info!(
                     "[manager] send_prompt_linked: conversation linked but \
                      external_id not yet on state (conn={conn_id}); lifecycle \
                      subscriber will catch up when SessionStarted arrives"
@@ -1053,7 +1053,7 @@ impl ConnectionManager {
                         Err(rollback_err) => {
                             // Best-effort: original send error is the load-bearing
                             // signal; rollback failure is logged but not surfaced.
-                            eprintln!(
+                            tracing::error!(
                                 "[ACP][ERROR] failed to mark conversation {cid} cancelled \
                                  after send failure (original={send_err}): {rollback_err}"
                             );
@@ -1148,7 +1148,7 @@ impl ConnectionManager {
                 }
                 Ok(false) => {}
                 Err(e) => {
-                    eprintln!(
+                    tracing::error!(
                         "[ACP][ERROR] failed to mark conversation {cid} cancelled \
                          on user cancel (conn={conn_id}): {e}"
                     );
@@ -1309,7 +1309,7 @@ impl ConnectionManager {
             // Surface failures even when the caller is gone (the detached task's
             // Result would otherwise be dropped silently).
             if let Err(ref e) = outcome {
-                eprintln!("[ACP][ERROR] fork persistence failed (conn={conn_id_for_task}): {e}");
+                tracing::error!("[ACP][ERROR] fork persistence failed (conn={conn_id_for_task}): {e}");
             }
             outcome
         });
@@ -1317,7 +1317,7 @@ impl ConnectionManager {
         match handle.await {
             Ok(result) => result,
             Err(join_err) => {
-                eprintln!(
+                tracing::error!(
                     "[ACP][ERROR] fork persistence task did not complete (conn={conn_id}): \
                      {join_err}"
                 );
@@ -1370,6 +1370,15 @@ impl ConnectionManager {
                     let folder_id = current.folder_id;
                     let agent_type_str = current.agent_type.clone();
                     let git_branch = current.git_branch.clone();
+                    // The sibling keeps the original's sidebar routing (a forked
+                    // chat conversation must stay in the Chat group). `Delegate`
+                    // is unreachable here — children are never forked from the
+                    // UI — but the invariant `delegate ⟺ parent_id set` wins
+                    // over inheritance, so it degrades to `Regular`.
+                    let sibling_kind = match current.kind {
+                        ConversationKind::Delegate => ConversationKind::Regular,
+                        ref kind => kind.clone(),
+                    };
                     let now = chrono::Utc::now();
 
                     // UPDATE current row → S2. Writing external_id explicitly
@@ -1393,6 +1402,7 @@ impl ConnectionManager {
                         title_locked: Set(false),
                         agent_type: Set(agent_type_str),
                         status: Set(ConversationStatus::PendingReview),
+                        kind: Set(sibling_kind),
                         model: Set(None),
                         git_branch: Set(git_branch),
                         external_id: Set(Some(original_session_id)),
@@ -1419,7 +1429,7 @@ impl ConnectionManager {
             connections.remove(conn_id).map(|conn| conn.cmd_tx)
         };
         if let Some(cmd_tx) = cmd_tx {
-            eprintln!("[ACP] disconnect connection={}", conn_id);
+            tracing::info!("[ACP] disconnect connection={}", conn_id);
             let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
             Ok(())
         } else {
@@ -1561,20 +1571,28 @@ impl ConnectionManager {
         let grace_period = Duration::from_millis(500);
         let mut selectors_ready_at: Option<std::time::Instant> = None;
         loop {
-            let (config_options, modes, selectors_ready) = {
+            let (config_options, modes, available_commands, selectors_ready) = {
                 let conns = self.connections.lock().await;
                 let conn = conns
                     .get(conn_id)
                     .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
                 let s = conn.state.read().await;
-                (s.config_options.clone(), s.modes.clone(), s.selectors_ready)
+                (
+                    s.config_options.clone(),
+                    s.modes.clone(),
+                    s.available_commands.clone(),
+                    s.selectors_ready,
+                )
             };
             if selectors_ready {
                 let ready_at = *selectors_ready_at.get_or_insert_with(std::time::Instant::now);
                 if ready_at.elapsed() >= grace_period {
+                    // Commands ride along from the same probe session (the grace
+                    // window lets a late `available_commands` land before we read).
                     return Ok(AgentOptionsSnapshot {
                         modes,
                         config_options: config_options.unwrap_or_default(),
+                        available_commands,
                     });
                 }
             }
@@ -1612,7 +1630,7 @@ impl ConnectionManager {
         for cmd_tx in cmd_txs {
             let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
         }
-        eprintln!(
+        tracing::info!(
             "[ACP] disconnect by owner window owner_window={} count={}",
             owner_window_label, disconnected
         );
@@ -1628,7 +1646,7 @@ impl ConnectionManager {
         for cmd_tx in cmd_txs {
             let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
         }
-        eprintln!("[ACP] disconnect_all count={}", disconnected);
+        tracing::info!("[ACP] disconnect_all count={}", disconnected);
         disconnected
     }
 

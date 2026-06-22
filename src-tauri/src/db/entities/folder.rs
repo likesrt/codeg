@@ -1,4 +1,20 @@
 use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+/// Folder classification. `regular` folders are user-facing; `chat` folders
+/// are hidden per-conversation scratch dirs backing folderless chat mode
+/// (excluded from folder lists; their conversations route to the sidebar
+/// "Chat" group). A `loop_worktree` variant is reserved for M2+ engine-created
+/// worktrees — add it then. Written once at insert, never updated.
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+#[serde(rename_all = "snake_case")]
+pub enum FolderKind {
+    #[sea_orm(string_value = "regular")]
+    Regular,
+    #[sea_orm(string_value = "chat")]
+    Chat,
+}
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "folder")]
@@ -21,10 +37,8 @@ pub struct Model {
     /// top-level folders. Flattened: a worktree of a worktree still points at the
     /// original root, never an intermediate worktree.
     pub parent_id: Option<i32>,
-    /// True for the dedicated hidden folder backing a single chat-mode
-    /// (folderless) conversation. Excluded from user-facing folder lists; its
-    /// conversations route to the sidebar "Chat" group.
-    pub is_chat: bool,
+    /// See [`FolderKind`]. Replaces the former `is_chat` boolean.
+    pub kind: FolderKind,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

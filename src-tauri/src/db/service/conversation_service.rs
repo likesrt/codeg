@@ -4,6 +4,7 @@ use sea_orm::{
     QueryFilter, QueryOrder, Set,
 };
 
+use crate::db::entities::conversation::ConversationKind;
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
 use crate::models::{AgentType, DbConversationSummary};
@@ -15,14 +16,47 @@ pub async fn create(
     title: Option<String>,
     git_branch: Option<String>,
 ) -> Result<conversation::Model, DbError> {
-    create_with_delegation(conn, folder_id, agent_type, title, git_branch, None).await
+    create_inner(
+        conn,
+        folder_id,
+        agent_type,
+        title,
+        git_branch,
+        None,
+        ConversationKind::Regular,
+    )
+    .await
+}
+
+/// Mirror of [`create`] for folderless chat-mode conversations: identical row
+/// shape but `kind = 'chat'`, so the sidebar routes the row to its flat "Chat"
+/// section. Callers must pair it with the hidden chat folder created in the
+/// same flow (`create_chat_conversation_core`).
+pub async fn create_chat(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    git_branch: Option<String>,
+) -> Result<conversation::Model, DbError> {
+    create_inner(
+        conn,
+        folder_id,
+        agent_type,
+        title,
+        git_branch,
+        None,
+        ConversationKind::Chat,
+    )
+    .await
 }
 
 /// Mirror of [`create`] plus optional delegation linkage. Used by the
 /// multi-agent broker when spawning a child sub-session — populates
 /// `parent_id` / `parent_tool_use_id` / `delegation_call_id` so the lifecycle
 /// subscriber and frontend can rebuild the parent ↔ child binding without
-/// inspecting the live broker state.
+/// inspecting the live broker state. `kind` follows the invariant
+/// `delegate ⟺ parent_id set`.
 pub async fn create_with_delegation(
     conn: &DatabaseConnection,
     folder_id: i32,
@@ -30,6 +64,23 @@ pub async fn create_with_delegation(
     title: Option<String>,
     git_branch: Option<String>,
     delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+) -> Result<conversation::Model, DbError> {
+    let kind = if delegation.is_some() {
+        ConversationKind::Delegate
+    } else {
+        ConversationKind::Regular
+    };
+    create_inner(conn, folder_id, agent_type, title, git_branch, delegation, kind).await
+}
+
+async fn create_inner(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    git_branch: Option<String>,
+    delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+    kind: ConversationKind,
 ) -> Result<conversation::Model, DbError> {
     let at_str = serde_json::to_value(agent_type)
         .ok()
@@ -51,6 +102,7 @@ pub async fn create_with_delegation(
         title_locked: Set(false),
         agent_type: Set(at_str),
         status: Set(conversation::ConversationStatus::InProgress),
+        kind: Set(kind),
         model: Set(None),
         git_branch: Set(git_branch),
         external_id: Set(None),
@@ -219,7 +271,7 @@ fn parse_agent_type(s: &str) -> AgentType {
             // DB has a value the enum does not recognise (manual edit or removed variant).
             // Fall back to ClaudeCode so the row stays readable, but log so resume-as-wrong-agent
             // regressions are traceable.
-            eprintln!(
+            tracing::warn!(
                 "[conversation_service] unknown agent_type {s:?} in DB, falling back to ClaudeCode"
             );
             AgentType::ClaudeCode
@@ -239,6 +291,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         title_locked: r.title_locked,
         agent_type: parse_agent_type(&r.agent_type),
         status,
+        kind: r.kind.clone(),
         model: r.model,
         git_branch: r.git_branch,
         external_id: r.external_id,
@@ -340,7 +393,8 @@ pub async fn list_by_folder(
 /// `include_children` controls visibility of delegation sub-sessions. When
 /// `false` (the default for the top-level list), rows whose `parent_id` is
 /// non-null are filtered out — they belong to their parent's tool-call view,
-/// not the workspace conversation list.
+/// not the workspace conversation list. Rows with `kind = 'loop'` are always
+/// excluded — they belong to the loops workbench.
 pub async fn list_all(
     conn: &DatabaseConnection,
     folder_ids: Option<Vec<i32>>,
@@ -351,6 +405,10 @@ pub async fn list_all(
     include_children: bool,
 ) -> Result<Vec<DbConversationSummary>, DbError> {
     let mut query = conversation::Entity::find().filter(conversation::Column::DeletedAt.is_null());
+
+    // Loop-engineering runs never surface in the workspace conversation list —
+    // their entry point is the loops workbench.
+    query = query.filter(conversation::Column::Kind.ne(ConversationKind::Loop));
 
     if !include_children {
         query = query.filter(conversation::Column::ParentId.is_null());
@@ -693,6 +751,77 @@ mod tests {
         assert_eq!(
             summary.updated_at, before,
             "auto-title backfill is metadata, not activity — it must not bump updated_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_paths_write_expected_kinds() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/kinds").await;
+
+        let regular = create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("regular");
+        assert_eq!(regular.kind, ConversationKind::Regular);
+
+        let chat = create_chat(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("chat");
+        assert_eq!(chat.kind, ConversationKind::Chat);
+
+        let child = create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            None,
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: regular.id,
+                parent_tool_use_id: "tu-kind".into(),
+                delegation_call_id: "call-kind".into(),
+            }),
+        )
+        .await
+        .expect("delegate");
+        assert_eq!(child.kind, ConversationKind::Delegate);
+        assert_eq!(child.parent_id, Some(regular.id));
+    }
+
+    #[tokio::test]
+    async fn list_all_excludes_loop_kind_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/loop-filter").await;
+        let keep = create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("keep".into()),
+            None,
+        )
+        .await
+        .expect("keep");
+        let hide = create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("hide".into()),
+            None,
+        )
+        .await
+        .expect("hide");
+        // No public write path mints kind='loop' yet (reserved for the loop
+        // engine), so flip the row directly to exercise the filter.
+        let mut active: conversation::ActiveModel = hide.into();
+        active.kind = Set(ConversationKind::Loop);
+        active.update(&db.conn).await.expect("flip kind");
+
+        let rows = list_all(&db.conn, None, None, None, None, None, false)
+            .await
+            .expect("list");
+        assert!(rows.iter().any(|r| r.id == keep.id), "regular row stays");
+        assert!(
+            !rows.iter().any(|r| r.title.as_deref() == Some("hide")),
+            "loop row must be excluded"
         );
     }
 }

@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import {
-  getGitBranch,
+  getGitHead,
   listAllConversations,
   listAllFolderDetails,
   listOpenFolderDetails,
@@ -27,12 +27,15 @@ import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { useAcpEvent } from "@/contexts/acp-connections-context"
 import {
   CONVERSATION_CHANGED_EVENT,
+  FOLDER_CHANGED_EVENT,
   type AgentStats,
   type AgentType,
   type ConversationChange,
   type DbConversationSummary,
   type EventEnvelope,
+  type FolderChange,
   type FolderDetail,
+  type GitHeadInfo,
 } from "@/lib/types"
 
 interface AppWorkspaceContextValue {
@@ -57,6 +60,20 @@ interface AppWorkspaceContextValue {
   getBranch: (folderId: number) => string | null | undefined
   setBranch: (folderId: number, branch: string | null) => void
 
+  /**
+   * Full HEAD state per folder (repo-ness, detached, short sha). The poll keeps
+   * this in sync alongside `branches`; consumers that only need the display
+   * branch name keep reading `branches`. `BranchDropdown` reads this to tell a
+   * detached HEAD apart from a non-git folder (issue #279).
+   */
+  gitHeads: Map<number, GitHeadInfo | null>
+
+  /**
+   * Insert/replace a folder in local state, mirroring the backend's list
+   * split: a `kind === "chat"` folder goes into `allFolders` only (matching
+   * `list_open_folder_details`, which excludes chat folders from the
+   * user-facing list), every other kind into both lists.
+   */
   upsertFolder: (detail: FolderDetail) => void
   openFolder: (path: string) => Promise<FolderDetail>
   openWorktreeFolder: (
@@ -132,6 +149,9 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
   )
 
   const [branches, setBranches] = useState<Map<number, string | null>>(
+    new Map()
+  )
+  const [gitHeads, setGitHeads] = useState<Map<number, GitHeadInfo | null>>(
     new Map()
   )
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
@@ -339,9 +359,60 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       }
       return [...prev, detail]
     }
-    setFolders(upsert)
+    // Mirror the backend's list split: hidden chat folders are excluded from
+    // `list_open_folder_details` (the user-facing `folders` list) but kept in
+    // `list_all_folder_details` (`allFolders`, for by-id cwd / active-folder
+    // lookups). Seeding a chat folder into `folders` would render a "Chat"
+    // header row in the sidebar until the next refetch.
+    if (detail.kind !== "chat") {
+      setFolders(upsert)
+    }
     setAllFolders(upsert)
   }, [])
+
+  // Subscribe to the global `folder://changed` side-channel so a folder created
+  // headlessly (e.g. an automation per-run worktree) lands in this client's
+  // workspace list in real time — without it, a conversation produced in that
+  // worktree has no known folder to group under and never renders in the sidebar.
+  // Only upserts the list (+ seeds its branch); unlike WorkspaceOpenFolderListener
+  // it never opens/focuses a tab, so a background emitter can't steal focus.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+
+    void (async () => {
+      const dispose = await subscribe<FolderChange>(
+        FOLDER_CHANGED_EVENT,
+        (change) => {
+          if (change.kind === "upsert") {
+            upsertFolder(change.folder)
+            // Only seed the branch when the event actually carries one. A
+            // freshly-minted worktree row stores `git_branch: null` (resolved
+            // later by git-head detection), and re-broadcasting an existing root
+            // must not clobber its already-known in-memory branch with null.
+            if (change.folder.git_branch) {
+              setBranch(change.folder.id, change.folder.git_branch)
+            }
+          }
+        }
+      )
+      if (disposed) dispose()
+      else unlisten = dispose
+    })()
+
+    // A folder created while the WS was disconnected is dropped by the
+    // broadcaster (receiver_count == 0); a full folder re-fetch on reconnect
+    // reconciles. Returns null on desktop IPC (no disconnect window) → no-op.
+    const offReconnect = onTransportReconnect(() => {
+      void fetchFolders()
+    })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+      offReconnect?.()
+    }
+  }, [upsertFolder, setBranch, fetchFolders])
 
   const openFolder = useCallback(
     async (path: string) => {
@@ -476,16 +547,34 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
 
     const poll = async () => {
       try {
-        const branch = await getGitBranch(folder.path)
+        const head = await getGitHead(folder.path)
         if (cancelled) return
+        // `branches` stays the display branch name (null when detached or
+        // non-repo) — unchanged contract for tab-bar/context-bar consumers.
         setBranches((prev) => {
           const existing = prev.get(folderId)
-          if (existing === branch) return prev
+          if (existing === head.branch) return prev
           const next = new Map(prev)
-          next.set(folderId, branch)
+          next.set(folderId, head.branch)
           return next
         })
-        const delay = branch ? 10_000 : 60_000
+        setGitHeads((prev) => {
+          const existing = prev.get(folderId)
+          if (
+            existing &&
+            existing.is_repo === head.is_repo &&
+            existing.branch === head.branch &&
+            existing.detached === head.detached &&
+            existing.short_sha === head.short_sha
+          ) {
+            return prev
+          }
+          const next = new Map(prev)
+          next.set(folderId, head)
+          return next
+        })
+        // Poll a repo briskly to catch branch switches; back off otherwise.
+        const delay = head.is_repo ? 10_000 : 60_000
         timer = setTimeout(poll, delay)
       } catch {
         if (!cancelled) {
@@ -520,6 +609,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       refreshConversations,
       updateConversationLocal,
       branches,
+      gitHeads,
       getBranch,
       setBranch,
       upsertFolder,
@@ -545,6 +635,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       refreshConversations,
       updateConversationLocal,
       branches,
+      gitHeads,
       getBranch,
       setBranch,
       upsertFolder,

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
+use crate::db::entities::folder::FolderKind;
 use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
@@ -184,7 +185,7 @@ fn list_conversations_sync(
                 }
             }
             Err(e) => {
-                eprintln!("Error listing {} conversations: {}", at, e);
+                tracing::error!("Error listing {} conversations: {}", at, e);
             }
         }
     }
@@ -786,7 +787,7 @@ pub async fn get_folder_conversation_with_live_core(
                         emit_conversation_upsert(emitter, conn, conversation_id).await;
                     }
                     Ok(false) => {}
-                    Err(e) => eprintln!(
+                    Err(e) => tracing::error!(
                         "[conversations] auto-title refresh failed for {conversation_id}: {e}"
                     ),
                 }
@@ -854,7 +855,7 @@ pub(crate) async fn emit_conversation_upsert(
                 },
             )
         }
-        Err(e) => eprintln!(
+        Err(e) => tracing::warn!(
             "[conversations] upsert emit skipped (get_by_id {conversation_id} failed): {e}"
         ),
     }
@@ -912,7 +913,7 @@ pub(crate) async fn cleanup_tabs_for_deleted_conversation(
                 emit_tabs_changed(emitter, inv.version, tabs, "server".to_string());
             }
         }
-        Err(e) => eprintln!(
+        Err(e) => tracing::error!(
             "[conversations] tab cleanup failed (delete tabs for conversation {conversation_id}): {e}"
         ),
     }
@@ -1065,7 +1066,7 @@ pub(crate) async fn gc_orphan_chat_dirs_core_with_threshold(
     let date_dirs = match std::fs::read_dir(&root) {
         Ok(rd) => rd,
         Err(err) => {
-            eprintln!(
+            tracing::error!(
                 "[conversations] chat-dir GC: read {} failed: {err}",
                 root.display()
             );
@@ -1085,7 +1086,7 @@ pub(crate) async fn gc_orphan_chat_dirs_core_with_threshold(
         let uuid_dirs = match std::fs::read_dir(&date_path) {
             Ok(rd) => rd,
             Err(err) => {
-                eprintln!(
+                tracing::error!(
                     "[conversations] chat-dir GC: read {} failed: {err}",
                     date_path.display()
                 );
@@ -1119,7 +1120,7 @@ pub(crate) async fn gc_orphan_chat_dirs_core_with_threshold(
             }
             match std::fs::remove_dir_all(&uuid_path) {
                 Ok(()) => removed += 1,
-                Err(err) => eprintln!(
+                Err(err) => tracing::error!(
                     "[conversations] chat-dir GC: remove {} failed: {err}",
                     uuid_path.display()
                 ),
@@ -1136,8 +1137,8 @@ pub(crate) async fn gc_orphan_chat_dirs_core_with_threshold(
 /// Core logic for creating a folderless "chat mode" conversation. Mirrors
 /// Codex's date-grouped session dirs: each chat conversation gets its own
 /// scratch directory under `<data_dir>/chat-sessions/<YYYY-MM-DD>/<uuid>/` plus a
-/// dedicated hidden `is_chat` folder pointing at it, so the NOT-NULL `folder_id`
-/// FK stays satisfied. Called lazily on first prompt send — never before — so
+/// dedicated hidden chat folder (`folder.kind = 'chat'`) pointing at it, so the
+/// NOT-NULL `folder_id` FK stays satisfied. Called lazily on first prompt send — never before — so
 /// merely selecting "no-folder mode" writes nothing to the DB. Shared by the
 /// Tauri command and the web handler.
 ///
@@ -1172,18 +1173,19 @@ pub async fn create_chat_conversation_core(
     // soft-deleting the just-created hidden folder — otherwise it would linger as
     // an orphan (active, conversation-less, never reached by the delete path) and
     // pollute the active-folder scope.
-    let model = match conversation_service::create(conn, folder.id, agent_type, title, None).await {
-        Ok(model) => model,
-        Err(create_err) => {
-            if let Err(cleanup_err) = folder_service::remove_folder(conn, &folder.path).await {
-                eprintln!(
-                    "[conversations] failed to clean up orphan chat folder {} after conversation create error: {cleanup_err}",
-                    folder.id
-                );
+    let model =
+        match conversation_service::create_chat(conn, folder.id, agent_type, title, None).await {
+            Ok(model) => model,
+            Err(create_err) => {
+                if let Err(cleanup_err) = folder_service::remove_folder(conn, &folder.path).await {
+                    tracing::error!(
+                        "[conversations] failed to clean up orphan chat folder {} after conversation create error: {cleanup_err}",
+                        folder.id
+                    );
+                }
+                return Err(AppCommandError::from(create_err));
             }
-            return Err(AppCommandError::from(create_err));
-        }
-    };
+        };
 
     Ok(CreateChatConversationResult {
         conversation_id: model.id,
@@ -1349,7 +1351,7 @@ pub async fn cleanup_chat_folder_for_deleted_conversation(
     folder_id: i32,
 ) {
     match folder_service::get_folder_by_id(conn, folder_id).await {
-        Ok(Some(folder)) if folder.is_chat => {
+        Ok(Some(folder)) if folder.kind == FolderKind::Chat => {
             // Only retire the hidden folder once it backs no remaining
             // (non-deleted) conversations, so deleting one chat conversation can
             // never hide another that happens to share the folder. (Normally a
@@ -1359,20 +1361,20 @@ pub async fn cleanup_chat_folder_for_deleted_conversation(
             {
                 Ok(remaining) if remaining.is_empty() => {
                     if let Err(e) = folder_service::remove_folder(conn, &folder.path).await {
-                        eprintln!(
+                        tracing::error!(
                             "[conversations] chat folder cleanup failed (folder {folder_id}): {e}"
                         );
                     }
                 }
                 Ok(_) => {}
-                Err(e) => eprintln!(
+                Err(e) => tracing::error!(
                     "[conversations] chat folder conversation check failed (folder {folder_id}): {e}"
                 ),
             }
         }
         Ok(_) => {}
         Err(e) => {
-            eprintln!("[conversations] chat folder lookup failed (folder {folder_id}): {e}")
+            tracing::error!("[conversations] chat folder lookup failed (folder {folder_id}): {e}")
         }
     }
 }
@@ -1477,6 +1479,7 @@ mod tests {
             title_locked: false,
             agent_type: AgentType::Codex,
             status: status.into(),
+            kind: conversation::ConversationKind::Delegate,
             model: None,
             git_branch: None,
             external_id: None,
@@ -2041,7 +2044,11 @@ mod tests {
         .expect("create chat conversation");
 
         // The backing folder is a hidden, top-level chat folder.
-        assert!(result.folder.is_chat, "folder must be is_chat");
+        assert_eq!(
+            result.folder.kind,
+            FolderKind::Chat,
+            "folder must be a chat folder"
+        );
         assert_eq!(result.folder.parent_id, None);
         assert_eq!(result.folder_id, result.folder.id);
         assert!(
@@ -2430,7 +2437,9 @@ mod tests {
         let all = folder_service::list_all_folder_details(&db.conn)
             .await
             .unwrap();
-        assert!(all.iter().any(|f| f.id == chat_id && f.is_chat));
+        assert!(all
+            .iter()
+            .any(|f| f.id == chat_id && f.kind == FolderKind::Chat));
     }
 
     #[tokio::test]

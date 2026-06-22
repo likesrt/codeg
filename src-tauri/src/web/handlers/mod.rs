@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod app_update;
+pub mod automation;
 pub mod backup;
 pub mod chat_channel;
 pub mod conversations;
@@ -12,6 +13,7 @@ pub mod files;
 pub mod folder_commands;
 pub mod folders;
 pub mod git;
+pub mod logging;
 pub mod mcp;
 pub mod model_provider;
 pub mod pet;

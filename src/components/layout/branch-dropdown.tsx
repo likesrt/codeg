@@ -1,6 +1,13 @@
 "use client"
 
-import { useState, useRef, useCallback, useMemo, useEffect } from "react"
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import {
   ArchiveRestore,
   Archive,
@@ -52,11 +59,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -85,6 +87,19 @@ import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-di
 import { toErrorMessage } from "@/lib/app-error"
 import { resolveFolderDisplayName } from "@/lib/folder-display"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
+import {
+  buildBranchTree,
+  buildRemoteBranchSections,
+  containsBranch,
+  expandedKeysForBranch,
+  localBranchItems,
+  sectionKey,
+  type BranchTreeLeaf,
+  type BranchTreeNode,
+} from "@/lib/branch-tree"
+import { branchRowPaddingLeft } from "@/components/layout/branch-tree-collapsible"
+import { useBranchTreeExpansion } from "@/hooks/use-branch-tree-expansion"
+import { cn } from "@/lib/utils"
 import type { GitBranchList, GitConflictInfo } from "@/lib/types"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
@@ -124,7 +139,7 @@ export function BranchDropdown() {
   const tCommon = useTranslations("Folder.common")
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
-  const { allFolders, branches, refreshFolder, openWorktreeFolder } =
+  const { allFolders, branches, gitHeads, refreshFolder, openWorktreeFolder } =
     useAppWorkspace()
   const { openNewConversationTab } = useTabContext()
   const { addTask, updateTask, removeTask } = useTaskContext()
@@ -137,6 +152,13 @@ export function BranchDropdown() {
   const branch = activeFolder
     ? (branches.get(activeFolder.id) ?? activeFolder.git_branch ?? null)
     : null
+  const head = activeFolder ? (gitHeads.get(activeFolder.id) ?? null) : null
+  // The gate is "is this a git repo?" — not "is there a branch?". A detached
+  // HEAD has no branch name yet is still a repo whose git operations must
+  // remain available (issue #279). Until the first poll resolves `head`, fall
+  // back to branch presence so the first-frame behavior is unchanged.
+  const isRepo = head ? head.is_repo : branch !== null
+  const isDetached = !branch && !!head?.detached
 
   const [branchList, setBranchList] = useState<GitBranchList>({
     local: [],
@@ -148,8 +170,6 @@ export function BranchDropdown() {
   const [loading, setLoading] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [branchLoading, setBranchLoading] = useState(false)
-  const [localOpen, setLocalOpen] = useState(false)
-  const [remoteOpen, setRemoteOpen] = useState(false)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [worktreeOpen, setWorktreeOpen] = useState(false)
   const [worktreeBrowserOpen, setWorktreeBrowserOpen] = useState(false)
@@ -164,18 +184,38 @@ export function BranchDropdown() {
     () => new Set(branchList.worktree_branches),
     [branchList.worktree_branches]
   )
-  const groupedRemoteBranches = useMemo(() => {
-    const groups: Record<string, string[]> = {}
-    for (const b of branchList.remote) {
-      const slashIndex = b.indexOf("/")
-      const remoteName = slashIndex > 0 ? b.substring(0, slashIndex) : "origin"
-      if (!groups[remoteName]) groups[remoteName] = []
-      groups[remoteName].push(b)
+  const localNodes = useMemo(
+    () => buildBranchTree(localBranchItems(branchList.local), "local"),
+    [branchList.local]
+  )
+  const remoteSections = useMemo(
+    () => buildRemoteBranchSections(branchList.remote),
+    [branchList.remote]
+  )
+  const localSectionKey = sectionKey("local")
+  const remoteSectionKey = sectionKey("remote")
+
+  // Auto-expand the section + prefix groups leading to the current branch once
+  // the branch list has loaded.
+  const seedKeys = useMemo(() => {
+    if (!branch) return []
+    if (containsBranch(localNodes, branch)) {
+      return [localSectionKey, ...expandedKeysForBranch(localNodes, branch)]
     }
-    return groups
-  }, [branchList.remote])
-  const remoteNames = Object.keys(groupedRemoteBranches)
-  const hasMultipleRemotes = remoteNames.length > 1
+    for (const section of remoteSections) {
+      if (containsBranch(section.nodes, branch)) {
+        const keys = [
+          remoteSectionKey,
+          ...expandedKeysForBranch(section.nodes, branch),
+        ]
+        if (section.key) keys.push(section.key)
+        return keys
+      }
+    }
+    return []
+  }, [branch, localNodes, remoteSections, localSectionKey, remoteSectionKey])
+
+  const { isExpanded, toggle } = useBranchTreeExpansion(dropdownOpen, seedKeys)
 
   const refresh = useCallback(() => {
     if (folderId) void refreshFolder(folderId)
@@ -292,12 +332,8 @@ export function BranchDropdown() {
 
   function handleDropdownOpenChange(open: boolean) {
     setDropdownOpen(open)
-    if (open && branch !== null) {
+    if (open && isRepo) {
       void loadAllBranches()
-    }
-    if (!open) {
-      setLocalOpen(false)
-      setRemoteOpen(false)
     }
   }
 
@@ -493,11 +529,13 @@ export function BranchDropdown() {
   }
 
   function renderBranchItem(
-    b: string,
+    leaf: BranchTreeLeaf,
     isRemote: boolean,
-    displayName?: string
+    depth: number
   ) {
-    const label = displayName ?? b
+    const b = leaf.fullName
+    const label = leaf.label
+    const paddingLeft = branchRowPaddingLeft("dropdown", depth)
     const isCurrent = b === branch
     const isTrackingCurrent =
       isRemote && !!branch && b.replace(/^[^/]+\//, "") === branch
@@ -509,24 +547,28 @@ export function BranchDropdown() {
     if (isCurrent) {
       return (
         <div
-          key={b}
-          className="flex select-none items-center gap-2.5 rounded-xl px-3 py-2 text-sm opacity-50"
+          key={leaf.key}
+          className="flex select-none items-center gap-2.5 rounded-xl py-2 pr-3 text-sm opacity-50"
+          style={{ paddingLeft }}
+          title={b}
         >
           <BranchIcon className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{label}</span>
-          <span className="ml-auto text-xs">{t("current")}</span>
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          <span className="shrink-0 pl-2 text-xs">{t("current")}</span>
         </div>
       )
     }
 
     return (
-      <DropdownMenuSub key={b}>
+      <DropdownMenuSub key={leaf.key}>
         <DropdownMenuSubTrigger
           className="hover:bg-accent hover:text-accent-foreground"
+          style={{ paddingLeft }}
           disabled={loading}
+          title={b}
         >
-          <BranchIcon className="h-3.5 w-3.5" />
-          {label}
+          <BranchIcon className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{label}</span>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent>
           <DropdownMenuItem
@@ -588,6 +630,48 @@ export function BranchDropdown() {
     )
   }
 
+  // Render the prefix tree as a flat sequence of menu items. Group rows are
+  // DropdownMenuItems (not plain Collapsible buttons) so Radix's roving focus /
+  // typeahead can reach them by keyboard; `onSelect` preventDefault keeps the
+  // menu open while toggling. Collapsed children simply aren't rendered.
+  function renderDropdownTree(
+    nodes: BranchTreeNode[],
+    depth: number,
+    isRemote: boolean
+  ): React.ReactNode[] {
+    return nodes.flatMap((node) => {
+      if (node.type === "leaf") {
+        return [renderBranchItem(node, isRemote, depth)]
+      }
+      const groupOpen = isExpanded(node.key)
+      return [
+        <DropdownMenuItem
+          key={node.key}
+          aria-expanded={groupOpen}
+          onSelect={(e) => {
+            e.preventDefault()
+            toggle(node.key)
+          }}
+          style={{ paddingLeft: branchRowPaddingLeft("dropdown", depth) }}
+        >
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 transition-transform",
+              groupOpen && "rotate-90"
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate">{node.label}</span>
+          <span className="shrink-0 pl-2 text-xs text-muted-foreground/70">
+            {node.count}
+          </span>
+        </DropdownMenuItem>,
+        ...(groupOpen
+          ? renderDropdownTree(node.children, depth + 1, isRemote)
+          : []),
+      ]
+    })
+  }
+
   // Folderless chat conversations have no git branch — hide the top-bar
   // selector entirely (covers both the mobile and desktop title-bar instances).
   if (!activeFolder || isChatMode) return null
@@ -596,7 +680,7 @@ export function BranchDropdown() {
   // below still use `activeFolder` (the worktree) unchanged.
   const folderName = resolveFolderDisplayName(activeFolder, allFolders)
 
-  if (branch === null) {
+  if (!isRepo) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -629,12 +713,25 @@ export function BranchDropdown() {
     <>
       <DropdownMenu open={dropdownOpen} onOpenChange={handleDropdownOpenChange}>
         <DropdownMenuTrigger asChild>
-          <button className="flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80">
-            <GitBranch className="h-3 w-3 shrink-0" />
+          <button
+            className="flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80"
+            title={
+              isDetached
+                ? t("detachedHead", { sha: head?.short_sha ?? "" })
+                : undefined
+            }
+          >
+            {isDetached ? (
+              <GitCommitHorizontal className="h-3 w-3 shrink-0" />
+            ) : (
+              <GitBranch className="h-3 w-3 shrink-0" />
+            )}
             <span className="max-w-[320px] truncate">
               {folderName}
               <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
-              <span className="text-primary">{branch}</span>
+              <span className="text-primary">
+                {branch ?? head?.short_sha ?? t("noBranch")}
+              </span>
             </span>
             <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
           </button>
@@ -783,61 +880,87 @@ export function BranchDropdown() {
             </div>
           ) : (
             <ScrollArea className="max-h-64">
-              <Collapsible open={localOpen} onOpenChange={setLocalOpen}>
-                <CollapsibleTrigger className="flex w-full select-none items-center gap-2.5 rounded-xl px-3 py-2 text-sm outline-hidden hover:bg-accent hover:text-accent-foreground">
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
-                  {t("localBranches", { count: branchList.local.length })}
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  {branchList.local.length === 0 ? (
-                    <DropdownMenuItem disabled>
-                      {t("noLocalBranches")}
-                    </DropdownMenuItem>
-                  ) : (
-                    branchList.local.map((b) => renderBranchItem(b, false))
+              <DropdownMenuItem
+                aria-expanded={isExpanded(localSectionKey)}
+                onSelect={(e) => {
+                  e.preventDefault()
+                  toggle(localSectionKey)
+                }}
+              >
+                <ChevronRight
+                  className={cn(
+                    "h-3.5 w-3.5 shrink-0 transition-transform",
+                    isExpanded(localSectionKey) && "rotate-90"
                   )}
-                </CollapsibleContent>
-              </Collapsible>
+                />
+                {t("localBranches", { count: branchList.local.length })}
+              </DropdownMenuItem>
+              {isExpanded(localSectionKey) &&
+                (branchList.local.length === 0 ? (
+                  <DropdownMenuItem disabled>
+                    {t("noLocalBranches")}
+                  </DropdownMenuItem>
+                ) : (
+                  renderDropdownTree(localNodes, 0, false)
+                ))}
 
-              <Collapsible open={remoteOpen} onOpenChange={setRemoteOpen}>
-                <CollapsibleTrigger className="flex w-full select-none items-center gap-2.5 rounded-xl px-3 py-2 text-sm outline-hidden hover:bg-accent hover:text-accent-foreground">
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
-                  {t("remoteBranches", { count: branchList.remote.length })}
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  {branchList.remote.length === 0 ? (
-                    <DropdownMenuItem disabled>
-                      {t("noRemoteBranches")}
-                    </DropdownMenuItem>
-                  ) : hasMultipleRemotes ? (
-                    remoteNames.map((remoteName) => (
-                      <Collapsible key={remoteName}>
-                        <CollapsibleTrigger className="flex w-full select-none items-center gap-2.5 rounded-xl px-3 py-2 pl-6 text-sm outline-hidden hover:bg-accent hover:text-accent-foreground">
-                          <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
-                          {remoteName} (
-                          {groupedRemoteBranches[remoteName].length})
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pl-3">
-                          {groupedRemoteBranches[remoteName].map((b) =>
-                            renderBranchItem(
-                              b,
-                              true,
-                              b.substring(remoteName.length + 1)
-                            )
-                          )}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    ))
-                  ) : (
-                    branchList.remote.map((b) => {
-                      const slashIndex = b.indexOf("/")
-                      const shortName =
-                        slashIndex > 0 ? b.substring(slashIndex + 1) : b
-                      return renderBranchItem(b, true, shortName)
-                    })
+              <DropdownMenuItem
+                aria-expanded={isExpanded(remoteSectionKey)}
+                onSelect={(e) => {
+                  e.preventDefault()
+                  toggle(remoteSectionKey)
+                }}
+              >
+                <ChevronRight
+                  className={cn(
+                    "h-3.5 w-3.5 shrink-0 transition-transform",
+                    isExpanded(remoteSectionKey) && "rotate-90"
                   )}
-                </CollapsibleContent>
-              </Collapsible>
+                />
+                {t("remoteBranches", { count: branchList.remote.length })}
+              </DropdownMenuItem>
+              {isExpanded(remoteSectionKey) &&
+                (branchList.remote.length === 0 ? (
+                  <DropdownMenuItem disabled>
+                    {t("noRemoteBranches")}
+                  </DropdownMenuItem>
+                ) : (
+                  remoteSections.map((section) =>
+                    section.remoteName == null ? (
+                      <Fragment key="remote-single">
+                        {renderDropdownTree(section.nodes, 0, true)}
+                      </Fragment>
+                    ) : (
+                      <Fragment key={section.key}>
+                        <DropdownMenuItem
+                          aria-expanded={isExpanded(section.key)}
+                          onSelect={(e) => {
+                            e.preventDefault()
+                            toggle(section.key)
+                          }}
+                          style={{
+                            paddingLeft: branchRowPaddingLeft("dropdown", 0),
+                          }}
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "h-3 w-3 shrink-0 transition-transform",
+                              isExpanded(section.key) && "rotate-90"
+                            )}
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {section.remoteName}
+                          </span>
+                          <span className="shrink-0 pl-2 text-xs text-muted-foreground/70">
+                            {section.count}
+                          </span>
+                        </DropdownMenuItem>
+                        {isExpanded(section.key) &&
+                          renderDropdownTree(section.nodes, 1, true)}
+                      </Fragment>
+                    )
+                  )
+                ))}
             </ScrollArea>
           )}
         </DropdownMenuContent>

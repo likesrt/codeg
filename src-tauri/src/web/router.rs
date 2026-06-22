@@ -16,6 +16,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use super::shutdown::ShutdownSignal;
 use super::{auth, handlers, ws};
 use crate::app_state::AppState;
+use tracing::Instrument;
 
 pub fn build_router(
     state: Arc<AppState>,
@@ -203,6 +204,7 @@ pub fn build_router(
             post(handlers::folders::create_folder_directory),
         )
         .route("/get_git_branch", post(handlers::folders::get_git_branch))
+        .route("/get_git_head", post(handlers::folders::get_git_head))
         .route(
             "/get_home_directory",
             post(handlers::folders::get_home_directory),
@@ -556,6 +558,18 @@ pub fn build_router(
             "/update_system_terminal_settings",
             post(handlers::system_settings::update_system_terminal_settings),
         )
+        // ─── Logging ───
+        .route(
+            "/get_log_settings",
+            post(handlers::logging::get_log_settings),
+        )
+        .route(
+            "/set_log_settings",
+            post(handlers::logging::set_log_settings),
+        )
+        .route("/get_recent_logs", post(handlers::logging::get_recent_logs))
+        .route("/list_log_files", post(handlers::logging::list_log_files))
+        .route("/read_log_file", post(handlers::logging::read_log_file))
         // ─── ACP ───
         .route(
             "/acp_get_agent_status",
@@ -902,6 +916,48 @@ pub fn build_router(
             "/quick_messages_reorder",
             post(handlers::quick_messages::quick_messages_reorder),
         )
+        // ─── Automations ───
+        .route(
+            "/automation_list",
+            post(handlers::automation::automation_list),
+        )
+        .route("/automation_get", post(handlers::automation::automation_get))
+        .route(
+            "/automation_runs",
+            post(handlers::automation::automation_runs),
+        )
+        .route(
+            "/automation_create",
+            post(handlers::automation::automation_create),
+        )
+        .route(
+            "/automation_update",
+            post(handlers::automation::automation_update),
+        )
+        .route(
+            "/automation_set_enabled",
+            post(handlers::automation::automation_set_enabled),
+        )
+        .route(
+            "/automation_delete",
+            post(handlers::automation::automation_delete),
+        )
+        .route(
+            "/automation_mark_seen",
+            post(handlers::automation::automation_mark_seen),
+        )
+        .route(
+            "/automation_compute_next_run",
+            post(handlers::automation::automation_compute_next_run),
+        )
+        .route(
+            "/automation_run_now",
+            post(handlers::automation::automation_run_now),
+        )
+        .route(
+            "/automation_cancel_run",
+            post(handlers::automation::automation_cancel_run),
+        )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
         .route("/pet_get", post(handlers::pet::pet_get))
@@ -980,7 +1036,25 @@ pub fn build_router(
             get(handlers::backup::backup_download),
         );
 
-    let api = public_api.merge(api);
+    // Wrap every API request in an `http` span (method, path, request id) so a
+    // single request's logs — including auth rejections — are correlatable in
+    // the viewer. `.instrument()` the downstream future; never `.enter()` across
+    // an await, which corrupts the span stack.
+    //
+    // Layer order: the protected router's `auth::require_token` layer was added
+    // (above) BEFORE this `.layer()`, and this layer is applied to the MERGED
+    // router, so it is the OUTERMOST layer. The instrumented `next.run(req)`
+    // future therefore wraps routing + auth + handler — auth-reject logs land
+    // inside the `http` span.
+    let api = public_api.merge(api).layer(middleware::from_fn(
+        |req: axum::extract::Request, next: Next| async move {
+            let method = req.method().clone();
+            let path = req.uri().path().to_string();
+            let request_id = uuid::Uuid::new_v4();
+            let span = tracing::info_span!("http", %method, %path, %request_id);
+            next.run(req).instrument(span).await
+        },
+    ));
 
     // WebSocket route (auth via Sec-WebSocket-Protocol)
     let ws_route = Router::new()
@@ -1050,7 +1124,7 @@ async fn health_check() -> impl IntoResponse {
 
 async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
     let command = uri.path().trim_start_matches('/');
-    eprintln!("[WEB] Unimplemented API endpoint: {}", command);
+    tracing::info!("[WEB] Unimplemented API endpoint: {}", command);
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({

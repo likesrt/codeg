@@ -11,6 +11,11 @@ if (typeof Element !== "undefined") {
   // jsdom doesn't implement scrollIntoView; the composer's suggestion popup
   // calls it to keep the active row visible.
   Element.prototype.scrollIntoView ??= () => {}
+  // jsdom doesn't implement Pointer Capture; Radix menus/popovers touch these
+  // during the pointer interactions @testing-library/user-event drives.
+  Element.prototype.hasPointerCapture ??= () => false
+  Element.prototype.setPointerCapture ??= () => {}
+  Element.prototype.releasePointerCapture ??= () => {}
 }
 if (typeof Range !== "undefined") {
   Range.prototype.getClientRects ??= () =>

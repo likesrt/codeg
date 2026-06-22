@@ -1,6 +1,7 @@
 pub mod acp;
 #[cfg(feature = "tauri-runtime")]
 pub mod app_update;
+pub mod automation;
 pub mod backup;
 pub mod chat_channel;
 pub mod conversations;
@@ -11,6 +12,7 @@ pub mod feedback;
 pub mod file_io;
 pub mod folder_commands;
 pub mod folders;
+pub mod logging;
 pub mod mcp;
 pub mod model_provider;
 #[cfg(feature = "tauri-runtime")]

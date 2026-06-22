@@ -251,12 +251,12 @@ export interface FolderDetail {
    */
   parent_id: number | null
   /**
-   * True for the dedicated hidden folder backing a single chat-mode (folderless)
-   * conversation. Kept in `allFolders` so cwd / active-folder resolve, but hidden
-   * from user-facing folder lists; its conversation routes to the sidebar "Chat"
-   * group and folder-bound chrome is hidden while it is active.
+   * Folder classification. `chat` folders back folderless chat-mode
+   * conversations: kept in `allFolders` so cwd / active-folder resolve, but
+   * hidden from user-facing folder lists; their conversations route to the
+   * sidebar "Chat" group and folder-bound chrome is hidden while one is active.
    */
-  is_chat: boolean
+  kind: FolderKind
 }
 
 /**
@@ -299,6 +299,8 @@ export interface DbConversationSummary {
   title_locked: boolean
   agent_type: AgentType
   status: string
+  /** Mirrors `conversation.kind` — drives sidebar visibility and grouping. */
+  kind: ConversationKind
   model: string | null
   git_branch: string | null
   external_id: string | null
@@ -323,6 +325,16 @@ export type ConversationChange =
   | { kind: "status"; id: number; status: string }
 
 export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
+
+/** Payload for the global `folder://changed` side-channel. A folder created or
+ *  updated headlessly — e.g. the automation engine minting a per-run worktree —
+ *  reaches every client's workspace list so a conversation produced inside it can
+ *  be grouped/rendered in the sidebar. Mirrors the Rust `FolderChange` enum
+ *  (serde `tag = "kind"`). Distinct from `folder://open-in-workspace`, whose
+ *  listener also opens + focuses a tab. */
+export type FolderChange = { kind: "upsert"; folder: FolderDetail }
+
+export const FOLDER_CHANGED_EVENT = "folder://changed"
 
 /** Global side-channel announcing a live-feedback enable/disable (payload is
  *  `FeedbackSettings`). The settings UI runs in a separate window, so the
@@ -386,6 +398,15 @@ export type ConversationStatus =
   | "pending_review"
   | "completed"
   | "cancelled"
+
+/** Mirrors Rust `ConversationKind` (src-tauri/src/db/entities/conversation.rs).
+ *  `loop` rows belong to the Loop Engineering workbench and never appear in
+ *  the sidebar list; `delegate` rows nest under their parent's tool-call view. */
+export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
+
+/** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
+ *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
+export type FolderKind = "regular" | "chat"
 
 export const STATUS_ORDER: ConversationStatus[] = [
   "in_progress",
@@ -865,11 +886,103 @@ export interface SessionConfigOptionInfo {
 export interface AgentOptionsSnapshot {
   modes: SessionModeStateInfo | null
   config_options: SessionConfigOptionInfo[]
+  /** Slash commands captured during the same transient probe as modes/config
+   *  (empty when the agent advertises none in the probe window). */
+  available_commands: AvailableCommandInfo[]
 }
 
 export interface AgentDelegationDefaults {
   mode_id?: string | null
   config_values: Record<string, string>
+}
+
+// ─── Automations ───────────────────────────────────────────────────────────
+// Mirrors src-tauri/src/models/automation.rs. Wire form is snake_case (serde
+// default), matching AgentDelegationDefaults.
+
+export type AutomationTriggerKind = "schedule" | "manual"
+export type AutomationIsolation = "worktree_per_run" | "shared_in_root"
+export type AutomationRunStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+
+/** Display-only cache so the editor can render a value the live agent no longer
+ *  offers (marked unavailable) instead of silently dropping it. */
+export interface AutomationLabelSnapshot {
+  agent_label?: string
+  mode_label?: string
+  config_labels?: Record<string, string>
+  folder_label?: string
+  branch_label?: string
+}
+
+/** The captured composer snapshot stored in `automation.config`. `mode_id` +
+ *  `config_values` are exactly AgentDelegationDefaults; the model rides inside
+ *  `config_values["model"]`, never as its own field. */
+export interface AutomationConfig {
+  prompt_blocks: PromptInputBlock[]
+  display_text: string
+  mode_id?: string | null
+  config_values: Record<string, string>
+  label_snapshot?: AutomationLabelSnapshot | null
+}
+
+export interface Automation {
+  id: number
+  name: string
+  enabled: boolean
+  trigger_kind: AutomationTriggerKind
+  cron: string | null
+  timezone: string
+  next_run_at: string | null
+  agent_type: AgentType
+  root_folder_id: number | null
+  isolation: AutomationIsolation
+  branch: string | null
+  is_remote_branch: boolean
+  // Serialized from an opaque JSON column; the backend falls back to `null`
+  // when a stored blob fails to parse, so readers must guard against it.
+  config: AutomationConfig | null
+  last_run_at: string | null
+  last_run_status: string | null
+  last_run_conversation_id: number | null
+  unseen_failures: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AutomationRun {
+  id: number
+  automation_id: number
+  status: AutomationRunStatus
+  trigger: string
+  scheduled_for: string | null
+  started_at: string | null
+  ended_at: string | null
+  conversation_id: number | null
+  worktree_folder_id: number | null
+  stop_reason: string | null
+  error: string | null
+  summary: string | null
+  created_at: string
+}
+
+/** Full create/update payload — the editor saves the whole automation wholesale. */
+export interface AutomationDraft {
+  name: string
+  enabled: boolean
+  trigger_kind: AutomationTriggerKind
+  cron: string | null
+  timezone: string
+  agent_type: AgentType
+  root_folder_id: number | null
+  isolation: AutomationIsolation
+  branch: string | null
+  is_remote_branch: boolean
+  config: AutomationConfig
 }
 
 export interface PlanEntryInfo {
@@ -1474,6 +1587,59 @@ export interface SystemRenderingSettings {
   disable_hardware_acceleration: boolean
 }
 
+// --- Logging ---
+
+export type LogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace"
+
+/** A per-target level override, e.g. `codeg_lib::acp` at `debug` while the
+ * global level stays `info`. `target` is a tracing target (a Rust module path). */
+export interface TargetDirective {
+  target: string
+  level: LogLevel
+}
+
+export interface LogSettings {
+  level: LogLevel
+  /** Omitted by the backend when empty; treat `undefined` as `[]`. */
+  targets?: TargetDirective[]
+}
+
+/** What the Logs settings UI reads: the persisted level + per-target overrides,
+ * plus whether an env var (CODEG_LOG/RUST_LOG) currently locks the controls
+ * (env owns the live level). */
+export interface LogSettingsView {
+  level: LogLevel
+  targets: TargetDirective[]
+  env_locked: boolean
+}
+
+/** One enclosing span in an event's scope: its name + recorded fields. Ordered
+ * root→leaf in `LogRecord.spans`. */
+export interface SpanInfo {
+  name: string
+  fields: Record<string, string>
+}
+
+/** One captured log event. `level` is tracing's uppercase string
+ * ("ERROR".."TRACE"); `target` is the emitting module path. `fields` holds the
+ * event's own key-value fields and `spans` the enclosing span chain; both are
+ * empty for plain-message logs. */
+export interface LogRecord {
+  seq: number
+  timestamp_ms: number
+  level: string
+  target: string
+  message: string
+  fields: Record<string, string>
+  spans: SpanInfo[]
+}
+
+export interface LogFileInfo {
+  name: string
+  size_bytes: number
+  modified_ms: number
+}
+
 // --- Version Control ---
 
 export interface GitCredentials {
@@ -1637,6 +1803,21 @@ export interface GitBranchList {
   local: string[]
   remote: string[]
   worktree_branches: string[]
+}
+
+/**
+ * State of a working tree's HEAD (mirrors Rust `GitHeadInfo`). Distinguishes a
+ * non-repo, a detached HEAD, and being on a branch — the branch-only
+ * `getGitBranch` contract collapsed the last two into `null`, hiding git
+ * operations for detached repos (issue #279).
+ */
+export interface GitHeadInfo {
+  is_repo: boolean
+  /** Branch name when on a branch (incl. unborn); null when detached or non-repo. */
+  branch: string | null
+  detached: boolean
+  /** Short commit hash, present when detached. */
+  short_sha: string | null
 }
 
 /**

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::agent::AgentType;
 use super::message::{MessageTurn, TurnUsage};
+use crate::db::entities::conversation::ConversationKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationSummary {
@@ -34,6 +35,9 @@ pub struct DbConversationSummary {
     pub title_locked: bool,
     pub agent_type: AgentType,
     pub status: String,
+    /// Mirrors `conversation.kind` — drives sidebar visibility/grouping
+    /// (serialized as "regular" | "chat" | "loop" | "delegate").
+    pub kind: ConversationKind,
     pub model: Option<String>,
     pub git_branch: Option<String>,
     pub external_id: Option<String>,

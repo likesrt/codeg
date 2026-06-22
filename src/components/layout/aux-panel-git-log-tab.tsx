@@ -99,6 +99,23 @@ import type {
 import { toast } from "sonner"
 import { isNotAGitRepoError, toErrorMessage } from "@/lib/app-error"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  buildBranchTree,
+  buildRemoteBranchSections,
+  containsBranch,
+  expandedKeysForBranch,
+  localBranchItems,
+  sectionKey,
+  type BranchTreeLeaf,
+} from "@/lib/branch-tree"
+import {
+  BranchTreeCollapsible,
+  branchRowPaddingLeft,
+} from "@/components/layout/branch-tree-collapsible"
+import { useBranchTreeExpansion } from "@/hooks/use-branch-tree-expansion"
+
+// Local section open by default; Remote stays collapsed until expanded or seeded.
+const SIDEBAR_DEFAULT_EXPANDED = [sectionKey("local")]
 
 const emitEvent = async (event: string, payload?: unknown) => {
   try {
@@ -558,45 +575,71 @@ function BranchSelector({
 }) {
   const t = useTranslations("Folder.gitLogTab.branchSelector")
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const [localOpen, setLocalOpen] = useState(true)
-  const [remoteOpen, setRemoteOpen] = useState(false)
-  const groupedRemoteBranches = useMemo(() => {
-    const groups: Record<string, string[]> = {}
-    for (const b of branchList.remote) {
-      const slashIndex = b.indexOf("/")
-      const remoteName = slashIndex > 0 ? b.substring(0, slashIndex) : "origin"
-      if (!groups[remoteName]) groups[remoteName] = []
-      groups[remoteName].push(b)
+
+  const localNodes = useMemo(
+    () => buildBranchTree(localBranchItems(branchList.local), "local"),
+    [branchList.local]
+  )
+  const remoteSections = useMemo(
+    () => buildRemoteBranchSections(branchList.remote),
+    [branchList.remote]
+  )
+
+  // Auto-expand the section + prefix groups leading to the selected (or current)
+  // branch when the popover opens.
+  const seedKeys = useMemo(() => {
+    const target = selectedBranch ?? currentBranch
+    if (!target) return []
+    if (containsBranch(localNodes, target)) {
+      return [sectionKey("local"), ...expandedKeysForBranch(localNodes, target)]
     }
-    return groups
-  }, [branchList.remote])
-  const remoteNames = Object.keys(groupedRemoteBranches)
-  const hasMultipleRemotes = remoteNames.length > 1
+    for (const section of remoteSections) {
+      if (containsBranch(section.nodes, target)) {
+        const keys = [
+          sectionKey("remote"),
+          ...expandedKeysForBranch(section.nodes, target),
+        ]
+        if (section.key) keys.push(section.key)
+        return keys
+      }
+    }
+    return []
+  }, [selectedBranch, currentBranch, localNodes, remoteSections])
+
+  const { expanded, isExpanded, toggle } = useBranchTreeExpansion(
+    popoverOpen,
+    seedKeys,
+    SIDEBAR_DEFAULT_EXPANDED
+  )
 
   const handleSelect = (branch: string) => {
     onBranchChange(branch)
     setPopoverOpen(false)
   }
 
-  function renderBranchItem(branch: string, displayName?: string, indent = 0) {
-    const isCurrent = branch === selectedBranch
+  const renderLeaf = (leaf: BranchTreeLeaf, depth: number) => {
+    const isSelected = leaf.fullName === selectedBranch
     return (
       <button
-        key={branch}
+        key={leaf.key}
         type="button"
-        className={`flex w-full items-center gap-2 rounded-lg py-1.5 text-xs hover:bg-accent hover:text-accent-foreground select-none outline-hidden ${isCurrent ? "bg-accent/50" : ""}`}
-        style={{ paddingLeft: `${(indent + 1) * 0.5 + 0.5}rem` }}
-        onClick={() => handleSelect(branch)}
+        className={`flex w-full items-center gap-2 rounded-lg py-1.5 text-xs hover:bg-accent hover:text-accent-foreground select-none outline-hidden ${isSelected ? "bg-accent/50" : ""}`}
+        style={{ paddingLeft: branchRowPaddingLeft("sidebar", depth) }}
+        onClick={() => handleSelect(leaf.fullName)}
+        title={leaf.fullName}
       >
-        <span className="truncate">{displayName ?? branch}</span>
-        {branch === currentBranch && (
-          <span className="ml-auto pr-2 text-[10px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-left">{leaf.label}</span>
+        {leaf.fullName === currentBranch && (
+          <span className="shrink-0 pr-2 text-[10px] text-muted-foreground">
             {t("current")}
           </span>
         )}
       </button>
     )
   }
+
+  const localSectionKey = sectionKey("local")
+  const remoteSectionKey = sectionKey("remote")
 
   return (
     <div className="flex items-center gap-1">
@@ -622,52 +665,70 @@ function BranchSelector({
         >
           <div className="max-h-72 overflow-y-auto">
             {branchList.local.length > 0 && (
-              <Collapsible open={localOpen} onOpenChange={setLocalOpen}>
+              <Collapsible
+                open={isExpanded(localSectionKey)}
+                onOpenChange={() => toggle(localSectionKey)}
+              >
                 <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground select-none outline-hidden">
                   <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
                   {t("localBranches")}
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                  {branchList.local.map((branch) =>
-                    renderBranchItem(branch, undefined, 1)
-                  )}
+                  <BranchTreeCollapsible
+                    nodes={localNodes}
+                    depth={0}
+                    expanded={expanded}
+                    onToggle={toggle}
+                    renderLeaf={renderLeaf}
+                    variant="sidebar"
+                  />
                 </CollapsibleContent>
               </Collapsible>
             )}
             {branchList.remote.length > 0 && (
-              <Collapsible open={remoteOpen} onOpenChange={setRemoteOpen}>
+              <Collapsible
+                open={isExpanded(remoteSectionKey)}
+                onOpenChange={() => toggle(remoteSectionKey)}
+              >
                 <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium hover:bg-accent hover:text-accent-foreground select-none outline-hidden">
                   <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
                   {t("remoteBranches")}
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                  {hasMultipleRemotes
-                    ? remoteNames.map((remoteName) => (
-                        <Collapsible key={remoteName}>
-                          <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-lg py-1.5 pl-5 text-xs hover:bg-accent hover:text-accent-foreground select-none outline-hidden">
-                            <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
-                            {remoteName} (
-                            {groupedRemoteBranches[remoteName].length})
-                          </CollapsibleTrigger>
-                          <CollapsibleContent>
-                            {groupedRemoteBranches[remoteName].map((branch) =>
-                              renderBranchItem(
-                                branch,
-                                branch.substring(remoteName.length + 1),
-                                3
-                              )
-                            )}
-                          </CollapsibleContent>
-                        </Collapsible>
-                      ))
-                    : branchList.remote.map((branch) => {
-                        const slashIndex = branch.indexOf("/")
-                        const shortName =
-                          slashIndex > 0
-                            ? branch.substring(slashIndex + 1)
-                            : branch
-                        return renderBranchItem(branch, shortName, 1)
-                      })}
+                  {remoteSections.map((section) =>
+                    section.remoteName == null ? (
+                      <BranchTreeCollapsible
+                        key="remote-single"
+                        nodes={section.nodes}
+                        depth={0}
+                        expanded={expanded}
+                        onToggle={toggle}
+                        renderLeaf={renderLeaf}
+                        variant="sidebar"
+                      />
+                    ) : (
+                      <Collapsible
+                        key={section.key}
+                        open={isExpanded(section.key)}
+                        onOpenChange={() => toggle(section.key)}
+                      >
+                        <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-lg py-1.5 pl-5 text-xs hover:bg-accent hover:text-accent-foreground select-none outline-hidden">
+                          <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
+                          {section.remoteName} ({section.count})
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <BranchTreeCollapsible
+                            nodes={section.nodes}
+                            depth={1}
+                            expanded={expanded}
+                            onToggle={toggle}
+                            renderLeaf={renderLeaf}
+                            variant="sidebar"
+                          />
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )
+                  )}
                 </CollapsibleContent>
               </Collapsible>
             )}

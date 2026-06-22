@@ -6,6 +6,10 @@ pub enum DbError {
     Database(#[from] sea_orm::DbErr),
     #[error("migration error: {0}")]
     Migration(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+    #[error("validation error: {0}")]
+    Validation(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

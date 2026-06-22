@@ -34,16 +34,17 @@ export function filterTopLevelFolders<
 }
 
 /**
- * Drop hidden chat-mode folders (`is_chat`) from a folder list. These back
- * folderless "chat mode" conversations and must never appear in user-facing
- * folder surfaces (the sidebar "文件夹" group, the input-box folder picker). They
- * stay in the full `allFolders` set so by-id lookups (cwd, active-folder, theme
- * color) keep resolving — only list rendering excludes them.
+ * Drop hidden chat-mode folders (`kind === "chat"`) from a folder list. These
+ * back folderless "chat mode" conversations and must never appear in
+ * user-facing folder surfaces (the sidebar "文件夹" group, the input-box folder
+ * picker). They stay in the full `allFolders` set so by-id lookups (cwd,
+ * active-folder, theme color) keep resolving — only list rendering excludes
+ * them.
  */
-export function excludeChatFolders<T extends Pick<FolderDetail, "is_chat">>(
+export function excludeChatFolders<T extends Pick<FolderDetail, "kind">>(
   folders: readonly T[]
 ): T[] {
-  return folders.filter((f) => !f.is_chat)
+  return folders.filter((f) => f.kind !== "chat")
 }
 
 /**
