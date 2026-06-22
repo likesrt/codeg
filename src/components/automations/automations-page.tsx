@@ -1187,11 +1187,6 @@ function RunHistory({
                         {" · "}
                         {formatDuration(r.started_at, r.ended_at)}
                       </>
-                    ) : r.status === "running" ? (
-                      <>
-                        {" · "}
-                        {t("running")}
-                      </>
                     ) : null}
                   </span>
                 </div>

@@ -22,7 +22,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { Virtualizer, type VirtualizerHandle } from "virtua"
+import { Virtualizer } from "virtua"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -44,7 +44,7 @@ import {
   subscribeLogAppended,
   subscribeLogSettingsChanged,
 } from "@/lib/api"
-import { isDesktop, openPath } from "@/lib/platform"
+import { isDesktop, revealItemInDir } from "@/lib/platform"
 import { toErrorMessage } from "@/lib/app-error"
 import type {
   LogFileInfo,
@@ -73,6 +73,13 @@ const VIEW_LEVELS = ["all", "error", "warn", "info", "debug", "trace"] as const
 // Newest records kept in the DOM. A rendering bound (the backend ring buffer is
 // the source of truth); aligned with the backend's buffer size.
 const DISPLAY_LIMIT = 5000
+
+// Animation frames to re-issue the open scroll-to-bottom. virtua measures
+// dynamic (wrapping) row heights progressively after mount, so the scroll size
+// keeps growing for a few frames and a single scroll lands at an early,
+// estimated bottom. Re-pinning each frame keeps the view glued to the true
+// bottom as it settles. Bounded so it always terminates.
+const OPEN_SCROLL_REPIN_FRAMES = 6
 
 // Mirror of the backend `READ_LOG_MAX_BYTES` (commands/logging.rs): a single
 // file download returns at most the newest 16 MiB. Larger files come back
@@ -285,8 +292,13 @@ export function LogsSettings() {
   // OverlayScrollbars viewport is surfaced via onViewportRef and fed to virtua.
   const viewportRef = useRef<HTMLElement | null>(null)
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null)
-  const virtualizerRef = useRef<VirtualizerHandle>(null)
   const wasNearBottomRef = useRef(true)
+  // Guards the scroll-to-newest on open (see effects below). Set once content is
+  // first shown, and re-armed only on a true reset (records emptied — Clear or an
+  // empty reload), so a Clear followed by a live-tail burst snaps to the newest.
+  // A search that merely filters every row out leaves `records` intact, so it
+  // does NOT re-arm and a scrolled-up reader keeps their place.
+  const didInitialScrollRef = useRef(false)
   // Live-tail ingestion buffer, flushed once per animation frame.
   const pendingRef = useRef<LogRecord[]>([])
   const rafRef = useRef<number | null>(null)
@@ -306,6 +318,12 @@ export function LogsSettings() {
 
   const handleViewportRef = useCallback((el: HTMLElement | null) => {
     viewportRef.current = el
+    // virtua requires its scroll container to opt out of browser scroll
+    // anchoring; otherwise the size changes from progressively measuring
+    // wrapping rows fight the programmatic scroll-to-bottom. (A no-op on
+    // WebKit, which has no scroll anchoring, but correct for the web/server
+    // build on Chromium/Firefox.)
+    if (el) el.style.overflowAnchor = "none"
     setViewportEl(el)
   }, [])
 
@@ -314,6 +332,17 @@ export function LogsSettings() {
     if (!el) return
     wasNearBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }, [])
+
+  // Scroll the live-log viewport to its true bottom. Drives the real
+  // OverlayScrollbars viewport directly (scrollTop ← scrollHeight) instead of
+  // virtua's scrollToIndex — see the open-scroll effect for why. scrollHeight is
+  // the current measured total, so it lands at the real bottom even while virtua
+  // re-measures wrapping rows. No-op until the viewport is surfaced.
+  const scrollViewportToBottom = useCallback(() => {
+    const el = viewportRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
   }, [])
 
   const toggleExpanded = useCallback((seq: number) => {
@@ -424,12 +453,78 @@ export function LogsSettings() {
     [records, viewLevel, search]
   )
 
-  // Stick to bottom while live-tailing if the user was already near the bottom
-  // (tracked on scroll). Uses the virtua handle rather than raw scrollTop.
+  // Newest record seq (monotonic), or null when the buffer is empty. Drives the
+  // stick effect: a new append always advances it — even at the display cap,
+  // where the record count holds steady — while a search/level filter leaves
+  // `records` untouched, so re-filtering never triggers a follow.
+  const latestRecordSeq =
+    records.length > 0 ? records[records.length - 1].seq : null
+  // Newest seq the stick effect has already seen, so it follows only genuine
+  // appends to an already-populated list.
+  const seenSeqRef = useRef<number | null>(null)
+
+  // Follow new records to the bottom while live-tailing, but only when the
+  // reader is already near the bottom (tracked on scroll) — never yank someone
+  // who scrolled up to read history. The initial jump (and the re-jump after a
+  // Clear/reload) is the open-scroll effect's job, so this skips the first
+  // population: it scrolls only when the newest seq strictly advances past one
+  // already seen.
   useEffect(() => {
-    if (!liveTail || !wasNearBottomRef.current || visible.length === 0) return
-    virtualizerRef.current?.scrollToIndex(visible.length - 1, { align: "end" })
-  }, [visible.length, liveTail])
+    const prev = seenSeqRef.current
+    seenSeqRef.current = latestRecordSeq
+    if (latestRecordSeq == null || prev == null || latestRecordSeq <= prev)
+      return
+    if (!liveTail || !wasNearBottomRef.current) return
+    scrollViewportToBottom()
+  }, [latestRecordSeq, liveTail, scrollViewportToBottom])
+
+  // A true reset (records emptied via Clear, or an empty (re)load) re-arms the
+  // open-scroll so the next records to arrive — e.g. a live-tail burst right
+  // after Clear — snap to the newest. Keyed on records, not the viewport, so a
+  // search that filters every row out (records intact) does not re-arm.
+  useEffect(() => {
+    if (records.length === 0) didInitialScrollRef.current = false
+  }, [records.length])
+
+  // Open at the newest record. The stick effect above can't cover the open: it
+  // fires when records first load, but the viewport (and virtua) mount only once
+  // onViewportRef surfaces the scroll container a few frames later, by which
+  // point the stick deps are stable and it never re-runs. So scroll when the
+  // viewport is first ready with content (the guard isn't set until a frame
+  // actually fires, so an empty initial load still snaps to the bottom when the
+  // first log lands).
+  //
+  // Three subtleties drive the shape below:
+  //  - Scroll the real viewport (scrollTop ← scrollHeight) rather than virtua's
+  //    scrollToIndex. A freshly-mounted virtua list driven by scrollToIndex can
+  //    land the scroll *position* at the bottom yet leave the rendered window
+  //    stuck on a blank, far target until a manual scroll nudges it — exactly
+  //    the symptom we hit. A genuine scrollTop change is the path virtua renders
+  //    from reliably (it is what the user's manual nudge does).
+  //  - A single scroll at mount lands short — the OverlayScrollbars viewport
+  //    (inits with `defer`) and virtua measure wrapping rows over several frames,
+  //    so scrollHeight keeps growing. Re-pin for a bounded window of frames (rAF,
+  //    like the sidebar list) so the view stays glued to the true bottom.
+  //  - Latch on the first *fired* frame, not at schedule time: if a dependency
+  //    changes between scheduling and that frame (e.g. a live-tail record landing
+  //    as the page opens), the effect re-runs — and the cleanup cancels the
+  //    pending frame. Latching at schedule would make that re-run skip and the
+  //    scroll never happen; latching on fire lets it reschedule instead. Once a
+  //    frame fires, later record changes are the stick effect's job.
+  useEffect(() => {
+    if (didInitialScrollRef.current || !viewportEl || visible.length === 0)
+      return
+    let raf = 0
+    let frames = 0
+    const pin = () => {
+      didInitialScrollRef.current = true
+      scrollViewportToBottom()
+      frames += 1
+      if (frames < OPEN_SCROLL_REPIN_FRAMES) raf = requestAnimationFrame(pin)
+    }
+    raf = requestAnimationFrame(pin)
+    return () => cancelAnimationFrame(raf)
+  }, [viewportEl, visible.length, scrollViewportToBottom])
 
   const queueSave = useCallback(() => {
     inFlightRef.current += 1
@@ -508,7 +603,10 @@ export function LogsSettings() {
   const handleOpenFolder = useCallback(async () => {
     try {
       const path = await openLogsDir()
-      await openPath(path)
+      // `revealItemInDir` (not `openPath`): the opener plugin's path scope
+      // rejects the hidden `~/.codeg/logs` path under its require-literal-
+      // leading-dot Unix default, whereas reveal is not scope-checked.
+      await revealItemInDir(path)
     } catch (err) {
       toast.error(t("openFolderFailed"), { description: toErrorMessage(err) })
     }
@@ -794,11 +892,7 @@ export function LogsSettings() {
                 onScroll={handleScroll}
               >
                 {viewportEl && (
-                  <Virtualizer
-                    ref={virtualizerRef}
-                    scrollRef={viewportRef}
-                    itemSize={28}
-                  >
+                  <Virtualizer scrollRef={viewportRef} itemSize={28}>
                     {visible.map((r) => (
                       <LogRow
                         key={r.seq}

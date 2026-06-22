@@ -10,6 +10,7 @@ import {
 import {
   Bot,
   BookOpenText,
+  FileSpreadsheet,
   GitBranch,
   Globe,
   Keyboard,
@@ -18,7 +19,6 @@ import {
   SendHorizontal,
   Palette,
   PlugZap,
-  ScrollText,
   Server,
   Settings,
   SlidersHorizontal,
@@ -120,7 +120,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   {
     href: "/settings/logs",
     labelKey: "logs",
-    icon: ScrollText,
+    icon: FileSpreadsheet,
   },
   {
     href: "/settings/system",

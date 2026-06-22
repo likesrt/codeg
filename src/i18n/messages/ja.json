@@ -50,7 +50,7 @@
       "model_providers": "モデルプロバイダー",
       "experts": "エキスパート",
       "quick_messages": "クイックメッセージ",
-      "logs": "ログ"
+      "logs": "実行ログ"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "読み込み中…",
-    "sectionTitle": "ログ",
+    "sectionTitle": "実行ログ",
     "sectionDescription": "アプリケーションの診断ログを表示・設定します。ログはローカルファイルに書き込まれ、ライブ表示のためメモリにも保持されます。",
     "captureTitle": "ログレベル",
     "captureDescription": "記録する詳細度を制御します。レベルが高い（Debug、Trace）ほど多く記録されますが、ログも大きくなります。「オフ」でログ記録を無効にします。",

@@ -50,7 +50,7 @@
       "model_providers": "Model Providers",
       "experts": "Experts",
       "quick_messages": "Quick Messages",
-      "logs": "Logs"
+      "logs": "Runtime Logs"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "Loading…",
-    "sectionTitle": "Logs",
+    "sectionTitle": "Runtime Logs",
     "sectionDescription": "View and configure application diagnostic logs. Logs are written to local files and kept in memory for live viewing.",
     "captureTitle": "Log level",
     "captureDescription": "Controls how much detail is captured. Higher levels (Debug, Trace) record more but produce larger logs. Off disables logging.",

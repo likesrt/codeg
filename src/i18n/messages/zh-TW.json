@@ -50,7 +50,7 @@
       "model_providers": "模型供應商",
       "experts": "專家",
       "quick_messages": "快捷訊息",
-      "logs": "日誌"
+      "logs": "執行日誌"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "載入中…",
-    "sectionTitle": "日誌",
+    "sectionTitle": "執行日誌",
     "sectionDescription": "檢視與設定應用程式診斷日誌。日誌會寫入本機檔案，並保留在記憶體中以便即時檢視。",
     "captureTitle": "日誌等級",
     "captureDescription": "控制記錄的詳細程度。等級越高（Debug、Trace）記錄越多，但日誌也越大。「關閉」會停止記錄日誌。",

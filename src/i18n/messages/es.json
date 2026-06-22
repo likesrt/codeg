@@ -50,7 +50,7 @@
       "model_providers": "Proveedores de Modelos",
       "experts": "Expertos",
       "quick_messages": "Mensajes rápidos",
-      "logs": "Registros"
+      "logs": "Registros de ejecución"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "Cargando…",
-    "sectionTitle": "Registros",
+    "sectionTitle": "Registros de ejecución",
     "sectionDescription": "Visualiza y configura los registros de diagnóstico de la aplicación. Los registros se escriben en archivos locales y se mantienen en memoria para la vista en vivo.",
     "captureTitle": "Nivel de registro",
     "captureDescription": "Controla cuánto detalle se captura. Los niveles más altos (Debug, Trace) registran más, pero generan registros más grandes. «Desactivado» deshabilita el registro.",

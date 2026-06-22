@@ -50,7 +50,7 @@
       "model_providers": "模型供应商",
       "experts": "专家",
       "quick_messages": "快捷消息",
-      "logs": "日志"
+      "logs": "运行日志"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "加载中…",
-    "sectionTitle": "日志",
+    "sectionTitle": "运行日志",
     "sectionDescription": "查看和配置应用诊断日志。日志会写入本地文件，并保留在内存中以便实时查看。",
     "captureTitle": "日志级别",
     "captureDescription": "控制记录的详细程度。级别越高（Debug、Trace）记录越多，但日志也越大。“关闭”将停止记录日志。",

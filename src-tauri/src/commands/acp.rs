@@ -2128,16 +2128,38 @@ fn merge_hermes_model_config(
 
 /// Quote a single argv token for the current platform's shell, only when it
 /// contains characters that would otherwise be reparsed (so simple tokens stay
-/// readable). POSIX uses single quotes; Windows `cmd` uses double quotes.
+/// readable). POSIX uses single quotes; Windows wraps in double quotes.
 fn shell_quote_arg(arg: &str) -> String {
-    let needs_quoting = arg.is_empty()
-        || arg
-            .chars()
-            .any(|c| c.is_whitespace() || "[](){}'\"$&;|<>*?`\\!#~".contains(c));
+    shell_quote_arg_for(arg, cfg!(windows))
+}
+
+/// Platform-parameterized core of [`shell_quote_arg`], so both the POSIX and
+/// Windows quoting rules are unit-testable on any host.
+///
+/// The backslash forces quoting on POSIX (it is the shell escape char) but NOT
+/// on Windows, where it is just the path separator. Force-quoting a plain
+/// Windows path like `C:\…\uvx.exe` makes the rendered command *begin* with a
+/// double-quoted string: `cmd.exe` runs that fine, but PowerShell parses a
+/// leading quoted string as a string *expression* (invoking it would need the
+/// `&` call operator) and dies with "Unexpected token" on the next argument —
+/// uvx never runs. Leaving a space-free path unquoted keeps it a bare command
+/// token that runs in both `cmd` and PowerShell. (A path that contains spaces
+/// still must be quoted; such a copied command stays PowerShell-incompatible and
+/// needs a leading `&` when pasted there.)
+fn shell_quote_arg_for(arg: &str, windows: bool) -> String {
+    // Metacharacters that force quoting. Backslash is POSIX-only: on Windows it
+    // is the path separator and quoting on its account is what breaks PowerShell.
+    let special: &str = if windows {
+        "[](){}'\"$&;|<>*?`!#~"
+    } else {
+        "[](){}'\"$&;|<>*?`\\!#~"
+    };
+    let needs_quoting =
+        arg.is_empty() || arg.chars().any(|c| c.is_whitespace() || special.contains(c));
     if !needs_quoting {
         return arg.to_string();
     }
-    if cfg!(windows) {
+    if windows {
         format!("\"{}\"", arg.replace('"', "\\\""))
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
@@ -7814,6 +7836,39 @@ mod tests {
             vec!["--python".to_string(), "3.13".to_string()]
         );
         assert!(uvx_python_args(None).is_empty());
+    }
+
+    #[test]
+    fn shell_quote_arg_leaves_spacefree_windows_paths_unquoted() {
+        // A backslash path with no spaces must NOT be quoted on Windows. A
+        // leading double-quoted string makes PowerShell parse the line as a
+        // string expression and fail with "Unexpected token" instead of running
+        // uvx; an unquoted bare path runs in both cmd and PowerShell.
+        let path = r"C:\Users\Administrator\AppData\Local\app.codeg\acp-binaries\uv-tool\windows-x86_64\uvx.exe";
+        assert_eq!(shell_quote_arg_for(path, true), path);
+        // On POSIX the backslash is the escape char, so it still forces quoting.
+        assert_eq!(shell_quote_arg_for(path, false), format!("'{path}'"));
+    }
+
+    #[test]
+    fn shell_quote_arg_still_quotes_when_required() {
+        // Spaces force quoting on both platforms (this case is the known
+        // PowerShell-incompatible residual: a quoted leading path needs `&`).
+        assert_eq!(
+            shell_quote_arg_for(r"C:\Program Files\uv-tool\uvx.exe", true),
+            "\"C:\\Program Files\\uv-tool\\uvx.exe\""
+        );
+        // The pinned package's brackets and comma must stay quoted so PowerShell
+        // does not split `[acp,mcp]` into an array argument.
+        let pkg = "hermes-agent[acp,mcp]==0.16.0";
+        assert_eq!(shell_quote_arg_for(pkg, true), format!("\"{pkg}\""));
+        assert_eq!(shell_quote_arg_for(pkg, false), format!("'{pkg}'"));
+        // Plain flag/value tokens are never quoted on either platform.
+        for windows in [true, false] {
+            assert_eq!(shell_quote_arg_for("--python", windows), "--python");
+            assert_eq!(shell_quote_arg_for("3.13", windows), "3.13");
+            assert_eq!(shell_quote_arg_for("hermes-acp", windows), "hermes-acp");
+        }
     }
 
     #[test]

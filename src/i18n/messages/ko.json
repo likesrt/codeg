@@ -50,7 +50,7 @@
       "model_providers": "모델 제공업체",
       "experts": "전문가",
       "quick_messages": "빠른 메시지",
-      "logs": "로그"
+      "logs": "실행 로그"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "불러오는 중…",
-    "sectionTitle": "로그",
+    "sectionTitle": "실행 로그",
     "sectionDescription": "애플리케이션 진단 로그를 보고 구성합니다. 로그는 로컬 파일에 기록되며 실시간 보기를 위해 메모리에도 보관됩니다.",
     "captureTitle": "로그 수준",
     "captureDescription": "기록되는 상세 수준을 제어합니다. 수준이 높을수록(Debug, Trace) 더 많이 기록되지만 로그도 커집니다. '끔'은 로깅을 비활성화합니다.",

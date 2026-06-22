@@ -50,7 +50,7 @@
       "model_providers": "Modellanbieter",
       "experts": "Experten",
       "quick_messages": "Schnellnachrichten",
-      "logs": "Protokolle"
+      "logs": "Laufzeitprotokolle"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "Wird geladen…",
-    "sectionTitle": "Protokolle",
+    "sectionTitle": "Laufzeitprotokolle",
     "sectionDescription": "Diagnoseprotokolle der Anwendung anzeigen und konfigurieren. Protokolle werden in lokale Dateien geschrieben und für die Live-Ansicht im Speicher gehalten.",
     "captureTitle": "Protokollebene",
     "captureDescription": "Steuert, wie viele Details erfasst werden. Höhere Stufen (Debug, Trace) zeichnen mehr auf, erzeugen aber größere Protokolle. „Aus“ deaktiviert die Protokollierung.",

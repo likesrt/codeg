@@ -50,7 +50,7 @@
       "model_providers": "Fournisseurs de Modèles",
       "experts": "Experts",
       "quick_messages": "Messages rapides",
-      "logs": "Journaux"
+      "logs": "Journaux d'exécution"
     }
   },
   "AppearanceSettings": {
@@ -3039,7 +3039,7 @@
   },
   "LogsSettings": {
     "loading": "Chargement…",
-    "sectionTitle": "Journaux",
+    "sectionTitle": "Journaux d'exécution",
     "sectionDescription": "Consultez et configurez les journaux de diagnostic de l'application. Les journaux sont écrits dans des fichiers locaux et conservés en mémoire pour l'affichage en direct.",
     "captureTitle": "Niveau de journalisation",
     "captureDescription": "Contrôle le niveau de détail capturé. Les niveaux plus élevés (Debug, Trace) enregistrent davantage mais produisent des journaux plus volumineux. « Désactivé » désactive la journalisation.",
