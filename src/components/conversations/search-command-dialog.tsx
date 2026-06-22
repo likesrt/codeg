@@ -749,6 +749,7 @@ function useSelectConversation(
   ) => void,
   onOpenChange: (open: boolean) => void
 ) {
+  const { openConversations } = useWorkbenchRoute()
   return useCallback(
     (conv: DbConversationSummary) => {
       // Leave any workbench route (e.g. Automations) so the picked conversation
