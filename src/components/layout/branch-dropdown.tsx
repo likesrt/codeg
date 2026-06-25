@@ -105,6 +105,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useAlertContext } from "@/contexts/alert-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
@@ -142,6 +143,7 @@ export function BranchDropdown() {
   const { allFolders, branches, gitHeads, refreshFolder, openWorktreeFolder } =
     useAppWorkspace()
   const { openNewConversationTab } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask, removeTask } = useTaskContext()
   const { pushAlert } = useAlertContext()
   const { withCredentialRetry } = useGitCredential()
@@ -411,6 +413,9 @@ export function BranchDropdown() {
       // conversations would otherwise be unreachable; this also lands the new
       // session with its cwd set to the worktree directory (detail.path).
       const detail = await openWorktreeFolder(wtPath, folderId)
+      // Return to the conversation workspace if a route (e.g. Automations)
+      // was covering the content region, else the new tab opens unseen.
+      openConversations()
       openNewConversationTab(detail.id, detail.path)
     })
   }

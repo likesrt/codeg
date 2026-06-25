@@ -49,6 +49,7 @@
       "web_service": "웹 서비스",
       "model_providers": "모델 제공업체",
       "experts": "전문가",
+      "office_tools": "오피스 도구",
       "quick_messages": "빠른 메시지",
       "logs": "실행 로그"
     }
@@ -575,7 +576,10 @@
       "confirmUninstall": "제거 확인",
       "saveClineConfig": "Cline 설정 저장",
       "saveHermesConfig": "Hermes 설정 저장",
-      "customInstall": "사용자 지정 설치"
+      "saveCodeBuddyConfig": "CodeBuddy 구성 저장",
+      "saveKimiCodeConfig": "Kimi Code 구성 저장",
+      "customInstall": "사용자 지정 설치",
+      "saveKimiCodeRawConfig": "Save config.toml"
     },
     "status": {
       "enabled": "활성화됨",
@@ -694,6 +698,66 @@
       "rawConfigHint": "~/.hermes/config.yaml을 직접 편집합니다. 여기서 저장하면 파일이 그대로 덮어쓰여집니다.",
       "saveRawConfig": "config.yaml 저장"
     },
+    "codebuddy": {
+      "configManagement": "CodeBuddy 구성",
+      "configDescription": "CodeBuddy는 API 키로 인증합니다. 중국 버전은 환경을 ‘중국(internal)’으로 설정해야 하며, iOA 버전은 ‘iOA’를 사용하고, 해외 버전은 설정하지 않습니다.",
+      "apiKeyLabel": "API 키",
+      "apiKeyHint": "이 에이전트의 CODEBUDDY_API_KEY로 저장됩니다. 또는 터미널에서 CodeBuddy CLI로 로그인할 수도 있습니다.",
+      "apiKeyHintSelfHosted": "이 에이전트의 CODEBUDDY_API_KEY로 저장됩니다. 비공개 배포에서 발급한 키를 사용하세요.",
+      "environmentLabel": "환경",
+      "environmentHint": "CODEBUDDY_INTERNET_ENVIRONMENT를 설정합니다. 중국 본토는 ‘중국(internal)’을 사용해야 하며, 해외 버전은 설정하지 않습니다.",
+      "envOverseas": "해외(기본값)",
+      "envChina": "중국(internal)",
+      "envIoa": "iOA",
+      "envSelfHosted": "프라이빗 배포(자체 호스팅)",
+      "baseUrlLabel": "배포 URL",
+      "baseUrlPlaceholder": "https://codebuddy.your-company.com",
+      "baseUrlHint": "CODEBUDDY_BASE_URL로 저장되어 CodeBuddy를 비공개 엔드포인트로 연결합니다. 자체 호스팅에서는 네트워크 환경(CODEBUDDY_INTERNET_ENVIRONMENT)을 설정하지 않습니다.",
+      "baseUrlInvalid": "유효한 http(s) URL을 입력하세요.",
+      "loginHint": "API 키가 없나요? 터미널에서 ‘codebuddy’를 실행하여 Tencent 계정으로 로그인할 수도 있습니다."
+    },
+    "kimiCode": {
+      "configManagement": "Kimi Code Configuration",
+      "configDescription": "`kimi acp` only authenticates with a stored login token and rejects API keys on their own. To use an API key, codeg writes a managed ~/.kimi-code/config.toml provider AND seeds a local gate token so the session opens — inference still runs on your key.",
+      "gateReadyApiKey": "Authenticated via API key (codeg seeded the local gate token).",
+      "gateReadyLogin": "Authenticated via a Kimi account login.",
+      "gateNotReady": "Not authenticated yet — save an API key below (or sign in) to open Kimi sessions.",
+      "authModeLabel": "Authentication method",
+      "authModeApiKey": "API key",
+      "authModeLogin": "Kimi account login (subscription)",
+      "authModeHint": "“API key” writes a codeg-managed config.toml provider and seeds a gate token. “Login” clears that and uses a real `kimi login` session (requires a Kimi subscription).",
+      "interfaceTypeLabel": "Provider type",
+      "interfaceTypeHint": "The provider protocol Kimi speaks (config.toml `type`). Use Kimi / Moonshot for a Moonshot / platform.kimi.com key.",
+      "endpointLabel": "Endpoint",
+      "endpointCustom": "Custom (OpenAI-compatible)",
+      "endpointHint": "International = api.moonshot.ai; China (platform.kimi.com keys) = api.moonshot.cn. Custom points at any OpenAI-compatible endpoint.",
+      "regionInternational": "International (api.moonshot.ai)",
+      "regionChina": "China (api.moonshot.cn)",
+      "baseUrlLabel": "Base URL",
+      "baseUrlHint": "Leave blank to use the provider SDK default.",
+      "apiKeyLabel": "API Key",
+      "apiKeyHint": "Written to ~/.kimi-code/config.toml and used for inference. From platform.kimi.com or platform.kimi.ai.",
+      "authTypeLabel": "Advanced: credential placement",
+      "authTypeApiKey": "Inline api_key",
+      "authTypeEnv": "Provider env sub-table",
+      "authTypeHint": "Where the API key is written inside config.toml.",
+      "vertexProjectLabel": "GCP project (GOOGLE_CLOUD_PROJECT)",
+      "vertexLocationLabel": "GCP location (GOOGLE_CLOUD_LOCATION)",
+      "vertexHint": "Vertex AI uses Google Application Default Credentials — run `gcloud auth application-default login` (no API key).",
+      "modelLabel": "Model",
+      "modelHint": "The model id to use. Click Fetch to list the models your key can access (e.g. kimi-k2.7-code) — avoids “model not found” errors.",
+      "fetchModels": "Fetch",
+      "fetchModelsOk": "Found {count} models",
+      "fetchModelsEmpty": "Key works, but no models were returned",
+      "fetchModelsFailed": "Couldn’t list models — check the key and endpoint",
+      "fetchModelsNeedsKey": "Enter an API key and endpoint first",
+      "maxContextLabel": "Max context size (optional)",
+      "maxContextHint": "Tokens, e.g. 262144. Leave blank to use the model default.",
+      "loginHint": "Run `kimi login` in a terminal to sign in with a Kimi subscription account (device-code OAuth). codeg stores nothing and reuses Kimi’s own login. Saving here removes codeg’s API-key gate token.",
+      "rawEditorLabel": "Advanced: edit config.toml directly",
+      "rawEditorHint": "Written verbatim (comments preserved) and validated as TOML. codeg also seeds the gate token so the session opens.",
+      "rawEditorPlaceholder": "[providers.codeg]\ntype = \"kimi\"\nbase_url = \"https://api.moonshot.cn/v1\"\napi_key = \"sk-...\""
+    },
     "authModeOfficialSubscription": "공식 구독",
     "authModeCustomEndpoint": "사용자 정의 엔드포인트",
     "authModeCustomEndpointHint": "API URL과 API Key를 수동으로 구성하여 사용자 정의 엔드포인트에 연결합니다.",
@@ -782,6 +846,10 @@
       "saveClineFailed": "Cline 설정 저장 실패",
       "hermesSaved": "Hermes 설정 저장됨",
       "saveHermesFailed": "Hermes 설정 저장 실패",
+      "codeBuddySaved": "CodeBuddy 구성이 저장되었습니다",
+      "saveCodeBuddyFailed": "CodeBuddy 구성 저장에 실패했습니다",
+      "kimiCodeSaved": "Kimi Code 구성이 저장되었습니다",
+      "saveKimiCodeFailed": "Kimi Code 구성 저장 실패",
       "modelProviderRequired": "저장하기 전에 모델 공급자를 선택하세요.",
       "affectedRunningSessions": "{count}개의 실행 중인 세션은 다시 연결하면 변경 사항이 적용됩니다"
     },
@@ -1253,7 +1321,13 @@
       "imageZoomReset": "확대/축소 초기화",
       "htmlPreviewTitle": "HTML 미리보기",
       "htmlPreviewTrust": "스크립트 사용",
-      "htmlPreviewTrustHint": "이 파일의 스크립트를 실행하고 네트워크 접근을 허용합니다. 신뢰할 수 있는 파일에서만 사용하세요."
+      "htmlPreviewTrustHint": "이 파일의 스크립트를 실행하고 네트워크 접근을 허용합니다. 신뢰할 수 있는 파일에서만 사용하세요.",
+      "officePreviewTitle": "Office 문서 미리보기",
+      "officeFullRender": "전체 렌더링",
+      "officeFullRenderHint": "Morph 애니메이션, 3D, 수식을 렌더링합니다(슬라이드 자체 스크립트 실행).",
+      "officeNotInstalled": "OfficeCLI가 설치되지 않았습니다",
+      "officeNotInstalledHint": "설정 → Office 도구에서 OfficeCLI를 설치하면 Word, Excel, PowerPoint 파일을 미리볼 수 있습니다.",
+      "officeOpenSettings": "설정 열기"
     },
     "branchDropdown": {
       "toasts": {
@@ -1962,6 +2036,46 @@
           "fusionMode": "파일이나 diff를 열면 대화 옆에 자동으로 표시됩니다.",
           "quickMessages": "입력창 옆 + 버튼에서 '빠른 메시지'를 선택하면 저장된 스니펫을 한 번에 삽입할 수 있습니다('설정 → 빠른 메시지'에서 관리)",
           "experts": "+ 버튼의 '전문가 스킬' 메뉴에서 디버그 / 기획 등 사전 정의된 역할을 한 번에 불러올 수 있습니다"
+        },
+        "quickActions": {
+          "excel": "Excel 통합 문서",
+          "excelDesc": "데이터 표, 수식, 차트",
+          "word": "Word 문서",
+          "wordDesc": "보고서, 편지, 메모",
+          "ppt": "프레젠테이션",
+          "pptDesc": "전문 디자인 슬라이드",
+          "pitchDeck": "피치덱",
+          "pitchDeckDesc": "핵심 지표가 담긴 투자 자료",
+          "morph": "Morph 애니메이션",
+          "morphDesc": "영화 같은 슬라이드 전환",
+          "morph3d": "3D Morph",
+          "morph3dDesc": "3D 모델과 카메라 무빙",
+          "academic": "학술 논문",
+          "academicDesc": "인용과 구조를 갖춘 연구 논문",
+          "financial": "재무 모델",
+          "financialDesc": "재무제표, DCF, 예측",
+          "dashboard": "데이터 대시보드",
+          "dashboardDesc": "데이터로 KPI와 분석 생성",
+          "prompts": {
+            "excel": "다음 요구 사항으로 Excel 통합 문서를 만들어 주세요:\n\n[데이터, 표, 수식, 차트를 여기에 설명]",
+            "word": "다음 요구 사항으로 Word 문서를 만들어 주세요:\n\n[문서 내용, 구조, 서식을 여기에 설명]",
+            "ppt": "다음 요구 사항으로 PowerPoint 프레젠테이션을 만들어 주세요:\n\n[슬라이드, 내용, 디자인을 여기에 설명]",
+            "pitchDeck": "다음 요구 사항으로 투자 피치덱을 만들어 주세요:\n\n[회사, 투자 라운드, 핵심 지표를 여기에 설명]",
+            "morph": "Morph 전환 애니메이션이 있는 프레젠테이션을 만들어 주세요:\n\n[발표 주제와 원하는 시각 효과를 여기에 설명]",
+            "morph3d": "GLB 모델과 카메라 무빙이 있는 3D Morph 프레젠테이션을 만들어 주세요:\n\n[주제와 3D 비주얼 콘셉트를 여기에 설명]",
+            "academic": "다음 요구 사항으로 Word 학술 논문을 작성해 주세요:\n\n[연구 주제, 방법론, 주요 결과를 여기에 설명]",
+            "financial": "다음 요구 사항으로 Excel 재무 모델을 만들어 주세요:\n\n[재무제표, 예측, 분석을 여기에 설명]",
+            "dashboard": "다음 요구 사항으로 Excel 데이터 대시보드를 만들어 주세요:\n\n[데이터 소스, KPI, 차트를 여기에 설명]"
+          },
+          "tabs": {
+            "office": "일상 업무",
+            "coding": "코드 개발"
+          },
+          "coding": {
+            "brainstormingDesc": "구현 전 의도와 요구사항 탐색",
+            "debuggingDesc": "수정 제안 전에 근본 원인 파악",
+            "writingSkillsDesc": "재사용 가능한 스킬 생성·편집·검증"
+          }
         }
       },
       "agentSelector": {
@@ -2695,6 +2809,63 @@
       "enableFailed": "전문가 활성화에 실패했습니다",
       "disableFailed": "전문가 비활성화에 실패했습니다",
       "openFolderFailed": "폴더를 열지 못했습니다"
+    }
+  },
+  "OfficeToolsSettings": {
+    "title": "Office 도구",
+    "description": "OfficeCLI 스킬을 관리하여 Excel, Word, PowerPoint 파일을 생성합니다. OfficeCLI를 설치하고 스킬을 동기화한 후 에이전트별로 활성화할 수 있습니다.",
+    "loadingContent": "콘텐츠 로드 중…",
+    "emptySkills": "스킬이 없습니다. OfficeCLI를 설치하고 스킬을 동기화하세요.",
+    "emptySelection": "스킬을 선택하여 내용을 확인하고 활성화를 관리합니다.",
+    "emptySearch": "검색과 일치하는 스킬이 없습니다.",
+    "searchPlaceholder": "이름, ID 또는 설명으로 스킬 검색",
+    "enableForAgents": "에이전트에 활성화",
+    "noAgents": "ACP 에이전트가 감지되지 않았습니다.",
+    "installFirst": "스킬을 활성화하려면 먼저 OfficeCLI를 설치하세요.",
+    "syncFirst": "콘텐츠를 로드하려면 먼저 스킬을 동기화하세요.",
+    "noContent": "콘텐츠가 없습니다.",
+    "copyModeWarning": "복사됨(링크 아님). 최신 버전을 가져오려면 다시 동기화하세요.",
+    "previewTitle": "SKILL.md 미리보기",
+    "detection": {
+      "installed": "설치됨",
+      "notInstalled": "미설치",
+      "installHint": "OfficeCLI를 설치하여 AI 에이전트에 오피스 문서 생성 스킬을 활성화합니다.",
+      "install": "설치",
+      "uninstall": "제거",
+      "syncSkills": "스킬 동기화"
+    },
+    "categories": {
+      "general": "일반",
+      "presentations": "프레젠테이션",
+      "documents": "문서",
+      "spreadsheets": "스프레드시트"
+    },
+    "states": {
+      "not_linked": "비활성",
+      "linked_to_codeg": "활성",
+      "linked_elsewhere": "차단됨 — 다른 링크가 존재합니다",
+      "blocked_by_real_directory": "차단됨 — 사용자 정의 스킬이 이 이름을 사용 중",
+      "broken": "링크 끊김"
+    },
+    "badges": {
+      "notSynced": "미동기화"
+    },
+    "actions": {
+      "refresh": "새로고침"
+    },
+    "toasts": {
+      "loadFailed": "스킬 상세 로드 실패",
+      "enabled": "이 에이전트에 스킬 활성화됨",
+      "disabled": "이 에이전트에서 스킬 비활성화됨",
+      "enableFailed": "스킬 활성화 실패",
+      "disableFailed": "스킬 비활성화 실패",
+      "installSuccess": "OfficeCLI 설치 성공",
+      "installFailed": "OfficeCLI 설치 실패",
+      "uninstallSuccess": "OfficeCLI 제거됨",
+      "uninstallFailed": "OfficeCLI 제거 실패",
+      "syncSuccess": "{synced}개 스킬 동기화 완료",
+      "syncPartial": "{synced}개 동기화, {errors}개 실패",
+      "syncFailed": "스킬 동기화 실패"
     }
   },
   "QuickMessagesSettings": {

@@ -424,12 +424,34 @@ function extractRevisedPrompt(content: string | null): string | null {
   return trimmed
 }
 
-function resolveGoalToolInputFromLiveTitle(
+/** First filesystem path from an ACP tool call's `locations` (`[{ path }]`), or null. */
+function firstLocationPath(locations: unknown): string | null {
+  if (!Array.isArray(locations)) return null
+  for (const loc of locations) {
+    if (loc && typeof loc === "object") {
+      const p = (loc as { path?: unknown }).path
+      if (typeof p === "string" && p.length > 0) return p
+    }
+  }
+  return null
+}
+
+function resolveLiveToolInput(
   toolName: string,
   info: ToolCallInfo
 ): string | null {
   if (info.raw_input && info.raw_input.trim().length > 0) {
     return info.raw_input
+  }
+
+  // codex classifies file-reading shell commands (sed/cat/head) as ACP `read`
+  // commandActions: kind="read", the path only in `locations`/`title`, and NO
+  // raw_input (codex-acp createCommandActionEvent). Synthesize a `file_path` from
+  // the location so the read card derives a "Read <path>" title + file view,
+  // matching a normal read instead of falling back to "read: <output>".
+  if (toolName === "read") {
+    const path = firstLocationPath(info.locations)
+    if (path) return JSON.stringify({ file_path: path })
   }
 
   const goal = parseGoalUpdateTitle(info.title)
@@ -502,21 +524,35 @@ function buildStreamingTurnsFromLiveMessage(
         // Only capture children while the agent is still running
         positionalAgentId = isFinal ? null : block.info.tool_call_id
       } else {
-        // Extract parentToolUseId from ACP meta (Claude Code embeds this
-        // under meta.claudeCode.parentToolUseId). Guard each access level
+        // Extract the parent tool-call id from ACP meta. Both Claude Code and
+        // CodeBuddy link a native sub-agent's child tool calls to the parent
+        // Agent tool call this way — just under different keys:
+        //   - Claude Code: nested `meta.claudeCode.parentToolUseId`
+        //   - CodeBuddy:   flat  `meta["codebuddy.ai/parentToolCallId"]`
+        // Reading both makes CodeBuddy sub-agents nest precisely (like Claude
+        // Code) instead of falling back to the positional heuristic, which the
+        // sub-agent's interleaved thinking blocks break. Guard each access level
         // to avoid crashes on unexpected shapes from other agents.
         const meta = block.info.meta
         let parentId: string | undefined
-        if (meta && typeof meta === "object" && "claudeCode" in meta) {
-          const cc = (meta as Record<string, unknown>).claudeCode
-          if (cc && typeof cc === "object" && "parentToolUseId" in cc) {
-            const pid = (cc as Record<string, unknown>).parentToolUseId
-            if (typeof pid === "string") parentId = pid
+        if (meta && typeof meta === "object") {
+          if ("claudeCode" in meta) {
+            const cc = (meta as Record<string, unknown>).claudeCode
+            if (cc && typeof cc === "object" && "parentToolUseId" in cc) {
+              const pid = (cc as Record<string, unknown>).parentToolUseId
+              if (typeof pid === "string") parentId = pid
+            }
+          }
+          if (!parentId) {
+            const cbParent = (meta as Record<string, unknown>)[
+              "codebuddy.ai/parentToolCallId"
+            ]
+            if (typeof cbParent === "string") parentId = cbParent
           }
         }
 
-        // Use explicit parentToolUseId when available, positional fallback
-        // only for in-progress agents
+        // Use explicit parent id when available, positional fallback only for
+        // in-progress agents.
         const resolvedParent =
           parentId && agentIds.has(parentId) ? parentId : positionalAgentId
 
@@ -639,10 +675,7 @@ function buildStreamingTurnsFromLiveMessage(
           type: "tool_use",
           tool_use_id: block.info.tool_call_id,
           tool_name: toolName,
-          input_preview: resolveGoalToolInputFromLiveTitle(
-            toolName,
-            block.info
-          ),
+          input_preview: resolveLiveToolInput(toolName, block.info),
           // Forward the ACP `meta` field downstream so the renderer can
           // read delegation state (`meta["codeg.delegation"]`) for
           // pre-binding / post-refresh fallback rendering of

@@ -24,7 +24,7 @@ pub enum AgentDistribution {
     /// Used for ACP agents distributed as Python packages (e.g. Hermes).
     Uvx {
         version: &'static str,
-        /// The `uvx --from` package spec, e.g. "hermes-agent[acp,mcp]==0.16.0".
+        /// The `uvx --from` package spec, e.g. "hermes-agent[acp,mcp]==0.17.0".
         package: &'static str,
         /// The console-script entry point to run, e.g. "hermes-acp".
         cmd: &'static str,
@@ -53,6 +53,12 @@ pub struct PlatformBinary {
 #[derive(Debug, Clone)]
 pub struct AcpAgentMeta {
     pub agent_type: AgentType,
+    /// 是否经 ACP 线缆（session/new 的 `mcpServers` 字段）向该 agent 转发 MCP
+    /// 服务器——既包括用户配置的服务器，也包括内置 codeg-mcp 伴生进程。
+    /// OpenClaw 拒绝 `mcpServers` 中的任何服务器条目（会使 session/new 失败），
+    /// 故置 false。注意空列表 `[]` 仍会按 ACP schema 序列化、OpenClaw 可接受——
+    /// 闸门只是保证该列表对 OpenClaw 恒为空（不含任何条目）。
+    pub supports_mcp: bool,
     pub name: &'static str,
     pub description: &'static str,
     pub distribution: AgentDistribution,
@@ -104,6 +110,8 @@ pub fn all_acp_agents() -> Vec<AgentType> {
         AgentType::OpenCode,
         AgentType::Cline,
         AgentType::Hermes,
+        AgentType::CodeBuddy,
+        AgentType::KimiCode,
     ]
 }
 
@@ -116,6 +124,8 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::OpenCode => "opencode",
         AgentType::Cline => "cline",
         AgentType::Hermes => "hermes",
+        AgentType::CodeBuddy => "codebuddy-code",
+        AgentType::KimiCode => "kimi-code",
     }
 }
 
@@ -128,6 +138,8 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "opencode" => Some(AgentType::OpenCode),
         "cline" => Some(AgentType::Cline),
         "hermes" => Some(AgentType::Hermes),
+        "codebuddy-code" => Some(AgentType::CodeBuddy),
+        "kimi-code" => Some(AgentType::KimiCode),
         _ => None,
     }
 }
@@ -140,11 +152,12 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
     match agent_type {
         AgentType::ClaudeCode => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
             distribution: AgentDistribution::Npx {
-                version: "0.49.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.49.0",
+                version: "0.50.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.50.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -153,43 +166,24 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::Codex => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "Codex CLI",
             description: "ACP adapter for OpenAI's coding assistant",
-            distribution: AgentDistribution::Binary {
-                version: "0.16.0",
+            // codex-acp moved from zed-industries (Rust binary) to the
+            // agentclientprotocol org (TypeScript rewrite, npx-distributed).
+            // 1.0.0 bundles `@openai/codex` and drives `codex app-server`.
+            distribution: AgentDistribution::Npx {
+                version: "1.0.0",
+                package: "@agentclientprotocol/codex-acp@1.0.0",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
-                platforms: &[
-                    PlatformBinary {
-                        platform: "darwin-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-apple-darwin.tar.gz",
-                    },
-                    PlatformBinary {
-                        platform: "darwin-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-apple-darwin.tar.gz",
-                    },
-                    PlatformBinary {
-                        platform: "linux-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-unknown-linux-gnu.tar.gz",
-                    },
-                    PlatformBinary {
-                        platform: "linux-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-unknown-linux-gnu.tar.gz",
-                    },
-                    PlatformBinary {
-                        platform: "windows-aarch64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-aarch64-pc-windows-msvc.zip",
-                    },
-                    PlatformBinary {
-                        platform: "windows-x86_64",
-                        url: "https://github.com/zed-industries/codex-acp/releases/download/v0.16.0/codex-acp-0.16.0-x86_64-pc-windows-msvc.zip",
-                    },
-                ],
+                node_required: None,
             },
         },
         AgentType::Gemini => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "Gemini CLI",
             description: "Google's official CLI for Gemini",
             distribution: AgentDistribution::Npx {
@@ -203,11 +197,14 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::OpenClaw => AcpAgentMeta {
             agent_type,
+            // OpenClaw 拒绝 `mcpServers` 中的任何服务器条目（会使 session/new 失败），
+            // 故不向其转发任何 MCP 条目（含 codeg-mcp 伴生进程）。详见 supports_mcp 字段注释。
+            supports_mcp: false,
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
             distribution: AgentDistribution::Npx {
-                version: "2026.6.9",
-                package: "openclaw@2026.6.9",
+                version: "2026.6.10",
+                package: "openclaw@2026.6.10",
                 cmd: "openclaw",
                 args: &["acp"],
                 env: &[],
@@ -216,6 +213,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::Cline => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
@@ -229,6 +227,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::OpenCode => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
@@ -266,16 +265,17 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
         },
         AgentType::Hermes => AcpAgentMeta {
             agent_type,
+            supports_mcp: true,
             name: "Hermes Agent",
             description: "Nous Research's self-improving agent (ACP via uvx)",
             distribution: AgentDistribution::Uvx {
-                version: "0.16.0",
-                package: "hermes-agent[acp,mcp]==0.16.0",
+                version: "0.17.0",
+                package: "hermes-agent[acp,mcp]==0.17.0",
                 cmd: "hermes-acp",
                 args: &[],
                 env: &[],
                 uv_required: Some("0.5.0"),
-                // hermes-agent 0.16.0 is `requires-python = ">=3.11,<3.14"`, and
+                // hermes-agent 0.17.0 is `requires-python = ">=3.11,<3.14"`, and
                 // its win32 dep `pywinpty` (>=2.0.0,<3) has no Python 3.14 wheel
                 // (the 2.0.15 source build fails against PyO3's 3.13 ceiling).
                 // Without this pin uvx grabs the machine's default interpreter
@@ -283,6 +283,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // Hermes supports.
                 python: Some("3.13"),
                 system_cmd: Some(("hermes", &["acp"])),
+            },
+        },
+        AgentType::CodeBuddy => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "CodeBuddy",
+            description: "Tencent Cloud's official AI coding assistant (ACP)",
+            distribution: AgentDistribution::Npx {
+                version: "2.109.3",
+                package: "@tencent-ai/codebuddy-code@2.109.3",
+                cmd: "codebuddy",
+                args: &["--acp"],
+                env: &[],
+                node_required: Some("22.0.0"),
+            },
+        },
+        AgentType::KimiCode => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "Kimi Code",
+            description: "Moonshot AI's official CLI coding assistant (ACP)",
+            distribution: AgentDistribution::Npx {
+                version: "0.19.1",
+                package: "@moonshot-ai/kimi-code@0.19.1",
+                cmd: "kimi",
+                args: &["acp"],
+                env: &[],
+                node_required: Some("22.19.0"),
             },
         },
     }
@@ -376,8 +404,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.49.0",
-            "@agentclientprotocol/claude-agent-acp@0.49.0",
+            "0.50.0",
+            "@agentclientprotocol/claude-agent-acp@0.50.0",
             None,
         );
         assert_npx_version(
@@ -388,21 +416,56 @@ mod tests {
         );
         assert_npx_version(
             AgentType::OpenClaw,
-            "2026.6.9",
-            "openclaw@2026.6.9",
+            "2026.6.10",
+            "openclaw@2026.6.10",
             Some("22.19.0"),
         );
         assert_npx_version(AgentType::Cline, "3.0.29", "cline@3.0.29", None);
-        assert_binary_version(AgentType::Codex, "0.16.0", "/releases/download/v0.16.0/");
+        assert_npx_version(
+            AgentType::CodeBuddy,
+            "2.109.3",
+            "@tencent-ai/codebuddy-code@2.109.3",
+            Some("22.0.0"),
+        );
+        assert_npx_version(
+            AgentType::KimiCode,
+            "0.19.1",
+            "@moonshot-ai/kimi-code@0.19.1",
+            Some("22.19.0"),
+        );
+        assert_npx_version(
+            AgentType::Codex,
+            "1.0.0",
+            "@agentclientprotocol/codex-acp@1.0.0",
+            None,
+        );
         assert_binary_version(AgentType::OpenCode, "1.17.9", "/releases/download/v1.17.9/");
         assert_uvx_version(
             AgentType::Hermes,
-            "0.16.0",
-            "hermes-agent[acp,mcp]==0.16.0",
+            "0.17.0",
+            "hermes-agent[acp,mcp]==0.17.0",
             Some("0.5.0"),
-            // hermes-agent 0.16.0 is requires-python `<3.14`; uvx must pin an
+            // hermes-agent 0.17.0 is requires-python `<3.14`; uvx must pin an
             // interpreter it (and its win32 `pywinpty` dep) supports.
             Some("3.13"),
         );
+    }
+
+    // OpenClaw rejects MCP server entries inside `mcpServers` (the empty `[]`
+    // field is still serialized and tolerated) and fails session/new on any
+    // entry, so it must be the only agent with `supports_mcp == false`. Every
+    // other agent (current and future) keeps it `true`. Iterating the full
+    // registry means a newly-added agent that wrongly opts out — or a
+    // regression flipping OpenClaw back on — trips this assert.
+    #[test]
+    fn only_openclaw_opts_out_of_mcp() {
+        for agent_type in all_acp_agents() {
+            let meta = get_agent_meta(agent_type);
+            assert_eq!(
+                meta.supports_mcp,
+                agent_type != AgentType::OpenClaw,
+                "unexpected supports_mcp for {agent_type:?}"
+            );
+        }
     }
 }

@@ -1,8 +1,10 @@
 pub mod claude;
 pub mod cline;
+pub mod codebuddy;
 pub mod codex;
 pub mod gemini;
 pub mod hermes;
+pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
 
@@ -92,6 +94,26 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             is_file: true,
             include_top: None,
         },
+        ExternalSource {
+            // CodeBuddy stores its JSONL transcripts under
+            // `~/.codebuddy/projects` — Claude Code's directory layout, but an
+            // OpenAI Agents-SDK item record schema (see `parsers::codebuddy`).
+            agent: "codebuddy",
+            root: codebuddy::resolve_codebuddy_config_dir().join("projects"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Kimi Code keeps a directory-per-session transcript store under
+            // `~/.kimi-code/sessions/` plus a `session_index.jsonl` (the only
+            // source of each session's working directory). Archive both, but
+            // allowlist them so the sibling `config.toml` / `credentials/` /
+            // `oauth/` are excluded (see `parsers::kimi_code`).
+            agent: "kimi-code",
+            root: kimi_code::resolve_kimi_code_home_dir(),
+            is_file: false,
+            include_top: Some(&["sessions", "session_index.jsonl"]),
+        },
     ];
     if let Some(home) = dirs::home_dir() {
         sources.push(ExternalSource {
@@ -137,6 +159,28 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
         let truncated: String = s.chars().take(max_len).collect();
         format!("{}...", truncated)
     }
+}
+
+/// True when `id` is safe to embed as a single filename component beneath a
+/// session's `subagents/` directory (Claude Code's and CodeBuddy's sub-agent
+/// transcript layout). The id is read straight from transcript JSON
+/// (`agentId` / `subAgent.sessionId`), so a corrupted or hostile transcript
+/// could otherwise smuggle a path that escapes the directory once it is joined
+/// and a file is opened.
+///
+/// Rejects: empty, a path separator (`/` or `\`), a parent ref (`..`), a colon
+/// (Windows drive prefix `C:` / NTFS alternate-data-stream), or a NUL. The
+/// checks are conservative and platform-independent — we reject `:` and `\`
+/// even on Unix (where they are legal filename chars) so the same id can never
+/// escape if the transcript is later read on Windows, where `Path::join("C:x")`
+/// silently replaces the whole base path.
+pub fn is_safe_subagent_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !id.contains(':')
+        && !id.contains('\0')
 }
 
 /// Punctuation the serializer escapes with a leading backslash inside a
@@ -412,6 +456,9 @@ pub fn infer_context_window_max_tokens(model: Option<&str>) -> Option<u64> {
     }
     if normalized.starts_with("gemini") {
         return Some(1_000_000);
+    }
+    if normalized.starts_with("kimi") {
+        return Some(262_144);
     }
 
     match normalized.as_str() {
@@ -964,10 +1011,35 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        fold_reference_links, infer_context_window_max_tokens, latest_turn_total_usage_tokens,
-        merge_context_window_stats, path_eq_for_matching, title_from_user_text,
+        fold_reference_links, infer_context_window_max_tokens, is_safe_subagent_id,
+        latest_turn_total_usage_tokens, merge_context_window_stats, path_eq_for_matching,
+        title_from_user_text,
     };
     use crate::models::{MessageTurn, SessionStats, TurnRole, TurnUsage};
+
+    #[test]
+    fn safe_subagent_id_accepts_plain_ids_and_rejects_traversal() {
+        // Real CodeBuddy / Claude sub-agent ids are plain tokens.
+        assert!(is_safe_subagent_id("agent-cdd7c1ea"));
+        assert!(is_safe_subagent_id("agent-test01"));
+        // Every escape vector is rejected — including the Windows-only drive
+        // colon that the old `/ \\ ..`-only guard let through.
+        for hostile in [
+            "",
+            "..",
+            "../../etc/passwd",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "C:\\Windows\\System32",
+            "a\0b",
+        ] {
+            assert!(
+                !is_safe_subagent_id(hostile),
+                "expected rejection for {hostile:?}"
+            );
+        }
+    }
 
     #[test]
     fn fold_reference_links_reduces_links_to_labels() {

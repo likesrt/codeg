@@ -1,7 +1,8 @@
 {
   "name": "codeg",
   "private": true,
-  "version": "0.16.0",
+  "version": "0.17.0",
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",

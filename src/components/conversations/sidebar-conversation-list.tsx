@@ -1310,16 +1310,22 @@ export function SidebarConversationList({
 
   const handleNewConversation = useCallback(() => {
     if (!activeFolder) return
+    // Starting a conversation returns to the conversation workspace if a
+    // workbench route (e.g. Automations) was taking over the content region.
+    openConversations()
     openNewConversationTab(activeFolder.id, activeFolder.path)
-  }, [activeFolder, openNewConversationTab])
+  }, [activeFolder, openNewConversationTab, openConversations])
 
   const handleNewConversationForFolder = useCallback(
     (folderId: number) => {
       const folder = folderIndex.get(folderId)
       if (!folder) return
+      // Starting a conversation returns to the conversation workspace if a
+      // workbench route (e.g. Automations) was taking over the content region.
+      openConversations()
       openNewConversationTab(folderId, folder.path)
     },
-    [folderIndex, openNewConversationTab]
+    [folderIndex, openNewConversationTab, openConversations]
   )
 
   const handleImportForFolder = useCallback(

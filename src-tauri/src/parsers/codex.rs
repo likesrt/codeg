@@ -691,7 +691,16 @@ impl CodexParser {
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
 
-        // Agent subagent tracking (spawn_agent / wait_agent / close_agent)
+        // Agent subagent tracking (spawn_agent / wait_agent / close_agent).
+        //
+        // This disk-based reconstruction (the rollout `function_call`s below +
+        // `parse_codex_subagent_stats` reading `agent-<id>.jsonl`) is the ONLY
+        // source for the sub-agent "Agent" capsule. codex-acp 1.0.0 deliberately
+        // drops sub-agent events from the live ACP stream — its
+        // `CodexEventHandler.createItemEvent` returns `null` for
+        // `collabAgentToolCall` and `subAgentActivity` — so the live path carries
+        // no sub-agent data and the capsule only appears on history reload (the
+        // same upstream constraint as kimi-code's `isFromMainAgent` gate).
         let mut spawn_agent_call_ids: HashSet<String> = HashSet::new();
         let mut agent_id_to_spawn_call_id: HashMap<String, String> = HashMap::new();
         let mut agent_final_results: HashMap<String, String> = HashMap::new();
@@ -1146,6 +1155,7 @@ impl CodexParser {
                                             output_preview: None,
                                             is_error: false,
                                             agent_stats: None,
+                                            images: Vec::new(),
                                         }],
                                         timestamp,
                                         usage: None,
@@ -1213,6 +1223,7 @@ impl CodexParser {
                                             output_preview: output,
                                             is_error,
                                             agent_stats: None,
+                                            images: Vec::new(),
                                         }],
                                         timestamp,
                                         usage: None,

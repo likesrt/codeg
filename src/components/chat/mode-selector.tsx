@@ -33,7 +33,7 @@ export function InlineModeSelector({
         <Button
           variant="ghost"
           size="xs"
-          title={selected?.description ?? selected?.name ?? label}
+          title={label}
           aria-label={currentLabel ? `${label}: ${currentLabel}` : label}
           className="min-w-0 gap-0.5 px-1 text-muted-foreground"
         >

@@ -8,6 +8,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { planBranchSwitch } from "@/lib/branch-switch"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import type { FolderDetail, WorktreeResolution } from "@/lib/types"
 
@@ -58,6 +59,7 @@ export function useSwitchToBranch(): (
     refreshFolder,
   } = useAppWorkspace()
   const { openNewConversationTab } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask } = useTaskContext()
 
   return useCallback(
@@ -115,6 +117,9 @@ export function useSwitchToBranch(): (
           if (!target) return
           try {
             await ensureOpen(target.id)
+            // Return to the conversation workspace if a route (e.g.
+            // Automations) was covering the content region.
+            openConversations()
             openNewConversationTab(target.id, target.path, {
               inheritFromActive: true,
               folderDefaultAgent: target.default_agent_type,
@@ -131,6 +136,7 @@ export function useSwitchToBranch(): (
         case "navigateExternal": {
           try {
             const detail = await openWorktreeFolder(plan.path, plan.rootId)
+            openConversations()
             openNewConversationTab(detail.id, detail.path, {
               inheritFromActive: true,
               folderDefaultAgent: detail.default_agent_type,
@@ -151,6 +157,7 @@ export function useSwitchToBranch(): (
           if (root.id !== activeFolder.id) {
             try {
               await ensureOpen(root.id)
+              openConversations()
               openNewConversationTab(root.id, root.path, {
                 inheritFromActive: true,
                 folderDefaultAgent: root.default_agent_type,
@@ -192,6 +199,7 @@ export function useSwitchToBranch(): (
       openWorktreeFolder,
       setBranch,
       refreshFolder,
+      openConversations,
       openNewConversationTab,
       addTask,
       updateTask,

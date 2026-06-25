@@ -85,6 +85,7 @@ pub enum LineDirection {
 pub struct AcpAgent {
     server: sacp::schema::McpServer,
     debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
+    current_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for AcpAgent {
@@ -95,6 +96,7 @@ impl std::fmt::Debug for AcpAgent {
                 "debug_callback",
                 &self.debug_callback.as_ref().map(|_| "..."),
             )
+            .field("current_dir", &self.current_dir)
             .finish()
     }
 }
@@ -105,6 +107,7 @@ impl AcpAgent {
         Self {
             server,
             debug_callback: None,
+            current_dir: None,
         }
     }
 
@@ -161,6 +164,18 @@ impl AcpAgent {
         self
     }
 
+    /// Set the working directory for the spawned agent process.
+    ///
+    /// Without this the child inherits the parent process's cwd. Agents that
+    /// derive their effective working directory from the process cwd (e.g.
+    /// Hermes' local backend force-exports `TERMINAL_CWD = os.getcwd()`)
+    /// rather than from the ACP `session/new` `cwd` need this to run in the
+    /// right place.
+    pub fn with_current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.current_dir = Some(dir.into());
+        self
+    }
+
     /// Spawn the process and get stdio streams.
     /// Used internally by the Component trait implementation.
     pub fn spawn_process(
@@ -180,6 +195,9 @@ impl AcpAgent {
                 cmd.args(&stdio.args);
                 for env_var in &stdio.env {
                     cmd.env(&env_var.name, &env_var.value);
+                }
+                if let Some(dir) = &self.current_dir {
+                    cmd.current_dir(dir);
                 }
                 #[cfg(windows)]
                 {
@@ -465,6 +483,7 @@ impl AcpAgent {
                     .env(env),
             ),
             debug_callback: None,
+            current_dir: None,
         })
     }
 }
@@ -508,6 +527,7 @@ impl FromStr for AcpAgent {
             return Ok(Self {
                 server,
                 debug_callback: None,
+                current_dir: None,
             });
         }
 
@@ -619,5 +639,38 @@ mod tests {
         let truncated = append_limited_utf8(&mut output, "A中文B", 5);
         assert!(truncated);
         assert_eq!(output, "文B");
+    }
+
+    #[test]
+    fn with_current_dir_sets_field() {
+        let agent = AcpAgent::from_str("python agent.py")
+            .unwrap()
+            .with_current_dir("/some/dir");
+        // The directory is private; surfaced via Debug so callers can confirm.
+        assert!(format!("{agent:?}").contains("/some/dir"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_process_honors_current_dir() {
+        use tokio::io::AsyncReadExt;
+        // A real, canonical directory distinct from the test process's own cwd.
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp dir canonicalizes");
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", "pwd -P"])
+            .unwrap()
+            .with_current_dir(&dir);
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let out = rt.block_on(async {
+            let (_stdin, mut stdout, _stderr, mut child) =
+                agent.spawn_process().expect("spawn");
+            let mut out = String::new();
+            stdout.read_to_string(&mut out).await.expect("read stdout");
+            let _ = child.wait().await;
+            out
+        });
+        // The child ran `pwd -P` from `dir`, so it must print exactly `dir`.
+        assert_eq!(out.trim(), dir.to_string_lossy());
     }
 }

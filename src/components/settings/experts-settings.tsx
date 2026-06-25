@@ -1,26 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  Bot,
-  Bug,
-  CheckCheck,
-  FileCode2,
-  FlaskConical,
-  FolderOpen,
-  GitBranch,
-  GitFork,
-  GitMerge,
-  Lightbulb,
-  ListTodo,
-  Loader2,
-  MessageSquareQuote,
-  MessageSquareReply,
-  PlayCircle,
-  RefreshCw,
-  Sparkles,
-  type LucideIcon,
-} from "lucide-react"
+import { FolderOpen, Loader2, RefreshCw } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -57,23 +38,7 @@ import type {
   ExpertListItem,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
-
-const ICON_MAP: Record<string, LucideIcon> = {
-  Lightbulb,
-  ListTodo,
-  PlayCircle,
-  Bot,
-  GitFork,
-  GitBranch,
-  FlaskConical,
-  CheckCheck,
-  Bug,
-  MessageSquareQuote,
-  MessageSquareReply,
-  GitMerge,
-  Sparkles,
-  FileCode2,
-}
+import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 
 const CATEGORY_SORT: Record<string, number> = {
   discovery: 1,
@@ -97,36 +62,10 @@ function toPercent(pixels: number, totalPixels: number): number {
   return (pixels / totalPixels) * 100
 }
 
-/**
- * next-intl locales are lower-case underscored like `zh_cn`. Our expert
- * metadata dictionary uses BCP47-ish keys like `zh-CN`. Normalize both
- * sides and fall back to `en`.
- */
-function pickLocalized(
-  dict: Record<string, string> | undefined,
-  locale: string
-): string {
-  if (!dict) return ""
-  if (dict[locale]) return dict[locale]
-  const normalized = locale.replace("_", "-")
-  if (dict[normalized]) return dict[normalized]
-  const [lang] = normalized.split("-")
-  const match = Object.keys(dict).find(
-    (key) => key.toLowerCase().split("-")[0] === lang.toLowerCase()
-  )
-  if (match) return dict[match]
-  return dict.en ?? Object.values(dict)[0] ?? ""
-}
-
 function stripFrontmatter(content: string): string {
   const match = content.match(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n)?/)
   if (!match) return content
   return content.slice(match[0].length)
-}
-
-function getIcon(name: string | null | undefined): LucideIcon {
-  if (name && ICON_MAP[name]) return ICON_MAP[name]
-  return Sparkles
 }
 
 export function ExpertsSettings() {
@@ -420,7 +359,7 @@ export function ExpertsSettings() {
   const selectedDescription = selectedExpert
     ? pickLocalized(selectedExpert.metadata.description, locale)
     : ""
-  const selectedIcon = getIcon(selectedExpert?.metadata.icon ?? null)
+  const selectedIcon = getExpertIcon(selectedExpert?.metadata.icon ?? null)
   const SelectedIcon = selectedIcon
 
   return (
@@ -496,7 +435,7 @@ export function ExpertsSettings() {
                         {translatedCategory(category)}
                       </div>
                       {items.map((item) => {
-                        const Icon = getIcon(item.metadata.icon)
+                        const Icon = getExpertIcon(item.metadata.icon)
                         const name =
                           pickLocalized(item.metadata.display_name, locale) ||
                           item.metadata.id

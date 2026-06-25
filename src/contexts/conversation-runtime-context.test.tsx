@@ -358,6 +358,110 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
 })
 
 /**
+ * codex classifies file-reading shell commands (sed/cat/head) as ACP `read`
+ * commandActions: kind="read", the path only in `locations`/`title`, and NO
+ * raw_input. The live builder synthesizes a `file_path` input from the location
+ * so the read card derives a proper "Read <path>" title (instead of falling back
+ * to "read: <output>") — matching how a normal Read tool renders.
+ */
+describe("ConversationRuntimeProvider codex read-commandAction input synthesis", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+  })
+
+  function readToolCall(
+    rawInput: string | null,
+    locations: unknown
+  ): LiveMessage {
+    return {
+      id: "lm-read",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "tc-read-1",
+            title: "Read file '/Users/x/SKILL.md'",
+            kind: "read",
+            status: "completed",
+            content: null,
+            raw_input: rawInput,
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations,
+            meta: null,
+            images: [],
+          },
+        },
+      ],
+    }
+  }
+
+  function firstToolUseInput(
+    api: ReturnType<typeof useConversationRuntime>
+  ): string | null | undefined {
+    const block = api
+      .getTimelineTurns(99)
+      .flatMap((t) => t.turn.blocks)
+      .find((b) => b.type === "tool_use")
+    return block?.type === "tool_use" ? block.input_preview : undefined
+  }
+
+  it("synthesizes a file_path input from locations when raw_input is absent", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().setLiveMessage(
+        99,
+        readToolCall(null, [{ path: "/Users/x/SKILL.md" }]),
+        true
+      )
+    })
+    const input = firstToolUseInput(api())
+    expect(input).toBeTruthy()
+    expect(JSON.parse(input as string)).toEqual({
+      file_path: "/Users/x/SKILL.md",
+    })
+  })
+
+  it("keeps an explicit raw_input untouched (normal Read tool, no synthesis)", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    const explicit = JSON.stringify({ file_path: "/real/input.ts" })
+    act(() => {
+      api().setLiveMessage(
+        99,
+        readToolCall(explicit, [{ path: "/Users/x/SKILL.md" }]),
+        true
+      )
+    })
+    expect(firstToolUseInput(api())).toBe(explicit)
+  })
+
+  it("leaves input null when there is no location path to synthesize from", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().setLiveMessage(99, readToolCall(null, null), true)
+    })
+    expect(firstToolUseInput(api())).toBeNull()
+  })
+})
+
+/**
  * `getTimelineTurns` memoizes per conversation by session reference, so a
  * dispatch that updates conversation A leaves conversation B's timeline array
  * referentially identical. This is what lets MessageListView's `threadItems`

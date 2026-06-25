@@ -6,6 +6,7 @@ import type {
   AgentExecutionStats,
   ToolCallStatus,
   PlanEntryInfo,
+  ImageData,
 } from "@/lib/types"
 import {
   isAgentLikeToolName,
@@ -924,7 +925,13 @@ function adaptContentBlock(
         meta: block.meta ?? null,
       }
 
-    case "tool_result":
+    case "tool_result": {
+      // An unpaired (orphan) image result still shows its picture rather than
+      // an empty result row. Paired image results are intercepted earlier in
+      // `adaptMessageTurn`; this only fires for the rare standalone case, where
+      // a single image is the realistic shape.
+      const imageParts = adaptImageToolResultParts(block)
+      if (imageParts) return imageParts[0]
       return {
         type: "tool-result",
         toolCallId: generateToolCallId(messageId, blockIndex),
@@ -934,6 +941,7 @@ function adaptContentBlock(
           : undefined,
         state: block.is_error ? "output-error" : "output-available",
       }
+    }
 
     case "thinking":
       return {
@@ -983,6 +991,48 @@ function deriveImageNameFromImageData(img: {
   }
   const ext = img.mime_type.split("/")[1]?.split("+")[0] ?? "image"
   return `image.${ext}`
+}
+
+/**
+ * Convert a tool_result carrying image bytes (e.g. Claude Code's `Read` of an
+ * image, or a multi-page PDF read returning one image per page) into one
+ * `generated-image` part per image.
+ *
+ * Mirrors the live ACP path: there, an image-bearing ToolCall is detected by
+ * `isImageGenerationToolCall` (`images.length > 0`) and rendered as
+ * `image_generation` block(s) in place of a generic tool card. Doing the same
+ * here means the historical (JSONL replay) view of that Read shows the picture
+ * in-position instead of degrading to a bare "Read foo.png" row — closing the
+ * live/historical asymmetry.
+ *
+ * Returns `null` when the result carries no usable images, so callers fall
+ * through to the normal tool-card path. Images missing `data`/`mime_type` are
+ * skipped; if that empties the list, `null` is returned too.
+ */
+function adaptImageToolResultParts(result: {
+  images?: ImageData[] | null
+}): AdaptedGeneratedImagePart[] | null {
+  const images = result.images
+  if (!images || images.length === 0) return null
+  const parts: AdaptedGeneratedImagePart[] = []
+  for (const img of images) {
+    if (!img.data || !img.mime_type) continue
+    parts.push({
+      type: "generated-image",
+      // A Read has no model-revised prompt — only codex image generation does.
+      revisedPrompt: null,
+      image: {
+        name: deriveImageNameFromImageData(img),
+        data: img.data,
+        mime_type: img.mime_type,
+        uri: img.uri ?? null,
+      },
+      // Historical replay always carries a present image, so status is
+      // irrelevant to the renderer; `null` is treated as success.
+      status: null,
+    })
+  }
+  return parts.length > 0 ? parts : null
 }
 
 /**
@@ -1475,6 +1525,17 @@ export function adaptMessageTurn(
 
       if (matchedResult) {
         matchedResultIds.add(block.tool_use_id!)
+        // A Read whose result carries image bytes renders in-position as
+        // image card(s) (matching the live ACP path) instead of a generic
+        // "Read foo.png" tool card. Only when the tool is no longer running —
+        // mid-stream we keep the spinner via the normal tool-call path.
+        const imageParts = isToolStillRunning
+          ? null
+          : adaptImageToolResultParts(matchedResult)
+        if (imageParts) {
+          adaptedContent.push(...imageParts)
+          continue
+        }
         adaptedContent.push({
           type: "tool-call",
           toolCallId,
@@ -1504,6 +1565,13 @@ export function adaptMessageTurn(
 
         if (positionalResult) {
           positionMatchedIndices.add(index + 1)
+          // Same image-result handling as the id-matched branch above: a Read
+          // returning image bytes renders as image card(s) in-position.
+          const imageParts = adaptImageToolResultParts(positionalResult)
+          if (imageParts) {
+            adaptedContent.push(...imageParts)
+            continue
+          }
           adaptedContent.push({
             type: "tool-call",
             toolCallId,

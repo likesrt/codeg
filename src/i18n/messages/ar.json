@@ -49,6 +49,7 @@
       "web_service": "خدمة الويب",
       "model_providers": "مزودو النماذج",
       "experts": "الخبراء",
+      "office_tools": "أدوات المكتب",
       "quick_messages": "رسائل سريعة",
       "logs": "سجلات التشغيل"
     }
@@ -575,7 +576,10 @@
       "confirmUninstall": "تأكيد إزالة التثبيت",
       "saveClineConfig": "حفظ تكوين Cline",
       "saveHermesConfig": "حفظ تكوين Hermes",
-      "customInstall": "تثبيت مخصص"
+      "saveCodeBuddyConfig": "حفظ إعدادات CodeBuddy",
+      "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
+      "customInstall": "تثبيت مخصص",
+      "saveKimiCodeRawConfig": "Save config.toml"
     },
     "status": {
       "enabled": "مفعّل",
@@ -694,6 +698,66 @@
       "rawConfigHint": "حرّر ~/.hermes/config.yaml مباشرةً. الحفظ هنا يستبدل الملف حرفيًا.",
       "saveRawConfig": "حفظ config.yaml"
     },
+    "codebuddy": {
+      "configManagement": "تكوين CodeBuddy",
+      "configDescription": "يصادق CodeBuddy باستخدام مفتاح API. تتطلب إصدارات الصين أيضًا ضبط البيئة على «الصين (internal)»؛ وتستخدم إصدارات iOA «iOA». أما الإصدار الخارجي فيتركها غير مضبوطة.",
+      "apiKeyLabel": "مفتاح API",
+      "apiKeyHint": "يُحفظ باسم CODEBUDDY_API_KEY لهذا الوكيل. بدلاً من ذلك، يمكنك تسجيل الدخول عبر واجهة CodeBuddy في الطرفية.",
+      "apiKeyHintSelfHosted": "يُحفظ باسم CODEBUDDY_API_KEY لهذا الوكيل. استخدم المفتاح الصادر عن نشرك الخاص.",
+      "environmentLabel": "البيئة",
+      "environmentHint": "يضبط CODEBUDDY_INTERNET_ENVIRONMENT. يجب أن تستخدم الصين «الصين (internal)»؛ أما الإصدار الخارجي فيتركها غير مضبوطة.",
+      "envOverseas": "الخارجي (افتراضي)",
+      "envChina": "الصين (internal)",
+      "envIoa": "iOA",
+      "envSelfHosted": "استضافة ذاتية (نشر خاص)",
+      "baseUrlLabel": "عنوان URL للنشر",
+      "baseUrlPlaceholder": "https://codebuddy.your-company.com",
+      "baseUrlHint": "يُحفظ باسم CODEBUDDY_BASE_URL ويوجّه CodeBuddy إلى نقطة النهاية الخاصة بك. في الاستضافة الذاتية يبقى إعداد الشبكة (CODEBUDDY_INTERNET_ENVIRONMENT) غير مضبوط.",
+      "baseUrlInvalid": "أدخل عنوان URL صالحًا بصيغة http(s).",
+      "loginHint": "لا تملك مفتاح API؟ شغّل «codebuddy» في الطرفية لتسجيل الدخول بحساب Tencent بدلاً من ذلك."
+    },
+    "kimiCode": {
+      "configManagement": "Kimi Code Configuration",
+      "configDescription": "`kimi acp` only authenticates with a stored login token and rejects API keys on their own. To use an API key, codeg writes a managed ~/.kimi-code/config.toml provider AND seeds a local gate token so the session opens — inference still runs on your key.",
+      "gateReadyApiKey": "Authenticated via API key (codeg seeded the local gate token).",
+      "gateReadyLogin": "Authenticated via a Kimi account login.",
+      "gateNotReady": "Not authenticated yet — save an API key below (or sign in) to open Kimi sessions.",
+      "authModeLabel": "Authentication method",
+      "authModeApiKey": "API key",
+      "authModeLogin": "Kimi account login (subscription)",
+      "authModeHint": "“API key” writes a codeg-managed config.toml provider and seeds a gate token. “Login” clears that and uses a real `kimi login` session (requires a Kimi subscription).",
+      "interfaceTypeLabel": "Provider type",
+      "interfaceTypeHint": "The provider protocol Kimi speaks (config.toml `type`). Use Kimi / Moonshot for a Moonshot / platform.kimi.com key.",
+      "endpointLabel": "Endpoint",
+      "endpointCustom": "Custom (OpenAI-compatible)",
+      "endpointHint": "International = api.moonshot.ai; China (platform.kimi.com keys) = api.moonshot.cn. Custom points at any OpenAI-compatible endpoint.",
+      "regionInternational": "International (api.moonshot.ai)",
+      "regionChina": "China (api.moonshot.cn)",
+      "baseUrlLabel": "Base URL",
+      "baseUrlHint": "Leave blank to use the provider SDK default.",
+      "apiKeyLabel": "API Key",
+      "apiKeyHint": "Written to ~/.kimi-code/config.toml and used for inference. From platform.kimi.com or platform.kimi.ai.",
+      "authTypeLabel": "Advanced: credential placement",
+      "authTypeApiKey": "Inline api_key",
+      "authTypeEnv": "Provider env sub-table",
+      "authTypeHint": "Where the API key is written inside config.toml.",
+      "vertexProjectLabel": "GCP project (GOOGLE_CLOUD_PROJECT)",
+      "vertexLocationLabel": "GCP location (GOOGLE_CLOUD_LOCATION)",
+      "vertexHint": "Vertex AI uses Google Application Default Credentials — run `gcloud auth application-default login` (no API key).",
+      "modelLabel": "Model",
+      "modelHint": "The model id to use. Click Fetch to list the models your key can access (e.g. kimi-k2.7-code) — avoids “model not found” errors.",
+      "fetchModels": "Fetch",
+      "fetchModelsOk": "Found {count} models",
+      "fetchModelsEmpty": "Key works, but no models were returned",
+      "fetchModelsFailed": "Couldn’t list models — check the key and endpoint",
+      "fetchModelsNeedsKey": "Enter an API key and endpoint first",
+      "maxContextLabel": "Max context size (optional)",
+      "maxContextHint": "Tokens, e.g. 262144. Leave blank to use the model default.",
+      "loginHint": "Run `kimi login` in a terminal to sign in with a Kimi subscription account (device-code OAuth). codeg stores nothing and reuses Kimi’s own login. Saving here removes codeg’s API-key gate token.",
+      "rawEditorLabel": "Advanced: edit config.toml directly",
+      "rawEditorHint": "Written verbatim (comments preserved) and validated as TOML. codeg also seeds the gate token so the session opens.",
+      "rawEditorPlaceholder": "[providers.codeg]\ntype = \"kimi\"\nbase_url = \"https://api.moonshot.cn/v1\"\napi_key = \"sk-...\""
+    },
     "authModeOfficialSubscription": "الاشتراك الرسمي",
     "authModeCustomEndpoint": "نقطة نهاية مخصصة",
     "authModeCustomEndpointHint": "تكوين عنوان API ومفتاح API يدوياً لنقطة نهاية مخصصة.",
@@ -782,6 +846,10 @@
       "saveClineFailed": "فشل في حفظ تكوين Cline",
       "hermesSaved": "تم حفظ تكوين Hermes",
       "saveHermesFailed": "فشل في حفظ تكوين Hermes",
+      "codeBuddySaved": "تم حفظ إعدادات CodeBuddy",
+      "saveCodeBuddyFailed": "فشل حفظ إعدادات CodeBuddy",
+      "kimiCodeSaved": "تم حفظ إعدادات Kimi Code",
+      "saveKimiCodeFailed": "فشل حفظ إعدادات Kimi Code",
       "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ.",
       "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير"
     },
@@ -1253,7 +1321,13 @@
       "imageZoomReset": "إعادة تعيين التكبير",
       "htmlPreviewTitle": "معاينة HTML",
       "htmlPreviewTrust": "تفعيل البرامج النصية",
-      "htmlPreviewTrustHint": "تشغيل البرامج النصية لهذا الملف والسماح بالوصول إلى الشبكة. فعّلها فقط للملفات الموثوقة."
+      "htmlPreviewTrustHint": "تشغيل البرامج النصية لهذا الملف والسماح بالوصول إلى الشبكة. فعّلها فقط للملفات الموثوقة.",
+      "officePreviewTitle": "معاينة مستند Office",
+      "officeFullRender": "عرض كامل",
+      "officeFullRenderHint": "يعرض حركات Morph والأبعاد الثلاثية والمعادلات (يشغّل سكربتات الشريحة نفسها)",
+      "officeNotInstalled": "OfficeCLI غير مثبّت",
+      "officeNotInstalledHint": "ثبّت OfficeCLI من الإعدادات → أدوات Office لمعاينة ملفات Word و Excel و PowerPoint.",
+      "officeOpenSettings": "فتح الإعدادات"
     },
     "branchDropdown": {
       "toasts": {
@@ -1962,6 +2036,46 @@
           "fusionMode": "افتح ملفًا أو فرقًا لعرضه تلقائيًا بجوار المحادثة.",
           "quickMessages": "افتح زر + بجانب الإدخال واختر «الرسائل السريعة» لإدراج مقتطف محفوظ (تُدار من «الإعدادات → الرسائل السريعة»).",
           "experts": "يحتوي زر + على قائمة «مهارات الخبراء» — حمّل أدوارًا مثل التصحيح أو التخطيط بنقرة واحدة."
+        },
+        "quickActions": {
+          "excel": "مصنّف Excel",
+          "excelDesc": "جداول بيانات وصيغ ومخططات",
+          "word": "مستند Word",
+          "wordDesc": "تقارير ورسائل ومذكرات",
+          "ppt": "عرض تقديمي",
+          "pptDesc": "شرائح بتصميم احترافي",
+          "pitchDeck": "عرض استثماري",
+          "pitchDeckDesc": "عرض تمويل بمؤشرات رئيسية",
+          "morph": "حركة Morph",
+          "morphDesc": "انتقالات شرائح سينمائية",
+          "morph3d": "Morph ثلاثي الأبعاد",
+          "morph3dDesc": "نماذج ثلاثية الأبعاد وحركات كاميرا",
+          "academic": "ورقة أكاديمية",
+          "academicDesc": "بحث باستشهادات وبنية",
+          "financial": "نموذج مالي",
+          "financialDesc": "قوائم وDCF وتوقعات",
+          "dashboard": "لوحة بيانات",
+          "dashboardDesc": "مؤشرات وتحليلات من بياناتك",
+          "prompts": {
+            "excel": "أنشئ مصنّف Excel وفق المتطلبات التالية:\n\n[صف هنا بياناتك وجداولك وصيغك ومخططاتك]",
+            "word": "أنشئ مستند Word وفق المتطلبات التالية:\n\n[صف هنا محتوى المستند وبنيته وتنسيقه]",
+            "ppt": "أنشئ عرض PowerPoint تقديمي وفق المتطلبات التالية:\n\n[صف هنا شرائحك ومحتواك وتصميمك]",
+            "pitchDeck": "أنشئ عرضًا استثماريًا لجمع التمويل وفق المتطلبات التالية:\n\n[صف هنا شركتك وجولة التمويل والمؤشرات الرئيسية]",
+            "morph": "أنشئ عرضًا تقديميًا بحركات انتقال Morph:\n\n[صف هنا موضوع العرض والمؤثرات المرئية المطلوبة]",
+            "morph3d": "أنشئ عرض Morph ثلاثي الأبعاد بنماذج GLB وحركات كاميرا:\n\n[صف هنا موضوعك ومفهومك المرئي ثلاثي الأبعاد]",
+            "academic": "اكتب ورقة أكاديمية في Word وفق المتطلبات التالية:\n\n[صف هنا موضوع بحثك ومنهجيتك وأبرز نتائجك]",
+            "financial": "أنشئ نموذجًا ماليًا في Excel وفق المتطلبات التالية:\n\n[صف هنا قوائمك المالية وتوقعاتك وتحليلاتك]",
+            "dashboard": "أنشئ لوحة بيانات في Excel وفق المتطلبات التالية:\n\n[صف هنا مصدر بياناتك ومؤشراتك ومخططاتك]"
+          },
+          "tabs": {
+            "office": "الأعمال المكتبية",
+            "coding": "تطوير الكود"
+          },
+          "coding": {
+            "brainstormingDesc": "استكشف النية والمتطلبات قبل البناء",
+            "debuggingDesc": "حدد السبب الجذري قبل اقتراح الإصلاحات",
+            "writingSkillsDesc": "أنشئ وحرّر وتحقق من مهارات قابلة لإعادة الاستخدام"
+          }
         }
       },
       "agentSelector": {
@@ -2695,6 +2809,63 @@
       "enableFailed": "فشل تفعيل الخبير",
       "disableFailed": "فشل تعطيل الخبير",
       "openFolderFailed": "فشل فتح المجلد"
+    }
+  },
+  "OfficeToolsSettings": {
+    "title": "أدوات Office",
+    "description": "إدارة مهارات OfficeCLI لإنشاء ملفات Excel وWord وPowerPoint. قم بتثبيت OfficeCLI ومزامنة المهارات وتفعيلها لكل وكيل.",
+    "loadingContent": "جارٍ تحميل المحتوى…",
+    "emptySkills": "لا توجد مهارات متاحة. قم بتثبيت OfficeCLI ومزامنة المهارات.",
+    "emptySelection": "اختر مهارة لعرض محتواها وإدارة التفعيل.",
+    "emptySearch": "لا توجد مهارات مطابقة.",
+    "searchPlaceholder": "البحث بالاسم أو المعرف أو الوصف",
+    "enableForAgents": "تفعيل للوكلاء",
+    "noAgents": "لم يتم اكتشاف وكلاء ACP.",
+    "installFirst": "قم بتثبيت OfficeCLI أولاً لتفعيل المهارات.",
+    "syncFirst": "قم بمزامنة المهارات أولاً لتحميل المحتوى.",
+    "noContent": "لا يوجد محتوى متاح.",
+    "copyModeWarning": "تم النسخ (بدون ربط). أعد المزامنة للحصول على أحدث إصدار.",
+    "previewTitle": "معاينة SKILL.md",
+    "detection": {
+      "installed": "مثبّت",
+      "notInstalled": "غير مثبّت",
+      "installHint": "قم بتثبيت OfficeCLI لتفعيل مهارات إنشاء مستندات Office لوكلاء الذكاء الاصطناعي.",
+      "install": "تثبيت",
+      "uninstall": "إلغاء التثبيت",
+      "syncSkills": "مزامنة المهارات"
+    },
+    "categories": {
+      "general": "عام",
+      "presentations": "عروض تقديمية",
+      "documents": "مستندات",
+      "spreadsheets": "جداول بيانات"
+    },
+    "states": {
+      "not_linked": "غير مفعّل",
+      "linked_to_codeg": "مفعّل",
+      "linked_elsewhere": "محظور — يوجد رابط آخر",
+      "blocked_by_real_directory": "محظور — مهارة مخصصة تشغل هذا الاسم",
+      "broken": "رابط معطل"
+    },
+    "badges": {
+      "notSynced": "غير متزامن"
+    },
+    "actions": {
+      "refresh": "تحديث"
+    },
+    "toasts": {
+      "loadFailed": "فشل تحميل تفاصيل المهارة",
+      "enabled": "تم تفعيل المهارة لهذا الوكيل",
+      "disabled": "تم تعطيل المهارة لهذا الوكيل",
+      "enableFailed": "فشل تفعيل المهارة",
+      "disableFailed": "فشل تعطيل المهارة",
+      "installSuccess": "تم تثبيت OfficeCLI بنجاح",
+      "installFailed": "فشل تثبيت OfficeCLI",
+      "uninstallSuccess": "تم إلغاء تثبيت OfficeCLI",
+      "uninstallFailed": "فشل إلغاء تثبيت OfficeCLI",
+      "syncSuccess": "تمت مزامنة {synced} مهارة",
+      "syncPartial": "تمت مزامنة {synced}، فشلت {errors}",
+      "syncFailed": "فشل مزامنة المهارات"
     }
   },
   "QuickMessagesSettings": {

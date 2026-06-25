@@ -1040,12 +1040,28 @@ mod tests {
             Ownership::Exclusive(_)
         ));
 
-        // Releasing the guard frees the dir for the next owner.
+        // Releasing the guard frees the dir for the next owner. The reacquire can
+        // momentarily still observe `Taken`: this binary runs tests in parallel,
+        // and when a sibling test spawns a subprocess, `fork` duplicates our open
+        // lock fd into the child. The child keeps the underlying open file
+        // description — and thus the advisory lock — alive until it reaches `exec`
+        // and `O_CLOEXEC` drops the inherited fd, so `drop(guard)` doesn't release
+        // the lock until that brief window closes. Retry until it clears; a genuine
+        // regression (the lock never released on drop) still fails at the deadline.
         drop(guard);
-        assert!(matches!(
-            acquire_engine_ownership(dir.path()),
-            Ownership::Exclusive(_)
-        ));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match acquire_engine_ownership(dir.path()) {
+                Ownership::Exclusive(_) => break,
+                Ownership::Taken | Ownership::Unavailable => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "lock not reacquirable after the guard was dropped"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
     }
 
     // Fail closed: if the lock file can't even be opened, ownership is

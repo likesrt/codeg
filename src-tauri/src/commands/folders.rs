@@ -3364,7 +3364,10 @@ fn unquote_git_path(path: &str) -> String {
     }
 }
 
-fn resolve_tree_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppCommandError> {
+pub(crate) fn resolve_tree_path(
+    root: &Path,
+    rel_path: &str,
+) -> Result<PathBuf, AppCommandError> {
     let rel = Path::new(rel_path);
     if rel.is_absolute() {
         return Err(AppCommandError::invalid_input("Path must be relative"));

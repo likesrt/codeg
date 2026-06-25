@@ -1291,7 +1291,48 @@ function BashToolInput({ input }: { input: Record<string, unknown> }) {
  * Parse structured read output from backend: `{"start_line":N,"content":"..."}`.
  * Falls back to raw text with startLine=1 if not structured.
  */
-function parseReadOutput(raw: string): { startLine: number; content: string } {
+/**
+ * codex classifies file-reading shell commands (sed/cat/head) as ACP `read`
+ * commandActions whose output is a command-execution envelope — codex-acp's
+ * `createCommandExecutionCompleteUpdate` always sends BOTH
+ * `{ formatted_output: <string>, exit_code: <number> }` — NOT the
+ * `{ start_line, content }` read shape. Return the inner `formatted_output` so the
+ * file content renders. Requiring BOTH keys keeps a genuine JSON-file read
+ * (`{ output: … }`, `{ stdout: … }`, a lone `{ exit_code: 0 }`, …) from being
+ * mistaken for a command envelope. Returns null when it isn't that exact shape.
+ */
+export function codexCommandReadOutput(raw: string): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null
+  const obj = parsed as Record<string, unknown>
+  if (
+    typeof obj.exit_code !== "number" ||
+    typeof obj.formatted_output !== "string"
+  ) {
+    return null
+  }
+  const out = obj.formatted_output
+  // Strip codex's CLI framing ("Chunk ID:/Wall time:/…/Output:\n<content>") only
+  // when the output actually STARTS with that metadata — so a clean file whose
+  // first line happens to be "Output:" is never truncated by the envelope parser.
+  const firstLine = (
+    out.split("\n").find((l) => l.trim().length > 0) ?? ""
+  ).trim()
+  return CLI_META_LINE_RE.test(firstLine)
+    ? parseCliExecutionEnvelope(out).output
+    : out
+}
+
+export function parseReadOutput(raw: string): {
+  startLine: number
+  content: string
+} {
   try {
     const parsed = JSON.parse(raw)
     if (
@@ -1305,6 +1346,8 @@ function parseReadOutput(raw: string): { startLine: number; content: string } {
   } catch {
     // not JSON
   }
+  const cmdOut = codexCommandReadOutput(raw)
+  if (cmdOut !== null) return { startLine: 1, content: cmdOut }
   return { startLine: 1, content: raw }
 }
 

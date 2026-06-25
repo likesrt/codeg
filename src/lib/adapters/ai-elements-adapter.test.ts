@@ -724,6 +724,157 @@ describe("adaptMessageTurn plan handling", () => {
   })
 })
 
+describe("adaptMessageTurn — image tool results", () => {
+  const msgText = {
+    attachedResources: "Attached resources",
+    toolCallFailed: "Tool failed",
+  }
+
+  it("renders a Read whose result carries an image as a generated-image part (matching the live path), not a Read tool card", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "read-img",
+        role: "assistant",
+        timestamp: "2026-06-02T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "toolu_1",
+            tool_name: "Read",
+            input_preview: JSON.stringify({ file_path: "clean-v1.png" }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            output_preview: null,
+            is_error: false,
+            images: [{ data: "QUJD", mime_type: "image/png" }],
+          },
+        ],
+      },
+      msgText,
+      false
+    )
+
+    expect(adapted.content.map((p) => p.type)).toEqual(["generated-image"])
+    expect(adapted.content.some((p) => p.type === "tool-result")).toBe(false)
+    expect(adapted.content.some((p) => p.type === "tool-group")).toBe(false)
+    const part = adapted.content[0]
+    if (part.type !== "generated-image") {
+      throw new Error("expected a generated-image part")
+    }
+    expect(part.image).not.toBeNull()
+    expect(part.image?.data).toBe("QUJD")
+    expect(part.image?.mime_type).toBe("image/png")
+    expect(part.revisedPrompt).toBeNull()
+  })
+
+  it("emits one generated-image part per image (multi-page PDF read)", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "read-pdf",
+        role: "assistant",
+        timestamp: "2026-06-02T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "toolu_2",
+            tool_name: "Read",
+            input_preview: JSON.stringify({ file_path: "doc.pdf" }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_2",
+            output_preview: null,
+            is_error: false,
+            images: [
+              { data: "UAGE1", mime_type: "image/png" },
+              { data: "UAGE2", mime_type: "image/png" },
+            ],
+          },
+        ],
+      },
+      msgText,
+      false
+    )
+
+    expect(adapted.content.map((p) => p.type)).toEqual([
+      "generated-image",
+      "generated-image",
+    ])
+  })
+
+  it("leaves a normal text Read result as a tool card (no regression)", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "read-text",
+        role: "assistant",
+        timestamp: "2026-06-02T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "toolu_3",
+            tool_name: "Read",
+            input_preview: JSON.stringify({ file_path: "notes.txt" }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_3",
+            output_preview: "hello world",
+            is_error: false,
+          },
+        ],
+      },
+      msgText,
+      false
+    )
+
+    expect(adapted.content.some((p) => p.type === "generated-image")).toBe(
+      false
+    )
+    // A lone tool call folds into a tool-group.
+    const group = adapted.content.find((p) => p.type === "tool-group")
+    expect(group).toBeDefined()
+    if (group?.type !== "tool-group") throw new Error("expected tool-group")
+    expect(group.items[0]?.toolName).toBe("Read")
+  })
+
+  it("keeps the running tool card (spinner) when the image result's tool is still in-flight", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "read-img-live",
+        role: "assistant",
+        timestamp: "2026-06-02T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "toolu_4",
+            tool_name: "Read",
+            input_preview: JSON.stringify({ file_path: "clean.png" }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_4",
+            output_preview: null,
+            is_error: false,
+            images: [{ data: "QUJD", mime_type: "image/png" }],
+          },
+        ],
+      },
+      msgText,
+      true,
+      new Set(["toolu_4"])
+    )
+
+    expect(adapted.content.some((p) => p.type === "generated-image")).toBe(
+      false
+    )
+    const group = adapted.content.find((p) => p.type === "tool-group")
+    if (group?.type !== "tool-group") throw new Error("expected tool-group")
+    expect(group.items[0]?.state).toBe("input-available")
+  })
+})
+
 describe("extractUserResourcesFromText — codeg references stay inline", () => {
   it("keeps a codeg://agent link inline (the @-prefixed label no longer lifts it to a chip)", () => {
     const input = "ask [@Codex](codeg://agent/codex) to review"

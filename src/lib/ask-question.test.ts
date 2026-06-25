@@ -106,6 +106,34 @@ describe("parseAskQuestionInput", () => {
     expect(result[0].options).toEqual([{ label: "Keep", description: "" }])
   })
 
+  it("unwraps the codex MCP envelope where questions are nested under arguments", () => {
+    // codex-acp 1.0.0 wraps MCP input as { server, tool, arguments } — see
+    // CodexToolCallMapper.ts::createMcpToolCallUpdate. The questions live under
+    // `arguments`, not the top level.
+    const input = JSON.stringify({
+      server: "codeg-mcp",
+      tool: "ask_user_question",
+      arguments: {
+        questions: [
+          {
+            question: "Which approach?",
+            header: "Approach",
+            multiSelect: false,
+            options: [{ label: "Incremental", description: "Smaller steps" }],
+          },
+        ],
+      },
+    })
+    expect(parseAskQuestionInput(input)).toEqual([
+      {
+        question: "Which approach?",
+        header: "Approach",
+        multiSelect: false,
+        options: [{ label: "Incremental", description: "Smaller steps" }],
+      },
+    ])
+  })
+
   it("returns [] for malformed JSON, missing questions, or nullish input", () => {
     expect(parseAskQuestionInput("not json")).toEqual([])
     expect(parseAskQuestionInput(JSON.stringify({ foo: 1 }))).toEqual([])
@@ -160,6 +188,100 @@ describe("parseAskQuestionOutcome", () => {
         answers: [{ header: "H", question: "Q", selected: ["A"] }],
         declined: false,
       },
+    })
+    expect(parseAskQuestionOutcome(output)?.answers[0].selected).toEqual(["A"])
+  })
+
+  it("keeps a valid top-level structuredContent over an unrelated result key", () => {
+    // Defensive: a bare envelope that also carries a `result` key must resolve
+    // from the top level, not unwrap into `result` and lose the answers.
+    const output = JSON.stringify({
+      content: [],
+      structuredContent: {
+        answers: [{ header: "H", question: "Q", selected: ["A"] }],
+        declined: false,
+      },
+      result: {},
+    })
+    expect(parseAskQuestionOutcome(output)?.answers[0].selected).toEqual(["A"])
+  })
+
+  it("unwraps the codex MCP result envelope ({ result, error })", () => {
+    // codex-acp 1.0.0 wraps MCP output as { result: CallToolResult, error };
+    // the { answers, declined } sits under result.structuredContent.
+    const output = JSON.stringify({
+      result: {
+        content: [{ type: "text", text: "The user answered…" }],
+        structuredContent: {
+          answers: [{ header: "H", question: "Q", selected: ["A"] }],
+          declined: false,
+        },
+      },
+      error: null,
+    })
+    expect(parseAskQuestionOutcome(output)).toEqual({
+      declined: false,
+      answers: [{ header: "H", question: "Q", selected: ["A"] }],
+    })
+  })
+
+  it("reads a declined codex MCP result envelope", () => {
+    const output = JSON.stringify({
+      result: {
+        content: [{ type: "text", text: "dismissed" }],
+        structuredContent: { answers: [], declined: true },
+      },
+      error: null,
+    })
+    expect(parseAskQuestionOutcome(output)).toEqual({
+      declined: true,
+      answers: [],
+    })
+  })
+
+  it("parses the real codex rollout output (Wall time / Output wrapper)", () => {
+    // Verbatim shape from ~/.codex/sessions rollout `function_call_output.output`:
+    // codex wraps the MCP result as `Wall time: <n> seconds\nOutput:\n<json>`,
+    // where <json> is the bare { answers, declined } envelope. Without stripping
+    // the wrapper the whole string fails JSON.parse and the selected value is lost.
+    const output =
+      "Wall time: 41.1908 seconds\nOutput:\n" +
+      JSON.stringify({
+        answers: [
+          {
+            header: "目标平台",
+            multi_select: false,
+            question: "最终工具主要要在哪个平台运行？",
+            selected: ["Windows .exe (Recommended)"],
+          },
+        ],
+        declined: false,
+      })
+    expect(parseAskQuestionOutcome(output)).toEqual({
+      declined: false,
+      answers: [
+        {
+          header: "目标平台",
+          question: "最终工具主要要在哪个平台运行？",
+          selected: ["Windows .exe (Recommended)"],
+        },
+      ],
+    })
+  })
+
+  it("unwraps an Ok-tagged codex result envelope", () => {
+    const output = JSON.stringify({
+      result: {
+        Ok: {
+          content: [{ type: "text", text: "The user answered…" }],
+          structuredContent: {
+            answers: [{ header: "H", question: "Q", selected: ["A"] }],
+            declined: false,
+          },
+          isError: false,
+        },
+      },
+      error: null,
     })
     expect(parseAskQuestionOutcome(output)?.answers[0].selected).toEqual(["A"])
   })

@@ -8,7 +8,8 @@ use regex::Regex;
 
 use crate::models::*;
 use crate::parsers::{
-    folder_name_from_path, title_from_user_text, truncate_str, AgentParser, ParseError,
+    folder_name_from_path, is_safe_subagent_id, title_from_user_text, truncate_str, AgentParser,
+    ParseError,
 };
 
 /// Regex that matches Claude Code system-injected XML tags and their content.
@@ -761,12 +762,11 @@ impl ClaudeParser {
                             let mut stats = extract_agent_execution_stats(tur);
                             // Load tool calls from subagent's own JSONL transcript
                             if let Some(agent_id) = tur.get("agentId").and_then(|v| v.as_str()) {
-                                // Reject path traversal: agentId must be alphanumeric
-                                if !agent_id.is_empty()
-                                    && !agent_id.contains('/')
-                                    && !agent_id.contains('\\')
-                                    && !agent_id.contains("..")
-                                {
+                                // Reject path traversal: `agent_id` becomes a filename
+                                // component under the session dir (see
+                                // `is_safe_subagent_id` — rejects separators, `..`, a
+                                // Windows drive colon, and NUL).
+                                if is_safe_subagent_id(agent_id) {
                                     let subagent_dir = path.with_extension("").join("subagents");
                                     let subagent_path =
                                         subagent_dir.join(format!("agent-{}.jsonl", agent_id));
@@ -986,6 +986,7 @@ impl ClaudeParser {
                             output_preview,
                             is_error,
                             agent_stats: None,
+                            images: Vec::new(),
                         });
                     } else {
                         let timestamp = parse_timestamp(&value).unwrap_or_else(Utc::now);
@@ -997,6 +998,7 @@ impl ClaudeParser {
                                 output_preview,
                                 is_error,
                                 agent_stats: None,
+                                images: Vec::new(),
                             }],
                             timestamp,
                             usage: None,
@@ -1123,6 +1125,7 @@ fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
                         .and_then(|n| n.as_str())
                         .map(|s| s.to_string());
                     let output = extract_tool_result_text(item);
+                    let images = extract_tool_result_images(item);
                     let is_error = item
                         .get("is_error")
                         .and_then(|e| e.as_bool())
@@ -1132,6 +1135,7 @@ fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
                         output_preview: output,
                         is_error,
                         agent_stats: None,
+                        images,
                     });
                 }
                 _ => {}
@@ -1451,6 +1455,38 @@ fn extract_tool_result_text(item: &serde_json::Value) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract base64 `image` content blocks from a tool_result.
+///
+/// Claude Code's `Read` of an image (or a PDF, page-by-page) returns the bytes
+/// as `{"type":"image","source":{"type":"base64","media_type":"image/png",
+/// "data":"…"}}` blocks inside the tool_result `content` array — never as text,
+/// so `extract_tool_result_text` returns `None` for them. We surface the images
+/// separately so the renderer can show them in-position, matching the live ACP
+/// path (which captures the same bytes via `extract_tool_call_images`).
+///
+/// Reuses `extract_claude_user_image` (the same `source.data`/`media_type` and
+/// data-URI shapes apply) and unwraps its `ContentBlock::Image` into `ImageData`.
+fn extract_tool_result_images(item: &serde_json::Value) -> Vec<ImageData> {
+    let Some(arr) = item.get("content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("image"))
+        .filter_map(|c| match extract_claude_user_image(c) {
+            Some(ContentBlock::Image {
+                data,
+                mime_type,
+                uri,
+            }) => Some(ImageData {
+                data,
+                mime_type,
+                uri,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Check if a user message contains ONLY tool_result blocks (no text).
@@ -2239,5 +2275,91 @@ mod tests {
             ContentBlock::Image { data, mime_type, uri }
             if data == "QUJD" && mime_type == "image/png" && uri.is_none()
         ));
+    }
+
+    #[test]
+    fn tool_result_with_image_populates_images_not_text() {
+        // Claude Code's `Read` of an image returns the bytes as an `image`
+        // content block inside the tool_result — never as text. The history
+        // parser must surface it on `ToolResult.images` (the live ACP path
+        // captures the same bytes) instead of dropping it to an empty result.
+        let value = json!({
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01YU4QSMbQEMEizVEzHsCZKV",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "QUJDREVGRw=="
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let blocks = extract_user_content(&value);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                output_preview,
+                images,
+                ..
+            } => {
+                assert_eq!(
+                    tool_use_id.as_deref(),
+                    Some("toolu_01YU4QSMbQEMEizVEzHsCZKV")
+                );
+                assert!(
+                    output_preview.is_none(),
+                    "image-only result carries no text preview"
+                );
+                assert_eq!(images.len(), 1);
+                assert_eq!(images[0].data, "QUJDREVGRw==");
+                assert_eq!(images[0].mime_type, "image/png");
+                assert!(images[0].uri.is_none());
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_result_with_text_carries_no_images() {
+        // A normal text tool_result keeps its text and has an empty images vec
+        // (so the field stays absent in serialized JSON).
+        let value = json!({
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_text",
+                        "content": [{"type": "text", "text": "hello"}]
+                    }
+                ]
+            }
+        });
+
+        let blocks = extract_user_content(&value);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::ToolResult {
+                output_preview,
+                images,
+                ..
+            } => {
+                assert_eq!(output_preview.as_deref(), Some("hello"));
+                assert!(images.is_empty());
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

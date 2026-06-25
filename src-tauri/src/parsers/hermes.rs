@@ -313,6 +313,7 @@ impl HermesParser {
                         // Hermes has no explicit error flag on tool rows.
                         is_error: false,
                         agent_stats: None,
+                        images: Vec::new(),
                     });
                 }
                 MessageRole::System => continue,

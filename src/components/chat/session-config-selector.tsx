@@ -66,7 +66,7 @@ export function InlineSessionConfigSelector({
         <Button
           variant="ghost"
           size="xs"
-          title={currentLabel}
+          title={option.name}
           aria-label={
             currentLabel ? `${option.name}: ${currentLabel}` : option.name
           }

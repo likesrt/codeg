@@ -536,6 +536,7 @@ impl OpenCodeParser {
                             output_preview,
                             is_error: is_error_status(status) || has_error_field,
                             agent_stats,
+                            images: Vec::new(),
                         });
                     } else {
                         let input_preview = state_input.and_then(|v| value_to_preview(Some(v)));
@@ -558,6 +559,7 @@ impl OpenCodeParser {
                             output_preview,
                             is_error: is_error_status(status) || has_error_field,
                             agent_stats: None,
+                            images: Vec::new(),
                         });
                     }
                 }

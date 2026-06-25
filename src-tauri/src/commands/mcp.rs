@@ -55,6 +55,8 @@ pub enum McpAppType {
     OpenCode,
     Cline,
     Hermes,
+    CodeBuddy,
+    KimiCode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,6 +371,8 @@ pub async fn mcp_upsert_local_server(
         McpAppType::OpenCode,
         McpAppType::Cline,
         McpAppType::Hermes,
+        McpAppType::CodeBuddy,
+        McpAppType::KimiCode,
     ];
 
     for app in all_apps {
@@ -424,6 +428,8 @@ pub async fn mcp_remove_server(
             McpAppType::OpenCode,
             McpAppType::Cline,
             McpAppType::Hermes,
+            McpAppType::CodeBuddy,
+            McpAppType::KimiCode,
         ],
     };
 
@@ -1552,6 +1558,153 @@ fn disable_claude_local_plugin(id: &str) -> Result<(), AppCommandError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// CodeBuddy  (~/.codebuddy.json  →  mcpServers)
+//
+// CodeBuddy is a Claude Code derivative and shares its on-disk MCP layout:
+// user-scope servers live in `~/.codebuddy.json.mcpServers`, gated for
+// activation by `<id>@local: true` in
+// `~/.codebuddy/settings.json.enabledPlugins`. These mirror the Claude helpers,
+// only pointed at CodeBuddy's files.
+// ---------------------------------------------------------------------------
+
+fn codebuddy_config_path() -> PathBuf {
+    home_dir_or_default().join(".codebuddy.json")
+}
+
+fn codebuddy_settings_path() -> PathBuf {
+    home_dir_or_default().join(".codebuddy").join("settings.json")
+}
+
+fn read_codebuddy_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let path = codebuddy_config_path();
+    let root = read_json_file(&path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "CodeBuddy config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid CodeBuddy MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_codebuddy_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let path = codebuddy_config_path();
+    let mut root = read_json_file(&path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "CodeBuddy write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(&path, &root)?;
+    enable_codebuddy_local_plugin(id)
+}
+
+fn remove_codebuddy_server(id: &str) -> Result<bool, AppCommandError> {
+    let path = codebuddy_config_path();
+    if !path.exists() {
+        disable_codebuddy_local_plugin(id)?;
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(&path)?;
+    let Some(obj) = root.as_object_mut() else {
+        disable_codebuddy_local_plugin(id)?;
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        disable_codebuddy_local_plugin(id)?;
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(&path, &root)?;
+    }
+    disable_codebuddy_local_plugin(id)?;
+    Ok(removed)
+}
+
+/// Add `<id>@local: true` to `~/.codebuddy/settings.json.enabledPlugins`,
+/// mirroring the Claude Code plugin-activation gate that CodeBuddy inherits.
+fn enable_codebuddy_local_plugin(id: &str) -> Result<(), AppCommandError> {
+    let path = codebuddy_settings_path();
+    let mut root = read_json_file(&path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj
+        .get("enabledPlugins")
+        .map(Value::is_object)
+        .unwrap_or(false)
+    {
+        obj.insert("enabledPlugins".to_string(), Value::Object(Map::new()));
+    }
+    let plugins = obj
+        .get_mut("enabledPlugins")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid enabledPlugins in {}", path.display()))
+        })?;
+    let key = claude_local_plugin_key(id);
+    if matches!(plugins.get(&key), Some(Value::Bool(true))) {
+        return Ok(());
+    }
+    plugins.insert(key, Value::Bool(true));
+    write_json_file(&path, &root)
+}
+
+/// Remove `<id>@local` from `~/.codebuddy/settings.json.enabledPlugins` if
+/// present. Other entries are intentionally left untouched.
+fn disable_codebuddy_local_plugin(id: &str) -> Result<(), AppCommandError> {
+    let path = codebuddy_settings_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut root = read_json_file(&path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(plugins) = obj.get_mut("enabledPlugins").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let key = claude_local_plugin_key(id);
+    if plugins.remove(&key).is_some() {
+        write_json_file(&path, &root)?;
+    }
+    Ok(())
+}
+
 fn read_codex_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     let root = read_codex_root_toml()?;
     let Some(table) = root.as_table() else {
@@ -2082,6 +2235,20 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Hermes);
     }
 
+    for (id, spec) in read_codebuddy_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::CodeBuddy);
+    }
+
+    for (id, spec) in read_kimi_code_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::KimiCode);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2106,6 +2273,8 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::OpenClaw => upsert_openclaw_server(id, spec),
         McpAppType::Cline => upsert_cline_server(id, spec),
         McpAppType::Hermes => upsert_hermes_server(id, spec),
+        McpAppType::CodeBuddy => upsert_codebuddy_server(id, spec),
+        McpAppType::KimiCode => upsert_kimi_code_server(id, spec),
     }
 }
 
@@ -2121,7 +2290,112 @@ pub fn read_servers_for_agent_type(
         AgentType::OpenClaw => read_openclaw_servers(),
         AgentType::Cline => read_cline_servers(),
         AgentType::Hermes => read_hermes_servers(),
+        AgentType::CodeBuddy => read_codebuddy_servers(),
+        AgentType::KimiCode => read_kimi_code_servers(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kimi Code  (~/.kimi-code/mcp.json  →  top-level `mcpServers`)
+//
+// Kimi reads its user-global MCP config from `<KIMI_CODE_HOME>/mcp.json`
+// (default `~/.kimi-code/mcp.json`) — a JSON file with a top-level `mcpServers`
+// object of Claude-shaped entries (`command`/`args`/`env`/`cwd`, or `url` for
+// http/sse). This mirrors CodeBuddy/Cline's JSON layout (NOT Codex's TOML).
+//
+// Because Kimi loads this file natively at session start, `KimiCode` is on the
+// ACP forward skip list in `connection.rs` (like Hermes) so the same user
+// servers aren't double-registered over `session/new`. The built-in `codeg-mcp`
+// companion is injected separately by `inject_codeg_mcp`, so it still reaches
+// Kimi regardless.
+// ---------------------------------------------------------------------------
+
+fn kimi_code_mcp_json_path() -> PathBuf {
+    crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("mcp.json")
+}
+
+fn read_kimi_code_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_kimi_code_servers_at(&kimi_code_mcp_json_path())
+}
+
+fn read_kimi_code_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "Kimi Code config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid Kimi Code MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_kimi_code_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_kimi_code_server_at(&kimi_code_mcp_json_path(), id, spec)
+}
+
+fn upsert_kimi_code_server_at(
+    path: &Path,
+    id: &str,
+    spec: &Value,
+) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "Kimi Code write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(path, &root)
+}
+
+fn remove_kimi_code_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_kimi_code_server_at(&kimi_code_mcp_json_path(), id)
+}
+
+fn remove_kimi_code_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
+    }
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
@@ -2376,6 +2650,8 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::OpenClaw => remove_openclaw_server(id),
         McpAppType::Cline => remove_cline_server(id),
         McpAppType::Hermes => remove_hermes_server(id),
+        McpAppType::CodeBuddy => remove_codebuddy_server(id),
+        McpAppType::KimiCode => remove_kimi_code_server(id),
     }
 }
 
@@ -4162,6 +4438,51 @@ mod tests {
         assert!(normalize_mcp_type("   ").is_none());
         assert!(normalize_mcp_type("Foo").is_none());
         assert!(normalize_mcp_type("ws").is_none());
+    }
+
+    #[test]
+    fn kimi_code_mcp_json_round_trips() {
+        // Kimi reads `<KIMI_CODE_HOME>/mcp.json` (`mcpServers`) natively; verify
+        // the read/upsert/remove cycle against an isolated path.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+
+        // Missing file → no servers, and removing is a no-op.
+        assert!(read_kimi_code_servers_at(&path)
+            .expect("read missing")
+            .is_empty());
+        assert!(!remove_kimi_code_server_at(&path, "ctx7").expect("remove missing"));
+
+        // Upsert a stdio server.
+        let spec = json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "ctx7-mcp"],
+        });
+        upsert_kimi_code_server_at(&path, "ctx7", &spec).expect("upsert");
+
+        // It round-trips, canonicalized, under `mcpServers`.
+        let servers = read_kimi_code_servers_at(&path).expect("read back");
+        assert_eq!(servers.len(), 1);
+        let stored = servers.get("ctx7").expect("ctx7 present");
+        assert_eq!(stored.get("type").and_then(Value::as_str), Some("stdio"));
+        assert_eq!(stored.get("command").and_then(Value::as_str), Some("npx"));
+
+        // On-disk shape is `{ "mcpServers": { "ctx7": { .. } } }`.
+        let raw = std::fs::read_to_string(&path).expect("read file");
+        let root: Value = serde_json::from_str(&raw).expect("parse json");
+        assert!(root
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .map(|m| m.contains_key("ctx7"))
+            .unwrap_or(false));
+
+        // Remove it; the file no longer lists it and a second remove is a no-op.
+        assert!(remove_kimi_code_server_at(&path, "ctx7").expect("remove"));
+        assert!(read_kimi_code_servers_at(&path)
+            .expect("read after remove")
+            .is_empty());
+        assert!(!remove_kimi_code_server_at(&path, "ctx7").expect("remove again"));
     }
 
     fn codex_entry(toml_src: &str) -> toml::Value {

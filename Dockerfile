@@ -1,6 +1,6 @@
 # Stage 1: Build Next.js static export
-FROM node:22-alpine AS frontend
-RUN corepack enable && corepack prepare pnpm@10.24.0 --activate
+FROM node:24-alpine AS frontend
+RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
@@ -21,7 +21,7 @@ RUN cargo build --release --bin codeg-server --no-default-features \
  && cargo build --release --bin codeg-mcp --no-default-features
 
 # Stage 3: Runtime
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y \
     libsqlite3-0 \
     git \

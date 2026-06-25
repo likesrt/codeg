@@ -49,6 +49,7 @@
       "web_service": "Service Web",
       "model_providers": "Fournisseurs de Modèles",
       "experts": "Experts",
+      "office_tools": "Outils bureautiques",
       "quick_messages": "Messages rapides",
       "logs": "Journaux d'exécution"
     }
@@ -575,7 +576,10 @@
       "confirmUninstall": "Confirmer la désinstallation",
       "saveClineConfig": "Enregistrer la configuration Cline",
       "saveHermesConfig": "Enregistrer la configuration Hermes",
-      "customInstall": "Installation personnalisée"
+      "saveCodeBuddyConfig": "Enregistrer la configuration CodeBuddy",
+      "saveKimiCodeConfig": "Enregistrer la configuration de Kimi Code",
+      "customInstall": "Installation personnalisée",
+      "saveKimiCodeRawConfig": "Save config.toml"
     },
     "status": {
       "enabled": "Activé",
@@ -694,6 +698,66 @@
       "rawConfigHint": "Modifiez directement ~/.hermes/config.yaml. Enregistrer ici écrase le fichier tel quel.",
       "saveRawConfig": "Enregistrer config.yaml"
     },
+    "codebuddy": {
+      "configManagement": "Configuration de CodeBuddy",
+      "configDescription": "CodeBuddy s'authentifie avec une clé API. Les versions pour la Chine continentale nécessitent aussi de définir l'environnement sur « Chine (internal) » ; les versions iOA utilisent « iOA ». La version internationale la laisse non définie.",
+      "apiKeyLabel": "Clé API",
+      "apiKeyHint": "Enregistré en tant que CODEBUDDY_API_KEY pour cet agent. Vous pouvez aussi vous connecter avec la CLI CodeBuddy dans un terminal.",
+      "apiKeyHintSelfHosted": "Enregistré en tant que CODEBUDDY_API_KEY pour cet agent. Utilisez la clé émise par votre déploiement privé.",
+      "environmentLabel": "Environnement",
+      "environmentHint": "Définit CODEBUDDY_INTERNET_ENVIRONMENT. La Chine continentale doit utiliser « Chine (internal) » ; la version internationale la laisse non définie.",
+      "envOverseas": "International (par défaut)",
+      "envChina": "Chine (internal)",
+      "envIoa": "iOA",
+      "envSelfHosted": "Auto-hébergé (déploiement privé)",
+      "baseUrlLabel": "URL de déploiement",
+      "baseUrlPlaceholder": "https://codebuddy.your-company.com",
+      "baseUrlHint": "Enregistré comme CODEBUDDY_BASE_URL et dirige CodeBuddy vers votre point de terminaison privé. En auto-hébergement, l’environnement réseau (CODEBUDDY_INTERNET_ENVIRONMENT) reste non défini.",
+      "baseUrlInvalid": "Saisissez une URL http(s) valide.",
+      "loginHint": "Pas de clé API ? Exécutez « codebuddy » dans un terminal pour vous connecter avec votre compte Tencent."
+    },
+    "kimiCode": {
+      "configManagement": "Kimi Code Configuration",
+      "configDescription": "`kimi acp` only authenticates with a stored login token and rejects API keys on their own. To use an API key, codeg writes a managed ~/.kimi-code/config.toml provider AND seeds a local gate token so the session opens — inference still runs on your key.",
+      "gateReadyApiKey": "Authenticated via API key (codeg seeded the local gate token).",
+      "gateReadyLogin": "Authenticated via a Kimi account login.",
+      "gateNotReady": "Not authenticated yet — save an API key below (or sign in) to open Kimi sessions.",
+      "authModeLabel": "Authentication method",
+      "authModeApiKey": "API key",
+      "authModeLogin": "Kimi account login (subscription)",
+      "authModeHint": "“API key” writes a codeg-managed config.toml provider and seeds a gate token. “Login” clears that and uses a real `kimi login` session (requires a Kimi subscription).",
+      "interfaceTypeLabel": "Provider type",
+      "interfaceTypeHint": "The provider protocol Kimi speaks (config.toml `type`). Use Kimi / Moonshot for a Moonshot / platform.kimi.com key.",
+      "endpointLabel": "Endpoint",
+      "endpointCustom": "Custom (OpenAI-compatible)",
+      "endpointHint": "International = api.moonshot.ai; China (platform.kimi.com keys) = api.moonshot.cn. Custom points at any OpenAI-compatible endpoint.",
+      "regionInternational": "International (api.moonshot.ai)",
+      "regionChina": "China (api.moonshot.cn)",
+      "baseUrlLabel": "Base URL",
+      "baseUrlHint": "Leave blank to use the provider SDK default.",
+      "apiKeyLabel": "API Key",
+      "apiKeyHint": "Written to ~/.kimi-code/config.toml and used for inference. From platform.kimi.com or platform.kimi.ai.",
+      "authTypeLabel": "Advanced: credential placement",
+      "authTypeApiKey": "Inline api_key",
+      "authTypeEnv": "Provider env sub-table",
+      "authTypeHint": "Where the API key is written inside config.toml.",
+      "vertexProjectLabel": "GCP project (GOOGLE_CLOUD_PROJECT)",
+      "vertexLocationLabel": "GCP location (GOOGLE_CLOUD_LOCATION)",
+      "vertexHint": "Vertex AI uses Google Application Default Credentials — run `gcloud auth application-default login` (no API key).",
+      "modelLabel": "Model",
+      "modelHint": "The model id to use. Click Fetch to list the models your key can access (e.g. kimi-k2.7-code) — avoids “model not found” errors.",
+      "fetchModels": "Fetch",
+      "fetchModelsOk": "Found {count} models",
+      "fetchModelsEmpty": "Key works, but no models were returned",
+      "fetchModelsFailed": "Couldn’t list models — check the key and endpoint",
+      "fetchModelsNeedsKey": "Enter an API key and endpoint first",
+      "maxContextLabel": "Max context size (optional)",
+      "maxContextHint": "Tokens, e.g. 262144. Leave blank to use the model default.",
+      "loginHint": "Run `kimi login` in a terminal to sign in with a Kimi subscription account (device-code OAuth). codeg stores nothing and reuses Kimi’s own login. Saving here removes codeg’s API-key gate token.",
+      "rawEditorLabel": "Advanced: edit config.toml directly",
+      "rawEditorHint": "Written verbatim (comments preserved) and validated as TOML. codeg also seeds the gate token so the session opens.",
+      "rawEditorPlaceholder": "[providers.codeg]\ntype = \"kimi\"\nbase_url = \"https://api.moonshot.cn/v1\"\napi_key = \"sk-...\""
+    },
     "authModeOfficialSubscription": "Abonnement officiel",
     "authModeCustomEndpoint": "Endpoint personnalisé",
     "authModeCustomEndpointHint": "Configurer manuellement l'URL API et la clé API pour un endpoint personnalisé.",
@@ -782,6 +846,10 @@
       "saveClineFailed": "Échec de l'enregistrement de la configuration Cline",
       "hermesSaved": "Configuration Hermes enregistrée",
       "saveHermesFailed": "Échec de l'enregistrement de la configuration Hermes",
+      "codeBuddySaved": "Configuration CodeBuddy enregistrée",
+      "saveCodeBuddyFailed": "Échec de l'enregistrement de la configuration CodeBuddy",
+      "kimiCodeSaved": "Configuration de Kimi Code enregistrée",
+      "saveKimiCodeFailed": "Échec de l'enregistrement de la configuration de Kimi Code",
       "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer.",
       "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}"
     },
@@ -1253,7 +1321,13 @@
       "imageZoomReset": "Réinitialiser le zoom",
       "htmlPreviewTitle": "Aperçu HTML",
       "htmlPreviewTrust": "Activer les scripts",
-      "htmlPreviewTrustHint": "Exécuter les scripts de ce fichier et autoriser l'accès réseau. À activer uniquement pour les fichiers de confiance."
+      "htmlPreviewTrustHint": "Exécuter les scripts de ce fichier et autoriser l'accès réseau. À activer uniquement pour les fichiers de confiance.",
+      "officePreviewTitle": "Aperçu du document Office",
+      "officeFullRender": "Rendu complet",
+      "officeFullRenderHint": "Affiche les animations Morph, la 3D et les formules (exécute les scripts de la diapositive)",
+      "officeNotInstalled": "OfficeCLI n'est pas installé",
+      "officeNotInstalledHint": "Installe OfficeCLI dans Paramètres → Outils Office pour prévisualiser les fichiers Word, Excel et PowerPoint.",
+      "officeOpenSettings": "Ouvrir les paramètres"
     },
     "branchDropdown": {
       "toasts": {
@@ -1962,6 +2036,46 @@
           "fusionMode": "Ouvrez un fichier ou un diff pour l'afficher automatiquement à côté de la conversation.",
           "quickMessages": "Ouvrez le bouton + à côté de la saisie et choisissez Messages rapides pour insérer un extrait enregistré (à gérer dans Paramètres → Messages rapides).",
           "experts": "Le bouton + propose un menu Compétences expertes — chargez en un clic des rôles comme Débogage ou Planification."
+        },
+        "quickActions": {
+          "excel": "Classeur Excel",
+          "excelDesc": "Tableaux, formules et graphiques",
+          "word": "Document Word",
+          "wordDesc": "Rapports, lettres et notes",
+          "ppt": "Présentation",
+          "pptDesc": "Diapositives au design professionnel",
+          "pitchDeck": "Pitch Deck",
+          "pitchDeckDesc": "Présentation de levée avec indicateurs",
+          "morph": "Animation Morph",
+          "morphDesc": "Transitions de diapositive cinématographiques",
+          "morph3d": "Morph 3D",
+          "morph3dDesc": "Modèles 3D avec mouvements de caméra",
+          "academic": "Article académique",
+          "academicDesc": "Recherche avec citations et structure",
+          "financial": "Modèle financier",
+          "financialDesc": "États, DCF et projections",
+          "dashboard": "Tableau de bord",
+          "dashboardDesc": "KPI et analyses à partir de vos données",
+          "prompts": {
+            "excel": "Crée un classeur Excel avec les exigences suivantes :\n\n[décris ici tes données, tableaux, formules et graphiques]",
+            "word": "Crée un document Word avec les exigences suivantes :\n\n[décris ici le contenu, la structure et la mise en forme du document]",
+            "ppt": "Crée une présentation PowerPoint avec les exigences suivantes :\n\n[décris ici tes diapositives, le contenu et le design]",
+            "pitchDeck": "Crée un pitch deck de levée de fonds avec les exigences suivantes :\n\n[décris ici ton entreprise, le tour de financement et les indicateurs clés]",
+            "morph": "Crée une présentation avec des animations de transition Morph :\n\n[décris ici le sujet de la présentation et les effets visuels souhaités]",
+            "morph3d": "Crée une présentation Morph 3D avec des modèles GLB et des mouvements de caméra :\n\n[décris ici ton sujet et le concept visuel en 3D]",
+            "academic": "Rédige un article académique dans Word avec les exigences suivantes :\n\n[décris ici ton sujet de recherche, la méthodologie et les principaux résultats]",
+            "financial": "Crée un modèle financier dans Excel avec les exigences suivantes :\n\n[décris ici tes états financiers, projections et analyses]",
+            "dashboard": "Crée un tableau de bord de données dans Excel avec les exigences suivantes :\n\n[décris ici ta source de données, les KPI et les graphiques]"
+          },
+          "tabs": {
+            "office": "Bureautique",
+            "coding": "Développement"
+          },
+          "coding": {
+            "brainstormingDesc": "Explorer intention et besoins avant de coder",
+            "debuggingDesc": "Trouver la cause racine avant de corriger",
+            "writingSkillsDesc": "Créer, modifier et vérifier des skills réutilisables"
+          }
         }
       },
       "agentSelector": {
@@ -2695,6 +2809,63 @@
       "enableFailed": "Échec de l'activation de l'expert",
       "disableFailed": "Échec de la désactivation de l'expert",
       "openFolderFailed": "Échec de l'ouverture du dossier"
+    }
+  },
+  "OfficeToolsSettings": {
+    "title": "Outils Office",
+    "description": "Gérez les compétences OfficeCLI pour créer des fichiers Excel, Word et PowerPoint. Installez OfficeCLI, synchronisez les compétences et activez-les par agent.",
+    "loadingContent": "Chargement du contenu…",
+    "emptySkills": "Aucune compétence disponible. Installez OfficeCLI et synchronisez les compétences.",
+    "emptySelection": "Sélectionnez une compétence pour voir son contenu et gérer l'activation.",
+    "emptySearch": "Aucune compétence correspondante.",
+    "searchPlaceholder": "Rechercher par nom, ID ou description",
+    "enableForAgents": "Activer pour les agents",
+    "noAgents": "Aucun agent ACP détecté.",
+    "installFirst": "Installez d'abord OfficeCLI pour activer les compétences.",
+    "syncFirst": "Synchronisez d'abord les compétences pour charger le contenu.",
+    "noContent": "Aucun contenu disponible.",
+    "copyModeWarning": "Copié (non lié). Resynchronisez pour obtenir la dernière version.",
+    "previewTitle": "Aperçu SKILL.md",
+    "detection": {
+      "installed": "Installé",
+      "notInstalled": "Non installé",
+      "installHint": "Installez OfficeCLI pour activer les compétences de génération de documents Office pour vos agents IA.",
+      "install": "Installer",
+      "uninstall": "Désinstaller",
+      "syncSkills": "Synchroniser les compétences"
+    },
+    "categories": {
+      "general": "Général",
+      "presentations": "Présentations",
+      "documents": "Documents",
+      "spreadsheets": "Tableurs"
+    },
+    "states": {
+      "not_linked": "Non activé",
+      "linked_to_codeg": "Activé",
+      "linked_elsewhere": "Bloqué — un autre lien existe",
+      "blocked_by_real_directory": "Bloqué — une compétence personnalisée occupe ce nom",
+      "broken": "Lien cassé"
+    },
+    "badges": {
+      "notSynced": "Non synchronisé"
+    },
+    "actions": {
+      "refresh": "Actualiser"
+    },
+    "toasts": {
+      "loadFailed": "Échec du chargement des détails de la compétence",
+      "enabled": "Compétence activée pour cet agent",
+      "disabled": "Compétence désactivée pour cet agent",
+      "enableFailed": "Échec de l'activation de la compétence",
+      "disableFailed": "Échec de la désactivation de la compétence",
+      "installSuccess": "OfficeCLI installé avec succès",
+      "installFailed": "Échec de l'installation d'OfficeCLI",
+      "uninstallSuccess": "OfficeCLI désinstallé",
+      "uninstallFailed": "Échec de la désinstallation d'OfficeCLI",
+      "syncSuccess": "{synced} compétences synchronisées",
+      "syncPartial": "{synced} synchronisées, {errors} échouées",
+      "syncFailed": "Échec de la synchronisation des compétences"
     }
   },
   "QuickMessagesSettings": {

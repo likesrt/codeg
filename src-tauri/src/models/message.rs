@@ -123,6 +123,15 @@ pub enum ContentBlock {
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_stats: Option<AgentExecutionStats>,
+        /// Images returned in a tool result (e.g. Claude Code's `Read` of a
+        /// PNG/JPEG, or a multi-page PDF read returning one image per page).
+        /// The agent JSONL embeds these as base64 `image` content blocks; the
+        /// adapter renders them in-position as image cards so the historical
+        /// (JSONL replay) path matches the live ACP stream, which surfaces the
+        /// same bytes via `ToolCallState.images`. Empty for the common
+        /// text-only tool result.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageData>,
     },
     Thinking {
         text: String,

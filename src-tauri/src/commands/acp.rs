@@ -1619,6 +1619,755 @@ fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
 }
 
 // ---------------------------------------------------------------------------
+// Kimi Code config helpers
+//
+// IMPORTANT — how `kimi acp` actually authenticates (reverse-engineered &
+// empirically verified against @moonshot-ai/kimi-code 0.19.1):
+//
+// `kimi acp` gates EVERY `session/new` on an OAuth-style token: it calls
+// `harnessIsAuthed`, which is true iff `~/.kimi-code/credentials/kimi-code.json`
+// holds a token whose `access_token` is non-empty. It NEVER validates that token
+// for the gate (no network, no signature check). API keys — whether injected via
+// the `KIMI_MODEL_*` env family OR written into `config.toml` `[providers].api_key`
+// — do NOT create this token, so on their own they yield `Authentication
+// required`. The only advertised ACP auth method is a terminal device-code login
+// (`kimi acp --login`), which requires a Kimi *subscription* account.
+//
+// To support plain API-key users, codeg therefore manages BOTH halves:
+//   1. `config.toml` — a codeg-managed `[providers."codeg"]` + `[models."codeg-managed"]`
+//      + `default_model` block that ROUTES INFERENCE to the user's API key
+//      (any of the six native interface types: kimi / openai / openai_responses /
+//      anthropic / google-genai / vertexai).
+//   2. `credentials/kimi-code.json` — a synthetic gate token codeg seeds so the
+//      ACP session opens. It is purely local: because `default_model` points at
+//      the API-key provider, the managed/OAuth endpoint is never called and this
+//      token is never transmitted. It carries a `_codeg_synthetic` marker so we
+//      only ever remove OUR token, never a real login the user performed.
+//
+// The codeg-managed block is keyed by the fixed names `codeg` / `codeg-managed`
+// so it is recognizable and removable without disturbing any provider/model the
+// user added by hand. The raw config.toml editor is the comment/format escape
+// hatch. A stale `KIMI_MODEL_*` env override would silently win over config.toml,
+// so every save also clears it.
+// ---------------------------------------------------------------------------
+
+const KIMI_MANAGED_PROVIDER: &str = "codeg";
+const KIMI_MANAGED_MODEL_ALIAS: &str = "codeg-managed";
+const KIMI_MODEL_API_KEY_ENV: &str = "KIMI_MODEL_API_KEY";
+const KIMI_MODEL_BASE_URL_ENV: &str = "KIMI_MODEL_BASE_URL";
+const KIMI_MODEL_NAME_ENV: &str = "KIMI_MODEL_NAME";
+/// Sentinel `access_token` value (and `_codeg_synthetic` marker) identifying the
+/// gate token codeg seeds, so we never clobber a real OAuth login.
+const KIMI_SYNTHETIC_TOKEN_ACCESS: &str = "codeg-local-gate";
+/// Fallback context window for the managed model. Kimi's config schema **requires**
+/// `[models.<alias>].max_context_size` to be a positive integer — omitting it makes
+/// kimi discard the whole model block ("Ignored invalid config … models.codeg-managed"),
+/// which leaves `default_model` dangling and every prompt ends with no reply. So we
+/// always write one, defaulting to the kimi-k2 256K window when the user leaves it blank.
+const KIMI_DEFAULT_MAX_CONTEXT_SIZE: i64 = 262_144;
+/// The six native provider `type` values Kimi accepts in `[providers.<name>]`.
+const KIMI_INTERFACE_TYPES: &[&str] = &[
+    "kimi",
+    "openai",
+    "openai_responses",
+    "anthropic",
+    "google-genai",
+    "vertexai",
+];
+
+fn kimi_code_config_toml_path() -> PathBuf {
+    crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("config.toml")
+}
+
+/// The synthetic-gate-token file `kimi acp` checks to decide a session is
+/// authenticated (`<KIMI_CODE_HOME>/credentials/kimi-code.json`).
+fn kimi_code_credentials_token_path() -> PathBuf {
+    crate::parsers::kimi_code::resolve_kimi_code_home_dir()
+        .join("credentials")
+        .join("kimi-code.json")
+}
+
+/// The `[providers.<name>].env` variable Kimi reads each interface type's API key
+/// from when the user picks "env sub-table" auth. `None` for vertexai, whose
+/// credentials come from GCP Application Default Credentials (no inline key).
+fn kimi_provider_key_env_var(interface_type: &str) -> Option<&'static str> {
+    match interface_type {
+        "kimi" => Some("KIMI_API_KEY"),
+        "openai" | "openai_responses" => Some("OPENAI_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "google-genai" => Some("GOOGLE_API_KEY"),
+        _ => None,
+    }
+}
+
+/// The resolved codeg-managed provider/model block to write into config.toml.
+struct KimiManagedSpec {
+    interface_type: String,
+    base_url: Option<String>,
+    /// Direct `api_key` field (when the user picks "direct key" auth).
+    api_key: Option<String>,
+    /// `[providers.codeg.env]` sub-table entries — the env-sub-table API key, or
+    /// Vertex's `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`.
+    env: BTreeMap<String, String>,
+    model: String,
+    max_context_size: Option<i64>,
+}
+
+/// Upsert (`Some`) or remove (`None`) the codeg-managed `[providers.codeg]` +
+/// `[models.codeg-managed]` block in a parsed config.toml document, preserving
+/// every other section the user authored. Removal also resets `default_model`
+/// only when it points at our managed alias.
+fn apply_kimi_managed_block(
+    toml_value: &mut toml::Value,
+    spec: Option<&KimiManagedSpec>,
+) -> Result<(), AcpError> {
+    let table = toml_value
+        .as_table_mut()
+        .ok_or_else(|| AcpError::protocol("kimi config root must be a TOML table"))?;
+    match spec {
+        Some(spec) => {
+            let providers = table
+                .entry("providers".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if !providers.is_table() {
+                *providers = toml::Value::Table(toml::map::Map::new());
+            }
+            let providers = providers.as_table_mut().expect("providers set to table");
+            let mut provider_table = toml::map::Map::new();
+            provider_table.insert(
+                "type".to_string(),
+                toml::Value::String(spec.interface_type.clone()),
+            );
+            if let Some(url) = spec.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                provider_table.insert("base_url".to_string(), toml::Value::String(url.to_string()));
+            }
+            if let Some(key) = spec.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                provider_table.insert("api_key".to_string(), toml::Value::String(key.to_string()));
+            }
+            if !spec.env.is_empty() {
+                let mut env_table = toml::map::Map::new();
+                for (k, v) in &spec.env {
+                    let trimmed = v.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    env_table.insert(k.clone(), toml::Value::String(trimmed.to_string()));
+                }
+                if !env_table.is_empty() {
+                    provider_table.insert("env".to_string(), toml::Value::Table(env_table));
+                }
+            }
+            providers.insert(
+                KIMI_MANAGED_PROVIDER.to_string(),
+                toml::Value::Table(provider_table),
+            );
+
+            let models = table
+                .entry("models".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if !models.is_table() {
+                *models = toml::Value::Table(toml::map::Map::new());
+            }
+            let models = models.as_table_mut().expect("models set to table");
+            let mut model_table = toml::map::Map::new();
+            model_table.insert(
+                "provider".to_string(),
+                toml::Value::String(KIMI_MANAGED_PROVIDER.to_string()),
+            );
+            model_table.insert("model".to_string(), toml::Value::String(spec.model.clone()));
+            // Always emit a positive `max_context_size`: kimi's schema requires it and
+            // silently drops the entire model block otherwise (→ empty turns). Fall back
+            // to the default window when the user did not specify one.
+            let ctx = spec
+                .max_context_size
+                .filter(|c| *c > 0)
+                .unwrap_or(KIMI_DEFAULT_MAX_CONTEXT_SIZE);
+            model_table.insert("max_context_size".to_string(), toml::Value::Integer(ctx));
+            models.insert(
+                KIMI_MANAGED_MODEL_ALIAS.to_string(),
+                toml::Value::Table(model_table),
+            );
+
+            table.insert(
+                "default_model".to_string(),
+                toml::Value::String(KIMI_MANAGED_MODEL_ALIAS.to_string()),
+            );
+        }
+        None => {
+            let providers_empty = if let Some(providers) =
+                table.get_mut("providers").and_then(toml::Value::as_table_mut)
+            {
+                providers.remove(KIMI_MANAGED_PROVIDER);
+                providers.is_empty()
+            } else {
+                false
+            };
+            if providers_empty {
+                table.remove("providers");
+            }
+            let models_empty = if let Some(models) =
+                table.get_mut("models").and_then(toml::Value::as_table_mut)
+            {
+                models.remove(KIMI_MANAGED_MODEL_ALIAS);
+                models.is_empty()
+            } else {
+                false
+            };
+            if models_empty {
+                table.remove("models");
+            }
+            if table.get("default_model").and_then(toml::Value::as_str) == Some(KIMI_MANAGED_MODEL_ALIAS)
+            {
+                table.remove("default_model");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read-modify-write `config.toml`, upserting (`Some`) or clearing (`None`) the
+/// codeg-managed block. A clear on a non-existent file is a no-op (never creates
+/// an empty file). Reuses the existing `toml` crate: data in other sections is
+/// preserved; comments/formatting are not (the raw editor covers that).
+fn mutate_kimi_config_toml(spec: Option<&KimiManagedSpec>) -> Result<(), AcpError> {
+    let path = kimi_code_config_toml_path();
+    if spec.is_none() && !path.exists() {
+        return Ok(());
+    }
+    let mut toml_value = if path.exists() {
+        match fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| raw.parse::<toml::Value>().ok())
+        {
+            Some(existing) if existing.is_table() => existing,
+            _ => toml::Value::Table(toml::map::Map::new()),
+        }
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    apply_kimi_managed_block(&mut toml_value, spec)?;
+    let serialized = toml::to_string_pretty(&toml_value)
+        .map_err(|e| AcpError::protocol(format!("serialize kimi config.toml failed: {e}")))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AcpError::protocol(format!("create kimi config directory failed: {e}")))?;
+    }
+    fs::write(&path, format!("{serialized}\n"))
+        .map_err(|e| AcpError::protocol(format!("write kimi config.toml failed: {e}")))?;
+    Ok(())
+}
+
+/// Read and parse a token file, if present and valid JSON.
+fn read_kimi_token_at(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+fn read_kimi_token() -> Option<serde_json::Value> {
+    read_kimi_token_at(&kimi_code_credentials_token_path())
+}
+
+/// Whether a token document is codeg's synthetic gate token (vs a real OAuth
+/// login the user performed via `kimi login`). Matches either the sentinel
+/// `access_token` or the explicit `_codeg_synthetic` marker.
+fn kimi_token_is_synthetic(token: &serde_json::Value) -> bool {
+    token
+        .get("_codeg_synthetic")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || token.get("access_token").and_then(serde_json::Value::as_str)
+            == Some(KIMI_SYNTHETIC_TOKEN_ACCESS)
+}
+
+/// Whether a token document carries a non-empty `access_token` — i.e. would pass
+/// `kimi acp`'s session gate.
+fn kimi_token_has_access(token: &serde_json::Value) -> bool {
+    token
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Whether any usable credential (real or synthetic) is present.
+fn kimi_credential_present() -> bool {
+    read_kimi_token().map(|t| kimi_token_has_access(&t)).unwrap_or(false)
+}
+
+/// Whether the present credential is codeg's synthetic gate token.
+fn kimi_credential_is_synthetic() -> bool {
+    read_kimi_token()
+        .map(|t| kimi_token_is_synthetic(&t))
+        .unwrap_or(false)
+}
+
+/// Seed codeg's synthetic gate token at `path` so `kimi acp` treats the session
+/// as authenticated. No-op (preserves) when a REAL OAuth login token is already
+/// present — that already satisfies the gate and must never be clobbered.
+fn seed_kimi_synthetic_credential_at(path: &Path) -> Result<(), AcpError> {
+    if let Some(existing) = read_kimi_token_at(path) {
+        if kimi_token_has_access(&existing) && !kimi_token_is_synthetic(&existing) {
+            return Ok(());
+        }
+    }
+    let token = serde_json::json!({
+        "access_token": KIMI_SYNTHETIC_TOKEN_ACCESS,
+        "refresh_token": "",
+        "expires_at": 9_999_999_999i64,
+        "expires_in": 9_999_999i64,
+        "scope": "",
+        "token_type": "Bearer",
+        "_codeg_synthetic": true,
+    });
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            AcpError::protocol(format!("create kimi credentials directory failed: {e}"))
+        })?;
+    }
+    let body = serde_json::to_string_pretty(&token)
+        .map_err(|e| AcpError::protocol(format!("serialize kimi credential failed: {e}")))?;
+    fs::write(path, format!("{body}\n"))
+        .map_err(|e| AcpError::protocol(format!("write kimi credential failed: {e}")))?;
+    Ok(())
+}
+
+fn seed_kimi_synthetic_credential() -> Result<(), AcpError> {
+    seed_kimi_synthetic_credential_at(&kimi_code_credentials_token_path())
+}
+
+/// Remove the gate token at `path` ONLY when it is codeg's synthetic one —
+/// leaving any real OAuth login the user performed untouched.
+fn remove_kimi_synthetic_credential_if_ours_at(path: &Path) -> Result<(), AcpError> {
+    match read_kimi_token_at(path) {
+        Some(token) if kimi_token_is_synthetic(&token) => fs::remove_file(path)
+            .map_err(|e| AcpError::protocol(format!("remove kimi credential failed: {e}"))),
+        _ => Ok(()),
+    }
+}
+
+fn remove_kimi_synthetic_credential_if_ours() -> Result<(), AcpError> {
+    remove_kimi_synthetic_credential_if_ours_at(&kimi_code_credentials_token_path())
+}
+
+/// Project the codeg-managed config.toml block into a flat JSON object for the
+/// settings panel, plus the raw file text for the advanced editor. Uses keys
+/// (`baseUrl` / `key` / `modelId`, never `apiBaseUrl` / `apiKey` / `model` /
+/// `env`) that do NOT match `AgentRuntimeConfig`, so `build_runtime_env_from_setting`
+/// never mirrors these file values back into the `KIMI_MODEL_*` runtime env.
+fn project_kimi_managed_config(value: &toml::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = serde_json::Map::new();
+
+    if let Some(provider) = value
+        .get("providers")
+        .and_then(|t| t.get(KIMI_MANAGED_PROVIDER))
+        .and_then(toml::Value::as_table)
+    {
+        let interface_type = provider
+            .get("type")
+            .and_then(toml::Value::as_str)
+            .map(str::to_string);
+        if let Some(itype) = &interface_type {
+            merged.insert(
+                "interfaceType".to_string(),
+                serde_json::Value::String(itype.clone()),
+            );
+        }
+        if let Some(url) = provider
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            merged.insert(
+                "baseUrl".to_string(),
+                serde_json::Value::String(url.to_string()),
+            );
+        }
+        if let Some(key) = provider
+            .get("api_key")
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            merged.insert("key".to_string(), serde_json::Value::String(key.to_string()));
+            merged.insert(
+                "authType".to_string(),
+                serde_json::Value::String("api_key".to_string()),
+            );
+        }
+        if let Some(env) = provider.get("env").and_then(toml::Value::as_table) {
+            if let Some(project) = env.get("GOOGLE_CLOUD_PROJECT").and_then(toml::Value::as_str) {
+                merged.insert(
+                    "vertexProject".to_string(),
+                    serde_json::Value::String(project.to_string()),
+                );
+            }
+            if let Some(location) = env.get("GOOGLE_CLOUD_LOCATION").and_then(toml::Value::as_str) {
+                merged.insert(
+                    "vertexLocation".to_string(),
+                    serde_json::Value::String(location.to_string()),
+                );
+            }
+            if let Some(var) = interface_type.as_deref().and_then(kimi_provider_key_env_var) {
+                if let Some(key) = env
+                    .get(var)
+                    .and_then(toml::Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    merged.insert("key".to_string(), serde_json::Value::String(key.to_string()));
+                    merged.insert(
+                        "authType".to_string(),
+                        serde_json::Value::String("env".to_string()),
+                    );
+                }
+            }
+        }
+    }
+    if let Some(model) = value
+        .get("models")
+        .and_then(|t| t.get(KIMI_MANAGED_MODEL_ALIAS))
+        .and_then(toml::Value::as_table)
+    {
+        if let Some(model_id) = model
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            merged.insert(
+                "modelId".to_string(),
+                serde_json::Value::String(model_id.to_string()),
+            );
+        }
+        if let Some(ctx) = model.get("max_context_size").and_then(toml::Value::as_integer) {
+            merged.insert(
+                "maxContextSize".to_string(),
+                serde_json::Value::Number(ctx.into()),
+            );
+        }
+    }
+
+    let has_managed = merged.contains_key("interfaceType");
+    merged.insert("hasManagedBlock".to_string(), serde_json::Value::Bool(has_managed));
+    merged
+}
+
+fn load_kimi_code_config_json() -> Option<String> {
+    let raw = fs::read_to_string(kimi_code_config_toml_path()).ok();
+    let mut merged = match raw.as_deref().and_then(|text| text.parse::<toml::Value>().ok()) {
+        Some(value) => project_kimi_managed_config(&value),
+        None => {
+            let mut m = serde_json::Map::new();
+            m.insert("hasManagedBlock".to_string(), serde_json::Value::Bool(false));
+            m
+        }
+    };
+    // Surface the gate-credential state so the panel can show whether `kimi acp`
+    // is currently authenticated and whether that came from codeg's synthetic
+    // token or a real OAuth login.
+    merged.insert(
+        "credentialPresent".to_string(),
+        serde_json::Value::Bool(kimi_credential_present()),
+    );
+    merged.insert(
+        "credentialSynthetic".to_string(),
+        serde_json::Value::Bool(kimi_credential_is_synthetic()),
+    );
+    if let Some(text) = raw {
+        merged.insert("rawConfigToml".to_string(), serde_json::Value::String(text));
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(merged)).ok()
+}
+
+/// Structured Kimi Code config update from the settings UI. `mode` is one of:
+/// `apikey` — write the codeg-managed `config.toml` provider/model block AND seed
+/// the synthetic gate token, so the API key actually authenticates `kimi acp`;
+/// `login` — clear the managed block + remove our synthetic token so a real OAuth
+/// login governs; `raw` — write a verbatim config.toml then seed the gate token.
+/// Every mode also clears any stale `KIMI_MODEL_*` env override (it would
+/// silently win over config.toml).
+#[derive(Debug, Clone)]
+pub(crate) struct KimiCodeConfigUpdate {
+    pub mode: String,
+    pub interface_type: Option<String>,
+    pub auth_type: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub max_context_size: Option<i64>,
+    pub vertex_project: Option<String>,
+    pub vertex_location: Option<String>,
+    pub raw_config_toml: Option<String>,
+}
+
+/// Validate + resolve a `native`-mode update into the managed block to write.
+fn build_kimi_managed_spec(update: &KimiCodeConfigUpdate) -> Result<KimiManagedSpec, AcpError> {
+    let interface_type = update.interface_type.as_deref().map(str::trim).unwrap_or("");
+    if !KIMI_INTERFACE_TYPES.contains(&interface_type) {
+        return Err(AcpError::protocol(format!(
+            "unknown kimi interface type: '{interface_type}'"
+        )));
+    }
+    let model = update
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AcpError::protocol("kimi native config requires a model id"))?
+        .to_string();
+    let base_url = update
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(url) = &base_url {
+        if url.contains(['\n', '\r']) {
+            return Err(AcpError::protocol("kimi base url must not contain newlines"));
+        }
+    }
+
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    let mut api_key: Option<String> = None;
+
+    if interface_type == "vertexai" {
+        // Vertex AI: no API key (GCP Application Default Credentials). Persist the
+        // project/location into the provider env sub-table.
+        if let Some(project) = update
+            .vertex_project
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            env.insert("GOOGLE_CLOUD_PROJECT".to_string(), project.to_string());
+        }
+        if let Some(location) = update
+            .vertex_location
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            env.insert("GOOGLE_CLOUD_LOCATION".to_string(), location.to_string());
+        }
+    } else if let Some(key) = update
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if key.contains(['\n', '\r']) {
+            return Err(AcpError::protocol("kimi api key must not contain newlines"));
+        }
+        // "env" auth writes the key into the provider env sub-table under the
+        // interface's canonical key var; otherwise it goes in the inline `api_key`.
+        if update.auth_type.as_deref() == Some("env") {
+            match kimi_provider_key_env_var(interface_type) {
+                Some(var) => {
+                    env.insert(var.to_string(), key.to_string());
+                }
+                None => api_key = Some(key.to_string()),
+            }
+        } else {
+            api_key = Some(key.to_string());
+        }
+    }
+
+    Ok(KimiManagedSpec {
+        interface_type: interface_type.to_string(),
+        base_url,
+        api_key,
+        env,
+        model,
+        max_context_size: update.max_context_size.filter(|c| *c > 0),
+    })
+}
+
+/// Clear any `KIMI_MODEL_*` env override from the DB `env_json`, preserving every
+/// other env key and the agent's enabled/provider state. `kimi acp` reads that
+/// env family BEFORE config.toml, so a stale entry would silently override the
+/// codeg-managed provider; every save clears it to keep config.toml authoritative.
+/// Ensures the settings row exists first. No-op fast path when nothing to clear.
+async fn clear_kimi_model_env(db: &AppDatabase) -> Result<(), AcpError> {
+    let default = agent_setting_service::AgentDefaultInput {
+        agent_type: AgentType::KimiCode,
+        registry_id: registry::registry_id_for(AgentType::KimiCode).to_string(),
+        default_sort_order: i32::MAX / 2,
+    };
+    agent_setting_service::ensure_defaults(&db.conn, &[default])
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::KimiCode)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let enabled = setting.as_ref().map(|m| m.enabled).unwrap_or(true);
+    let model_provider_id = setting.as_ref().and_then(|m| m.model_provider_id);
+    let mut env: BTreeMap<String, String> = setting
+        .and_then(|m| m.env_json)
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let had = env.remove(KIMI_MODEL_BASE_URL_ENV).is_some()
+        | env.remove(KIMI_MODEL_API_KEY_ENV).is_some()
+        | env.remove(KIMI_MODEL_NAME_ENV).is_some();
+    if !had {
+        return Ok(());
+    }
+    let env_json = serde_json::to_string(&env)
+        .map_err(|e| AcpError::protocol(format!("serialize kimi env failed: {e}")))?;
+    agent_setting_service::update(
+        &db.conn,
+        AgentType::KimiCode,
+        agent_setting_service::AgentSettingsUpdate {
+            enabled,
+            env_json: Some(env_json),
+            model_provider_id,
+        },
+    )
+    .await
+    .map_err(|e| AcpError::protocol(e.to_string()))?;
+    Ok(())
+}
+
+/// Apply a structured Kimi config update across both stores (DB `env_json` +
+/// `~/.kimi-code/config.toml`), keeping exactly one authoritative. Validates the
+/// whole request before any write, then writes config.toml first so an env-write
+/// failure can never leave the file pointing at credentials that were rolled back.
+pub(crate) async fn acp_update_kimi_code_config_core(
+    update: KimiCodeConfigUpdate,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    enum FileAction {
+        Managed(Option<KimiManagedSpec>),
+        Raw(String),
+    }
+    // What to do with the synthetic gate token after the config write. `kimi acp`
+    // won't open a session without it, so API-key/raw seed it; OAuth-login removes
+    // only OUR token (never a real login).
+    enum CredentialAction {
+        Seed,
+        RemoveIfOurs,
+    }
+
+    // ---- Plan + validate (no writes yet) ----
+    let (file_action, credential_action) = match update.mode.trim() {
+        "apikey" => (
+            FileAction::Managed(Some(build_kimi_managed_spec(&update)?)),
+            CredentialAction::Seed,
+        ),
+        "login" => (FileAction::Managed(None), CredentialAction::RemoveIfOurs),
+        "raw" => {
+            let raw = update.raw_config_toml.as_deref().unwrap_or("");
+            toml::from_str::<toml::Table>(raw)
+                .map_err(|e| AcpError::protocol(format!("invalid kimi config.toml: {e}")))?;
+            (FileAction::Raw(raw.to_string()), CredentialAction::Seed)
+        }
+        other => {
+            return Err(AcpError::protocol(format!("unknown kimi config mode: '{other}'")));
+        }
+    };
+
+    // ---- Apply: config.toml, then the gate token, then clear the env override ----
+    match file_action {
+        FileAction::Managed(spec) => mutate_kimi_config_toml(spec.as_ref())?,
+        FileAction::Raw(raw) => {
+            let path = kimi_code_config_toml_path();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    AcpError::protocol(format!("create kimi config directory failed: {e}"))
+                })?;
+            }
+            fs::write(&path, raw)
+                .map_err(|e| AcpError::protocol(format!("write kimi config.toml failed: {e}")))?;
+        }
+    }
+    match credential_action {
+        CredentialAction::Seed => seed_kimi_synthetic_credential()?,
+        CredentialAction::RemoveIfOurs => remove_kimi_synthetic_credential_if_ours()?,
+    }
+    clear_kimi_model_env(db).await?;
+    emit_acp_agents_updated(emitter, "config_updated", Some(AgentType::KimiCode));
+    Ok(())
+}
+
+/// `acp_update_kimi_code_config_core` followed by a session staleness refresh.
+/// Shared by the Tauri command and the web handler; returns the count of running
+/// Kimi sessions left on stale (launch-time) config.
+pub(crate) async fn acp_update_kimi_code_config_and_refresh(
+    update: KimiCodeConfigUpdate,
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    data_dir: &Path,
+    emitter: &EventEmitter,
+) -> Result<usize, AcpError> {
+    acp_update_kimi_code_config_core(update, db, emitter).await?;
+    Ok(refresh_config_staleness(
+        manager,
+        db,
+        data_dir,
+        &[AgentType::KimiCode],
+        ConfigStaleKind::AgentConfig,
+    )
+    .await)
+}
+
+/// Validate an API key + endpoint by listing the account's models. GETs
+/// `<base_url>/models` with the key as a Bearer token and returns the model ids
+/// (OpenAI-compatible `{ "data": [{ "id": ... }] }`). Surfaces the provider's
+/// own error message on failure. Lets the settings panel populate a model picker
+/// and doubles as a one-click connection test — directly preventing the
+/// "Not found the model ..." trap of typing a model the account can't access.
+pub(crate) async fn acp_fetch_kimi_models_core(
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, AcpError> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(AcpError::protocol("base URL is required to list models"));
+    }
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(AcpError::protocol("API key is required to list models"));
+    }
+    let url = format!("{base}/models");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(key)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| AcpError::protocol(format!("list models request failed: {e}")))?;
+    let status = resp.status();
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AcpError::protocol(format!("list models returned invalid JSON: {e}")))?;
+    if !status.is_success() {
+        let msg = body
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("request rejected");
+        return Err(AcpError::protocol(format!("{status}: {msg}")));
+    }
+    let mut ids: Vec<String> = body
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    m.get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+// ---------------------------------------------------------------------------
 // Hermes config helpers
 //
 // Hermes self-manages credentials in `~/.hermes/.env` (secrets) and general
@@ -2817,6 +3566,10 @@ fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
         AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
         AgentType::OpenCode => Some(resolve_opencode_config_path()),
         AgentType::Cline => Some(cline_global_state_path()),
+        // Kimi Code's native config is `~/.kimi-code/config.toml`. Exposing the
+        // path lights up "open config file" + staleness tracking; the actual
+        // load/persist are special-cased below (TOML, not the generic JSON path).
+        AgentType::KimiCode => Some(kimi_code_config_toml_path()),
         _ => None,
     }
 }
@@ -2827,6 +3580,9 @@ pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<Stri
     }
     if agent_type == AgentType::Cline {
         return load_cline_local_config_json();
+    }
+    if agent_type == AgentType::KimiCode {
+        return load_kimi_code_config_json();
     }
 
     let path = agent_local_config_path(agent_type)?;
@@ -2872,6 +3628,13 @@ fn persist_agent_local_config_json(
     }
     if agent_type == AgentType::Cline {
         return persist_cline_local_config(config_patch_json);
+    }
+    if agent_type == AgentType::KimiCode {
+        // Kimi's config.toml is written exclusively through the dedicated
+        // `acp_update_kimi_code_config` command (structured/raw modes). The
+        // generic JSON-merge persist must never touch it (it would write JSON
+        // into a TOML file).
+        return Ok(());
     }
 
     let Some(path) = agent_local_config_path(agent_type) else {
@@ -2996,6 +3759,22 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![hermes_home_dir().join("skills")],
             project_rel_dirs: vec![],
+        }),
+        // CodeBuddy is a Claude Code derivative: same `skills` directory
+        // layout, under `~/.codebuddy` instead of `~/.claude`.
+        AgentType::CodeBuddy => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![home_dir_or_default().join(".codebuddy").join("skills")],
+            project_rel_dirs: vec![".codebuddy/skills"],
+        }),
+        // Kimi Code reads skills from `<KIMI_CODE_HOME>/skills/` (default
+        // `~/.kimi-code/skills/`) and project-local `<root>/.kimi-code/skills/`.
+        AgentType::KimiCode => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills"),
+            ],
+            project_rel_dirs: vec![".kimi-code/skills"],
         }),
     }
 }
@@ -3384,6 +4163,10 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "ANTHROPIC_MODEL",
         ),
         AgentType::Gemini => ("GOOGLE_GEMINI_BASE_URL", "GEMINI_API_KEY", "GEMINI_MODEL"),
+        // Kimi Code does NOT read shell KIMI_API_KEY/OPENAI_API_KEY; the only
+        // non-interactive credential path is the `KIMI_MODEL_*` family, which
+        // also takes priority over `~/.kimi-code/config.toml`.
+        AgentType::KimiCode => ("KIMI_MODEL_BASE_URL", "KIMI_MODEL_API_KEY", "KIMI_MODEL_NAME"),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -3524,6 +4307,14 @@ pub(crate) fn parse_provider_model(
         }
         AgentType::Gemini => {
             out.insert("GEMINI_MODEL".to_string(), trimmed_raw.map(str::to_string));
+        }
+        // Kimi reads its model name from KIMI_MODEL_NAME (the `KIMI_MODEL_*`
+        // family), not OPENAI_MODEL — see `agent_env_keys`.
+        AgentType::KimiCode => {
+            out.insert(
+                "KIMI_MODEL_NAME".to_string(),
+                trimmed_raw.map(str::to_string),
+            );
         }
         _ => {
             out.insert("OPENAI_MODEL".to_string(), trimmed_raw.map(str::to_string));
@@ -3721,6 +4512,18 @@ fn cascade_update_agent_config(
             persist_agent_local_config_json(agent_type, Some(&patch_str))?;
         }
         AgentType::Cline => {}
+        AgentType::CodeBuddy => {
+            // CodeBuddy authenticates via env vars (CODEBUDDY_API_KEY /
+            // CODEBUDDY_INTERNET_ENVIRONMENT) managed by its dedicated settings
+            // panel through `acpUpdateAgentEnv`; it does not participate in the
+            // model-provider credential cascade.
+        }
+        AgentType::KimiCode => {
+            // Kimi Code authenticates via the `KIMI_MODEL_*` env family
+            // (KIMI_MODEL_API_KEY / KIMI_MODEL_BASE_URL / KIMI_MODEL_NAME)
+            // managed by its dedicated settings panel through `acpUpdateAgentEnv`;
+            // it does not participate in the model-provider credential cascade.
+        }
     }
     Ok(())
 }
@@ -5044,6 +5847,63 @@ pub async fn acp_update_hermes_config(
     )
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn acp_update_kimi_code_config(
+    mode: String,
+    interface_type: Option<String>,
+    auth_type: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    max_context_size: Option<i64>,
+    vertex_project: Option<String>,
+    vertex_location: Option<String>,
+    raw_config_toml: Option<String>,
+    manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<usize, AcpError> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let emitter = EventEmitter::Tauri(app);
+    acp_update_kimi_code_config_and_refresh(
+        KimiCodeConfigUpdate {
+            mode,
+            interface_type,
+            auth_type,
+            base_url,
+            api_key,
+            model,
+            max_context_size,
+            vertex_project,
+            vertex_location,
+            raw_config_toml,
+        },
+        &db,
+        &manager,
+        &app_data_dir,
+        &emitter,
+    )
+    .await
+}
+
+/// List the models an API key + endpoint can access (validates the key and
+/// populates the Kimi settings model picker). Desktop command; the web handler
+/// calls `acp_fetch_kimi_models_core` directly.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_fetch_kimi_models(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<String>, AcpError> {
+    acp_fetch_kimi_models_core(&base_url, &api_key).await
+}
+
 /// Launch Hermes's interactive setup in the OS terminal. `kind` selects the
 /// flow (`"setup"` → `hermes-acp --setup`, `"model"` → `hermes model`); the
 /// exact command is constructed by the backend from the registry recipe (the
@@ -6142,6 +7002,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codeg-acp-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create test directory");
         dir
+    }
+
+    #[test]
+    fn kimi_code_skill_storage_spec_targets_kimi_home() {
+        let spec =
+            skill_storage_spec(AgentType::KimiCode).expect("Kimi Code supports skills");
+        assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOnly);
+        assert_eq!(spec.project_rel_dirs, vec![".kimi-code/skills"]);
+        let expected = crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills");
+        assert_eq!(spec.global_dirs, vec![expected]);
     }
 
     #[test]
@@ -7889,5 +8759,353 @@ mod tests {
                 assert_eq!(argv.get(py_idx + 1).map(String::as_str), Some("3.13"));
             }
         }
+    }
+
+    #[test]
+    fn kimi_parse_provider_model_uses_kimi_model_name() {
+        let out = parse_provider_model(AgentType::KimiCode, Some("kimi-for-coding"));
+        assert_eq!(
+            out.get("KIMI_MODEL_NAME"),
+            Some(&Some("kimi-for-coding".to_string()))
+        );
+        assert!(!out.contains_key("OPENAI_MODEL"));
+    }
+
+    #[test]
+    fn kimi_managed_block_writes_provider_model_and_default() {
+        let spec = KimiManagedSpec {
+            interface_type: "anthropic".to_string(),
+            base_url: Some("https://api.anthropic.com".to_string()),
+            api_key: Some("sk-ant".to_string()),
+            env: BTreeMap::new(),
+            model: "claude-opus-4-7".to_string(),
+            max_context_size: Some(200_000),
+        };
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        // Pre-existing user content that must survive a managed-block write.
+        doc.as_table_mut()
+            .unwrap()
+            .insert("telemetry".to_string(), toml::Value::Boolean(true));
+        apply_kimi_managed_block(&mut doc, Some(&spec)).expect("write managed block");
+        // Round-trip through the serializer the real writer uses.
+        let serialized = toml::to_string_pretty(&doc).expect("serialize");
+        let reparsed: toml::Value = serialized.parse().expect("valid toml");
+        let t = reparsed.as_table().unwrap();
+        assert_eq!(t.get("telemetry").and_then(toml::Value::as_bool), Some(true));
+        assert_eq!(
+            t.get("default_model").and_then(toml::Value::as_str),
+            Some(KIMI_MANAGED_MODEL_ALIAS)
+        );
+        let provider = t
+            .get("providers")
+            .and_then(|p| p.get(KIMI_MANAGED_PROVIDER))
+            .and_then(toml::Value::as_table)
+            .expect("managed provider present");
+        assert_eq!(
+            provider.get("type").and_then(toml::Value::as_str),
+            Some("anthropic")
+        );
+        assert_eq!(
+            provider.get("api_key").and_then(toml::Value::as_str),
+            Some("sk-ant")
+        );
+        let model = t
+            .get("models")
+            .and_then(|m| m.get(KIMI_MANAGED_MODEL_ALIAS))
+            .and_then(toml::Value::as_table)
+            .expect("managed model present");
+        assert_eq!(
+            model.get("provider").and_then(toml::Value::as_str),
+            Some(KIMI_MANAGED_PROVIDER)
+        );
+        assert_eq!(
+            model.get("model").and_then(toml::Value::as_str),
+            Some("claude-opus-4-7")
+        );
+        assert_eq!(
+            model.get("max_context_size").and_then(toml::Value::as_integer),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn kimi_managed_block_always_writes_positive_max_context_size() {
+        // Regression: kimi's schema requires `max_context_size` to be a positive
+        // integer and silently discards the whole `[models.*]` block when it is
+        // missing — leaving `default_model` dangling so every prompt ends with no
+        // reply. A blank field MUST therefore still serialize a positive default.
+        for ctx in [None, Some(0), Some(-5)] {
+            let spec = KimiManagedSpec {
+                interface_type: "kimi".to_string(),
+                base_url: Some("https://api.moonshot.cn/v1".to_string()),
+                api_key: Some("sk-test".to_string()),
+                env: BTreeMap::new(),
+                model: "kimi-k2.7-code".to_string(),
+                max_context_size: ctx,
+            };
+            let mut doc = toml::Value::Table(toml::map::Map::new());
+            apply_kimi_managed_block(&mut doc, Some(&spec)).expect("write managed block");
+            let serialized = toml::to_string_pretty(&doc).expect("serialize");
+            let reparsed: toml::Value = serialized.parse().expect("valid toml");
+            let written = reparsed
+                .get("models")
+                .and_then(|m| m.get(KIMI_MANAGED_MODEL_ALIAS))
+                .and_then(|m| m.get("max_context_size"))
+                .and_then(toml::Value::as_integer)
+                .expect("max_context_size present for ctx input");
+            assert!(
+                written > 0,
+                "expected a positive max_context_size for input {ctx:?}, got {written}"
+            );
+            assert_eq!(written, KIMI_DEFAULT_MAX_CONTEXT_SIZE);
+        }
+    }
+
+    #[test]
+    fn kimi_managed_block_clear_preserves_user_sections() {
+        let mut doc: toml::Value = r#"
+default_model = "mine"
+[providers.codeg]
+type = "openai"
+api_key = "sk"
+[providers.mine]
+type = "openai"
+api_key = "sk-user"
+[models.codeg-managed]
+provider = "codeg"
+model = "x"
+[models.mine]
+provider = "mine"
+model = "gpt"
+"#
+        .parse()
+        .expect("valid toml");
+        apply_kimi_managed_block(&mut doc, None).expect("clear managed block");
+        let t = doc.as_table().unwrap();
+        // A user-owned default_model (not our alias) survives untouched.
+        assert_eq!(
+            t.get("default_model").and_then(toml::Value::as_str),
+            Some("mine")
+        );
+        let providers = t.get("providers").and_then(toml::Value::as_table).unwrap();
+        assert!(!providers.contains_key(KIMI_MANAGED_PROVIDER));
+        assert!(providers.contains_key("mine"));
+        let models = t.get("models").and_then(toml::Value::as_table).unwrap();
+        assert!(!models.contains_key(KIMI_MANAGED_MODEL_ALIAS));
+        assert!(models.contains_key("mine"));
+    }
+
+    #[test]
+    fn kimi_managed_block_clear_resets_our_default_and_empties() {
+        let mut doc: toml::Value = r#"
+default_model = "codeg-managed"
+[providers.codeg]
+type = "kimi"
+[models.codeg-managed]
+provider = "codeg"
+model = "kimi-for-coding"
+"#
+        .parse()
+        .expect("valid toml");
+        apply_kimi_managed_block(&mut doc, None).expect("clear");
+        let t = doc.as_table().unwrap();
+        assert!(t.get("default_model").is_none());
+        // Emptied tables are dropped entirely.
+        assert!(t.get("providers").is_none());
+        assert!(t.get("models").is_none());
+    }
+
+    #[test]
+    fn kimi_build_spec_env_auth_writes_provider_key_var() {
+        let update = KimiCodeConfigUpdate {
+            mode: "apikey".to_string(),
+            interface_type: Some("openai".to_string()),
+            auth_type: Some("env".to_string()),
+            base_url: Some("https://api.deepseek.com/v1".to_string()),
+            api_key: Some("sk-deep".to_string()),
+            model: Some("deepseek-chat".to_string()),
+            max_context_size: None,
+            vertex_project: None,
+            vertex_location: None,
+            raw_config_toml: None,
+        };
+        let spec = build_kimi_managed_spec(&update).expect("valid spec");
+        // env auth → key lands in the provider env sub-table, NOT the inline field.
+        assert!(spec.api_key.is_none());
+        assert_eq!(spec.env.get("OPENAI_API_KEY"), Some(&"sk-deep".to_string()));
+    }
+
+    #[test]
+    fn kimi_build_spec_vertex_uses_adc_not_api_key() {
+        let update = KimiCodeConfigUpdate {
+            mode: "apikey".to_string(),
+            interface_type: Some("vertexai".to_string()),
+            auth_type: None,
+            base_url: None,
+            api_key: Some("ignored".to_string()),
+            model: Some("gemini-2.5-pro".to_string()),
+            max_context_size: None,
+            vertex_project: Some("my-proj".to_string()),
+            vertex_location: Some("us-central1".to_string()),
+            raw_config_toml: None,
+        };
+        let spec = build_kimi_managed_spec(&update).expect("valid vertex spec");
+        assert!(spec.api_key.is_none());
+        assert_eq!(
+            spec.env.get("GOOGLE_CLOUD_PROJECT"),
+            Some(&"my-proj".to_string())
+        );
+        assert_eq!(
+            spec.env.get("GOOGLE_CLOUD_LOCATION"),
+            Some(&"us-central1".to_string())
+        );
+    }
+
+    #[test]
+    fn kimi_build_spec_rejects_unknown_type_and_missing_model() {
+        let base = KimiCodeConfigUpdate {
+            mode: "apikey".to_string(),
+            interface_type: Some("nope".to_string()),
+            auth_type: None,
+            base_url: None,
+            api_key: None,
+            model: Some("m".to_string()),
+            max_context_size: None,
+            vertex_project: None,
+            vertex_location: None,
+            raw_config_toml: None,
+        };
+        assert!(build_kimi_managed_spec(&base).is_err());
+        let no_model = KimiCodeConfigUpdate {
+            interface_type: Some("kimi".to_string()),
+            model: None,
+            ..base.clone()
+        };
+        assert!(build_kimi_managed_spec(&no_model).is_err());
+    }
+
+    #[test]
+    fn kimi_project_managed_config_uses_non_colliding_keys() {
+        // The projection MUST avoid AgentRuntimeConfig keys (apiKey / apiBaseUrl /
+        // model / env); otherwise `build_runtime_env_from_setting` would mirror the
+        // config.toml values back into the KIMI_MODEL_* runtime env, defeating the
+        // single-source-of-truth between env override and config.toml.
+        let value: toml::Value = r#"
+default_model = "codeg-managed"
+[providers.codeg]
+type = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant"
+[models.codeg-managed]
+provider = "codeg"
+model = "claude-opus-4-7"
+max_context_size = 200000
+"#
+        .parse()
+        .expect("valid toml");
+        let proj = project_kimi_managed_config(&value);
+        assert_eq!(
+            proj.get("interfaceType").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            proj.get("baseUrl").and_then(|v| v.as_str()),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(proj.get("key").and_then(|v| v.as_str()), Some("sk-ant"));
+        assert_eq!(proj.get("authType").and_then(|v| v.as_str()), Some("api_key"));
+        assert_eq!(
+            proj.get("modelId").and_then(|v| v.as_str()),
+            Some("claude-opus-4-7")
+        );
+        assert_eq!(
+            proj.get("maxContextSize").and_then(|v| v.as_i64()),
+            Some(200000)
+        );
+        assert_eq!(proj.get("hasManagedBlock"), Some(&serde_json::Value::Bool(true)));
+        for forbidden in [
+            "apiKey",
+            "apiBaseUrl",
+            "api_key",
+            "api_base_url",
+            "model",
+            "env",
+        ] {
+            assert!(
+                !proj.contains_key(forbidden),
+                "projection must not contain colliding key {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn kimi_project_managed_config_env_subtable_surfaces_as_env_auth() {
+        let value: toml::Value = r#"
+[providers.codeg]
+type = "openai"
+[providers.codeg.env]
+OPENAI_API_KEY = "sk-x"
+[models.codeg-managed]
+provider = "codeg"
+model = "gpt"
+"#
+        .parse()
+        .expect("valid toml");
+        let proj = project_kimi_managed_config(&value);
+        assert_eq!(proj.get("key").and_then(|v| v.as_str()), Some("sk-x"));
+        assert_eq!(proj.get("authType").and_then(|v| v.as_str()), Some("env"));
+    }
+
+    #[test]
+    fn kimi_seed_synthetic_credential_opens_gate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("credentials").join("kimi-code.json");
+        seed_kimi_synthetic_credential_at(&path).expect("seed");
+        let token = read_kimi_token_at(&path).expect("token written");
+        // A non-empty access_token is exactly what `kimi acp`'s session gate
+        // (`harnessIsAuthed`) checks — and it must be flagged as ours.
+        assert!(kimi_token_has_access(&token));
+        assert!(kimi_token_is_synthetic(&token));
+        assert_eq!(
+            token.get("access_token").and_then(|v| v.as_str()),
+            Some(KIMI_SYNTHETIC_TOKEN_ACCESS)
+        );
+    }
+
+    #[test]
+    fn kimi_seed_preserves_a_real_login_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("credentials").join("kimi-code.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A real OAuth login: non-empty access_token, no synthetic marker.
+        std::fs::write(
+            &path,
+            r#"{"access_token":"real-oauth-abc","token_type":"Bearer"}"#,
+        )
+        .unwrap();
+        seed_kimi_synthetic_credential_at(&path).expect("seed");
+        let token = read_kimi_token_at(&path).expect("token");
+        assert_eq!(
+            token.get("access_token").and_then(|v| v.as_str()),
+            Some("real-oauth-abc"),
+            "a real login must never be clobbered by the synthetic seed"
+        );
+        assert!(!kimi_token_is_synthetic(&token));
+    }
+
+    #[test]
+    fn kimi_remove_if_ours_deletes_synthetic_but_keeps_real() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("credentials").join("kimi-code.json");
+        // Synthetic → removed.
+        seed_kimi_synthetic_credential_at(&path).expect("seed");
+        assert!(path.exists());
+        remove_kimi_synthetic_credential_if_ours_at(&path).expect("remove");
+        assert!(!path.exists());
+        // Real login → preserved.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"access_token":"real-oauth-abc"}"#).unwrap();
+        remove_kimi_synthetic_credential_if_ours_at(&path).expect("remove");
+        assert!(path.exists(), "a real login token must not be removed");
     }
 }

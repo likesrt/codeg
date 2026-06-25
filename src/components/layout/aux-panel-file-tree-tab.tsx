@@ -28,6 +28,7 @@ import {
   useFileTreeClipboard,
   type FileTreeClipboardItem,
 } from "@/hooks/use-file-tree-clipboard"
+import { isOfficePreviewable } from "@/lib/language-detect"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
@@ -2723,6 +2724,32 @@ export function FileTreeTab() {
     rejectFileTab,
     announceConflict,
   ])
+
+  // Auto-surface office files (.docx/.xlsx/.pptx) the agent produces: the first
+  // time one appears in changed_paths with no tab open for it, open its live
+  // preview. Once open, the OfficePreview tracks further edits itself, so we
+  // never re-open — that avoids pane thrash from officecli's incremental writes
+  // (and decideLoad re-activating the file pane on every cache-hit reopen).
+  useEffect(() => {
+    if (!subscribeWorkspaceEnvelopes) return
+    return subscribeWorkspaceEnvelopes(({ changed_paths }) => {
+      if (!changed_paths || changed_paths.length === 0) return
+      const openPaths = new Set(
+        fileTabsRef.current
+          .filter((t) => t.kind === "file" && t.path)
+          .map((t) => normalizeComparePath(t.path as string))
+      )
+      const seen = new Set<string>()
+      for (const changed of changed_paths) {
+        const norm = normalizeComparePath(changed)
+        if (seen.has(norm)) continue
+        seen.add(norm)
+        if (isOfficePreviewable(changed) && !openPaths.has(norm)) {
+          void openFilePreview(changed)
+        }
+      }
+    })
+  }, [subscribeWorkspaceEnvelopes, openFilePreview])
 
   // Stale-on-activation: when the user switches to (or just opened) a tab
   // that the watcher previously flagged stale, fire the appropriate action

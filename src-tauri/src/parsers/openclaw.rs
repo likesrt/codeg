@@ -1072,6 +1072,7 @@ fn extract_tool_result_content(value: &serde_json::Value) -> Vec<ContentBlock> {
         output_preview: output,
         is_error,
         agent_stats: None,
+        images: Vec::new(),
     });
 
     blocks

@@ -640,6 +640,14 @@ pub fn build_router(
             post(handlers::acp::acp_update_hermes_config),
         )
         .route(
+            "/acp_update_kimi_code_config",
+            post(handlers::acp::acp_update_kimi_code_config),
+        )
+        .route(
+            "/acp_fetch_kimi_models",
+            post(handlers::acp::acp_fetch_kimi_models),
+        )
+        .route(
             "/acp_download_agent_binary",
             post(handlers::acp::acp_download_agent_binary),
         )
@@ -724,6 +732,47 @@ pub fn build_router(
         .route(
             "/experts_open_central_dir",
             post(handlers::experts::experts_open_central_dir),
+        )
+        // ─── Office tools ───
+        .route(
+            "/officecli_detect",
+            post(handlers::office_tools::officecli_detect),
+        )
+        .route(
+            "/officecli_install",
+            post(handlers::office_tools::officecli_install),
+        )
+        .route(
+            "/officecli_uninstall",
+            post(handlers::office_tools::officecli_uninstall),
+        )
+        .route(
+            "/officecli_list_skills",
+            post(handlers::office_tools::officecli_list_skills),
+        )
+        .route(
+            "/officecli_sync_skills",
+            post(handlers::office_tools::officecli_sync_skills),
+        )
+        .route(
+            "/officecli_skill_link_to_agent",
+            post(handlers::office_tools::officecli_skill_link_to_agent),
+        )
+        .route(
+            "/officecli_skill_unlink_from_agent",
+            post(handlers::office_tools::officecli_skill_unlink_from_agent),
+        )
+        .route(
+            "/officecli_skill_get_install_status",
+            post(handlers::office_tools::officecli_skill_get_install_status),
+        )
+        .route(
+            "/officecli_skill_read_content",
+            post(handlers::office_tools::officecli_skill_read_content),
+        )
+        .route(
+            "/officecli_render_html",
+            post(handlers::office_tools::officecli_render_html),
         )
         // ─── Project boot ───
         .route(

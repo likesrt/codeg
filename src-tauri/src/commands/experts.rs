@@ -357,12 +357,12 @@ fn save_manifest(manifest: &Manifest) -> Result<(), ExpertsError> {
 // ─── Link operations ────────────────────────────────────────────────────
 
 #[cfg(unix)]
-fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
+pub(crate) fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
     std::os::unix::fs::symlink(src, dst).map(|_| false)
 }
 
 #[cfg(windows)]
-fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
+pub(crate) fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
     match junction::create(src, dst) {
         Ok(_) => Ok(false),
         Err(junction_err) => {
@@ -400,7 +400,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 /// Best-effort human-readable link target. On Windows, `fs::read_link`
 /// does not resolve junctions in all stdlib versions — prefer the
 /// `junction` crate when the path is a reparse point.
-fn read_link_target(path: &Path) -> Option<PathBuf> {
+pub(crate) fn read_link_target(path: &Path) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         if path_is_reparse_point(path) {
@@ -412,7 +412,7 @@ fn read_link_target(path: &Path) -> Option<PathBuf> {
     fs::read_link(path).ok()
 }
 
-fn path_is_symlink(path: &Path) -> bool {
+pub(crate) fn path_is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false)
@@ -461,7 +461,7 @@ fn resolve_real_path(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
 }
 
-fn classify_link(link_path: &Path, expected_target: &Path) -> ExpertLinkState {
+pub(crate) fn classify_link(link_path: &Path, expected_target: &Path) -> ExpertLinkState {
     // No entry at all (not even a dangling link) → not linked.
     let meta = match fs::symlink_metadata(link_path) {
         Ok(m) => m,
@@ -793,6 +793,8 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::OpenClaw,
         AgentType::Cline,
         AgentType::Hermes,
+        AgentType::CodeBuddy,
+        AgentType::KimiCode,
     ];
     ALL.iter()
         .filter(|a| skill_storage_spec(**a).is_some())

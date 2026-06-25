@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { subscribe } from "@/lib/platform"
 import { FOLDER_OPEN_IN_WORKSPACE_EVENT } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
@@ -22,6 +23,7 @@ import type { FolderDetail } from "@/lib/types"
 export function WorkspaceOpenFolderListener() {
   const { upsertFolder, setBranch, refreshConversations } = useAppWorkspace()
   const { openNewConversationTab } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
 
   useEffect(() => {
     let disposed = false
@@ -33,6 +35,9 @@ export function WorkspaceOpenFolderListener() {
         (detail) => {
           upsertFolder(detail)
           setBranch(detail.id, detail.git_branch ?? null)
+          // Return to the conversation workspace if a route (e.g. Automations)
+          // was covering the content region, else the new tab opens unseen.
+          openConversations()
           openNewConversationTab(detail.id, detail.path)
           void refreshConversations()
         }
@@ -47,7 +52,13 @@ export function WorkspaceOpenFolderListener() {
       disposed = true
       unlisten?.()
     }
-  }, [upsertFolder, setBranch, refreshConversations, openNewConversationTab])
+  }, [
+    upsertFolder,
+    setBranch,
+    refreshConversations,
+    openNewConversationTab,
+    openConversations,
+  ])
 
   return null
 }

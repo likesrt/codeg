@@ -23,6 +23,7 @@ import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
@@ -55,6 +56,7 @@ export function FolderTitleBar() {
   const { isOpen: auxPanelOpen, toggle: toggleAuxPanel } = useAuxPanelContext()
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
   const { openNewConversationTab } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
   // Search open-state is shared (see search-dialog-context): the trigger now
@@ -139,6 +141,9 @@ export function FolderTitleBar() {
       if (matchShortcutEvent(e, shortcuts.new_conversation)) {
         if (!activeFolder) return
         e.preventDefault()
+        // Return to the conversation workspace if a route (e.g. Automations)
+        // was covering the content region, else the new tab opens unseen.
+        openConversations()
         openNewConversationTab(activeFolder.id, activeFolder.path)
         return
       }
@@ -158,6 +163,7 @@ export function FolderTitleBar() {
     activeFolder,
     handleOpenFolder,
     handleOpenSettings,
+    openConversations,
     openNewConversationTab,
     setSearchOpen,
     shortcuts,
