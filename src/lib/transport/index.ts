@@ -74,6 +74,16 @@ export function isRemoteDesktopMode(): boolean {
   return _remoteTransport !== null
 }
 
+/// Base URL of the codeg server backing the current transport, for building
+/// raw resource URLs that bypass the JSON transport (iframes, downloads).
+/// Remote-desktop → the remote host; web → this page's origin. In pure-desktop
+/// mode there's no server (callers use loopback / `invoke`), so this returns
+/// the local origin only as a harmless fallback.
+export function getServerBaseUrl(): string {
+  if (_remoteConfig) return _remoteConfig.baseUrl.replace(/\/+$/, "")
+  return typeof window !== "undefined" ? window.location.origin : ""
+}
+
 /// Surface a remote-server 401 to the same UI the transport uses for its
 /// own auth failures. Direct `invoke()` calls (workspace file
 /// upload/download) bypass `RemoteDesktopTransport.call`, so without

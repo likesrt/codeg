@@ -102,3 +102,26 @@ pub async fn officecli_render_html(
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeWatchParams {
+    pub root_path: String,
+    pub path: String,
+}
+
+pub async fn start_office_watch(
+    Json(params): Json<OfficeWatchParams>,
+) -> Result<Json<crate::office_watch::OfficeWatchStarted>, AppCommandError> {
+    // `?` converts WatchError → AppCommandError, carrying the machine code.
+    let result =
+        crate::office_watch::start_office_watch_core(params.root_path, params.path).await?;
+    Ok(Json(result))
+}
+
+pub async fn stop_office_watch(
+    Json(params): Json<OfficeWatchParams>,
+) -> Result<Json<()>, AppCommandError> {
+    crate::office_watch::stop_office_watch_core(params.root_path, params.path).await?;
+    Ok(Json(()))
+}

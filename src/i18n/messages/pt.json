@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "Renderiza animações Morph, 3D e fórmulas (executa os scripts do próprio slide)",
       "officeNotInstalled": "OfficeCLI não está instalado",
       "officeNotInstalledHint": "Instale o OfficeCLI em Configurações → Ferramentas do Office para pré-visualizar arquivos do Word, Excel e PowerPoint.",
-      "officeOpenSettings": "Abrir configurações"
+      "officeOpenSettings": "Abrir configurações",
+      "officeWatchFailed": "Não foi possível iniciar a visualização ao vivo",
+      "officeWatchRetry": "Tentar novamente",
+      "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
+      "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "{synced} habilidades sincronizadas",
       "syncPartial": "{synced} sincronizadas, {errors} falharam",
       "syncFailed": "Falha ao sincronizar habilidades"
-    }
+    },
+    "autoPreviewLabel": "Abrir visualização automaticamente",
+    "autoPreviewHint": "Quando um agente cria ou edita um arquivo do Word, Excel ou PowerPoint, abre sua visualização ao vivo automaticamente."
   },
   "QuickMessagesSettings": {
     "title": "Mensagens rápidas",

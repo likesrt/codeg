@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "Morph 애니메이션, 3D, 수식을 렌더링합니다(슬라이드 자체 스크립트 실행).",
       "officeNotInstalled": "OfficeCLI가 설치되지 않았습니다",
       "officeNotInstalledHint": "설정 → Office 도구에서 OfficeCLI를 설치하면 Word, Excel, PowerPoint 파일을 미리볼 수 있습니다.",
-      "officeOpenSettings": "설정 열기"
+      "officeOpenSettings": "설정 열기",
+      "officeWatchFailed": "실시간 미리보기를 시작할 수 없습니다",
+      "officeWatchRetry": "다시 시도",
+      "officeServerInstallHint": "OfficeCLI는 서버 호스트에 설치해야 합니다. 서버에서 다음 명령을 실행한 후 다시 시도하세요:",
+      "officeRemoteDesktopUnsupported": "원격 데스크톱 창에서는 실시간 미리보기를 사용할 수 없습니다. Office 파일을 미리 보려면 서버의 웹 UI에서 이 작업 공간을 여세요."
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "{synced}개 스킬 동기화 완료",
       "syncPartial": "{synced}개 동기화, {errors}개 실패",
       "syncFailed": "스킬 동기화 실패"
-    }
+    },
+    "autoPreviewLabel": "미리보기 자동 열기",
+    "autoPreviewHint": "에이전트가 Word, Excel, PowerPoint 파일을 만들거나 편집하면 실시간 미리보기를 자동으로 엽니다."
   },
   "QuickMessagesSettings": {
     "title": "빠른 메시지",

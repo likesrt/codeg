@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "Affiche les animations Morph, la 3D et les formules (exécute les scripts de la diapositive)",
       "officeNotInstalled": "OfficeCLI n'est pas installé",
       "officeNotInstalledHint": "Installe OfficeCLI dans Paramètres → Outils Office pour prévisualiser les fichiers Word, Excel et PowerPoint.",
-      "officeOpenSettings": "Ouvrir les paramètres"
+      "officeOpenSettings": "Ouvrir les paramètres",
+      "officeWatchFailed": "Impossible de démarrer l'aperçu en direct",
+      "officeWatchRetry": "Réessayer",
+      "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
+      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "{synced} compétences synchronisées",
       "syncPartial": "{synced} synchronisées, {errors} échouées",
       "syncFailed": "Échec de la synchronisation des compétences"
-    }
+    },
+    "autoPreviewLabel": "Ouvrir l'aperçu automatiquement",
+    "autoPreviewHint": "Lorsqu'un agent crée ou modifie un fichier Word, Excel ou PowerPoint, ouvrir automatiquement son aperçu en direct."
   },
   "QuickMessagesSettings": {
     "title": "Messages rapides",

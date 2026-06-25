@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "يعرض حركات Morph والأبعاد الثلاثية والمعادلات (يشغّل سكربتات الشريحة نفسها)",
       "officeNotInstalled": "OfficeCLI غير مثبّت",
       "officeNotInstalledHint": "ثبّت OfficeCLI من الإعدادات → أدوات Office لمعاينة ملفات Word و Excel و PowerPoint.",
-      "officeOpenSettings": "فتح الإعدادات"
+      "officeOpenSettings": "فتح الإعدادات",
+      "officeWatchFailed": "تعذّر بدء المعاينة المباشرة",
+      "officeWatchRetry": "إعادة المحاولة",
+      "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
+      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "تمت مزامنة {synced} مهارة",
       "syncPartial": "تمت مزامنة {synced}، فشلت {errors}",
       "syncFailed": "فشل مزامنة المهارات"
-    }
+    },
+    "autoPreviewLabel": "فتح المعاينة تلقائيًا",
+    "autoPreviewHint": "عندما ينشئ وكيل ملف Word أو Excel أو PowerPoint أو يعدّله، افتح معاينته المباشرة تلقائيًا."
   },
   "QuickMessagesSettings": {
     "title": "رسائل سريعة",

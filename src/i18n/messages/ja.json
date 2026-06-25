@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "Morph アニメーション・3D・数式を描画します（スライド自身のスクリプトを実行）",
       "officeNotInstalled": "OfficeCLI がインストールされていません",
       "officeNotInstalledHint": "設定 → Office ツール から OfficeCLI をインストールすると、Word・Excel・PowerPoint ファイルをプレビューできます。",
-      "officeOpenSettings": "設定を開く"
+      "officeOpenSettings": "設定を開く",
+      "officeWatchFailed": "ライブプレビューを開始できませんでした",
+      "officeWatchRetry": "再試行",
+      "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
+      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "{synced} 個のスキルを同期しました",
       "syncPartial": "{synced} 個同期、{errors} 個失敗",
       "syncFailed": "スキルの同期に失敗"
-    }
+    },
+    "autoPreviewLabel": "プレビューを自動で開く",
+    "autoPreviewHint": "エージェントが Word、Excel、PowerPoint ファイルを作成または編集したときに、ライブプレビューを自動で開きます。"
   },
   "QuickMessagesSettings": {
     "title": "クイックメッセージ",

@@ -15,6 +15,7 @@ pub mod keyring_store;
 pub mod logging;
 pub mod models;
 mod network;
+pub mod office_watch;
 pub mod parsers;
 pub mod paths;
 pub mod pet_sessions;
@@ -602,6 +603,16 @@ mod tauri_app {
                     ));
                 }
 
+                // Office watch preview servers: reap dead children + ref0
+                // stragglers (live previews are never swept). Override via
+                // `CODEG_OFFICE_WATCH_IDLE_TIMEOUT_SECS` (`0` disables).
+                if let Some(idle_timeout) = crate::office_watch::idle_timeout_from_env() {
+                    tauri::async_runtime::spawn(crate::office_watch::office_watch_idle_sweep_task(
+                        idle_timeout,
+                        std::time::Duration::from_secs(crate::office_watch::SWEEP_INTERVAL_SECS),
+                    ));
+                }
+
                 // Automation engine: drives manual + scheduled fires, settles
                 // runs off the event bus, reconciles, and recovers on boot. One
                 // per process; mirrored in `bin/codeg_server.rs`.
@@ -1067,6 +1078,8 @@ mod tauri_app {
                 office_tools_commands::officecli_skill_get_install_status,
                 office_tools_commands::officecli_skill_read_content,
                 office_tools_commands::officecli_render_html,
+                office_tools_commands::start_office_watch,
+                office_tools_commands::stop_office_watch,
                 folder_commands::list_folder_commands,
                 folder_commands::create_folder_command,
                 folder_commands::update_folder_command,
@@ -1162,6 +1175,7 @@ mod tauri_app {
                     if let Some(tm) = app.try_state::<TerminalManager>() {
                         tm.kill_all();
                     }
+                    crate::office_watch::stop_all_office_watches();
                     if let Some(cm) = app.try_state::<ConnectionManager>() {
                         tauri::async_runtime::block_on(cm.disconnect_all());
                     }

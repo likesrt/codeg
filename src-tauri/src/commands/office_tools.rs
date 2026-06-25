@@ -24,6 +24,7 @@ use crate::commands::experts::{
     central_experts_dir, classify_link, create_link_raw, path_is_symlink, read_link_target,
     ExpertInstallStatus, ExpertLinkState,
 };
+use crate::app_error::AppCommandError;
 use crate::commands::folders::resolve_tree_path;
 use crate::models::agent::AgentType;
 use crate::process::tokio_command;
@@ -266,7 +267,7 @@ fn agent_link_path(agent: AgentType, skill_id: &str) -> Result<PathBuf, OfficeTo
 
 // ─── Binary detection ──────────────────────────────────────────────────
 
-fn resolve_officecli() -> Option<PathBuf> {
+pub(crate) fn resolve_officecli() -> Option<PathBuf> {
     if let Some(p) = resolve_command_on_path("officecli") {
         return Some(p);
     }
@@ -680,7 +681,7 @@ pub async fn officecli_skill_read_content(skill_id: String) -> Result<String, Of
 
 // ─── Commands: office file preview ─────────────────────────────────────
 
-fn is_office_path(path: &Path) -> bool {
+pub(crate) fn is_office_path(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|e| e.to_str())
@@ -754,4 +755,30 @@ pub async fn officecli_render_html(
         ));
     }
     Ok(html)
+}
+
+// ─── Commands: office live preview (watch) ─────────────────────────────
+
+/// Start (or share, by ref-count) a long-lived `officecli watch` HTTP preview
+/// server for an office file and return its loopback port. The live preview is
+/// driven by officecli's own SSE refresh, so it no longer races the agent's
+/// edits for the file on disk (the bug the one-shot `view html` path caused on
+/// Windows). See `crate::office_watch`.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn start_office_watch(
+    root_path: String,
+    path: String,
+) -> Result<crate::office_watch::OfficeWatchStarted, AppCommandError> {
+    crate::office_watch::start_office_watch_core(root_path, path)
+        .await
+        .map_err(Into::into)
+}
+
+/// Release one reference to the watch preview for an office file; kills the
+/// server when the last viewer goes away.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn stop_office_watch(root_path: String, path: String) -> Result<(), AppCommandError> {
+    crate::office_watch::stop_office_watch_core(root_path, path)
+        .await
+        .map_err(Into::into)
 }

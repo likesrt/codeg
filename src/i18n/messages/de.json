@@ -1312,7 +1312,11 @@
       "officeFullRenderHint": "Stellt Morph-Animationen, 3D und Formeln dar (führt die Skripte der Folie aus)",
       "officeNotInstalled": "OfficeCLI ist nicht installiert",
       "officeNotInstalledHint": "Installiere OfficeCLI unter Einstellungen → Office-Tools, um Word-, Excel- und PowerPoint-Dateien vorzuschauen.",
-      "officeOpenSettings": "Einstellungen öffnen"
+      "officeOpenSettings": "Einstellungen öffnen",
+      "officeWatchFailed": "Live-Vorschau konnte nicht gestartet werden",
+      "officeWatchRetry": "Erneut versuchen",
+      "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
+      "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
     },
     "branchDropdown": {
       "toasts": {
@@ -2814,7 +2818,9 @@
       "syncSuccess": "{synced} Skills erfolgreich synchronisiert",
       "syncPartial": "{synced} synchronisiert, {errors} fehlgeschlagen",
       "syncFailed": "Skills konnten nicht synchronisiert werden"
-    }
+    },
+    "autoPreviewLabel": "Vorschau automatisch öffnen",
+    "autoPreviewHint": "Wenn ein Agent eine Word-, Excel- oder PowerPoint-Datei erstellt oder bearbeitet, wird die Live-Vorschau automatisch geöffnet."
   },
   "QuickMessagesSettings": {
     "title": "Schnellnachrichten",
