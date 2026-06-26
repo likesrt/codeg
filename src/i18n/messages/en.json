@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Render Morph animations, 3D and math (runs the slide's own scripts)",
       "officeNotInstalled": "OfficeCLI is not installed",
       "officeNotInstalledHint": "Install OfficeCLI under Settings → Office Tools to preview Word, Excel, and PowerPoint files.",
-      "officeOpenSettings": "Open Settings"
+      "officeOpenSettings": "Open Settings",
+      "officeWatchFailed": "Couldn't start the live preview",
+      "officeWatchRetry": "Retry",
+      "officeServerInstallHint": "OfficeCLI must be installed on the server host. Run this command there, then retry:",
+      "officeRemoteDesktopUnsupported": "Live preview isn't available in a remote-desktop window. Open this workspace in the server's web UI to preview Office files."
     },
     "branchDropdown": {
       "toasts": {
@@ -1981,8 +1985,6 @@
         "send": "Send",
         "forkAndSend": "Fork & Send",
         "slashCommands": "Slash commands",
-        "expertSkills": "Expert skills",
-        "expertsEmptyForAgent": "This agent has no enabled experts. Enable them in Settings > Experts.",
         "slashSearchPlaceholder": "Search commands...",
         "slashSearchEmpty": "No matching commands",
         "attachUploadTooLarge": "{names} exceeds the {limit}MB upload limit and was skipped.",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "Explore intent & requirements before building",
             "debuggingDesc": "Find the root cause before proposing fixes",
             "writingSkillsDesc": "Create, edit & verify reusable skills"
+          },
+          "notEnabled": {
+            "title": "“{skill}” isn’t enabled for {agent} yet",
+            "description": "Enable it in Settings to use it here.",
+            "action": "Enable",
+            "hint": "Skill not enabled"
           }
         }
       },
@@ -2778,6 +2786,57 @@
     "save": "Save",
     "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}"
   },
+  "SkillMatrix": {
+    "loading": "Loading…",
+    "searchPlaceholder": "Search by name, id, or description",
+    "empty": "Nothing to show.",
+    "emptySearch": "No matches for the current search.",
+    "skillColumn": "Skill",
+    "selectAll": "Select all visible",
+    "selectSkill": "Select {name}",
+    "everything": {
+      "label": "Bulk",
+      "enable": "Enable everything (visible)",
+      "disable": "Disable everything (visible)"
+    },
+    "columnMenu": {
+      "enableAll": "Enable all skills",
+      "disableAll": "Disable all skills"
+    },
+    "rowMenu": {
+      "label": "Batch actions for {name}",
+      "enableAll": "Enable for all agents",
+      "disableAll": "Disable for all agents"
+    },
+    "bulk": {
+      "selected": "{count} selected",
+      "targetAll": "All agents",
+      "targetSome": "{count} agents",
+      "enable": "Enable",
+      "disable": "Disable",
+      "clear": "Clear"
+    },
+    "confirm": {
+      "disableTitle": "Disable these links?",
+      "disableBody": "This removes {count} codeg-managed skill link(s). Skills occupying a custom directory are left untouched. You can re-enable them anytime.",
+      "cancel": "Cancel",
+      "confirm": "Disable"
+    },
+    "toasts": {
+      "loadFailed": "Failed to load skill statuses",
+      "applyFailed": "Failed to apply changes",
+      "enabled": "Enabled {count} link(s)",
+      "disabled": "Disabled {count} link(s)",
+      "enabledPartial": "Enabled {ok}, {failed} failed",
+      "disabledPartial": "Disabled {ok}, {failed} failed"
+    },
+    "detail": {
+      "enableForAgents": "Enable for agents",
+      "preview": "SKILL.md preview",
+      "loadingContent": "Loading content…"
+    },
+    "copyModeHint": "Copied (not linked) — re-enable after updates for the latest version"
+  },
   "ExpertsSettings": {
     "title": "Expert Skills",
     "description": "Enable curated, battle-tested skill workflows for your AI coding agents. Each expert is a standalone skill from the superpowers project — codeg manages the central copy and links it into the agents you choose.",
@@ -2878,7 +2937,9 @@
       "syncSuccess": "{synced} skills synced successfully",
       "syncPartial": "{synced} skills synced, {errors} failed",
       "syncFailed": "Failed to sync skills"
-    }
+    },
+    "autoPreviewLabel": "Auto-open preview",
+    "autoPreviewHint": "When an agent creates or edits a Word, Excel, or PowerPoint file, open its live preview automatically."
   },
   "QuickMessagesSettings": {
     "title": "Quick Messages",

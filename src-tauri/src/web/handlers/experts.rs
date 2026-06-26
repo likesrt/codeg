@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
 use crate::commands::experts as experts_commands;
-use crate::commands::experts::{ExpertInstallStatus, ExpertListItem};
+use crate::commands::experts::{ExpertInstallStatus, ExpertListItem, LinkOp, LinkOpResult};
 use crate::models::agent::AgentType;
 
 #[derive(Deserialize)]
@@ -14,28 +14,19 @@ pub struct ExpertIdParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentTypeOnlyParams {
-    pub agent_type: AgentType,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExpertAgentParams {
     pub expert_id: String,
     pub agent_type: AgentType,
 }
 
-pub async fn experts_list() -> Result<Json<Vec<ExpertListItem>>, AppCommandError> {
-    let result = experts_commands::experts_list()
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-    Ok(Json(result))
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyLinksParams {
+    pub ops: Vec<LinkOp>,
 }
 
-pub async fn experts_list_for_agent(
-    Json(params): Json<AgentTypeOnlyParams>,
-) -> Result<Json<Vec<ExpertListItem>>, AppCommandError> {
-    let result = experts_commands::experts_list_for_agent(params.agent_type)
+pub async fn experts_list() -> Result<Json<Vec<ExpertListItem>>, AppCommandError> {
+    let result = experts_commands::experts_list()
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
@@ -50,10 +41,27 @@ pub async fn experts_get_install_status(
     Ok(Json(result))
 }
 
+pub async fn experts_list_all_install_statuses(
+) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
+    let result = experts_commands::experts_list_all_install_statuses()
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
 pub async fn experts_link_to_agent(
     Json(params): Json<ExpertAgentParams>,
 ) -> Result<Json<ExpertInstallStatus>, AppCommandError> {
     let result = experts_commands::experts_link_to_agent(params.expert_id, params.agent_type)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+pub async fn experts_apply_links(
+    Json(params): Json<ApplyLinksParams>,
+) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
+    let result = experts_commands::experts_apply_links(params.ops)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))

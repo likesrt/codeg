@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Renderiza animaciones Morph, 3D y fórmulas (ejecuta los scripts de la diapositiva)",
       "officeNotInstalled": "OfficeCLI no está instalado",
       "officeNotInstalledHint": "Instala OfficeCLI en Ajustes → Herramientas de Office para previsualizar archivos de Word, Excel y PowerPoint.",
-      "officeOpenSettings": "Abrir ajustes"
+      "officeOpenSettings": "Abrir ajustes",
+      "officeWatchFailed": "No se pudo iniciar la vista previa en vivo",
+      "officeWatchRetry": "Reintentar",
+      "officeServerInstallHint": "OfficeCLI debe instalarse en el host del servidor. Ejecuta este comando allí y vuelve a intentarlo:",
+      "officeRemoteDesktopUnsupported": "La vista previa en vivo no está disponible en una ventana de escritorio remoto. Abre este espacio de trabajo en la interfaz web del servidor para previsualizar archivos de Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "Enviar",
         "forkAndSend": "Fork y Enviar",
         "slashCommands": "Comandos de barra",
-        "expertSkills": "Habilidades de expertos",
-        "expertsEmptyForAgent": "Este agente no tiene expertos habilitados. Actívalos en Configuración > Expertos.",
         "slashSearchPlaceholder": "Buscar comandos...",
         "slashSearchEmpty": "Sin comandos coincidentes",
         "attachLocalUpload": "Subir archivo local",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "Explora intención y requisitos antes de construir",
             "debuggingDesc": "Encuentra la causa raíz antes de proponer arreglos",
             "writingSkillsDesc": "Crea, edita y verifica habilidades reutilizables"
+          },
+          "notEnabled": {
+            "title": "La habilidad «{skill}» aún no está activada para {agent}",
+            "description": "Actívala en Ajustes para usarla aquí.",
+            "action": "Activar",
+            "hint": "Habilidad no activada"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "Guardar",
     "affectedRunningSessions": "{count, plural, one {# sesión activa necesita reconectarse para aplicar el cambio} other {# sesiones activas necesitan reconectarse para aplicar el cambio}}"
   },
+  "SkillMatrix": {
+    "loading": "Cargando…",
+    "searchPlaceholder": "Buscar por nombre, id o descripción",
+    "empty": "Nada que mostrar.",
+    "emptySearch": "No hay coincidencias para la búsqueda actual.",
+    "skillColumn": "Habilidad",
+    "selectAll": "Seleccionar todo lo visible",
+    "selectSkill": "Seleccionar {name}",
+    "everything": {
+      "label": "En bloque",
+      "enable": "Activar todo (visible)",
+      "disable": "Desactivar todo (visible)"
+    },
+    "columnMenu": {
+      "enableAll": "Activar todas las habilidades",
+      "disableAll": "Desactivar todas las habilidades"
+    },
+    "rowMenu": {
+      "label": "Acciones en bloque para {name}",
+      "enableAll": "Activar para todos los agentes",
+      "disableAll": "Desactivar para todos los agentes"
+    },
+    "bulk": {
+      "selected": "{count} seleccionados",
+      "targetAll": "Todos los agentes",
+      "targetSome": "{count} agentes",
+      "enable": "Activar",
+      "disable": "Desactivar",
+      "clear": "Limpiar"
+    },
+    "confirm": {
+      "disableTitle": "¿Desactivar estos enlaces?",
+      "disableBody": "Esto eliminará {count} enlaces de habilidades gestionados por codeg. Las habilidades que ocupan un directorio personalizado no se modifican. Puedes reactivarlas cuando quieras.",
+      "cancel": "Cancelar",
+      "confirm": "Desactivar"
+    },
+    "toasts": {
+      "loadFailed": "No se pudieron cargar los estados de las habilidades",
+      "applyFailed": "No se pudieron aplicar los cambios",
+      "enabled": "{count} enlaces activados",
+      "disabled": "{count} enlaces desactivados",
+      "enabledPartial": "{ok} activados, {failed} fallidos",
+      "disabledPartial": "{ok} desactivados, {failed} fallidos"
+    },
+    "detail": {
+      "enableForAgents": "Activar para agentes",
+      "preview": "Vista previa de SKILL.md",
+      "loadingContent": "Cargando contenido…"
+    },
+    "copyModeHint": "Copiado (no enlazado): vuelve a activarlo tras las actualizaciones para la última versión"
+  },
   "ExpertsSettings": {
     "title": "Habilidades de expertos",
     "description": "Habilita flujos de trabajo de habilidades cuidadosamente seleccionadas y probadas en la práctica para tus agentes de codificación de IA. Cada experto es una habilidad independiente del proyecto superpowers — codeg gestiona la copia central y la vincula a los agentes que elijas.",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "{synced} habilidades sincronizadas",
       "syncPartial": "{synced} sincronizadas, {errors} fallidas",
       "syncFailed": "Error al sincronizar habilidades"
-    }
+    },
+    "autoPreviewLabel": "Abrir vista previa automáticamente",
+    "autoPreviewHint": "Cuando un agente crea o edita un archivo de Word, Excel o PowerPoint, abre su vista previa en vivo automáticamente."
   },
   "QuickMessagesSettings": {
     "title": "Mensajes rápidos",

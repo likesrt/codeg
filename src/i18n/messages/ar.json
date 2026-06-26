@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "يعرض حركات Morph والأبعاد الثلاثية والمعادلات (يشغّل سكربتات الشريحة نفسها)",
       "officeNotInstalled": "OfficeCLI غير مثبّت",
       "officeNotInstalledHint": "ثبّت OfficeCLI من الإعدادات → أدوات Office لمعاينة ملفات Word و Excel و PowerPoint.",
-      "officeOpenSettings": "فتح الإعدادات"
+      "officeOpenSettings": "فتح الإعدادات",
+      "officeWatchFailed": "تعذّر بدء المعاينة المباشرة",
+      "officeWatchRetry": "إعادة المحاولة",
+      "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
+      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "إرسال",
         "forkAndSend": "تفريع وإرسال",
         "slashCommands": "أوامر الشرطة المائلة",
-        "expertSkills": "مهارات الخبراء",
-        "expertsEmptyForAgent": "لا يحتوي هذا العميل على خبراء مفعّلين. فعّلهم من الإعدادات > الخبراء.",
         "slashSearchPlaceholder": "البحث عن الأوامر...",
         "slashSearchEmpty": "لا توجد أوامر مطابقة",
         "attachLocalUpload": "تحميل ملف محلي",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "استكشف النية والمتطلبات قبل البناء",
             "debuggingDesc": "حدد السبب الجذري قبل اقتراح الإصلاحات",
             "writingSkillsDesc": "أنشئ وحرّر وتحقق من مهارات قابلة لإعادة الاستخدام"
+          },
+          "notEnabled": {
+            "title": "المهارة ”{skill}“ غير مُفعّلة بعد لـ {agent}",
+            "description": "فعّلها من الإعدادات لاستخدامها هنا.",
+            "action": "تفعيل",
+            "hint": "المهارة غير مُفعّلة"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "حفظ",
     "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير"
   },
+  "SkillMatrix": {
+    "loading": "جارٍ التحميل…",
+    "searchPlaceholder": "البحث بالاسم أو المعرّف أو الوصف",
+    "empty": "لا شيء لعرضه.",
+    "emptySearch": "لا توجد نتائج مطابقة للبحث الحالي.",
+    "skillColumn": "المهارة",
+    "selectAll": "تحديد كل المرئي",
+    "selectSkill": "تحديد {name}",
+    "everything": {
+      "label": "إجراء جماعي",
+      "enable": "تفعيل الكل (المرئي)",
+      "disable": "تعطيل الكل (المرئي)"
+    },
+    "columnMenu": {
+      "enableAll": "تفعيل كل المهارات",
+      "disableAll": "تعطيل كل المهارات"
+    },
+    "rowMenu": {
+      "label": "إجراءات جماعية لـ {name}",
+      "enableAll": "تفعيل لكل الوكلاء",
+      "disableAll": "تعطيل لكل الوكلاء"
+    },
+    "bulk": {
+      "selected": "{count} محدد",
+      "targetAll": "كل الوكلاء",
+      "targetSome": "{count} وكلاء",
+      "enable": "تفعيل",
+      "disable": "تعطيل",
+      "clear": "مسح"
+    },
+    "confirm": {
+      "disableTitle": "تعطيل هذه الروابط؟",
+      "disableBody": "سيؤدي هذا إلى إزالة {count} من روابط المهارات التي يديرها codeg. المهارات التي تشغل دليلاً مخصصاً تبقى دون تغيير. يمكنك إعادة تفعيلها في أي وقت.",
+      "cancel": "إلغاء",
+      "confirm": "تعطيل"
+    },
+    "toasts": {
+      "loadFailed": "فشل تحميل حالات المهارات",
+      "applyFailed": "فشل تطبيق التغييرات",
+      "enabled": "تم تفعيل {count} رابط",
+      "disabled": "تم تعطيل {count} رابط",
+      "enabledPartial": "تم تفعيل {ok}، وفشل {failed}",
+      "disabledPartial": "تم تعطيل {ok}، وفشل {failed}"
+    },
+    "detail": {
+      "enableForAgents": "التفعيل للوكلاء",
+      "preview": "معاينة SKILL.md",
+      "loadingContent": "جارٍ تحميل المحتوى…"
+    },
+    "copyModeHint": "تم النسخ (غير مرتبط) — أعد التفعيل بعد التحديثات للحصول على أحدث إصدار"
+  },
   "ExpertsSettings": {
     "title": "مهارات الخبراء",
     "description": "فعّل سير عمل المهارات المختارة بعناية والمختبرة ميدانيًا لوكلاء البرمجة بالذكاء الاصطناعي. كل خبير هو مهارة مستقلة من مشروع superpowers — يدير codeg النسخة المركزية ويربطها بالوكلاء الذين تختارهم.",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "تمت مزامنة {synced} مهارة",
       "syncPartial": "تمت مزامنة {synced}، فشلت {errors}",
       "syncFailed": "فشل مزامنة المهارات"
-    }
+    },
+    "autoPreviewLabel": "فتح المعاينة تلقائيًا",
+    "autoPreviewHint": "عندما ينشئ وكيل ملف Word أو Excel أو PowerPoint أو يعدّله، افتح معاينته المباشرة تلقائيًا."
   },
   "QuickMessagesSettings": {
     "title": "رسائل سريعة",

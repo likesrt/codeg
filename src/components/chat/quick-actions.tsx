@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react"
 import { useLocale, useTranslations } from "next-intl"
+import { toast } from "sonner"
 import {
   BarChart3,
   Box,
@@ -16,6 +17,7 @@ import {
   FileSpreadsheet,
   FileText,
   GraduationCap,
+  Lock,
   Presentation,
   Rocket,
   TrendingUp,
@@ -23,8 +25,10 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { openSettingsWindow, type SettingsSection } from "@/lib/api"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useBuiltInExperts } from "@/hooks/use-built-in-experts"
+import { useEnabledSkillIds } from "@/hooks/use-enabled-skill-ids"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 import {
   loadQuickActionsTab,
@@ -32,7 +36,7 @@ import {
   type QuickActionsTab,
 } from "@/lib/quick-actions-tab-storage"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
-import type { ExpertListItem } from "@/lib/types"
+import { AGENT_LABELS, type AgentType, type ExpertListItem } from "@/lib/types"
 
 interface OfficeAction {
   /** Stable id; also the i18n label key (`<id>`) and description (`<id>Desc`). */
@@ -168,23 +172,36 @@ function BigCard({
   title,
   description,
   onClick,
+  locked,
+  lockHint,
 }: {
   icon: LucideIcon
   accent: string
   title: string
   description: string
   onClick: () => void
+  /** Skill not enabled for the current agent — shows a lock badge; the card
+   *  keeps its normal look and stays clickable (the click surfaces a hint). */
+  locked?: boolean
+  lockHint?: string
 }) {
   const a = ACCENTS[accent] ?? ACCENTS.green
   return (
     <button
       type="button"
       onClick={onClick}
+      title={locked ? lockHint : undefined}
       className={cn(
-        "group flex flex-col items-start gap-1.5 rounded-lg border bg-card/50 px-3 py-2.5 text-left transition-colors",
+        "group relative flex flex-col items-start gap-1.5 rounded-lg border bg-card/50 px-3 py-2.5 text-left transition-colors",
         a.surface
       )}
     >
+      {locked && (
+        <Lock
+          aria-hidden
+          className="absolute right-2 top-2 h-3.5 w-3.5 text-muted-foreground/70"
+        />
+      )}
       <Icon aria-hidden className={cn("h-4 w-4 transition-colors", a.icon)} />
       <div className="text-sm font-medium text-foreground">{title}</div>
       <div className="line-clamp-1 text-xs text-muted-foreground">
@@ -201,6 +218,8 @@ function SkillBar({
   title,
   onClick,
   clone,
+  locked,
+  lockHint,
 }: {
   icon: LucideIcon
   label: string
@@ -208,12 +227,16 @@ function SkillBar({
   onClick: () => void
   /** A marquee duplicate: hidden from a11y + keyboard, removed under reduced motion. */
   clone?: boolean
+  /** Skill not enabled for the current agent — appends a small lock glyph; the
+   *  bar keeps its look and stays clickable (the click surfaces a hint). */
+  locked?: boolean
+  lockHint?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      title={title}
+      title={locked ? lockHint : title}
       aria-hidden={clone || undefined}
       tabIndex={clone ? -1 : undefined}
       data-qa-clone={clone ? "" : undefined}
@@ -226,6 +249,12 @@ function SkillBar({
       <span className="whitespace-nowrap text-xs font-medium text-foreground/90">
         {label}
       </span>
+      {locked && (
+        <Lock
+          aria-hidden
+          className="h-3 w-3 shrink-0 text-muted-foreground/60"
+        />
+      )}
     </button>
   )
 }
@@ -316,12 +345,52 @@ function Marquee({
 interface QuickActionsProps {
   /** Emits the resolved (localized) injection payload for the picked action. */
   onSelect: (payload: ComposerInjectContent) => void
+  /** The agent the new conversation will use. Drives per-agent skill-enabled
+   *  detection: a card whose skill isn't linked to this agent is locked, and
+   *  clicking it shows a hint instead of injecting an unusable badge. */
+  agentType: AgentType | null
 }
 
-export function QuickActions({ onSelect }: QuickActionsProps) {
+export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
+  const { enabledIds, ready } = useEnabledSkillIds(agentType)
+  const lockHint = t("notEnabled.hint")
+
+  // A skill card is locked when we know which agent will run (welcome mode
+  // always does) and — after the status snapshot has loaded — that skill is not
+  // linked to it. Before `ready` we optimistically treat everything as usable
+  // to avoid a flash of all-locked cards on first paint.
+  const isLocked = useCallback(
+    (id: string) => !!agentType && ready && !enabledIds.has(id),
+    [agentType, ready, enabledIds]
+  )
+
+  // Clicking a locked card: warn (with the agent's name) and offer a one-click
+  // jump to the settings page that manages this skill family — coding cards
+  // open Experts, office cards open Office Tools — rather than injecting a
+  // badge the agent can't act on.
+  const notifyNotEnabled = useCallback(
+    (skillLabel: string, section: SettingsSection) => {
+      const agentLabel = agentType ? AGENT_LABELS[agentType] : ""
+      toast.warning(
+        t("notEnabled.title", { skill: skillLabel, agent: agentLabel }),
+        {
+          description: t("notEnabled.description"),
+          action: {
+            label: t("notEnabled.action"),
+            onClick: () => {
+              void openSettingsWindow(section).catch((err) =>
+                console.error("[QuickActions] failed to open settings:", err)
+              )
+            },
+          },
+        }
+      )
+    },
+    [agentType, t]
+  )
 
   // Restore the last-picked tab; persist on change. The lazy initializer reads
   // localStorage on each mount (QuickActions only renders client-side in
@@ -337,23 +406,32 @@ export function QuickActions({ onSelect }: QuickActionsProps) {
   const handleOffice = useCallback(
     (action: OfficeAction) => {
       const label = t(action.id as Parameters<typeof t>[0])
+      if (isLocked(action.skillId)) {
+        notifyNotEnabled(label, "office-tools")
+        return
+      }
       onSelect({
         text: t(action.promptKey as Parameters<typeof t>[0]),
         skill: { id: action.skillId, label },
       })
     },
-    [onSelect, t]
+    [onSelect, t, isLocked, notifyNotEnabled]
   )
 
   const handleExpert = useCallback(
     (item: ExpertListItem) => {
       const label =
         pickLocalized(item.metadata.display_name, locale) || item.metadata.id
-      // Experts are open-ended coding skills: inject just the `/id` badge and
-      // let the user describe the task (no canned template like office docs).
+      if (isLocked(item.metadata.id)) {
+        notifyNotEnabled(label, "experts")
+        return
+      }
+      // Experts are open-ended coding skills: inject just the leading
+      // invocation badge (`$id` on Codex, `/id` elsewhere) and let the user
+      // describe the task (no canned template like office docs).
       onSelect({ text: "", skill: { id: item.metadata.id, label } })
     },
-    [onSelect, locale]
+    [onSelect, locale, isLocked, notifyNotEnabled]
   )
 
   const { codingFeatured, codingRest } = useMemo(() => {
@@ -408,6 +486,8 @@ export function QuickActions({ onSelect }: QuickActionsProps) {
                 }
                 description={t(f.descKey as Parameters<typeof t>[0])}
                 onClick={() => handleExpert(f.item)}
+                locked={isLocked(f.item.metadata.id)}
+                lockHint={lockHint}
               />
             ))}
           </div>
@@ -426,6 +506,8 @@ export function QuickActions({ onSelect }: QuickActionsProps) {
                   label={label}
                   title={pickLocalized(item.metadata.description, locale)}
                   onClick={() => handleExpert(item)}
+                  locked={isLocked(item.metadata.id)}
+                  lockHint={lockHint}
                 />
               )
             })
@@ -443,6 +525,8 @@ export function QuickActions({ onSelect }: QuickActionsProps) {
               title={t(action.id as Parameters<typeof t>[0])}
               description={t(`${action.id}Desc` as Parameters<typeof t>[0])}
               onClick={() => handleOffice(action)}
+              locked={isLocked(action.skillId)}
+              lockHint={lockHint}
             />
           ))}
         </div>
@@ -456,6 +540,8 @@ export function QuickActions({ onSelect }: QuickActionsProps) {
                 label={t(action.id as Parameters<typeof t>[0])}
                 title={t(`${action.id}Desc` as Parameters<typeof t>[0])}
                 onClick={() => handleOffice(action)}
+                locked={isLocked(action.skillId)}
+                lockHint={lockHint}
               />
             ))
           }

@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Stellt Morph-Animationen, 3D und Formeln dar (führt die Skripte der Folie aus)",
       "officeNotInstalled": "OfficeCLI ist nicht installiert",
       "officeNotInstalledHint": "Installiere OfficeCLI unter Einstellungen → Office-Tools, um Word-, Excel- und PowerPoint-Dateien vorzuschauen.",
-      "officeOpenSettings": "Einstellungen öffnen"
+      "officeOpenSettings": "Einstellungen öffnen",
+      "officeWatchFailed": "Live-Vorschau konnte nicht gestartet werden",
+      "officeWatchRetry": "Erneut versuchen",
+      "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
+      "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "Senden",
         "forkAndSend": "Fork & Senden",
         "slashCommands": "Slash-Befehle",
-        "expertSkills": "Expertenfähigkeiten",
-        "expertsEmptyForAgent": "Dieser Agent hat keine aktivierten Experten. Aktivieren Sie sie unter Einstellungen > Experten.",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",
         "attachLocalUpload": "Lokale Datei hochladen",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "Absicht & Anforderungen vor dem Bauen klären",
             "debuggingDesc": "Erst die Ursache finden, dann Fixes vorschlagen",
             "writingSkillsDesc": "Wiederverwendbare Skills erstellen, bearbeiten & prüfen"
+          },
+          "notEnabled": {
+            "title": "Skill „{skill}“ ist für {agent} noch nicht aktiviert",
+            "description": "Aktiviere ihn in den Einstellungen, um ihn hier zu nutzen.",
+            "action": "Aktivieren",
+            "hint": "Skill nicht aktiviert"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "Speichern",
     "affectedRunningSessions": "{count, plural, one {# laufende Sitzung muss zum Anwenden neu verbunden werden} other {# laufende Sitzungen müssen zum Anwenden neu verbunden werden}}"
   },
+  "SkillMatrix": {
+    "loading": "Wird geladen…",
+    "searchPlaceholder": "Nach Name, ID oder Beschreibung suchen",
+    "empty": "Nichts anzuzeigen.",
+    "emptySearch": "Keine Treffer für die aktuelle Suche.",
+    "skillColumn": "Skill",
+    "selectAll": "Alle sichtbaren auswählen",
+    "selectSkill": "{name} auswählen",
+    "everything": {
+      "label": "Sammelaktion",
+      "enable": "Alle aktivieren (sichtbar)",
+      "disable": "Alle deaktivieren (sichtbar)"
+    },
+    "columnMenu": {
+      "enableAll": "Alle Skills aktivieren",
+      "disableAll": "Alle Skills deaktivieren"
+    },
+    "rowMenu": {
+      "label": "Sammelaktionen für {name}",
+      "enableAll": "Für alle Agenten aktivieren",
+      "disableAll": "Für alle Agenten deaktivieren"
+    },
+    "bulk": {
+      "selected": "{count} ausgewählt",
+      "targetAll": "Alle Agenten",
+      "targetSome": "{count} Agenten",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "clear": "Leeren"
+    },
+    "confirm": {
+      "disableTitle": "Diese Verknüpfungen deaktivieren?",
+      "disableBody": "Dadurch werden {count} von codeg verwaltete Skill-Verknüpfungen entfernt. Skills, die ein eigenes Verzeichnis belegen, bleiben unberührt. Du kannst sie jederzeit wieder aktivieren.",
+      "cancel": "Abbrechen",
+      "confirm": "Deaktivieren"
+    },
+    "toasts": {
+      "loadFailed": "Skill-Status konnte nicht geladen werden",
+      "applyFailed": "Änderungen konnten nicht angewendet werden",
+      "enabled": "{count} Verknüpfungen aktiviert",
+      "disabled": "{count} Verknüpfungen deaktiviert",
+      "enabledPartial": "{ok} aktiviert, {failed} fehlgeschlagen",
+      "disabledPartial": "{ok} deaktiviert, {failed} fehlgeschlagen"
+    },
+    "detail": {
+      "enableForAgents": "Für Agenten aktivieren",
+      "preview": "SKILL.md-Vorschau",
+      "loadingContent": "Inhalt wird geladen…"
+    },
+    "copyModeHint": "Kopiert (nicht verknüpft) – nach Updates erneut aktivieren, um die neueste Version zu erhalten"
+  },
   "ExpertsSettings": {
     "title": "Experten-Skills",
     "description": "Aktivieren Sie kuratierte, praxiserprobte Skill-Workflows für Ihre KI-Coding-Agents. Jeder Experte ist ein eigenständiger Skill aus dem superpowers-Projekt — codeg verwaltet die zentrale Kopie und verknüpft sie mit den von Ihnen ausgewählten Agents.",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "{synced} Skills erfolgreich synchronisiert",
       "syncPartial": "{synced} synchronisiert, {errors} fehlgeschlagen",
       "syncFailed": "Skills konnten nicht synchronisiert werden"
-    }
+    },
+    "autoPreviewLabel": "Vorschau automatisch öffnen",
+    "autoPreviewHint": "Wenn ein Agent eine Word-, Excel- oder PowerPoint-Datei erstellt oder bearbeitet, wird die Live-Vorschau automatisch geöffnet."
   },
   "QuickMessagesSettings": {
     "title": "Schnellnachrichten",

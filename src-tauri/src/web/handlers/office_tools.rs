@@ -2,7 +2,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
-use crate::commands::experts::ExpertInstallStatus;
+use crate::commands::experts::{ExpertInstallStatus, LinkOp, LinkOpResult};
 use crate::commands::office_tools as ot;
 use crate::commands::office_tools::{OfficecliInfo, OfficecliSkill, SkillSyncReport};
 use crate::models::agent::AgentType;
@@ -25,6 +25,12 @@ pub struct SkillAgentParams {
 pub struct RenderHtmlParams {
     pub root_path: String,
     pub path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyLinksParams {
+    pub ops: Vec<LinkOp>,
 }
 
 pub async fn officecli_detect() -> Result<Json<OfficecliInfo>, AppCommandError> {
@@ -85,6 +91,23 @@ pub async fn officecli_skill_get_install_status(
     Ok(Json(result))
 }
 
+pub async fn officecli_skill_list_all_install_statuses(
+) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
+    let result = ot::officecli_skill_list_all_install_statuses()
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+pub async fn officecli_skill_apply_links(
+    Json(params): Json<ApplyLinksParams>,
+) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
+    let result = ot::officecli_skill_apply_links(params.ops)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
 pub async fn officecli_skill_read_content(
     Json(params): Json<SkillIdParams>,
 ) -> Result<Json<String>, AppCommandError> {
@@ -101,4 +124,27 @@ pub async fn officecli_render_html(
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeWatchParams {
+    pub root_path: String,
+    pub path: String,
+}
+
+pub async fn start_office_watch(
+    Json(params): Json<OfficeWatchParams>,
+) -> Result<Json<crate::office_watch::OfficeWatchStarted>, AppCommandError> {
+    // `?` converts WatchError → AppCommandError, carrying the machine code.
+    let result =
+        crate::office_watch::start_office_watch_core(params.root_path, params.path).await?;
+    Ok(Json(result))
+}
+
+pub async fn stop_office_watch(
+    Json(params): Json<OfficeWatchParams>,
+) -> Result<Json<()>, AppCommandError> {
+    crate::office_watch::stop_office_watch_core(params.root_path, params.path).await?;
+    Ok(Json(()))
 }

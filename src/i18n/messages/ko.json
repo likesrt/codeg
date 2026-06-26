@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Morph 애니메이션, 3D, 수식을 렌더링합니다(슬라이드 자체 스크립트 실행).",
       "officeNotInstalled": "OfficeCLI가 설치되지 않았습니다",
       "officeNotInstalledHint": "설정 → Office 도구에서 OfficeCLI를 설치하면 Word, Excel, PowerPoint 파일을 미리볼 수 있습니다.",
-      "officeOpenSettings": "설정 열기"
+      "officeOpenSettings": "설정 열기",
+      "officeWatchFailed": "실시간 미리보기를 시작할 수 없습니다",
+      "officeWatchRetry": "다시 시도",
+      "officeServerInstallHint": "OfficeCLI는 서버 호스트에 설치해야 합니다. 서버에서 다음 명령을 실행한 후 다시 시도하세요:",
+      "officeRemoteDesktopUnsupported": "원격 데스크톱 창에서는 실시간 미리보기를 사용할 수 없습니다. Office 파일을 미리 보려면 서버의 웹 UI에서 이 작업 공간을 여세요."
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "보내기",
         "forkAndSend": "포크 & 전송",
         "slashCommands": "슬래시 명령",
-        "expertSkills": "전문가 스킬",
-        "expertsEmptyForAgent": "이 에이전트에 활성화된 전문가가 없습니다. 설정 > 전문가에서 활성화하세요.",
         "slashSearchPlaceholder": "명령 검색...",
         "slashSearchEmpty": "일치하는 명령이 없습니다",
         "attachLocalUpload": "로컬 파일 첨부",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "구현 전 의도와 요구사항 탐색",
             "debuggingDesc": "수정 제안 전에 근본 원인 파악",
             "writingSkillsDesc": "재사용 가능한 스킬 생성·편집·검증"
+          },
+          "notEnabled": {
+            "title": "‘{skill}’ 스킬이 아직 {agent}에서 활성화되지 않았습니다",
+            "description": "설정에서 활성화하면 여기서 사용할 수 있습니다.",
+            "action": "활성화하기",
+            "hint": "스킬이 비활성화됨"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "저장",
     "affectedRunningSessions": "{count}개의 실행 중인 세션은 다시 연결하면 변경 사항이 적용됩니다"
   },
+  "SkillMatrix": {
+    "loading": "불러오는 중…",
+    "searchPlaceholder": "이름, ID 또는 설명으로 검색",
+    "empty": "표시할 항목이 없습니다.",
+    "emptySearch": "현재 검색과 일치하는 항목이 없습니다.",
+    "skillColumn": "스킬",
+    "selectAll": "표시된 항목 모두 선택",
+    "selectSkill": "{name} 선택",
+    "everything": {
+      "label": "일괄",
+      "enable": "모두 활성화(표시된 항목)",
+      "disable": "모두 비활성화(표시된 항목)"
+    },
+    "columnMenu": {
+      "enableAll": "모든 스킬 활성화",
+      "disableAll": "모든 스킬 비활성화"
+    },
+    "rowMenu": {
+      "label": "{name} 일괄 작업",
+      "enableAll": "모든 에이전트에 활성화",
+      "disableAll": "모든 에이전트에서 비활성화"
+    },
+    "bulk": {
+      "selected": "{count}개 선택됨",
+      "targetAll": "모든 에이전트",
+      "targetSome": "에이전트 {count}개",
+      "enable": "활성화",
+      "disable": "비활성화",
+      "clear": "지우기"
+    },
+    "confirm": {
+      "disableTitle": "이 링크를 비활성화할까요?",
+      "disableBody": "codeg가 관리하는 스킬 링크 {count}개를 제거합니다. 사용자 지정 디렉터리를 차지한 스킬은 그대로 유지됩니다. 언제든지 다시 활성화할 수 있습니다.",
+      "cancel": "취소",
+      "confirm": "비활성화"
+    },
+    "toasts": {
+      "loadFailed": "스킬 상태를 불러오지 못했습니다",
+      "applyFailed": "변경 사항을 적용하지 못했습니다",
+      "enabled": "링크 {count}개를 활성화했습니다",
+      "disabled": "링크 {count}개를 비활성화했습니다",
+      "enabledPartial": "{ok}개 활성화, {failed}개 실패",
+      "disabledPartial": "{ok}개 비활성화, {failed}개 실패"
+    },
+    "detail": {
+      "enableForAgents": "에이전트에 활성화",
+      "preview": "SKILL.md 미리보기",
+      "loadingContent": "콘텐츠 불러오는 중…"
+    },
+    "copyModeHint": "복사됨(링크 아님) — 업데이트 후 최신 버전을 받으려면 다시 활성화하세요"
+  },
   "ExpertsSettings": {
     "title": "전문가 스킬",
     "description": "AI 코딩 에이전트를 위해 엄선되고 실전 검증된 스킬 워크플로를 활성화하세요. 각 전문가는 superpowers 프로젝트의 독립 실행형 스킬이며 — codeg가 중앙 복사본을 관리하고 선택한 에이전트에 연결합니다.",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "{synced}개 스킬 동기화 완료",
       "syncPartial": "{synced}개 동기화, {errors}개 실패",
       "syncFailed": "스킬 동기화 실패"
-    }
+    },
+    "autoPreviewLabel": "미리보기 자동 열기",
+    "autoPreviewHint": "에이전트가 Word, Excel, PowerPoint 파일을 만들거나 편집하면 실시간 미리보기를 자동으로 엽니다."
   },
   "QuickMessagesSettings": {
     "title": "빠른 메시지",

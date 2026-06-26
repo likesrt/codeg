@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Morph アニメーション・3D・数式を描画します（スライド自身のスクリプトを実行）",
       "officeNotInstalled": "OfficeCLI がインストールされていません",
       "officeNotInstalledHint": "設定 → Office ツール から OfficeCLI をインストールすると、Word・Excel・PowerPoint ファイルをプレビューできます。",
-      "officeOpenSettings": "設定を開く"
+      "officeOpenSettings": "設定を開く",
+      "officeWatchFailed": "ライブプレビューを開始できませんでした",
+      "officeWatchRetry": "再試行",
+      "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
+      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "送信",
         "forkAndSend": "フォークして送信",
         "slashCommands": "スラッシュコマンド",
-        "expertSkills": "エキスパートスキル",
-        "expertsEmptyForAgent": "このエージェントで有効なエキスパートはありません。「設定 > エキスパート」から有効にしてください。",
         "slashSearchPlaceholder": "コマンドを検索...",
         "slashSearchEmpty": "一致するコマンドがありません",
         "attachLocalUpload": "ローカルファイルを添付",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "着手前に意図と要件を整理",
             "debuggingDesc": "修正の前に根本原因を特定",
             "writingSkillsDesc": "再利用可能なスキルを作成・編集・検証"
+          },
+          "notEnabled": {
+            "title": "「{skill}」スキルは {agent} でまだ有効になっていません",
+            "description": "設定で有効にすると、ここで使用できます。",
+            "action": "有効にする",
+            "hint": "スキルが無効です"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "保存",
     "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます"
   },
+  "SkillMatrix": {
+    "loading": "読み込み中…",
+    "searchPlaceholder": "名前・ID・説明で検索",
+    "empty": "表示する項目がありません。",
+    "emptySearch": "現在の検索に一致する項目がありません。",
+    "skillColumn": "スキル",
+    "selectAll": "表示中をすべて選択",
+    "selectSkill": "{name} を選択",
+    "everything": {
+      "label": "一括",
+      "enable": "すべて有効化（表示中）",
+      "disable": "すべて無効化（表示中）"
+    },
+    "columnMenu": {
+      "enableAll": "すべてのスキルを有効化",
+      "disableAll": "すべてのスキルを無効化"
+    },
+    "rowMenu": {
+      "label": "{name} の一括操作",
+      "enableAll": "すべてのエージェントで有効化",
+      "disableAll": "すべてのエージェントで無効化"
+    },
+    "bulk": {
+      "selected": "{count} 件選択中",
+      "targetAll": "すべてのエージェント",
+      "targetSome": "{count} 個のエージェント",
+      "enable": "有効化",
+      "disable": "無効化",
+      "clear": "クリア"
+    },
+    "confirm": {
+      "disableTitle": "これらのリンクを無効化しますか？",
+      "disableBody": "codeg が管理する {count} 件のスキルリンクを削除します。カスタムディレクトリを占有しているスキルはそのまま残ります。いつでも再び有効化できます。",
+      "cancel": "キャンセル",
+      "confirm": "無効化"
+    },
+    "toasts": {
+      "loadFailed": "スキルの状態の読み込みに失敗しました",
+      "applyFailed": "変更の適用に失敗しました",
+      "enabled": "{count} 件のリンクを有効化しました",
+      "disabled": "{count} 件のリンクを無効化しました",
+      "enabledPartial": "{ok} 件を有効化、{failed} 件が失敗しました",
+      "disabledPartial": "{ok} 件を無効化、{failed} 件が失敗しました"
+    },
+    "detail": {
+      "enableForAgents": "エージェントで有効化",
+      "preview": "SKILL.md プレビュー",
+      "loadingContent": "コンテンツを読み込み中…"
+    },
+    "copyModeHint": "コピー済み（リンクではありません）— 更新後は最新版を取得するため再度有効化してください"
+  },
   "ExpertsSettings": {
     "title": "エキスパートスキル",
     "description": "AI コーディングエージェント向けに、厳選され実戦で検証されたスキルワークフローを有効にします。各エキスパートは superpowers プロジェクトの独立したスキルで、codeg が中央コピーを管理し、選択したエージェントにリンクします。",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "{synced} 個のスキルを同期しました",
       "syncPartial": "{synced} 個同期、{errors} 個失敗",
       "syncFailed": "スキルの同期に失敗"
-    }
+    },
+    "autoPreviewLabel": "プレビューを自動で開く",
+    "autoPreviewHint": "エージェントが Word、Excel、PowerPoint ファイルを作成または編集したときに、ライブプレビューを自動で開きます。"
   },
   "QuickMessagesSettings": {
     "title": "クイックメッセージ",

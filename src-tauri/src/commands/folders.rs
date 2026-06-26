@@ -614,6 +614,16 @@ pub async fn remove_folder_from_workspace_core(
     folder_id: i32,
 ) -> Result<(), AppCommandError> {
     use crate::db::service::tab_service;
+
+    // Capture the folder path before flipping it closed, so we can stop any
+    // office watch preview servers rooted under it — belt-and-suspenders over
+    // the frontend's per-tab unmount teardown.
+    let folder_path = folder_service::get_folder_by_id(&db.conn, folder_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|f| f.path);
+
     folder_service::set_folder_open(&db.conn, folder_id, false)
         .await
         .map_err(AppCommandError::from)?;
@@ -637,6 +647,10 @@ pub async fn remove_folder_from_workspace_core(
                 tabs,
             },
         );
+    }
+
+    if let Some(path) = folder_path {
+        crate::office_watch::stop_office_watches_under_root(&path);
     }
     Ok(())
 }

@@ -1385,9 +1385,12 @@ const ConversationTabView = memo(function ConversationTabView({
       {isWelcomeMode ? (
         <div className="relative isolate flex h-full min-h-0 flex-col overflow-x-hidden overflow-y-auto">
           <div className="flex-1" />
-          <div className="mx-auto flex w-full max-w-2xl shrink-0 flex-col gap-6 px-4 py-4">
+          <div className="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-6 px-4 py-4">
             <WelcomeHero />
-            <QuickActions onSelect={handleQuickAction} />
+            <QuickActions
+              onSelect={handleQuickAction}
+              agentType={selectedAgent}
+            />
             <div className="flex justify-center">
               <AgentSelector
                 defaultAgentType={selectedAgent}
@@ -1449,10 +1452,11 @@ const ConversationTabView = memo(function ConversationTabView({
               injectContent={quickActionInject}
               onInjectConsumed={handleQuickActionConsumed}
               flush
+              tall
             />
           </div>
           <div className="flex-1" />
-          <div className="mx-auto w-full max-w-2xl shrink-0 px-4 pb-6">
+          <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-6">
             <WelcomeTip />
           </div>
         </div>

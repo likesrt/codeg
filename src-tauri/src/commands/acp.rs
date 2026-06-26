@@ -573,6 +573,19 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
 /// may not have synced niche packages like `@agentclientprotocol/*`.
 const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 
+/// Force npm to install platform-specific `optionalDependencies`. Several agents
+/// ship their native CLI as a per-platform optional package — e.g.
+/// `@agentclientprotocol/claude-agent-acp` pulls in `@anthropic-ai/claude-agent-sdk`,
+/// whose runtime binary lives in optional deps like
+/// `@anthropic-ai/claude-agent-sdk-win32-x64`. npm includes optional deps by
+/// default, but a machine with `omit=optional` in its `.npmrc` (or `npm_config_omit`
+/// in the environment) silently skips them, so the install "succeeds" yet the agent
+/// fails at launch with "native binary not found for <platform>". `--include` wins
+/// over `--omit` regardless of order and a CLI flag outranks any `.npmrc`, so passing
+/// it unconditionally guarantees the native binary lands no matter how npm is
+/// configured. Harmless for agents without optional deps.
+const NPM_INCLUDE_OPTIONAL: &str = "--include=optional";
+
 /// Run an npm command with piped stdout/stderr, streaming each line as a log event.
 /// Returns (success: bool, collected_stderr: String) so callers can inspect errors.
 async fn run_npm_streaming(
@@ -654,11 +667,15 @@ async fn install_npm_global_package_streaming(
         emitter,
         task_id,
         AgentInstallEventKind::Log,
-        format!("$ npm install -g {package}"),
+        format!("$ npm install -g {NPM_INCLUDE_OPTIONAL} {package}"),
     );
 
-    let (success, stderr) =
-        run_npm_streaming(&["install", "-g", &registry_arg, package], task_id, emitter).await?;
+    let (success, stderr) = run_npm_streaming(
+        &["install", "-g", NPM_INCLUDE_OPTIONAL, &registry_arg, package],
+        task_id,
+        emitter,
+    )
+    .await?;
 
     if !success {
         // EACCES: permission denied — retry with a user-local --prefix so
@@ -683,7 +700,14 @@ async fn install_npm_global_package_streaming(
                 "File conflict, retrying with --force...",
             );
             let (retry_success, retry_stderr) = run_npm_streaming(
-                &["install", "-g", "--force", &registry_arg, package],
+                &[
+                    "install",
+                    "-g",
+                    "--force",
+                    NPM_INCLUDE_OPTIONAL,
+                    &registry_arg,
+                    package,
+                ],
                 task_id,
                 emitter,
             )
@@ -756,11 +780,21 @@ async fn install_npm_to_user_prefix_streaming(
         emitter,
         task_id,
         AgentInstallEventKind::Log,
-        format!("$ npm install -g --prefix={} {package}", prefix.display()),
+        format!(
+            "$ npm install -g {NPM_INCLUDE_OPTIONAL} --prefix={} {package}",
+            prefix.display()
+        ),
     );
 
     let (success, stderr) = run_npm_streaming(
-        &["install", "-g", &prefix_arg, registry_arg, package],
+        &[
+            "install",
+            "-g",
+            NPM_INCLUDE_OPTIONAL,
+            &prefix_arg,
+            registry_arg,
+            package,
+        ],
         task_id,
         emitter,
     )
@@ -781,6 +815,7 @@ async fn install_npm_to_user_prefix_streaming(
                     "install",
                     "-g",
                     "--force",
+                    NPM_INCLUDE_OPTIONAL,
                     &prefix_arg,
                     registry_arg,
                     package,
@@ -1407,6 +1442,29 @@ fn load_codex_local_config_json() -> Option<String> {
         return None;
     }
     serde_json::to_string_pretty(&serde_json::Value::Object(merged)).ok()
+}
+
+/// Extract the `model_provider` name from codex `config.toml` text.
+///
+/// Returns the trimmed provider name, or `None` when the key is absent, empty,
+/// or the TOML is malformed. Pure (no I/O) so it is unit-testable without env
+/// vars or the filesystem; [`codex_model_provider`] is the on-disk wrapper.
+fn parse_codex_model_provider(raw_toml: &str) -> Option<String> {
+    raw_toml
+        .parse::<toml::Value>()
+        .ok()?
+        .get("model_provider")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+}
+
+/// Read codex's configured `model_provider` from `~/.codex/config.toml` (honors
+/// `CODEX_HOME` via [`codex_config_toml_path`]). `None` when the file is
+/// missing/unreadable or declares no provider.
+fn codex_model_provider() -> Option<String> {
+    parse_codex_model_provider(&fs::read_to_string(codex_config_toml_path()).ok()?)
 }
 
 fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), AcpError> {
@@ -4658,6 +4716,21 @@ pub(crate) async fn build_session_runtime_env(
         build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
     apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
 
+    // codex-acp 1.0.0 hard-codes `modelProvider: "openai"` when resuming a
+    // session (its `getResumeModelProvider`) unless `MODEL_PROVIDER` is set —
+    // which silently routes resumed conversations to the official OpenAI
+    // endpoint and ignores the custom provider in `~/.codex/config.toml`. New
+    // sessions are spared because they pass `null` (→ codex reads the config's
+    // own `model_provider`). Pin `MODEL_PROVIDER` to that same name so resumed
+    // sessions select the same provider as new ones. Skipped when the config
+    // declares no provider (official OpenAI / ChatGPT users → keep the upstream
+    // "openai" fallback) or the user already set it explicitly via `env_json`.
+    if agent_type == AgentType::Codex && !runtime_env.contains_key("MODEL_PROVIDER") {
+        if let Some(provider) = codex_model_provider() {
+            runtime_env.insert("MODEL_PROVIDER".to_string(), provider);
+        }
+    }
+
     if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(data_dir) {
         for (key, value) in cred_env {
             runtime_env.insert(key, value);
@@ -6997,6 +7070,33 @@ pub(crate) async fn codex_poll_device_code_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_codex_model_provider_extracts_named_custom_provider() {
+        // A codeg-managed config pins a named custom provider. Without this name
+        // pinned into MODEL_PROVIDER, codex-acp resumes against "openai".
+        let toml = r#"
+model = "gpt-5-codex"
+model_provider = "codeg"
+
+[model_providers.codeg]
+name = "codeg"
+base_url = "https://gateway.example/v1"
+wire_api = "responses"
+"#;
+        assert_eq!(parse_codex_model_provider(toml), Some("codeg".to_string()));
+
+        // No model_provider (official OpenAI / ChatGPT users) → None, so
+        // build_session_runtime_env leaves MODEL_PROVIDER unset and codex-acp's
+        // resume fallback to "openai" stays correct.
+        assert_eq!(parse_codex_model_provider("model = \"gpt-5-codex\"\n"), None);
+
+        // Whitespace-only value is treated as absent.
+        assert_eq!(parse_codex_model_provider("model_provider = \"   \"\n"), None);
+
+        // Malformed TOML must not panic — just yields None.
+        assert_eq!(parse_codex_model_provider("model_provider = "), None);
+    }
 
     fn unique_test_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("codeg-acp-{name}-{}", uuid::Uuid::new_v4()));

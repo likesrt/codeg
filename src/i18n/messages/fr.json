@@ -1327,7 +1327,11 @@
       "officeFullRenderHint": "Affiche les animations Morph, la 3D et les formules (exécute les scripts de la diapositive)",
       "officeNotInstalled": "OfficeCLI n'est pas installé",
       "officeNotInstalledHint": "Installe OfficeCLI dans Paramètres → Outils Office pour prévisualiser les fichiers Word, Excel et PowerPoint.",
-      "officeOpenSettings": "Ouvrir les paramètres"
+      "officeOpenSettings": "Ouvrir les paramètres",
+      "officeWatchFailed": "Impossible de démarrer l'aperçu en direct",
+      "officeWatchRetry": "Réessayer",
+      "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
+      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."
     },
     "branchDropdown": {
       "toasts": {
@@ -1979,8 +1983,6 @@
         "send": "Envoyer",
         "forkAndSend": "Fork & Envoyer",
         "slashCommands": "Commandes slash",
-        "expertSkills": "Compétences d'expert",
-        "expertsEmptyForAgent": "Cet agent n'a aucun expert activé. Activez-les dans Paramètres > Experts.",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",
         "attachLocalUpload": "Téléverser un fichier local",
@@ -2075,6 +2077,12 @@
             "brainstormingDesc": "Explorer intention et besoins avant de coder",
             "debuggingDesc": "Trouver la cause racine avant de corriger",
             "writingSkillsDesc": "Créer, modifier et vérifier des skills réutilisables"
+          },
+          "notEnabled": {
+            "title": "La compétence « {skill} » n’est pas encore activée pour {agent}",
+            "description": "Activez-la dans les Paramètres pour l’utiliser ici.",
+            "action": "Activer",
+            "hint": "Compétence non activée"
           }
         }
       },
@@ -2766,6 +2774,57 @@
     "save": "Enregistrer",
     "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}"
   },
+  "SkillMatrix": {
+    "loading": "Chargement…",
+    "searchPlaceholder": "Rechercher par nom, id ou description",
+    "empty": "Rien à afficher.",
+    "emptySearch": "Aucun résultat pour la recherche actuelle.",
+    "skillColumn": "Compétence",
+    "selectAll": "Tout sélectionner (visible)",
+    "selectSkill": "Sélectionner {name}",
+    "everything": {
+      "label": "En masse",
+      "enable": "Tout activer (visible)",
+      "disable": "Tout désactiver (visible)"
+    },
+    "columnMenu": {
+      "enableAll": "Activer toutes les compétences",
+      "disableAll": "Désactiver toutes les compétences"
+    },
+    "rowMenu": {
+      "label": "Actions groupées pour {name}",
+      "enableAll": "Activer pour tous les agents",
+      "disableAll": "Désactiver pour tous les agents"
+    },
+    "bulk": {
+      "selected": "{count} sélectionné(s)",
+      "targetAll": "Tous les agents",
+      "targetSome": "{count} agents",
+      "enable": "Activer",
+      "disable": "Désactiver",
+      "clear": "Effacer"
+    },
+    "confirm": {
+      "disableTitle": "Désactiver ces liens ?",
+      "disableBody": "Cela supprimera {count} liens de compétences gérés par codeg. Les compétences occupant un répertoire personnalisé ne sont pas touchées. Vous pouvez les réactiver à tout moment.",
+      "cancel": "Annuler",
+      "confirm": "Désactiver"
+    },
+    "toasts": {
+      "loadFailed": "Échec du chargement des états des compétences",
+      "applyFailed": "Échec de l'application des modifications",
+      "enabled": "{count} liens activés",
+      "disabled": "{count} liens désactivés",
+      "enabledPartial": "{ok} activés, {failed} échoués",
+      "disabledPartial": "{ok} désactivés, {failed} échoués"
+    },
+    "detail": {
+      "enableForAgents": "Activer pour les agents",
+      "preview": "Aperçu de SKILL.md",
+      "loadingContent": "Chargement du contenu…"
+    },
+    "copyModeHint": "Copié (non lié) — réactivez après les mises à jour pour obtenir la dernière version"
+  },
   "ExpertsSettings": {
     "title": "Compétences d'experts",
     "description": "Activez des workflows de compétences soigneusement sélectionnés et éprouvés pour vos agents de codage IA. Chaque expert est une compétence autonome du projet superpowers — codeg gère la copie centrale et la lie aux agents que vous choisissez.",
@@ -2866,7 +2925,9 @@
       "syncSuccess": "{synced} compétences synchronisées",
       "syncPartial": "{synced} synchronisées, {errors} échouées",
       "syncFailed": "Échec de la synchronisation des compétences"
-    }
+    },
+    "autoPreviewLabel": "Ouvrir l'aperçu automatiquement",
+    "autoPreviewHint": "Lorsqu'un agent crée ou modifie un fichier Word, Excel ou PowerPoint, ouvrir automatiquement son aperçu en direct."
   },
   "QuickMessagesSettings": {
     "title": "Messages rapides",

@@ -28,8 +28,8 @@ const FETCH_DEBOUNCE_MS = 150
 // Tab order in the panel: agent first (per product decision), then the rest in
 // their usual order. This is a *display* order; the search provider keeps its
 // own (file-first) group order, which other code/tests depend on. `skill` is
-// intentionally absent — skills/commands are inserted via the `/` and `$`
-// triggers (and experts via the expert menu), not the `@` panel.
+// intentionally absent — skills, commands and experts are inserted via the `/`
+// and `$` triggers, not the `@` panel.
 const TAB_ORDER: readonly ReferenceKind[] = [
   "agent",
   "file",
@@ -413,11 +413,17 @@ export const SuggestionPopup = forwardRef<
                     onMouseEnter={() => setSelectedIndex(index)}
                   >
                     <ReferenceIcon data={item.reference} variant="option" />
-                    <span className="flex-1 truncate">
+                    <span
+                      className="flex-1 truncate"
+                      title={item.reference.label || item.reference.id}
+                    >
                       {item.reference.label || item.reference.id}
                     </span>
                     {item.detail && (
-                      <span className="max-w-[10rem] truncate text-xs text-muted-foreground">
+                      <span
+                        className="max-w-[10rem] truncate text-xs text-muted-foreground"
+                        title={item.detail}
+                      >
                         {item.detail}
                       </span>
                     )}

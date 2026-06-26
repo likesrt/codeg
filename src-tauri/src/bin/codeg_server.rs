@@ -424,6 +424,14 @@ async fn async_main() -> ExitCode {
         ));
     }
 
+    // Office watch preview servers: reap dead children + ref0 stragglers.
+    if let Some(idle_timeout) = codeg_lib::office_watch::idle_timeout_from_env() {
+        tokio::spawn(codeg_lib::office_watch::office_watch_idle_sweep_task(
+            idle_timeout,
+            std::time::Duration::from_secs(codeg_lib::office_watch::SWEEP_INTERVAL_SECS),
+        ));
+    }
+
     // Automation engine (mirrors lib.rs setup): manual + scheduled fires,
     // event-bus completion, reconcile, boot recovery. One per process.
     if let Some(engine) = codeg_lib::automation::build_engine(
@@ -497,6 +505,9 @@ async fn async_main() -> ExitCode {
         tracing::error!("[SERVER] Server error: {}", e);
         return ExitCode::from(1);
     }
+    // Graceful shutdown: release any live office watch preview servers
+    // (kill_on_drop is the backstop, but this frees their ports promptly).
+    codeg_lib::office_watch::stop_all_office_watches();
     ExitCode::SUCCESS
 }
 

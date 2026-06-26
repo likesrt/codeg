@@ -117,6 +117,32 @@ pub struct ExpertInstallStatus {
     pub copy_mode: bool,
 }
 
+/// A single enable/disable request for one (skill, agent) pair, used by the
+/// batch `*_apply_links` commands. `expert_id` is the central-store id — for
+/// office tools it carries the office skill id (mirroring how
+/// `ExpertInstallStatus.expert_id` already doubles as the office skill id).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOp {
+    pub expert_id: String,
+    pub agent_type: AgentType,
+    pub enable: bool,
+}
+
+/// Per-op outcome of a batch apply. A failed op never aborts the rest of the
+/// batch; the caller inspects `ok`/`error` per entry and re-fetches the
+/// authoritative snapshot afterwards.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkOpResult {
+    pub expert_id: String,
+    pub agent_type: AgentType,
+    pub ok: bool,
+    /// Present on a successful enable; `None` for disables and failures.
+    pub status: Option<ExpertInstallStatus>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct InstallReport {
     pub installed_count: usize,
@@ -714,46 +740,6 @@ pub async fn experts_list() -> Result<Vec<ExpertListItem>, ExpertsError> {
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn experts_list_for_agent(
-    agent_type: AgentType,
-) -> Result<Vec<ExpertListItem>, ExpertsError> {
-    let _ = skill_storage_spec(agent_type).ok_or(ExpertsError::UnsupportedAgent(agent_type))?;
-
-    let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
-        .map_err(|_| ExpertsError::UnsupportedAgent(agent_type))?;
-
-    let meta_list = bundled_metadata().to_vec();
-    let manifest = load_manifest();
-    let mut out = Vec::new();
-
-    for meta in meta_list {
-        let central_path = expert_central_path(&meta.id);
-        let is_linked = dirs.iter().any(|dir| {
-            let candidate = dir.join(&meta.id);
-            classify_link(&candidate, &central_path) == ExpertLinkState::LinkedToCodeg
-        });
-        if !is_linked {
-            continue;
-        }
-
-        let installed_centrally = central_path.exists();
-        let user_modified = manifest
-            .experts
-            .get(&meta.id)
-            .map(|e| e.pending_user_review)
-            .unwrap_or(false);
-
-        out.push(ExpertListItem {
-            metadata: meta,
-            installed_centrally,
-            user_modified,
-            central_path: central_path.to_string_lossy().to_string(),
-        });
-    }
-    Ok(out)
-}
-
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn experts_get_install_status(
     expert_id: String,
 ) -> Result<Vec<ExpertInstallStatus>, ExpertsError> {
@@ -804,13 +790,16 @@ fn supported_agents() -> Vec<AgentType> {
 
 // ─── Commands: link / unlink ────────────────────────────────────────────
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn experts_link_to_agent(
-    expert_id: String,
+/// Link one expert into one agent's skill dir. **Assumes the mutation lock is
+/// already held** by the caller — `tokio::sync::Mutex` is not reentrant, so the
+/// batch path (`experts_apply_links`) locks once and calls this directly rather
+/// than the public command (which would self-deadlock).
+fn link_one_locked(
+    expert_id: &str,
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, ExpertsError> {
     let expert_id =
-        validate_skill_id(&expert_id).map_err(|e| ExpertsError::Metadata(e.to_string()))?;
+        validate_skill_id(expert_id).map_err(|e| ExpertsError::Metadata(e.to_string()))?;
     let _ = find_metadata(&expert_id)?;
     let central = expert_central_path(&expert_id);
     if !central.exists() {
@@ -819,7 +808,6 @@ pub async fn experts_link_to_agent(
         )));
     }
 
-    let _guard = mutation_lock().lock().await;
     let link_path = agent_link_path(agent_type, &expert_id)?;
     if let Some(parent) = link_path.parent() {
         fs::create_dir_all(parent)?;
@@ -874,14 +862,28 @@ pub async fn experts_link_to_agent(
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn experts_link_to_agent(
+    expert_id: String,
+    agent_type: AgentType,
+) -> Result<ExpertInstallStatus, ExpertsError> {
+    let _guard = mutation_lock().lock().await;
+    link_one_locked(&expert_id, agent_type)
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn experts_unlink_from_agent(
     expert_id: String,
     agent_type: AgentType,
 ) -> Result<(), ExpertsError> {
-    let expert_id =
-        validate_skill_id(&expert_id).map_err(|e| ExpertsError::Metadata(e.to_string()))?;
-
     let _guard = mutation_lock().lock().await;
+    unlink_one_locked(&expert_id, agent_type)
+}
+
+/// Remove one expert's link from one agent's skill dirs. **Assumes the mutation
+/// lock is already held** (see `link_one_locked`).
+fn unlink_one_locked(expert_id: &str, agent_type: AgentType) -> Result<(), ExpertsError> {
+    let expert_id =
+        validate_skill_id(expert_id).map_err(|e| ExpertsError::Metadata(e.to_string()))?;
 
     // Scan ALL global dirs for this agent to handle shared-dir agents
     // (Codex, Gemini and Cline all also point at `~/.agents/skills/`).
@@ -925,6 +927,80 @@ pub async fn experts_unlink_from_agent(
     Ok(())
 }
 
+/// Apply a batch of enable/disable operations under a single lock acquisition.
+///
+/// Each op is applied independently: a failing op records `ok: false` with its
+/// error and the batch continues, so a partial failure never aborts the rest.
+/// The frontend computes the minimal delta of changed cells, calls this, then
+/// re-fetches the authoritative snapshot via `experts_list_all_install_statuses`
+/// to reconcile (necessary because shared agent dirs make per-op state
+/// non-local — see the office/experts shared-dir note).
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn experts_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, ExpertsError> {
+    let _guard = mutation_lock().lock().await;
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let LinkOp {
+            expert_id,
+            agent_type,
+            enable,
+        } = op;
+        let res = if enable {
+            link_one_locked(&expert_id, agent_type).map(Some)
+        } else {
+            unlink_one_locked(&expert_id, agent_type).map(|()| None)
+        };
+        out.push(match res {
+            Ok(status) => LinkOpResult {
+                expert_id,
+                agent_type,
+                ok: true,
+                status,
+                error: None,
+            },
+            Err(err) => LinkOpResult {
+                expert_id,
+                agent_type,
+                ok: false,
+                status: None,
+                error: Some(err.to_string()),
+            },
+        });
+    }
+    Ok(out)
+}
+
+/// One-shot snapshot of every (expert, agent) link state — lets the matrix UI
+/// render the whole grid from a single round-trip instead of one
+/// `experts_get_install_status` call per expert.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn experts_list_all_install_statuses() -> Result<Vec<ExpertInstallStatus>, ExpertsError> {
+    let agents = supported_agents();
+    let mut out = Vec::with_capacity(bundled_metadata().len() * agents.len());
+    for meta in bundled_metadata() {
+        let expected = expert_central_path(&meta.id);
+        for &agent in &agents {
+            let link_path = match agent_link_path(agent, &meta.id) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let state = classify_link(&link_path, &expected);
+            let target_path =
+                read_link_target(&link_path).map(|p| p.to_string_lossy().to_string());
+            out.push(ExpertInstallStatus {
+                expert_id: meta.id.clone(),
+                agent_type: agent,
+                state,
+                link_path: link_path.to_string_lossy().to_string(),
+                target_path,
+                expected_target_path: expected.to_string_lossy().to_string(),
+                copy_mode: false,
+            });
+        }
+    }
+    Ok(out)
+}
+
 // ─── Commands: read / open ──────────────────────────────────────────────
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -954,4 +1030,76 @@ pub async fn experts_open_central_dir() -> Result<String, ExpertsError> {
     let dir = central_experts_dir();
     fs::create_dir_all(&dir)?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{timeout, Duration};
+
+    // These tests deliberately use ids that are well-formed but absent from the
+    // bundle and unlikely to exist as real links, so they never touch or mutate
+    // the developer's real skill directories: a disable of an absent id only
+    // performs path-existence reads, and an enable of an unknown id fails at
+    // `find_metadata` before any filesystem write.
+
+    #[tokio::test]
+    async fn apply_links_does_not_deadlock() {
+        // The keystone regression: `experts_apply_links` locks the (non-reentrant)
+        // mutation lock once and must call the lock-free inner helpers, NOT the
+        // public single commands. If a future refactor reintroduced a re-lock,
+        // the second acquisition would hang — caught here as a timeout rather
+        // than a wedged CI run.
+        let ops = vec![
+            LinkOp {
+                expert_id: "zzz-codeg-batch-test-absent-aaa".into(),
+                agent_type: AgentType::ClaudeCode,
+                enable: false,
+            },
+            LinkOp {
+                expert_id: "zzz-codeg-batch-test-absent-bbb".into(),
+                agent_type: AgentType::Codex,
+                enable: false,
+            },
+        ];
+        let results = timeout(Duration::from_secs(5), experts_apply_links(ops))
+            .await
+            .expect("experts_apply_links must not deadlock")
+            .expect("batch returns Ok");
+        assert_eq!(results.len(), 2);
+        // Disabling an already-absent link is an idempotent success.
+        assert!(results.iter().all(|r| r.ok), "{results:?}");
+    }
+
+    #[tokio::test]
+    async fn apply_links_collects_per_op_results_without_aborting() {
+        let ops = vec![
+            LinkOp {
+                expert_id: "zzz-codeg-batch-test-absent".into(),
+                agent_type: AgentType::ClaudeCode,
+                enable: false,
+            },
+            LinkOp {
+                // Unknown expert → enable fails at find_metadata, before any fs write.
+                expert_id: "zzz-unknown-expert".into(),
+                agent_type: AgentType::ClaudeCode,
+                enable: true,
+            },
+        ];
+        let results = experts_apply_links(ops).await.expect("batch returns Ok");
+        assert_eq!(results.len(), 2);
+        assert!(results[0].ok, "idempotent disable should succeed");
+        assert!(!results[1].ok, "unknown expert enable should fail its op");
+        assert!(results[1].error.is_some());
+        assert!(results[1].status.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_all_install_statuses_covers_every_expert_agent_pair() {
+        let rows = experts_list_all_install_statuses()
+            .await
+            .expect("snapshot returns Ok");
+        let expected = bundled_metadata().len() * supported_agents().len();
+        assert_eq!(rows.len(), expected);
+    }
 }

@@ -5,7 +5,7 @@ use axum::{
     http::{StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{any, get, post},
     Json, Router,
 };
 
@@ -710,16 +710,20 @@ pub fn build_router(
         // ─── Experts ───
         .route("/experts_list", post(handlers::experts::experts_list))
         .route(
-            "/experts_list_for_agent",
-            post(handlers::experts::experts_list_for_agent),
-        )
-        .route(
             "/experts_get_install_status",
             post(handlers::experts::experts_get_install_status),
         )
         .route(
+            "/experts_list_all_install_statuses",
+            post(handlers::experts::experts_list_all_install_statuses),
+        )
+        .route(
             "/experts_link_to_agent",
             post(handlers::experts::experts_link_to_agent),
+        )
+        .route(
+            "/experts_apply_links",
+            post(handlers::experts::experts_apply_links),
         )
         .route(
             "/experts_unlink_from_agent",
@@ -767,12 +771,28 @@ pub fn build_router(
             post(handlers::office_tools::officecli_skill_get_install_status),
         )
         .route(
+            "/officecli_skill_list_all_install_statuses",
+            post(handlers::office_tools::officecli_skill_list_all_install_statuses),
+        )
+        .route(
+            "/officecli_skill_apply_links",
+            post(handlers::office_tools::officecli_skill_apply_links),
+        )
+        .route(
             "/officecli_skill_read_content",
             post(handlers::office_tools::officecli_skill_read_content),
         )
         .route(
             "/officecli_render_html",
             post(handlers::office_tools::officecli_render_html),
+        )
+        .route(
+            "/start_office_watch",
+            post(handlers::office_tools::start_office_watch),
+        )
+        .route(
+            "/stop_office_watch",
+            post(handlers::office_tools::stop_office_watch),
         )
         // ─── Project boot ───
         .route(
@@ -1083,6 +1103,23 @@ pub fn build_router(
         .route(
             "/backup_download/{ticket}",
             get(handlers::backup::backup_download),
+        )
+        // Office watch preview proxy (server mode): the iframe can't carry a
+        // Bearer header, so these self-authenticate via a per-watch `?cap=`
+        // capability + an SSRF port whitelist. `any` so OPTIONS (CORS preflight)
+        // and POST (officecli's /api/edit, /api/selection) reach the handler,
+        // not just GET. See `handlers::office_watch_proxy`.
+        .route(
+            "/office-watch-proxy/{port}",
+            any(handlers::office_watch_proxy::proxy_root),
+        )
+        .route(
+            "/office-watch-proxy/{port}/",
+            any(handlers::office_watch_proxy::proxy_root),
+        )
+        .route(
+            "/office-watch-proxy/{port}/{*rest}",
+            any(handlers::office_watch_proxy::proxy),
         );
 
     // Wrap every API request in an `http` span (method, path, request id) so a
