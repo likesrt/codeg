@@ -2718,10 +2718,17 @@ export function MessageInput({
                 // blank areas (padding, the dead space below a short message, the
                 // action-bar gaps) so the whole input reads as clickable-to-type;
                 // interactive controls re-assert their own cursor (see globals.css).
-                "codeg-composer-chrome @container relative flex flex-col bg-transparent transition-colors",
+                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-input bg-transparent transition-colors",
+                // Standard focus ring — always shown when the composer is
+                // focused (the plain default input style).
                 folderBranchPickerAttached
-                  ? "rounded-xl border border-input bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
-                  : "rounded-xl border border-input focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                  ? "bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
+                  : "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                // Active session: a gradient flows around the border, but ONLY
+                // while the composer itself is not focused. Focusing it hides the
+                // flow (globals.css) so the default focus ring above takes over;
+                // an inactive session shows the plain default border.
+                isActive && "codeg-composer-flow",
                 !folderBranchPickerAttached &&
                   showDragActive &&
                   "ring-1 ring-primary/40",

@@ -1515,6 +1515,62 @@
   cursor: pointer;
 }
 
+/* Active-session composer: a gradient that flows around the input border as the
+   active-conversation cue (replaces the old top-center icon). The ::before
+   overlays the element's existing 1px border — `inset:-1px` reaches the
+   border-box edge and the conic gradient is masked down to a thin ring — so
+   adding/removing this class never changes the box model: no layout shift when
+   the active tab switches. Rotating the gradient's start angle makes it "flow";
+   stops start and end on the same color so the conic seam is invisible. The
+   `, 0deg` fallback keeps `background` valid where @property is unsupported,
+   degrading to a static gradient border. Intentionally NOT gated behind
+   prefers-reduced-motion: this is an explicitly-requested accent and the
+   maintainer runs reduced-motion ON but wants requested motion to play (repo
+   convention, matches the always-on spinners); at most one composer animates at
+   a time over a 1px ring, so the repaint cost is negligible. */
+@property --codeg-flow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.codeg-composer-flow::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--codeg-flow-angle, 0deg),
+    #ff453a,
+    #32d74b,
+    #0a84ff,
+    #ff453a
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: codeg-composer-flow 2.5s linear infinite;
+}
+/* The flow is the "active session, input not focused" cue: the moment the
+   composer itself gains focus, hide it so the input reverts to its plain default
+   style (the standard focus ring applied in the composer className).
+   `display:none` also stops the animation while the input is focused. */
+.codeg-composer-flow:focus-within::before {
+  display: none;
+}
+@keyframes codeg-composer-flow {
+  to {
+    --codeg-flow-angle: 360deg;
+  }
+}
+
 .codeg-composer .ProseMirror {
   outline: none;
   white-space: pre-wrap;
