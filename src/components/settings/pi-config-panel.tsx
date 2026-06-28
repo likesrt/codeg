@@ -39,11 +39,11 @@ import {
   loadPiConfig,
 } from "@/lib/api"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
+import { PI_CONFIG_DIR_ENV } from "@/lib/pi-config"
 import type { AcpAgentInfo } from "@/lib/types"
 import { cn, randomUUID } from "@/lib/utils"
 
 const PI_COMMAND_ENV = "PI_ACP_PI_COMMAND"
-const PI_CONFIG_DIR_ENV = "PI_CODING_AGENT_DIR"
 const PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR"
 /**
  * Per-agent `env_json` flag gating launch-time workspace-trust seeding. Absent or
@@ -760,6 +760,11 @@ export function PiConfigPanel({
                     placeholder="~/.pi/agent"
                     spellCheck={false}
                   />
+                  {configDir.trim() !== "" && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                      {t("pi.configDirSkillsNote")}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[11px] text-muted-foreground">

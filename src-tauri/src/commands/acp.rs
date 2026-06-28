@@ -4340,10 +4340,21 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".kimi-code/skills"],
         }),
-        // pi skills load natively over rpc (`~/.pi/agent/...` + the settings
-        // `skills` key); codeg does not yet manage a skill store for pi — the
-        // exact global skill dir is unconfirmed (deferred).
-        AgentType::Pi => None,
+        // pi auto-loads skills from `~/.pi/agent/skills` and the shared
+        // `~/.agents/skills` store (both global), plus project-local
+        // `.pi/skills` / `.agents/skills` once the workspace is trusted (codeg
+        // seeds that trust on connect). `~/.pi/agent/skills` additionally
+        // accepts standalone `.md` files, so this mirrors Codex's spec shape.
+        // The pi-native dir comes first so toggling pi links into its own dir
+        // without cross-agent side effects on the shared store.
+        AgentType::Pi => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            global_dirs: vec![
+                pi_agent_dir().join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".pi/skills", ".agents/skills"],
+        }),
     }
 }
 
@@ -8086,6 +8097,20 @@ wire_api = "chat"
         assert_eq!(spec.project_rel_dirs, vec![".kimi-code/skills"]);
         let expected = crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills");
         assert_eq!(spec.global_dirs, vec![expected]);
+    }
+
+    #[test]
+    fn pi_skill_storage_spec_targets_pi_agent_dir() {
+        let spec = skill_storage_spec(AgentType::Pi).expect("Pi supports skills");
+        // pi's native dir accepts standalone `.md` files, like Codex.
+        assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOrMarkdownFile);
+        assert_eq!(spec.project_rel_dirs, vec![".pi/skills", ".agents/skills"]);
+        // Native pi dir first (preferred link target), shared store second.
+        let expected = vec![
+            pi_agent_dir().join("skills"),
+            home_dir_or_default().join(".agents").join("skills"),
+        ];
+        assert_eq!(spec.global_dirs, expected);
     }
 
     #[test]

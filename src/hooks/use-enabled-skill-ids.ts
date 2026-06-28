@@ -6,6 +6,8 @@ import {
   expertsListAllInstallStatuses,
   officecliSkillListAllInstallStatuses,
 } from "@/lib/api"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AgentType, ExpertInstallStatus } from "@/lib/types"
 
 // Module-level cache shared across QuickActions mounts. The snapshots are
@@ -108,11 +110,22 @@ function releaseFocusRefresh(): void {
  * `ready` is false until the first snapshot resolves successfully, so callers
  * can avoid marking everything as "not enabled" during the initial async load
  * (or after an error, where we deliberately stay not-ready and fail open).
+ *
+ * `supported` is false for an agent codeg's skill store can't manage — today
+ * only a pi pointed at a custom `PI_CODING_AGENT_DIR`, whose skills live in a
+ * per-agent dir codeg's default-dir store never touches. For such an agent
+ * `enabledIds` is forced empty (so no consumer can surface a default-dir link
+ * as enabled) and skill UIs should hide their shortcuts rather than show a
+ * dead-end "enable in Settings" path the Settings matrices also hide. pi is
+ * held unsupported until the agent registry has loaded, so a custom-dir pi
+ * never briefly exposes default-dir shortcuts during the optimistic window.
  */
 export function useEnabledSkillIds(agentType: AgentType | null): {
   enabledIds: Set<string>
   ready: boolean
+  supported: boolean
 } {
+  const { agents, fresh: agentsFresh } = useAcpAgents()
   const [snapshot, setSnapshot] = useState<ExpertInstallStatus[] | null>(
     () => cached
   )
@@ -150,9 +163,32 @@ export function useEnabledSkillIds(agentType: AgentType | null): {
     return () => releaseFocusRefresh()
   }, [])
 
+  // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by codeg's
+  // default-dir skill store. The custom dir lives in the agent registry's
+  // env_json, so pi is held unmanaged until that registry is first `fresh`
+  // (pessimistic — a custom-dir pi must never expose default-dir shortcuts
+  // during the initial optimistic load), then managed only when it resolves to
+  // a default-dir pi. Non-pi agents are unaffected.
+  //
+  // `fresh` is monotonic, so a mid-session dir change leaves `agents` briefly
+  // stale during the reload it triggers. We let that converge within one reload
+  // rather than gate on every in-flight reload: the env save that stores the
+  // dir override emits `app://acp-agents-updated`, which this hook's
+  // `useAcpAgents` reloads on, so the stale view self-heals in one round-trip.
+  // Gating all reloads would instead flicker default-dir pi's shortcuts on every
+  // window focus (useAcpAgents reloads on focus and the consumers hide whole
+  // shortcut surfaces) — a worse, recurring regression than a sub-frame window
+  // whose worst case is one ignored skill badge.
+  const piSkillsUnmanaged = useMemo(() => {
+    if (agentType !== "pi") return false
+    if (!agentsFresh) return true
+    const agent = agents.find((a) => a.agent_type === agentType)
+    return !agent || piUsesCustomAgentDir(agent)
+  }, [agentType, agentsFresh, agents])
+
   const enabledIds = useMemo(() => {
     const set = new Set<string>()
-    if (!snapshot || !agentType) return set
+    if (!snapshot || !agentType || piSkillsUnmanaged) return set
     for (const status of snapshot) {
       if (
         status.agentType === agentType &&
@@ -162,7 +198,13 @@ export function useEnabledSkillIds(agentType: AgentType | null): {
       }
     }
     return set
-  }, [snapshot, agentType])
+  }, [snapshot, agentType, piSkillsUnmanaged])
 
-  return { enabledIds, ready: snapshot !== null }
+  return {
+    enabledIds,
+    // An unmanaged pi is authoritatively "no managed skills", so report ready
+    // immediately instead of leaving consumers in the optimistic loading state.
+    ready: piSkillsUnmanaged || snapshot !== null,
+    supported: !piSkillsUnmanaged,
+  }
 }

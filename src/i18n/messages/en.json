@@ -994,7 +994,8 @@
       "recheck": "Recheck",
       "trustTitle": "Auto-trust opened workspaces",
       "trustDescription": "When codeg connects pi to a folder, mark that folder trusted so pi loads the project's local config and skills without a separate prompt.",
-      "trustHint": "Only folders you open here are trusted, never your whole machine — and this affects config loading only, not what pi is allowed to run."
+      "trustHint": "Only folders you open here are trusted, never your whole machine — and this affects config loading only, not what pi is allowed to run.",
+      "configDirSkillsNote": "With a custom config directory, the Skills, Experts, and Office tools managed in Settings won't apply to this pi — manage its skills in that folder directly."
     }
   },
   "SettingsPages": {

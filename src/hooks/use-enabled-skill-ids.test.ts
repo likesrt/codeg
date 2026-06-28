@@ -1,11 +1,23 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { AcpAgentInfo, ExpertInstallStatus } from "@/lib/types"
+
 // Both status scans are mocked so we can count how many times a window focus
-// triggers them across multiple mounted consumers.
+// triggers them across multiple mounted consumers. `acpListAgents` is pulled in
+// transitively via `useAcpAgents` (the hook reads each agent's env_json to spot
+// a custom-dir pi); it returns no agents here, so detection stays inert.
 vi.mock("@/lib/api", () => ({
   expertsListAllInstallStatuses: vi.fn(),
   officecliSkillListAllInstallStatuses: vi.fn(),
+  acpListAgents: vi.fn().mockResolvedValue([]),
+}))
+
+// `useAcpAgents` subscribes through the platform layer; stub it to inert
+// disposers so the hook mounts cleanly under jsdom.
+vi.mock("@/lib/platform", () => ({
+  subscribe: vi.fn(async () => () => {}),
+  onTransportReconnect: vi.fn(() => () => {}),
 }))
 
 // The hook caches snapshot + focus-listener state at module scope; reset the
@@ -67,5 +79,82 @@ describe("useEnabledSkillIds — focus refresh coalescing", () => {
 
     expect(api.expertsListAllInstallStatuses).not.toHaveBeenCalled()
     expect(api.officecliSkillListAllInstallStatuses).not.toHaveBeenCalled()
+  })
+})
+
+// Only the fields the hook + useAcpAgents read; the rest of AcpAgentInfo is
+// irrelevant to skill-management gating.
+function piAgent(env: Record<string, string>): AcpAgentInfo {
+  return {
+    agent_type: "pi",
+    name: "Pi",
+    sort_order: 0,
+    env,
+  } as unknown as AcpAgentInfo
+}
+
+function piLinkedStatus(expertId: string): ExpertInstallStatus {
+  return {
+    expertId,
+    agentType: "pi",
+    state: "linked_to_codeg",
+    linkPath: "",
+    targetPath: null,
+    expectedTargetPath: "",
+    copyMode: false,
+  }
+}
+
+describe("useEnabledSkillIds — custom-dir pi gating", () => {
+  it("never exposes managed skills for a custom-dir pi, before or after the registry resolves", async () => {
+    const { api, hook } = await setup()
+    // A pi pinned to a custom PI_CODING_AGENT_DIR, plus a default-dir expert
+    // link that must NOT be surfaced for it.
+    vi.mocked(api.acpListAgents).mockResolvedValue([
+      piAgent({ PI_CODING_AGENT_DIR: "/custom/pi" }),
+    ])
+    vi.mocked(api.expertsListAllInstallStatuses).mockResolvedValue([
+      piLinkedStatus("writer"),
+    ])
+
+    const { result } = renderHook(() => hook.useEnabledSkillIds("pi"))
+
+    // Optimistic window: registry not yet loaded → pessimistically unmanaged,
+    // so no default-dir link leaks even though the snapshot may resolve first.
+    expect(result.current.supported).toBe(false)
+    expect(result.current.enabledIds.size).toBe(0)
+
+    // Let the agent registry and the skill snapshot both resolve.
+    await waitFor(() => expect(api.acpListAgents).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(api.expertsListAllInstallStatuses).toHaveBeenCalled()
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // Custom dir now known → still unmanaged, link still suppressed.
+    expect(result.current.supported).toBe(false)
+    expect(result.current.enabledIds.size).toBe(0)
+  })
+
+  it("manages a default-dir pi once the registry resolves", async () => {
+    const { api, hook } = await setup()
+    vi.mocked(api.acpListAgents).mockResolvedValue([piAgent({})])
+    vi.mocked(api.expertsListAllInstallStatuses).mockResolvedValue([
+      piLinkedStatus("writer"),
+    ])
+
+    const { result } = renderHook(() => hook.useEnabledSkillIds("pi"))
+
+    // Held unmanaged until the registry is known (pessimistic during load).
+    expect(result.current.supported).toBe(false)
+
+    // Once the registry is fresh and the agent is default-dir, pi is managed
+    // and its linked skill surfaces.
+    await waitFor(() => expect(result.current.supported).toBe(true))
+    await waitFor(() =>
+      expect(result.current.enabledIds.has("writer")).toBe(true)
+    )
   })
 })

@@ -54,6 +54,7 @@ import type {
   OfficecliInfo,
   OfficecliSkill,
 } from "@/lib/types"
+import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import { toErrorMessage } from "@/lib/app-error"
 
 const ICON_MAP: Record<string, LucideIcon> = {
@@ -289,7 +290,9 @@ export function OfficeToolsSettings() {
         acpListAgents(),
       ])
       setSkills(skillList)
-      setAgents(agentList)
+      // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
+      // default-dir skill store, so it doesn't get a column here.
+      setAgents(agentList.filter((agent) => !piUsesCustomAgentDir(agent)))
       // Remount the matrix so it re-fetches the authoritative status snapshot
       // (newly synced skills become enableable).
       setReloadKey((k) => k + 1)

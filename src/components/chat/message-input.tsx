@@ -543,9 +543,11 @@ export function MessageInput({
   const locale = useLocale()
   const tQa = useTranslations("Folder.chat.welcomePanel.quickActions")
   const experts = useBuiltInExperts()
-  const { enabledIds, ready: skillStatusReady } = useEnabledSkillIds(
-    agentType ?? null
-  )
+  const {
+    enabledIds,
+    ready: skillStatusReady,
+    supported: skillManagementSupported,
+  } = useEnabledSkillIds(agentType ?? null)
   const editorRef = useRef<RichComposerHandle>(null)
   // The editor owns the content now; this mirror of its empty state drives the
   // send button and `hasSendableContent`.
@@ -3128,76 +3130,88 @@ export function MessageInput({
                           </div>
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
-                      <DropdownMenuSub>
-                        <DropdownMenuSubTrigger
-                          disabled={expertsSorted.length === 0}
-                        >
-                          <Sparkles className="size-4" />
-                          {t("experts")}
-                        </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent
-                          className="min-w-44 overflow-y-auto"
-                          style={{
-                            maxWidth: "min(20rem, calc(100vw - 1rem))",
-                            maxHeight:
-                              "min(32rem, var(--radix-dropdown-menu-content-available-height))",
-                          }}
-                        >
-                          {expertsSorted.map((item) => {
-                            const Icon = getExpertIcon(item.metadata.icon)
-                            const label =
-                              pickLocalized(
-                                item.metadata.display_name,
-                                locale
-                              ) || item.metadata.id
-                            return (
-                              <DropdownMenuItem
-                                key={item.metadata.id}
-                                onClick={() => handleExpertShortcut(item)}
-                              >
-                                <Icon className="size-4" />
-                                <span className="flex-1 truncate">{label}</span>
-                                {isSkillLocked(item.metadata.id) && (
-                                  <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
-                                )}
-                              </DropdownMenuItem>
-                            )
-                          })}
-                        </DropdownMenuSubContent>
-                      </DropdownMenuSub>
-                      <DropdownMenuSub>
-                        <DropdownMenuSubTrigger>
-                          <FileStack className="size-4" />
-                          {t("office")}
-                        </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent
-                          className="min-w-44 overflow-y-auto"
-                          style={{
-                            maxWidth: "min(20rem, calc(100vw - 1rem))",
-                            maxHeight:
-                              "min(32rem, var(--radix-dropdown-menu-content-available-height))",
-                          }}
-                        >
-                          {OFFICE_ACTIONS.map((action) => {
-                            const Icon = action.icon
-                            const label = tQa(
-                              action.id as Parameters<typeof tQa>[0]
-                            )
-                            return (
-                              <DropdownMenuItem
-                                key={action.id}
-                                onClick={() => handleOfficeShortcut(action)}
-                              >
-                                <Icon className="size-4" />
-                                <span className="flex-1 truncate">{label}</span>
-                                {isSkillLocked(action.skillId) && (
-                                  <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
-                                )}
-                              </DropdownMenuItem>
-                            )
-                          })}
-                        </DropdownMenuSubContent>
-                      </DropdownMenuSub>
+                      {/* A custom-dir pi can't have skills managed by codeg's
+                          default-dir store, so hide these shortcuts instead of
+                          offering ones that lock with a Settings path the
+                          Experts/Office matrices also hide for this agent. */}
+                      {skillManagementSupported && (
+                        <>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger
+                              disabled={expertsSorted.length === 0}
+                            >
+                              <Sparkles className="size-4" />
+                              {t("experts")}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent
+                              className="min-w-44 overflow-y-auto"
+                              style={{
+                                maxWidth: "min(20rem, calc(100vw - 1rem))",
+                                maxHeight:
+                                  "min(32rem, var(--radix-dropdown-menu-content-available-height))",
+                              }}
+                            >
+                              {expertsSorted.map((item) => {
+                                const Icon = getExpertIcon(item.metadata.icon)
+                                const label =
+                                  pickLocalized(
+                                    item.metadata.display_name,
+                                    locale
+                                  ) || item.metadata.id
+                                return (
+                                  <DropdownMenuItem
+                                    key={item.metadata.id}
+                                    onClick={() => handleExpertShortcut(item)}
+                                  >
+                                    <Icon className="size-4" />
+                                    <span className="flex-1 truncate">
+                                      {label}
+                                    </span>
+                                    {isSkillLocked(item.metadata.id) && (
+                                      <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
+                                    )}
+                                  </DropdownMenuItem>
+                                )
+                              })}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <FileStack className="size-4" />
+                              {t("office")}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent
+                              className="min-w-44 overflow-y-auto"
+                              style={{
+                                maxWidth: "min(20rem, calc(100vw - 1rem))",
+                                maxHeight:
+                                  "min(32rem, var(--radix-dropdown-menu-content-available-height))",
+                              }}
+                            >
+                              {OFFICE_ACTIONS.map((action) => {
+                                const Icon = action.icon
+                                const label = tQa(
+                                  action.id as Parameters<typeof tQa>[0]
+                                )
+                                return (
+                                  <DropdownMenuItem
+                                    key={action.id}
+                                    onClick={() => handleOfficeShortcut(action)}
+                                  >
+                                    <Icon className="size-4" />
+                                    <span className="flex-1 truncate">
+                                      {label}
+                                    </span>
+                                    {isSkillLocked(action.skillId) && (
+                                      <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
+                                    )}
+                                  </DropdownMenuItem>
+                                )
+                              })}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        </>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                   {hasInlineSelectors && (
