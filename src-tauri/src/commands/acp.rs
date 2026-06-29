@@ -1013,18 +1013,25 @@ fn codex_auth_json_path() -> PathBuf {
     codex_home_dir().join("auth.json")
 }
 
-fn opencode_primary_config_path() -> PathBuf {
-    home_dir_or_default()
-        .join(".config")
+/// OpenCode reads config from `$XDG_CONFIG_HOME/opencode` (falling back to
+/// `~/.config/opencode`) and credentials from `$XDG_DATA_HOME/opencode`
+/// (falling back to `~/.local/share/opencode`) on every platform. codeg must
+/// write where OpenCode reads, so these reuse the same XDG resolution as
+/// `opencode_plugins` (config) and `parsers::opencode` (data) — otherwise a
+/// user with XDG dirs set would get credentials written where OpenCode never
+/// looks, and codeg's own plugin/connect paths would diverge.
+fn opencode_config_dir() -> PathBuf {
+    crate::acp::opencode_plugins::xdg_config_home()
+        .unwrap_or_else(|| home_dir_or_default().join(".config"))
         .join("opencode")
-        .join("opencode.json")
+}
+
+fn opencode_primary_config_path() -> PathBuf {
+    opencode_config_dir().join("opencode.json")
 }
 
 fn opencode_legacy_config_path() -> PathBuf {
-    home_dir_or_default()
-        .join(".config")
-        .join("opencode")
-        .join("config.json")
+    opencode_config_dir().join("config.json")
 }
 
 fn resolve_opencode_config_path() -> PathBuf {
@@ -1042,11 +1049,7 @@ fn resolve_opencode_config_path() -> PathBuf {
 }
 
 fn opencode_auth_json_path() -> PathBuf {
-    home_dir_or_default()
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("auth.json")
+    crate::parsers::opencode::resolve_opencode_base_dir().join("auth.json")
 }
 
 fn load_opencode_auth_json_raw() -> Option<String> {
@@ -1344,83 +1347,112 @@ fn load_codex_config_toml_raw() -> Option<String> {
     fs::read_to_string(codex_config_toml_path()).ok()
 }
 
-fn load_codex_local_config_json() -> Option<String> {
+/// Project codex `config.toml` text into the launch-relevant config map shared
+/// by the settings read-back and the staleness fingerprint. Pure (no I/O) so it
+/// is unit-testable; [`load_codex_local_config_json`] is the on-disk wrapper
+/// that also folds in the api key from `auth.json`.
+///
+/// `apiBaseUrl` / `model` / `env` mirror back into the codex runtime env via
+/// [`build_runtime_env_from_setting`] (they map to `OPENAI_*`); `modelProvider`
+/// deliberately does NOT (it is not an `AgentRuntimeConfig` field). It is still
+/// included so a provider switch is visible to the fingerprint even when the
+/// resolved `base_url` is unchanged — two providers can share one endpoint yet
+/// differ in `wire_api` / auth. Before codex-acp 1.0.1 this was caught only
+/// incidentally by the injected `MODEL_PROVIDER` launch env; that injection is
+/// gone now that resume reads `model_provider` from config.toml (#224), so the
+/// fingerprint must carry the name itself.
+fn codex_config_projection_from_toml(raw_toml: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut merged = serde_json::Map::new();
+    let Ok(value) = raw_toml.parse::<toml::Value>() else {
+        return merged;
+    };
 
-    if let Ok(raw_toml) = fs::read_to_string(codex_config_toml_path()) {
-        if let Ok(value) = raw_toml.parse::<toml::Value>() {
-            if let Some(model) = value
-                .get("model")
-                .and_then(|item| item.as_str())
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-            {
-                merged.insert(
-                    "model".to_string(),
-                    serde_json::Value::String(model.to_string()),
-                );
-            }
+    if let Some(model) = value
+        .get("model")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        merged.insert(
+            "model".to_string(),
+            serde_json::Value::String(model.to_string()),
+        );
+    }
 
-            let model_provider = value
-                .get("model_provider")
-                .and_then(|item| item.as_str())
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(str::to_string);
+    let model_provider = value
+        .get("model_provider")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string);
 
-            let mut api_base_url: Option<String> = None;
-            if let Some(provider) = model_provider {
-                api_base_url = value
-                    .get("model_providers")
-                    .and_then(|table| table.get(provider.as_str()))
-                    .and_then(|table| table.get("base_url"))
-                    .and_then(|item| item.as_str())
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                    .map(str::to_string);
-            }
-            if api_base_url.is_none() {
-                api_base_url = value
-                    .get("model_providers")
-                    .and_then(|table| table.as_table())
-                    .and_then(|providers| {
-                        providers.values().find_map(|item| {
-                            item.get("base_url")
-                                .and_then(|base| base.as_str())
-                                .map(str::trim)
-                                .filter(|base| !base.is_empty())
-                                .map(str::to_string)
-                        })
-                    });
-            }
-            if let Some(base_url) = api_base_url {
-                merged.insert(
-                    "apiBaseUrl".to_string(),
-                    serde_json::Value::String(base_url),
-                );
-            }
+    if let Some(provider) = &model_provider {
+        merged.insert(
+            "modelProvider".to_string(),
+            serde_json::Value::String(provider.clone()),
+        );
+    }
 
-            if let Some(env) = value.get("env").and_then(|item| item.as_table()) {
-                let mut env_map = serde_json::Map::new();
-                for (key, item) in env {
-                    let Some(raw) = item.as_str() else {
-                        continue;
-                    };
-                    let trimmed = raw.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    env_map.insert(
-                        key.to_string(),
-                        serde_json::Value::String(trimmed.to_string()),
-                    );
-                }
-                if !env_map.is_empty() {
-                    merged.insert("env".to_string(), serde_json::Value::Object(env_map));
-                }
+    let mut api_base_url: Option<String> = None;
+    if let Some(provider) = &model_provider {
+        api_base_url = value
+            .get("model_providers")
+            .and_then(|table| table.get(provider.as_str()))
+            .and_then(|table| table.get("base_url"))
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string);
+    }
+    if api_base_url.is_none() {
+        api_base_url = value
+            .get("model_providers")
+            .and_then(|table| table.as_table())
+            .and_then(|providers| {
+                providers.values().find_map(|item| {
+                    item.get("base_url")
+                        .and_then(|base| base.as_str())
+                        .map(str::trim)
+                        .filter(|base| !base.is_empty())
+                        .map(str::to_string)
+                })
+            });
+    }
+    if let Some(base_url) = api_base_url {
+        merged.insert(
+            "apiBaseUrl".to_string(),
+            serde_json::Value::String(base_url),
+        );
+    }
+
+    if let Some(env) = value.get("env").and_then(|item| item.as_table()) {
+        let mut env_map = serde_json::Map::new();
+        for (key, item) in env {
+            let Some(raw) = item.as_str() else {
+                continue;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
             }
+            env_map.insert(
+                key.to_string(),
+                serde_json::Value::String(trimmed.to_string()),
+            );
+        }
+        if !env_map.is_empty() {
+            merged.insert("env".to_string(), serde_json::Value::Object(env_map));
         }
     }
+
+    merged
+}
+
+fn load_codex_local_config_json() -> Option<String> {
+    let mut merged = match fs::read_to_string(codex_config_toml_path()) {
+        Ok(raw_toml) => codex_config_projection_from_toml(&raw_toml),
+        Err(_) => serde_json::Map::new(),
+    };
 
     if let Ok(raw_auth) = fs::read_to_string(codex_auth_json_path()) {
         if let Ok(auth) = serde_json::from_str::<serde_json::Value>(&raw_auth) {
@@ -1442,29 +1474,6 @@ fn load_codex_local_config_json() -> Option<String> {
         return None;
     }
     serde_json::to_string_pretty(&serde_json::Value::Object(merged)).ok()
-}
-
-/// Extract the `model_provider` name from codex `config.toml` text.
-///
-/// Returns the trimmed provider name, or `None` when the key is absent, empty,
-/// or the TOML is malformed. Pure (no I/O) so it is unit-testable without env
-/// vars or the filesystem; [`codex_model_provider`] is the on-disk wrapper.
-fn parse_codex_model_provider(raw_toml: &str) -> Option<String> {
-    raw_toml
-        .parse::<toml::Value>()
-        .ok()?
-        .get("model_provider")
-        .and_then(|item| item.as_str())
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(str::to_string)
-}
-
-/// Read codex's configured `model_provider` from `~/.codex/config.toml` (honors
-/// `CODEX_HOME` via [`codex_config_toml_path`]). `None` when the file is
-/// missing/unreadable or declares no provider.
-fn codex_model_provider() -> Option<String> {
-    parse_codex_model_provider(&fs::read_to_string(codex_config_toml_path()).ok()?)
 }
 
 fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), AcpError> {
@@ -2423,6 +2432,503 @@ pub(crate) async fn acp_fetch_kimi_models_core(
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+// ---------------------------------------------------------------------------
+// Pi config helpers
+//
+// pi (the self-extensible coding agent, reached over ACP via `pi-acp`) reads its
+// model selection from `~/.pi/agent/settings.json` (`defaultProvider`,
+// `defaultModel`, `defaultThinkingLevel` — plain strings) and its API keys from
+// `~/.pi/agent/auth.json` (`{ "<provider>": { "type": "api_key", "key": ... } }`).
+// codeg manages both NATIVE files directly (merge-writes that preserve every
+// other key), mirroring how it manages Codex's `auth.json`/`config.toml`. The
+// agent dir honors `PI_CODING_AGENT_DIR` so a custom pi install can be targeted.
+// ---------------------------------------------------------------------------
+
+/// Resolve pi's coding-agent dir: `PI_CODING_AGENT_DIR` if set (trimmed,
+/// non-empty), else `~/.pi/agent` (mirrors `codex_home_dir`/`resolve_kimi_*`).
+fn pi_agent_dir() -> PathBuf {
+    match std::env::var("PI_CODING_AGENT_DIR")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(value) => PathBuf::from(value),
+        None => home_dir_or_default().join(".pi").join("agent"),
+    }
+}
+
+fn pi_settings_json_path() -> PathBuf {
+    pi_agent_dir().join("settings.json")
+}
+
+fn pi_auth_json_path() -> PathBuf {
+    pi_agent_dir().join("auth.json")
+}
+
+fn pi_models_json_path() -> PathBuf {
+    pi_agent_dir().join("models.json")
+}
+
+/// Like [`pi_agent_dir`], but resolves `PI_CODING_AGENT_DIR` from a per-agent
+/// `runtime_env` map first (the BYO-pi override path) before falling back to the
+/// process env / `~/.pi/agent`. Launch-time trust seeding only has the per-agent
+/// env (the override never lands in codeg's own process env), so it must consult
+/// `runtime_env` to target the same agent dir pi-acp will spawn pi against.
+fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
+    match runtime_env
+        .get("PI_CODING_AGENT_DIR")
+        .map(|raw| raw.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(value) => PathBuf::from(value),
+        None => pi_agent_dir(),
+    }
+}
+
+/// Per-agent `env_json` key gating launch-time workspace-trust seeding for pi.
+/// Absent or any value other than `"0"` ⇒ enabled (default on); `"0"` disables.
+pub(crate) const PI_TRUST_WORKSPACE_ENV: &str = "PI_ACP_TRUST_WORKSPACE";
+
+/// Seed pi's `trust.json` so the workspace codeg is launching pi into is trusted.
+///
+/// pi stores trust as a flat `{ "<canonical-dir>": true|false|null }` map and the
+/// nearest-ancestor entry decides whether it loads a project's local `.pi/*`
+/// config and `.agents/skills`. This gates ONLY config/skill loading, never tool
+/// execution — codeg has already authorized full execution in `cwd` by connecting
+/// an agent there, so trusting the same folder for config loading is consistent
+/// and removes a redundant, mid-connection trust prompt.
+///
+/// Guarantees: scoped (only `cwd`, never machine-wide), additive-only (never
+/// writes `false` or removes entries), idempotent (any existing entry for `cwd` —
+/// including a user's explicit `false`/`null` set in pi — is left untouched), and
+/// crash-safe for pi's file (a present-but-unparseable `trust.json` is never
+/// clobbered). Best-effort: every failure is logged at debug and swallowed so
+/// trust seeding can never block a connect. Honors `PI_CODING_AGENT_DIR` via
+/// `runtime_env`.
+pub(crate) fn seed_pi_workspace_trust(cwd: &Path, runtime_env: &BTreeMap<String, String>) {
+    // Default on: only an explicit "0" disables.
+    if runtime_env
+        .get(PI_TRUST_WORKSPACE_ENV)
+        .is_some_and(|v| v.trim() == "0")
+    {
+        return;
+    }
+    // pi keys trust by the realpath of the directory; mirror `realpathSync` with
+    // `fs::canonicalize`. A non-canonicalizable cwd can't be matched anyway.
+    let canonical = match fs::canonicalize(cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("[pi] trust seed skipped: canonicalize {cwd:?} failed: {e}");
+            return;
+        }
+    };
+    let key = canonical.to_string_lossy().to_string();
+    let path = pi_agent_dir_for_env(runtime_env).join("trust.json");
+
+    // Read pi's file strictly: a missing file is fine (we create one), but a file
+    // that exists yet doesn't parse to a JSON object must NOT be overwritten —
+    // that would destroy decisions codeg can't see.
+    let mut obj = match fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => {
+                tracing::debug!("[pi] trust seed skipped: {path:?} is not a JSON object");
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => {
+            tracing::debug!("[pi] trust seed skipped: read {path:?} failed: {e}");
+            return;
+        }
+    };
+
+    // Idempotent + respect any decision the user already made for this folder.
+    if obj.contains_key(&key) {
+        return;
+    }
+    obj.insert(key, serde_json::Value::Bool(true));
+    if let Err(e) = write_json_object_pretty(&path, &obj) {
+        tracing::debug!("[pi] trust seed write failed for {path:?}: {e}");
+    }
+}
+
+/// Structured Pi config update from the settings UI. Writes pi's native files:
+/// `settings.json` always (provider/model/thinking level), and `auth.json` only
+/// when an API key is supplied (merge-preserving other providers).
+#[derive(Debug, Clone)]
+pub(crate) struct PiConfigUpdate {
+    pub provider: String,
+    pub model: String,
+    pub thinking_level: Option<String>,
+    pub api_key: Option<String>,
+    /// When set (non-empty), `provider` is a custom / self-hosted provider: its
+    /// definition is merge-written to `models.json` (`baseUrl` + `api`, with the
+    /// chosen `model` folded into the provider's `models` array). `None` leaves
+    /// `models.json` untouched (built-in provider).
+    pub custom_base_url: Option<String>,
+    /// Wire protocol for the custom provider (defaults to `openai-completions`).
+    /// Ignored when `custom_base_url` is `None`.
+    pub custom_api: Option<String>,
+}
+
+/// Read a JSON file into an owned object map, returning an empty map when the
+/// file is absent, unreadable, or does not parse to a JSON object. Pi's native
+/// files are small and codeg-owned; corruption shouldn't abort a save (we
+/// re-author the managed keys and preserve whatever else parses).
+fn read_json_object_or_empty(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Pretty-print a JSON object (with a trailing newline) to `path`, creating the
+/// parent directory if needed.
+fn write_json_object_pretty(
+    path: &Path,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), AcpError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AcpError::protocol(format!("create pi config directory failed: {e}")))?;
+    }
+    let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(obj.clone()))
+        .map_err(|e| AcpError::protocol(format!("serialize pi config failed: {e}")))?;
+    text.push('\n');
+    fs::write(path, text)
+        .map_err(|e| AcpError::protocol(format!("write pi config failed: {e}")))?;
+    Ok(())
+}
+
+/// Apply a structured Pi config update to pi's native files. Validates the whole
+/// request before any write: provider/model must be non-empty after trim and the
+/// API key must not contain newlines (it lands verbatim in a JSON string). Writes
+/// `settings.json` first (merge-preserving), then `auth.json` only when an API
+/// key is supplied. Ensures the settings row exists, then emits the agents-updated
+/// event so the settings panel refreshes.
+pub(crate) async fn acp_update_pi_config_core(
+    update: PiConfigUpdate,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    // ---- Validate (no writes yet) ----
+    let provider = update.provider.trim();
+    if provider.is_empty() {
+        return Err(AcpError::protocol("pi provider is required"));
+    }
+    let model = update.model.trim();
+    if model.is_empty() {
+        return Err(AcpError::protocol("pi model is required"));
+    }
+    let thinking_level = update
+        .thinking_level
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let api_key = update
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(key) = api_key {
+        if key.contains('\n') || key.contains('\r') {
+            return Err(AcpError::protocol(
+                "pi API key must not contain line breaks",
+            ));
+        }
+    }
+
+    // Ensure the settings row exists (mirrors the kimi flow) so the agent shows
+    // up as configured/enabled in the DB-backed settings list.
+    let default = agent_setting_service::AgentDefaultInput {
+        agent_type: AgentType::Pi,
+        registry_id: registry::registry_id_for(AgentType::Pi).to_string(),
+        default_sort_order: i32::MAX / 2,
+    };
+    agent_setting_service::ensure_defaults(&db.conn, &[default])
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    // ---- settings.json: merge-write provider/model/thinking level ----
+    let settings_path = pi_settings_json_path();
+    let mut settings = read_json_object_or_empty(&settings_path);
+    settings.insert(
+        "defaultProvider".to_string(),
+        serde_json::Value::String(provider.to_string()),
+    );
+    settings.insert(
+        "defaultModel".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    if let Some(level) = thinking_level {
+        settings.insert(
+            "defaultThinkingLevel".to_string(),
+            serde_json::Value::String(level.to_string()),
+        );
+    }
+    write_json_object_pretty(&settings_path, &settings)?;
+
+    // ---- auth.json: merge-write the provider credential (only when given) ----
+    if let Some(key) = api_key {
+        let auth_path = pi_auth_json_path();
+        let mut auth = read_json_object_or_empty(&auth_path);
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "type".to_string(),
+            serde_json::Value::String("api_key".to_string()),
+        );
+        entry.insert(
+            "key".to_string(),
+            serde_json::Value::String(key.to_string()),
+        );
+        auth.insert(provider.to_string(), serde_json::Value::Object(entry));
+        write_json_object_pretty(&auth_path, &auth)?;
+    }
+
+    // ---- models.json: define the custom provider (only when a base URL is
+    // given). Built-in providers leave this file untouched. Merge-preserving:
+    // `baseUrl`/`api` are overwritten from the form, but any other fields the
+    // user hand-tuned (headers/compat/modelOverrides) and previously-defined
+    // models are kept; the chosen model is folded into the `models` array. ----
+    let custom_base_url = update
+        .custom_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(base_url) = custom_base_url {
+        let custom_api = update
+            .custom_api
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("openai-completions");
+        let models_path = pi_models_json_path();
+        let mut models_doc = read_json_object_or_empty(&models_path);
+        let mut providers = match models_doc.remove("providers") {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        let mut entry = match providers.remove(provider) {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        entry.insert(
+            "baseUrl".to_string(),
+            serde_json::Value::String(base_url.to_string()),
+        );
+        entry.insert(
+            "api".to_string(),
+            serde_json::Value::String(custom_api.to_string()),
+        );
+        let mut models_arr = match entry.remove("models") {
+            Some(serde_json::Value::Array(arr)) => arr,
+            _ => Vec::new(),
+        };
+        let already = models_arr
+            .iter()
+            .any(|m| m.get("id").and_then(serde_json::Value::as_str) == Some(model));
+        if !already {
+            let mut model_obj = serde_json::Map::new();
+            model_obj.insert(
+                "id".to_string(),
+                serde_json::Value::String(model.to_string()),
+            );
+            model_obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(model.to_string()),
+            );
+            models_arr.push(serde_json::Value::Object(model_obj));
+        }
+        entry.insert("models".to_string(), serde_json::Value::Array(models_arr));
+        providers.insert(provider.to_string(), serde_json::Value::Object(entry));
+        models_doc.insert(
+            "providers".to_string(),
+            serde_json::Value::Object(providers),
+        );
+        write_json_object_pretty(&models_path, &models_doc)?;
+    }
+
+    emit_acp_agents_updated(emitter, "config_updated", Some(AgentType::Pi));
+    Ok(())
+}
+
+/// Projection of pi's current native config for the settings panel: the three
+/// `settings.json` model keys plus the provider names present in `auth.json`
+/// (sorted). Missing files surface as all-`None` / empty.
+/// A custom / self-hosted provider defined in `models.json`, projected for the
+/// settings panel so it can rehydrate the custom-provider form (and detect that
+/// the current `defaultProvider` is a custom one).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCustomProvider {
+    pub id: String,
+    pub base_url: String,
+    pub api: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiConfigProjection {
+    pub default_provider: Option<String>,
+    pub default_model: Option<String>,
+    pub default_thinking_level: Option<String>,
+    pub auth_providers: Vec<String>,
+    pub custom_providers: Vec<PiCustomProvider>,
+}
+
+/// Read pi's native files into a `PiConfigProjection`. Never errors: absent or
+/// malformed files yield `None` / an empty provider list (the panel treats that
+/// as "not configured yet").
+pub(crate) fn load_pi_config_core() -> PiConfigProjection {
+    let settings = read_json_object_or_empty(&pi_settings_json_path());
+    let string_key = |key: &str| {
+        settings
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let mut auth_providers: Vec<String> = read_json_object_or_empty(&pi_auth_json_path())
+        .keys()
+        .cloned()
+        .collect();
+    auth_providers.sort();
+    let mut custom_providers: Vec<PiCustomProvider> =
+        read_json_object_or_empty(&pi_models_json_path())
+            .get("providers")
+            .and_then(serde_json::Value::as_object)
+            .map(|providers| {
+                providers
+                    .iter()
+                    .map(|(id, entry)| PiCustomProvider {
+                        id: id.clone(),
+                        base_url: entry
+                            .get("baseUrl")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        api: entry
+                            .get("api")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("openai-completions")
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    custom_providers.sort_by(|a, b| a.id.cmp(&b.id));
+    PiConfigProjection {
+        default_provider: string_key("defaultProvider"),
+        default_model: string_key("defaultModel"),
+        default_thinking_level: string_key("defaultThinkingLevel"),
+        auth_providers,
+        custom_providers,
+    }
+}
+
+/// Result of validating a user-supplied custom pi binary (BYO-pi). `found=false`
+/// with `resolved_path=None` is a normal result (not an error) — the panel shows
+/// "not found" rather than surfacing an exception.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCommandValidation {
+    pub found: bool,
+    pub resolved_path: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Best-effort check that `resolved` looks executable on unix (any execute bit
+/// set). On non-unix we already know it exists; treat that as good enough.
+#[cfg(unix)]
+fn pi_path_is_executable(resolved: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(resolved)
+        .map(|meta| meta.is_file() && (meta.permissions().mode() & 0o111 != 0))
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn pi_path_is_executable(resolved: &Path) -> bool {
+    resolved.is_file()
+}
+
+/// Resolve a user-supplied pi command. A value containing a path separator (or an
+/// absolute path) is treated as a path and checked on disk; a bare name is looked
+/// up on `PATH` via the `which` crate. On success, best-effort `--version` is run
+/// (failures tolerated → `version=None`). Never errors on a not-found / probe
+/// failure: returns `found=false` (or `version=None`) instead.
+/// Resolve a pi command to an executable path: a value containing a path
+/// separator (or an absolute path) is checked on disk; a bare name is looked up
+/// on `PATH` via the `which` crate. Returns `None` when it can't be resolved to
+/// an executable. Shared by the BYO-pi validate command and the launch preflight
+/// ([`crate::acp::connection`]) so both agree on what "pi is resolvable" means —
+/// and both see the same `PATH` the spawned pi-acp process inherits.
+pub(crate) fn resolve_pi_command_path(command: &str) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let looks_like_path = trimmed.contains(std::path::MAIN_SEPARATOR)
+        || trimmed.contains('/')
+        || Path::new(trimmed).is_absolute();
+
+    if looks_like_path {
+        let candidate = Path::new(trimmed);
+        if pi_path_is_executable(candidate) {
+            // Canonicalize to an absolute path; fall back to the raw path if the
+            // FS rejects canonicalization (e.g. permissions) but it is executable.
+            Some(fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf()))
+        } else {
+            None
+        }
+    } else {
+        which::which(trimmed).ok()
+    }
+}
+
+pub(crate) fn acp_validate_pi_command_core(command: String) -> PiCommandValidation {
+    let Some(resolved_path) = resolve_pi_command_path(&command) else {
+        return PiCommandValidation {
+            found: false,
+            resolved_path: None,
+            version: None,
+        };
+    };
+
+    let version = probe_pi_version(&resolved_path);
+    PiCommandValidation {
+        found: true,
+        resolved_path: Some(resolved_path.to_string_lossy().into_owned()),
+        version,
+    }
+}
+
+/// Best-effort `<resolved> --version`, returning the trimmed first stdout line.
+/// Any failure (spawn error, non-zero exit, empty output) → `None`; never panics
+/// and never blocks indefinitely (`Command::output` waits for the short-lived
+/// `--version` child to exit on its own).
+fn probe_pi_version(resolved: &Path) -> Option<String> {
+    let output = std::process::Command::new(resolved)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -3834,6 +4340,21 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".kimi-code/skills"],
         }),
+        // pi auto-loads skills from `~/.pi/agent/skills` and the shared
+        // `~/.agents/skills` store (both global), plus project-local
+        // `.pi/skills` / `.agents/skills` once the workspace is trusted (codeg
+        // seeds that trust on connect). `~/.pi/agent/skills` additionally
+        // accepts standalone `.md` files, so this mirrors Codex's spec shape.
+        // The pi-native dir comes first so toggling pi links into its own dir
+        // without cross-agent side effects on the shared store.
+        AgentType::Pi => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOrMarkdownFile,
+            global_dirs: vec![
+                pi_agent_dir().join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".pi/skills", ".agents/skills"],
+        }),
     }
 }
 
@@ -4582,6 +5103,12 @@ fn cascade_update_agent_config(
             // managed by its dedicated settings panel through `acpUpdateAgentEnv`;
             // it does not participate in the model-provider credential cascade.
         }
+        AgentType::Pi => {
+            // Pi authenticates via its own `~/.pi/agent/auth.json` + model
+            // selection in `~/.pi/agent/settings.json`, managed by the dedicated
+            // Pi settings panel (`acp_update_pi_config`); it does not participate
+            // in the model-provider credential cascade.
+        }
     }
     Ok(())
 }
@@ -4716,20 +5243,12 @@ pub(crate) async fn build_session_runtime_env(
         build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
     apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
 
-    // codex-acp 1.0.0 hard-codes `modelProvider: "openai"` when resuming a
-    // session (its `getResumeModelProvider`) unless `MODEL_PROVIDER` is set —
-    // which silently routes resumed conversations to the official OpenAI
-    // endpoint and ignores the custom provider in `~/.codex/config.toml`. New
-    // sessions are spared because they pass `null` (→ codex reads the config's
-    // own `model_provider`). Pin `MODEL_PROVIDER` to that same name so resumed
-    // sessions select the same provider as new ones. Skipped when the config
-    // declares no provider (official OpenAI / ChatGPT users → keep the upstream
-    // "openai" fallback) or the user already set it explicitly via `env_json`.
-    if agent_type == AgentType::Codex && !runtime_env.contains_key("MODEL_PROVIDER") {
-        if let Some(provider) = codex_model_provider() {
-            runtime_env.insert("MODEL_PROVIDER".to_string(), provider);
-        }
-    }
+    // codex resume no longer needs a `MODEL_PROVIDER` pin: codex-acp 1.0.1
+    // (#224) resolves the resumed provider from `~/.codex/config.toml` via
+    // `config/read`, matching new sessions (which pass `null` so codex reads the
+    // config's own `model_provider`). The 1.0.0 workaround that injected
+    // `MODEL_PROVIDER` to stop resumed sessions falling back to "openai" is now
+    // redundant and was removed.
 
     if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(data_dir) {
         for (key, value) in cred_env {
@@ -5474,14 +5993,6 @@ pub(crate) async fn acp_update_agent_preferences_core(
             Some(trimmed.to_string())
         }
     });
-    let opencode_auth_json = opencode_auth_json.and_then(|raw| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
     if let Some(raw) = config_json.as_deref() {
         let parsed = serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| AcpError::protocol(format!("invalid config_json: {e}")))?;
@@ -5513,12 +6024,10 @@ pub(crate) async fn acp_update_agent_preferences_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        if let Some(raw_auth) = opencode_auth_json.as_deref() {
-            persist_opencode_auth_json(raw_auth)?;
-        }
-        if let Some(raw) = config_json.as_deref() {
-            persist_agent_local_config_json(agent_type, Some(raw))?;
-        }
+        persist_opencode_native_config(
+            opencode_auth_json.as_deref(),
+            config_json.as_deref(),
+        )?;
         emit_acp_agents_updated(emitter, "preferences_updated", Some(agent_type));
         return Ok(());
     }
@@ -5759,6 +6268,38 @@ pub async fn acp_update_agent_env(
     .await
 }
 
+/// Decide what to write to OpenCode's `auth.json`. `None` (caller passed no
+/// auth payload) leaves the file untouched. An explicitly empty payload becomes
+/// `{}` so clearing the last credential truncates the file instead of being
+/// skipped — otherwise a stale key would survive on disk and the disconnected
+/// provider would reappear after reload.
+fn opencode_auth_payload_to_write(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    Some(if trimmed.is_empty() {
+        "{}".to_string()
+    } else {
+        trimmed.to_string()
+    })
+}
+
+/// Persist OpenCode's native files (`auth.json` + `opencode.json`) for a
+/// config/preferences save. Shared by both the config and preferences commands
+/// so the empty-auth handling can't drift between the two exposed paths. An
+/// explicitly empty auth payload truncates `auth.json` to `{}`; `None` leaves
+/// each file untouched.
+fn persist_opencode_native_config(
+    opencode_auth_json: Option<&str>,
+    config_json: Option<&str>,
+) -> Result<(), AcpError> {
+    if let Some(auth) = opencode_auth_payload_to_write(opencode_auth_json) {
+        persist_opencode_auth_json(&auth)?;
+    }
+    if let Some(raw) = config_json {
+        persist_agent_local_config_json(AgentType::OpenCode, Some(raw))?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn acp_update_agent_config_core(
     agent_type: AgentType,
@@ -5769,14 +6310,6 @@ pub(crate) async fn acp_update_agent_config_core(
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
     let config_json = config_json.and_then(|raw| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-    let opencode_auth_json = opencode_auth_json.and_then(|raw| {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             None
@@ -5806,12 +6339,10 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        if let Some(raw_auth) = opencode_auth_json.as_deref() {
-            persist_opencode_auth_json(raw_auth)?;
-        }
-        if let Some(raw) = config_json.as_deref() {
-            persist_agent_local_config_json(agent_type, Some(raw))?;
-        }
+        persist_opencode_native_config(
+            opencode_auth_json.as_deref(),
+            config_json.as_deref(),
+        )?;
         emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
         return Ok(());
     }
@@ -5975,6 +6506,57 @@ pub async fn acp_fetch_kimi_models(
     api_key: String,
 ) -> Result<Vec<String>, AcpError> {
     acp_fetch_kimi_models_core(&base_url, &api_key).await
+}
+
+/// Apply a structured Pi config update, writing pi's native `settings.json`
+/// (provider/model/thinking level) and `auth.json` (when an API key is given).
+/// Desktop command; the web handler calls `acp_update_pi_config_core` directly.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn acp_update_pi_config(
+    provider: String,
+    model: String,
+    thinking_level: Option<String>,
+    api_key: Option<String>,
+    custom_base_url: Option<String>,
+    custom_api: Option<String>,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_update_pi_config_core(
+        PiConfigUpdate {
+            provider,
+            model,
+            thinking_level,
+            api_key,
+            custom_base_url,
+            custom_api,
+        },
+        &db,
+        &emitter,
+    )
+    .await
+}
+
+/// Read pi's current native config (model selection + configured auth providers)
+/// for the settings panel. Desktop command; the web handler calls
+/// `load_pi_config_core` directly. Reads the filesystem only — no DB/state needed.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_load_pi_config() -> Result<PiConfigProjection, AcpError> {
+    Ok(load_pi_config_core())
+}
+
+/// Validate a user-supplied custom pi binary (BYO-pi): resolve it (path or
+/// `PATH`) and best-effort read its `--version`. A not-found binary returns
+/// `found=false` (not an error). Desktop command; the web handler calls
+/// `acp_validate_pi_command_core` directly.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_validate_pi_command(command: String) -> Result<PiCommandValidation, AcpError> {
+    Ok(acp_validate_pi_command_core(command))
 }
 
 /// Launch Hermes's interactive setup in the OS terminal. `kind` selects the
@@ -6582,6 +7164,98 @@ pub async fn acp_uninstall_agent(
     acp_uninstall_agent_core(agent_type, task_id, &db, &emitter).await
 }
 
+/// The npm package that ships the `pi` binary pi-acp spawns as `pi --mode rpc`.
+/// Installed unpinned ("latest"): pi releases frequently and pi-acp resolves
+/// `pi` from PATH, so the binary's version floats independently of the pinned
+/// `pi-acp` adapter (which `acp_prepare_npx_agent` installs separately).
+const PI_CODING_AGENT_PACKAGE: &str = "@earendil-works/pi-coding-agent";
+
+/// Install the `pi` binary globally via npm, streaming progress on the shared
+/// `app://agent-install` topic. This is the prerequisite the missing-pi launch
+/// preflight (see [`crate::acp::connection`]) guards against. Reuses the same
+/// EACCES user-prefix and EEXIST `--force` fallbacks as every other npm agent
+/// install.
+pub(crate) async fn acp_install_pi_binary_core(
+    task_id: String,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
+
+    let result =
+        install_npm_global_package_streaming(PI_CODING_AGENT_PACKAGE, &task_id, emitter).await;
+
+    match &result {
+        Ok(()) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Completed,
+            "pi installed successfully",
+        ),
+        Err(e) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Failed,
+            e.to_string(),
+        ),
+    }
+    result
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_install_pi_binary(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_install_pi_binary_core(task_id, &emitter).await
+}
+
+/// Uninstall the global `pi` binary. Mirrors `acp_uninstall_agent_core`'s event
+/// envelope; the npm subprocess output isn't streamed (the shared helper
+/// collects it via `.output()`), but the Started/Log/Completed/Failed events
+/// drive the same install-log block in the panel.
+pub(crate) async fn acp_uninstall_pi_binary_core(
+    task_id: String,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
+    emit_agent_install_event(
+        emitter,
+        &task_id,
+        AgentInstallEventKind::Log,
+        format!("$ npm uninstall -g {PI_CODING_AGENT_PACKAGE}"),
+    );
+
+    let result = uninstall_npm_global_package(PI_CODING_AGENT_PACKAGE).await;
+
+    match &result {
+        Ok(()) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Completed,
+            "pi uninstalled successfully",
+        ),
+        Err(e) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Failed,
+            e.to_string(),
+        ),
+    }
+    result
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_uninstall_pi_binary(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_uninstall_pi_binary_core(task_id, &emitter).await
+}
+
 pub(crate) async fn acp_reorder_agents_core(
     agent_types: &[AgentType],
     db: &AppDatabase,
@@ -6814,6 +7488,27 @@ pub(crate) async fn opencode_list_plugins_core() -> Result<PluginCheckSummary, A
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn opencode_list_plugins() -> Result<PluginCheckSummary, AcpError> {
     opencode_list_plugins_core().await
+}
+
+pub(crate) async fn opencode_provider_catalog_core(
+    data_dir: &Path,
+    force_refresh: bool,
+) -> Vec<crate::acp::opencode_catalog::CatalogProvider> {
+    crate::acp::opencode_catalog::provider_catalog(data_dir, force_refresh).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn opencode_provider_catalog(
+    force_refresh: Option<bool>,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<crate::acp::opencode_catalog::CatalogProvider>, AcpError> {
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    Ok(opencode_provider_catalog_core(&data_dir, force_refresh.unwrap_or(false)).await)
 }
 
 pub(crate) async fn opencode_install_plugins_core(
@@ -7071,31 +7766,321 @@ pub(crate) async fn codex_poll_device_code_core(
 mod tests {
     use super::*;
 
+    /// Build a `runtime_env` whose `PI_CODING_AGENT_DIR` points at `agent_dir`,
+    /// so trust seeding writes a tempdir's `trust.json` instead of `~/.pi/agent`.
+    fn pi_env_for(agent_dir: &Path) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_CODING_AGENT_DIR".to_string(),
+            agent_dir.to_string_lossy().to_string(),
+        );
+        env
+    }
+
+    fn canonical_key(dir: &Path) -> String {
+        fs::canonicalize(dir)
+            .expect("canonicalize")
+            .to_string_lossy()
+            .to_string()
+    }
+
     #[test]
-    fn parse_codex_model_provider_extracts_named_custom_provider() {
-        // A codeg-managed config pins a named custom provider. Without this name
-        // pinned into MODEL_PROVIDER, codex-acp resumes against "openai".
-        let toml = r#"
+    fn pi_trust_seed_creates_file_and_trusts_canonical_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        let workspace = tmp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(
+            map.get(&canonical_key(&workspace)),
+            Some(&serde_json::Value::Bool(true)),
+            "the opened workspace must be marked trusted",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_preserves_existing_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        // Pre-existing decisions for unrelated folders must survive untouched.
+        let mut initial = serde_json::Map::new();
+        initial.insert("/some/other".to_string(), serde_json::Value::Bool(true));
+        initial.insert("/denied".to_string(), serde_json::Value::Bool(false));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(map.get("/some/other"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(map.get("/denied"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            map.get(&canonical_key(&workspace)),
+            Some(&serde_json::Value::Bool(true)),
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_respects_existing_false_and_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let key = canonical_key(&workspace);
+        let env = pi_env_for(&agent_dir);
+
+        // The user explicitly distrusted this exact folder in pi: never overwrite.
+        let mut initial = serde_json::Map::new();
+        initial.insert(key.clone(), serde_json::Value::Bool(false));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &env);
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(
+            map.get(&key),
+            Some(&serde_json::Value::Bool(false)),
+            "an explicit deny must be preserved (additive-only)",
+        );
+
+        // Idempotent: seeding an already-trusted folder must not rewrite the file.
+        let mut trusted = serde_json::Map::new();
+        trusted.insert(key.clone(), serde_json::Value::Bool(true));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &trusted).unwrap();
+        let mtime1 = fs::metadata(agent_dir.join("trust.json"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        seed_pi_workspace_trust(&workspace, &env);
+        assert_eq!(
+            fs::metadata(agent_dir.join("trust.json"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            mtime1,
+            "a no-op seed must not rewrite trust.json",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_disabled_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut env = pi_env_for(&agent_dir);
+        env.insert(PI_TRUST_WORKSPACE_ENV.to_string(), "0".to_string());
+        seed_pi_workspace_trust(&workspace, &env);
+
+        assert!(
+            !agent_dir.join("trust.json").exists(),
+            "a disabled toggle must not touch trust.json",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_leaves_unparseable_file_untouched() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(agent_dir.join("trust.json"), "not json at all").unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        assert_eq!(
+            fs::read_to_string(agent_dir.join("trust.json")).unwrap(),
+            "not json at all",
+            "a present-but-unparseable trust.json must never be clobbered",
+        );
+    }
+
+    #[test]
+    fn opencode_auth_empty_payload_truncates_to_empty_object() {
+        // Clearing the last credential sends "" — it must persist `{}` (clearing
+        // the file), not be skipped (which would strand a stale key on disk).
+        assert_eq!(
+            opencode_auth_payload_to_write(Some("")),
+            Some("{}".to_string())
+        );
+        assert_eq!(
+            opencode_auth_payload_to_write(Some("   \n")),
+            Some("{}".to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_auth_payload_preserves_non_empty_and_skips_none() {
+        let json = r#"{"openai":{"type":"api","key":"k"}}"#;
+        assert_eq!(
+            opencode_auth_payload_to_write(Some(json)),
+            Some(json.to_string())
+        );
+        // No payload supplied → leave auth.json untouched.
+        assert_eq!(opencode_auth_payload_to_write(None), None);
+    }
+
+    // Call-site guard: both acp_update_agent_config_core and
+    // acp_update_agent_preferences_core route OpenCode persistence through
+    // persist_opencode_native_config, so testing it covers both exposed paths.
+    #[test]
+    fn persist_opencode_native_config_empty_auth_clears_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Pin HOME and clear XDG_DATA_HOME so the auth path resolves under the
+        // temp dir regardless of the developer's environment.
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("XDG_DATA_HOME", None::<&std::path::Path>),
+            ],
+            || {
+                let auth_path = opencode_auth_json_path();
+                fs::create_dir_all(auth_path.parent().unwrap()).expect("mkdir");
+                fs::write(&auth_path, r#"{"openai":{"type":"api","key":"k"}}"#).expect("seed");
+
+                // Disconnecting the last provider sends an empty auth payload: it
+                // must truncate auth.json to {}, not strand the stale credential.
+                persist_opencode_native_config(Some(""), None).expect("persist");
+
+                assert_eq!(fs::read_to_string(&auth_path).unwrap().trim(), "{}");
+            },
+        );
+    }
+
+    #[test]
+    fn persist_opencode_native_config_none_auth_leaves_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("XDG_DATA_HOME", None::<&std::path::Path>),
+            ],
+            || {
+                let auth_path = opencode_auth_json_path();
+                fs::create_dir_all(auth_path.parent().unwrap()).expect("mkdir");
+                let original = "{\"openai\":{\"type\":\"api\",\"key\":\"k\"}}\n";
+                fs::write(&auth_path, original).expect("seed");
+
+                // No auth payload supplied → file untouched.
+                persist_opencode_native_config(None, None).expect("persist");
+
+                assert_eq!(fs::read_to_string(&auth_path).unwrap(), original);
+            },
+        );
+    }
+
+    #[test]
+    fn opencode_config_path_falls_back_when_xdg_config_home_empty() {
+        // An empty XDG_CONFIG_HOME must fall back to <home>/.config, not resolve
+        // to a relative "opencode/opencode.json". `dirs::home_dir()` ignores the
+        // HOME env var on Windows, so derive the expected base from the same
+        // resolution production uses instead of pinning HOME.
+        temp_env::with_var("XDG_CONFIG_HOME", Some(""), || {
+            assert_eq!(
+                opencode_primary_config_path(),
+                home_dir_or_default()
+                    .join(".config")
+                    .join("opencode")
+                    .join("opencode.json")
+            );
+        });
+    }
+
+    #[test]
+    fn opencode_paths_follow_xdg_when_set() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = tmp.path().join("xdg-config");
+        let data = tmp.path().join("xdg-data");
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("XDG_CONFIG_HOME", Some(cfg.as_path())),
+                ("XDG_DATA_HOME", Some(data.as_path())),
+            ],
+            || {
+                assert_eq!(
+                    opencode_primary_config_path(),
+                    cfg.join("opencode").join("opencode.json")
+                );
+                assert_eq!(
+                    opencode_auth_json_path(),
+                    data.join("opencode").join("auth.json")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn codex_config_projection_tracks_model_provider_for_fingerprint() {
+        // Two configs sharing one base_url but naming different providers must
+        // produce different projections, so `fingerprint_config` (which hashes
+        // this projection) flags a provider switch even though the resolved
+        // endpoint is unchanged. codex-acp 1.0.1 reads `model_provider` from
+        // config.toml directly, so it is no longer pinned into the launch env
+        // where the fingerprint previously caught it incidentally.
+        let codeg = r#"
 model = "gpt-5-codex"
 model_provider = "codeg"
 
 [model_providers.codeg]
-name = "codeg"
 base_url = "https://gateway.example/v1"
 wire_api = "responses"
+
+[model_providers.other]
+base_url = "https://gateway.example/v1"
+wire_api = "chat"
 "#;
-        assert_eq!(parse_codex_model_provider(toml), Some("codeg".to_string()));
+        let other = codeg.replace(
+            "model_provider = \"codeg\"",
+            "model_provider = \"other\"",
+        );
 
-        // No model_provider (official OpenAI / ChatGPT users) → None, so
-        // build_session_runtime_env leaves MODEL_PROVIDER unset and codex-acp's
-        // resume fallback to "openai" stays correct.
-        assert_eq!(parse_codex_model_provider("model = \"gpt-5-codex\"\n"), None);
+        let p_codeg = codex_config_projection_from_toml(codeg);
+        let p_other = codex_config_projection_from_toml(&other);
 
-        // Whitespace-only value is treated as absent.
-        assert_eq!(parse_codex_model_provider("model_provider = \"   \"\n"), None);
+        assert_eq!(
+            p_codeg.get("modelProvider").and_then(|v| v.as_str()),
+            Some("codeg")
+        );
+        assert_eq!(
+            p_other.get("modelProvider").and_then(|v| v.as_str()),
+            Some("other")
+        );
+        // Same endpoint resolved for both providers...
+        assert_eq!(p_codeg.get("apiBaseUrl"), p_other.get("apiBaseUrl"));
+        // ...yet the projections differ, so the launch-config fingerprint does too.
+        assert_ne!(p_codeg, p_other);
 
-        // Malformed TOML must not panic — just yields None.
-        assert_eq!(parse_codex_model_provider("model_provider = "), None);
+        // Deterministic for identical input.
+        assert_eq!(codex_config_projection_from_toml(codeg), p_codeg);
+
+        // `modelProvider` must NOT be an AgentRuntimeConfig key, or
+        // build_runtime_env_from_setting would mirror it back into a runtime env
+        // var (reintroducing the very MODEL_PROVIDER pin we removed).
+        assert!(
+            serde_json::from_value::<AgentRuntimeConfig>(serde_json::Value::Object(
+                p_codeg.clone()
+            ))
+            .is_ok()
+        );
+
+        // No model_provider declared (official OpenAI / ChatGPT) → no
+        // modelProvider key, matching the pre-1.0.1 "leave MODEL_PROVIDER unset"
+        // behavior; the bare `model` still projects.
+        let bare = codex_config_projection_from_toml("model = \"gpt-5-codex\"\n");
+        assert!(!bare.contains_key("modelProvider"));
+        assert_eq!(bare.get("model").and_then(|v| v.as_str()), Some("gpt-5-codex"));
+
+        // Malformed TOML must not panic — yields an empty projection.
+        assert!(codex_config_projection_from_toml("model_provider = ").is_empty());
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {
@@ -7112,6 +8097,20 @@ wire_api = "responses"
         assert_eq!(spec.project_rel_dirs, vec![".kimi-code/skills"]);
         let expected = crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills");
         assert_eq!(spec.global_dirs, vec![expected]);
+    }
+
+    #[test]
+    fn pi_skill_storage_spec_targets_pi_agent_dir() {
+        let spec = skill_storage_spec(AgentType::Pi).expect("Pi supports skills");
+        // pi's native dir accepts standalone `.md` files, like Codex.
+        assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOrMarkdownFile);
+        assert_eq!(spec.project_rel_dirs, vec![".pi/skills", ".agents/skills"]);
+        // Native pi dir first (preferred link target), shared store second.
+        let expected = vec![
+            pi_agent_dir().join("skills"),
+            home_dir_or_default().join(".agents").join("skills"),
+        ];
+        assert_eq!(spec.global_dirs, expected);
     }
 
     #[test]

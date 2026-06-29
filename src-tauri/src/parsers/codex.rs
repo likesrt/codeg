@@ -490,6 +490,86 @@ fn infer_tool_call_output_is_error(
         .unwrap_or(false)
 }
 
+/// Synthetic rawInput key the live input shaper uses to carry the collab op
+/// through to the card (see frontend `collab-tool.ts` `COLLAB_OP_KEY`). Kept in
+/// sync here so history `wait_agent` capsules render with an op-aware title.
+const COLLAB_OP_KEY: &str = "__codegCollabOp";
+
+/// Whether a collab status string is an error (mirrors the frontend
+/// `isErrorCollabStatusKind`: only `errored` / `failed` / `notFound`).
+fn is_error_collab_status(status: &str) -> bool {
+    matches!(status, "errored" | "failed" | "notFound")
+}
+
+/// Add `agent_id` to a spawn execution capsule's input JSON (the
+/// `{subagent_type,prompt,description}` object), so the card can show the
+/// sub-agent UUID. Tolerates a missing/!object input by starting fresh.
+fn inject_agent_id_into_input(input: Option<&str>, agent_id: &str) -> String {
+    let mut obj = input
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        "agent_id".to_string(),
+        serde_json::Value::String(agent_id.to_string()),
+    );
+    serde_json::Value::Object(obj).to_string()
+}
+
+/// Pull a single sub-agent's `(status, message)` out of one `wait_agent`
+/// `output.status` value, e.g. `{ "completed": "<result>" }`. Generalizes over
+/// the terminal key: prefer `completed`, else the first string-valued key, so a
+/// future `{ "errored": "<msg>" }` maps to `status="errored"`.
+fn extract_wait_agent_status(value: &serde_json::Value) -> (String, Option<String>) {
+    if let Some(obj) = value.as_object() {
+        if let Some(text) = obj.get("completed").and_then(|v| v.as_str()) {
+            return ("completed".to_string(), Some(text.to_string()));
+        }
+        for (key, val) in obj {
+            if let Some(text) = val.as_str() {
+                return (key.clone(), Some(text.to_string()));
+            }
+        }
+    } else if let Some(text) = value.as_str() {
+        return (text.to_string(), None);
+    }
+    ("completed".to_string(), None)
+}
+
+/// Build a synthesized live-shaped collab `rawInput` JSON (and whether any agent
+/// errored) for a history `wait_agent` capsule, from that wait's own
+/// `output.status` map `{ agent_id: { <terminal-key>: <text> } }`. The result
+/// routes through the same `CollabAgentCard` as the live `wait` capsule (matches
+/// the shape `collab-tool.ts` `parseCollabToolInput` expects). Caller guarantees
+/// `status` is non-empty.
+fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) -> (String, bool) {
+    let mut receiver_ids: Vec<serde_json::Value> = Vec::new();
+    let mut agents_states = serde_json::Map::new();
+    let mut any_error = false;
+    for (agent_id, value) in status {
+        receiver_ids.push(serde_json::Value::String(agent_id.clone()));
+        let (st, msg) = extract_wait_agent_status(value);
+        if is_error_collab_status(&st) {
+            any_error = true;
+        }
+        agents_states.insert(
+            agent_id.clone(),
+            serde_json::json!({
+                "status": st,
+                "message": msg,
+            }),
+        );
+    }
+    let input = serde_json::json!({
+        "senderThreadId": "",
+        "receiverThreadIds": receiver_ids,
+        "agentsStates": serde_json::Value::Object(agents_states),
+        "status": if any_error { "failed" } else { "completed" },
+        COLLAB_OP_KEY: "wait",
+    });
+    (input.to_string(), any_error)
+}
+
 fn parse_codex_subagent_stats(
     session_dir: &std::path::Path,
     agent_id: &str,
@@ -693,17 +773,35 @@ impl CodexParser {
 
         // Agent subagent tracking (spawn_agent / wait_agent / close_agent).
         //
-        // This disk-based reconstruction (the rollout `function_call`s below +
-        // `parse_codex_subagent_stats` reading `agent-<id>.jsonl`) is the ONLY
-        // source for the sub-agent "Agent" capsule. codex-acp 1.0.0 deliberately
-        // drops sub-agent events from the live ACP stream — its
-        // `CodexEventHandler.createItemEvent` returns `null` for
-        // `collabAgentToolCall` and `subAgentActivity` — so the live path carries
-        // no sub-agent data and the capsule only appears on history reload (the
-        // same upstream constraint as kimi-code's `isFromMainAgent` gate).
+        // Capsule model (mirrors the live frontend, see collab-tool.ts):
+        //   - spawn_agent → an "Agent" execution capsule (this file + nested
+        //     stats from `agent-<id>.jsonl`). Shows the task + process; it does
+        //     NOT carry the final result text (that lives in the wait capsule).
+        //   - wait_agent  → a synthesized `collab_agent` capsule per wait, built
+        //     from THAT wait's own `output.status` (the agents it returned). The
+        //     full result text is shown here, via the same `CollabAgentCard` the
+        //     live `wait` capsule uses. codex returns each agent's result in
+        //     exactly one wait, so wait capsules never overlap.
+        //   - close_agent → folded into the execution capsule (no own capsule);
+        //     its result is only a fallback for agents never waited on.
+        // codex-acp 1.0.1 (#223) maps `collabAgentToolCall` onto live ACP
+        // `tool_call`s and still drops `subAgentActivity`, so the nested
+        // `agent-<id>.jsonl` stats only exist on history reload. Live and
+        // reconstructed capsules never double-render (live during streaming,
+        // this on reload).
         let mut spawn_agent_call_ids: HashSet<String> = HashSet::new();
         let mut agent_id_to_spawn_call_id: HashMap<String, String> = HashMap::new();
-        let mut agent_final_results: HashMap<String, String> = HashMap::new();
+        // Result text used to FILL the execution capsule only as a fallback for
+        // agents that were never returned by a wait (keyed by agent_id). Filled
+        // from close_agent's `previous_status`.
+        let mut agent_fallback_results: HashMap<String, String> = HashMap::new();
+        // Agents whose result was already shown in a wait capsule — their
+        // execution capsule must NOT also show the result (no duplication).
+        let mut agent_waited: HashSet<String> = HashSet::new();
+        // Agents that ended in an error state (see `is_error_collab_status`:
+        // errored/failed/notFound) in any wait or close — used to mark the
+        // execution capsule as failed (live parity).
+        let mut agent_errored: HashSet<String> = HashSet::new();
         let mut wait_agent_call_ids: HashSet<String> = HashSet::new();
         let mut close_agent_call_ids: HashSet<String> = HashSet::new();
         let mut close_agent_targets: HashMap<String, String> = HashMap::new();
@@ -835,7 +933,19 @@ impl CodexParser {
                                     completed_at: Some(timestamp),
                                 });
                             }
-                            "agent_message" if active_agent_count == 0 => {
+                            "agent_message" => {
+                                // Parent narration is emitted even while a
+                                // sub-agent is active (active_agent_count > 0).
+                                // codex-acp 1.0.x writes the sub-agent's own
+                                // transcript to its `agent-<id>.jsonl`, NOT into
+                                // the parent rollout, so every agent_message here
+                                // is the parent's (verified across 180 real
+                                // rollouts: 0 sub-agent leaks). The old
+                                // `active_agent_count == 0` guard wrongly dropped
+                                // the parent's between-capsule narration — and,
+                                // when no close_agent ran (active never returns to
+                                // 0), even the final answer. Images keep their own
+                                // guard (see image_generation arms).
                                 let text = payload
                                     .get("message")
                                     .and_then(|m| m.as_str())
@@ -852,7 +962,10 @@ impl CodexParser {
                                     completed_at: Some(timestamp),
                                 });
                             }
-                            "agent_reasoning" if active_agent_count == 0 => {
+                            "agent_reasoning" => {
+                                // Parent reasoning, same rationale as agent_message
+                                // above: not gated on active_agent_count so
+                                // between-capsule reasoning survives.
                                 let text = payload
                                     .get("text")
                                     .and_then(|t| t.as_str())
@@ -1164,18 +1277,63 @@ impl CodexParser {
                                         completed_at: Some(timestamp),
                                     });
                                 } else if is_wait {
+                                    // Emit one `collab_agent` capsule per wait,
+                                    // built from THIS wait's own returned agents
+                                    // (`output.status`). Routes through the same
+                                    // CollabAgentCard as the live wait capsule.
                                     if let Some(output_obj) = parse_codex_json_output(payload) {
                                         if let Some(status) =
                                             output_obj.get("status").and_then(|s| s.as_object())
                                         {
-                                            for (agent_id, result) in status {
-                                                if let Some(text) =
-                                                    result.get("completed").and_then(|v| v.as_str())
-                                                {
-                                                    agent_final_results
-                                                        .entry(agent_id.clone())
-                                                        .or_insert_with(|| text.to_string());
+                                            // Mark returned agents so the spawn
+                                            // capsule won't also show their result,
+                                            // and record per-agent error state so
+                                            // the execution capsule can render
+                                            // failed (live parity).
+                                            for (agent_id, value) in status {
+                                                agent_waited.insert(agent_id.clone());
+                                                let (st, _) = extract_wait_agent_status(value);
+                                                if is_error_collab_status(&st) {
+                                                    agent_errored.insert(agent_id.clone());
                                                 }
+                                            }
+                                            if !status.is_empty() {
+                                                let (collab_input, is_error) =
+                                                    build_collab_wait_input(status);
+                                                messages.push(UnifiedMessage {
+                                                    id: format!("tool-{}", messages.len()),
+                                                    role: MessageRole::Assistant,
+                                                    content: vec![ContentBlock::ToolUse {
+                                                        tool_use_id: tool_use_id.clone(),
+                                                        tool_name: "collab_agent".to_string(),
+                                                        input_preview: Some(collab_input),
+                                                        meta: None,
+                                                    }],
+                                                    timestamp,
+                                                    usage: None,
+                                                    duration_ms: None,
+                                                    model: None,
+                                                    completed_at: Some(timestamp),
+                                                });
+                                                messages.push(UnifiedMessage {
+                                                    id: format!(
+                                                        "tool-result-{}",
+                                                        messages.len()
+                                                    ),
+                                                    role: MessageRole::Tool,
+                                                    content: vec![ContentBlock::ToolResult {
+                                                        tool_use_id,
+                                                        output_preview: None,
+                                                        is_error,
+                                                        agent_stats: None,
+                                                        images: Vec::new(),
+                                                    }],
+                                                    timestamp,
+                                                    usage: None,
+                                                    duration_ms: None,
+                                                    model: None,
+                                                    completed_at: Some(timestamp),
+                                                });
                                             }
                                         }
                                     }
@@ -1186,14 +1344,23 @@ impl CodexParser {
                                             .as_ref()
                                             .and_then(|id| close_agent_targets.get(id))
                                         {
-                                            if let Some(text) = output_obj
-                                                .get("previous_status")
-                                                .and_then(|s| s.get("completed"))
-                                                .and_then(|v| v.as_str())
+                                            // Generalize over the terminal key (not
+                                            // just `completed`): an errored/notFound
+                                            // close with no wait must not lose its
+                                            // message or its error state.
+                                            if let Some(prev) =
+                                                output_obj.get("previous_status")
                                             {
-                                                agent_final_results
-                                                    .entry(agent_id.clone())
-                                                    .or_insert_with(|| text.to_string());
+                                                let (st, msg) =
+                                                    extract_wait_agent_status(prev);
+                                                if let Some(text) = msg {
+                                                    agent_fallback_results
+                                                        .entry(agent_id.clone())
+                                                        .or_insert(text);
+                                                }
+                                                if is_error_collab_status(&st) {
+                                                    agent_errored.insert(agent_id.clone());
+                                                }
                                             }
                                         }
                                     }
@@ -1334,7 +1501,8 @@ impl CodexParser {
             }
         }
 
-        // Fill in agent final results and subagent tool call stats
+        // Fill in subagent tool call stats (and, only as a fallback, the result)
+        // on each spawn execution capsule.
         if !agent_id_to_spawn_call_id.is_empty() {
             let spawn_call_to_agent: HashMap<&str, &str> = agent_id_to_spawn_call_id
                 .iter()
@@ -1347,26 +1515,57 @@ impl CodexParser {
 
             for msg in &mut messages {
                 for block in &mut msg.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id: Some(ref id),
-                        ref mut output_preview,
-                        ref mut agent_stats,
-                        ..
-                    } = block
-                    {
-                        if let Some(&agent_id) = spawn_call_to_agent.get(id.as_str()) {
-                            if let Some(result) = agent_final_results.get(agent_id) {
-                                *output_preview = Some(result.clone());
-                            }
-                            if let Some(dir) = session_dir {
-                                let stats = agent_stats_cache
-                                    .entry(agent_id.to_string())
-                                    .or_insert_with(|| parse_codex_subagent_stats(dir, agent_id));
-                                if stats.is_some() {
-                                    *agent_stats = stats.clone();
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id: Some(ref id),
+                            ref mut output_preview,
+                            ref mut is_error,
+                            ref mut agent_stats,
+                            ..
+                        } => {
+                            if let Some(&agent_id) = spawn_call_to_agent.get(id.as_str()) {
+                                // The result text normally lives in the wait
+                                // capsule; only show it on the execution capsule
+                                // when this agent was never returned by a wait
+                                // (else duplicate).
+                                if !agent_waited.contains(agent_id) {
+                                    if let Some(result) = agent_fallback_results.get(agent_id) {
+                                        *output_preview = Some(result.clone());
+                                    }
+                                }
+                                // Mark the execution capsule failed when the agent
+                                // ended in error (in a wait or close) — live parity.
+                                if agent_errored.contains(agent_id) {
+                                    *is_error = true;
+                                }
+                                if let Some(dir) = session_dir {
+                                    let stats = agent_stats_cache.entry(agent_id.to_string())
+                                        .or_insert_with(|| {
+                                            parse_codex_subagent_stats(dir, agent_id)
+                                        });
+                                    if stats.is_some() {
+                                        *agent_stats = stats.clone();
+                                    }
                                 }
                             }
                         }
+                        // Stamp the sub-agent's id onto the spawn execution capsule
+                        // input so the card can render it (parity with the wait
+                        // capsule, whose agentsStates already carry the id).
+                        ContentBlock::ToolUse {
+                            tool_use_id: Some(ref id),
+                            ref tool_name,
+                            ref mut input_preview,
+                            ..
+                        } if tool_name == "Agent" => {
+                            if let Some(&agent_id) = spawn_call_to_agent.get(id.as_str()) {
+                                *input_preview = Some(inject_agent_id_into_input(
+                                    input_preview.as_deref(),
+                                    agent_id,
+                                ));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2443,6 +2642,517 @@ mod tests {
             }
             other => panic!("expected ContentBlock::ImageGeneration, got {other:?}"),
         }
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// Write JSONL lines to a unique temp file and return its path.
+    fn write_temp_rollout(tag: &str, lines: &[String]) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path = env::temp_dir().join(format!("codeg-codex-{tag}-{nanos}.jsonl"));
+        let mut content = lines.join("\n");
+        content.push('\n');
+        fs::write(&path, content).expect("write test jsonl");
+        path
+    }
+
+    fn rollout_line(ts: &str, msg_type: &str, payload: serde_json::Value) -> String {
+        serde_json::json!({ "timestamp": ts, "type": msg_type, "payload": payload }).to_string()
+    }
+
+    /// Multi-wait, no close (the real codex polling pattern): every parent
+    /// narration in the active window must survive (incl. the final answer with
+    /// no close), each `wait_agent` becomes its own `collab_agent` capsule built
+    /// from only the agents IT returned, and the result text moves off the spawn
+    /// execution capsule into those wait capsules.
+    #[test]
+    fn subagent_waits_emit_independent_collab_capsules_and_keep_narration() {
+        let spawn = |ts: &str, call: &str, msg: &str| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call", "call_id": call, "name": "spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":msg}).to_string(),
+                }),
+            )
+        };
+        let spawn_out = |ts: &str, call: &str, agent_id: &str| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call_output", "call_id": call,
+                    "output": serde_json::json!({"agent_id":agent_id}).to_string(),
+                }),
+            )
+        };
+        let wait = |ts: &str, call: &str, targets: serde_json::Value| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call", "call_id": call, "name": "wait_agent",
+                    "arguments": serde_json::json!({"targets":targets}).to_string(),
+                }),
+            )
+        };
+        let wait_out = |ts: &str, call: &str, status: serde_json::Value| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call_output", "call_id": call,
+                    "output": serde_json::json!({"status":status}).to_string(),
+                }),
+            )
+        };
+        let narration = |ts: &str, text: &str| {
+            rollout_line(
+                ts,
+                "event_msg",
+                serde_json::json!({"type":"agent_message","message":text}),
+            )
+        };
+
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T10:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"mw","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T10:00:01Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}),
+            ),
+            spawn("2026-06-27T10:00:02Z", "spawn_a", "task A"),
+            spawn_out("2026-06-27T10:00:03Z", "spawn_a", "agent_a"),
+            spawn("2026-06-27T10:00:04Z", "spawn_b", "task B"),
+            spawn_out("2026-06-27T10:00:05Z", "spawn_b", "agent_b"),
+            // active_agent_count == 2 here — old code dropped these three.
+            narration("2026-06-27T10:00:06Z", "NARRATION_STARTED both started"),
+            wait(
+                "2026-06-27T10:00:07Z",
+                "wait_1",
+                serde_json::json!(["agent_a", "agent_b"]),
+            ),
+            // wait #1 returned ONLY agent_b (agent_a still running).
+            wait_out(
+                "2026-06-27T10:00:08Z",
+                "wait_1",
+                serde_json::json!({"agent_b":{"completed":"B_RESULT_TOKEN"}}),
+            ),
+            narration("2026-06-27T10:00:09Z", "NARRATION_MID B back waiting A"),
+            wait("2026-06-27T10:00:10Z", "wait_2", serde_json::json!(["agent_a"])),
+            wait_out(
+                "2026-06-27T10:00:11Z",
+                "wait_2",
+                serde_json::json!({"agent_a":{"completed":"A_RESULT_TOKEN"}}),
+            ),
+            // Final answer with NO close → active never returns to 0.
+            narration("2026-06-27T10:00:12Z", "NARRATION_FINAL summary"),
+        ];
+
+        let path = write_temp_rollout("multiwait", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "mw")
+            .expect("parse ok");
+        let blocks: Vec<&ContentBlock> =
+            detail.turns.iter().flat_map(|t| t.blocks.iter()).collect();
+
+        // Part A: every parent narration survives the active window.
+        let all_text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for token in ["NARRATION_STARTED", "NARRATION_MID", "NARRATION_FINAL"] {
+            assert!(all_text.contains(token), "missing narration {token}");
+        }
+
+        // Part B: exactly two wait capsules, each with its own returned agent.
+        let collab_inputs: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "collab_agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(collab_inputs.len(), 2, "one collab_agent capsule per wait");
+        let b_cap = collab_inputs
+            .iter()
+            .find(|s| s.contains("B_RESULT_TOKEN"))
+            .expect("wait capsule carrying B's result");
+        assert!(b_cap.contains("agent_b"));
+        assert!(
+            !b_cap.contains("A_RESULT_TOKEN") && !b_cap.contains("agent_a"),
+            "wait capsules must not overlap"
+        );
+        let a_cap = collab_inputs
+            .iter()
+            .find(|s| s.contains("A_RESULT_TOKEN"))
+            .expect("wait capsule carrying A's result");
+        assert!(a_cap.contains("agent_a"));
+        // op-aware title source is present.
+        assert!(a_cap.contains("__codegCollabOp"));
+
+        // The result text must NOT remain on the spawn execution capsules or any
+        // tool result (it lives only in the wait capsules now).
+        for b in &blocks {
+            match b {
+                ContentBlock::ToolResult {
+                    output_preview: Some(o),
+                    ..
+                } => {
+                    assert!(
+                        !o.contains("A_RESULT_TOKEN") && !o.contains("B_RESULT_TOKEN"),
+                        "result leaked into a tool result"
+                    );
+                }
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview: Some(i),
+                    ..
+                } if tool_name == "Agent" => {
+                    assert!(
+                        !i.contains("A_RESULT_TOKEN") && !i.contains("B_RESULT_TOKEN"),
+                        "result leaked into the execution capsule"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// A sub-agent closed without ever being waited on: there is no wait capsule
+    /// to host the result, so the execution capsule falls back to showing the
+    /// close `previous_status` result (no data loss).
+    #[test]
+    fn subagent_close_without_wait_falls_back_to_execution_capsule() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T11:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"cf","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T11:00:01Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}),
+            ),
+            rollout_line(
+                "2026-06-27T11:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"spawn_c","name":"spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":"task C"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T11:00:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"spawn_c",
+                    "output": serde_json::json!({"agent_id":"agent_c"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T11:00:04Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"close_c","name":"close_agent",
+                    "arguments": serde_json::json!({"target":"agent_c"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T11:00:05Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"close_c",
+                    "output": serde_json::json!({"previous_status":{"completed":"C_RESULT_TOKEN"}}).to_string(),
+                }),
+            ),
+        ];
+
+        let path = write_temp_rollout("closefallback", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "cf")
+            .expect("parse ok");
+        let blocks: Vec<&ContentBlock> =
+            detail.turns.iter().flat_map(|t| t.blocks.iter()).collect();
+
+        let collab_count = blocks
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::ToolUse { tool_name, .. } if tool_name == "collab_agent"))
+            .count();
+        assert_eq!(collab_count, 0, "no wait → no collab capsule");
+
+        let spawn_c_result = blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    output_preview,
+                    ..
+                } if id == "spawn_c" => Some(output_preview.clone()),
+                _ => None,
+            })
+            .expect("spawn_c result block present");
+        assert_eq!(
+            spawn_c_result.as_deref(),
+            Some("C_RESULT_TOKEN"),
+            "execution capsule must show the close fallback result"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// A sub-agent closed (no wait) with a non-`completed` terminal result must
+    /// keep that result AND mark the execution capsule failed — no data loss and
+    /// live/history parity for errored no-wait closes.
+    #[test]
+    fn subagent_errored_close_without_wait_marks_execution_error() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T12:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"ce","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T12:00:01Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}),
+            ),
+            rollout_line(
+                "2026-06-27T12:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"spawn_e","name":"spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":"risky"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T12:00:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"spawn_e",
+                    "output": serde_json::json!({"agent_id":"agent_e"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T12:00:04Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"close_e","name":"close_agent",
+                    "arguments": serde_json::json!({"target":"agent_e"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T12:00:05Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"close_e",
+                    "output": serde_json::json!({"previous_status":{"errored":"BOOM_TOKEN"}}).to_string(),
+                }),
+            ),
+        ];
+
+        let path = write_temp_rollout("closeerr", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "ce")
+            .expect("parse ok");
+        let blocks: Vec<&ContentBlock> =
+            detail.turns.iter().flat_map(|t| t.blocks.iter()).collect();
+
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { tool_name, .. } if tool_name == "collab_agent")),
+            "no wait → no collab capsule"
+        );
+        let (output, is_error) = blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    output_preview,
+                    is_error,
+                    ..
+                } if id == "spawn_e" => Some((output_preview.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("spawn_e result block present");
+        assert_eq!(output.as_deref(), Some("BOOM_TOKEN"), "errored result kept");
+        assert!(is_error, "errored no-wait close → execution capsule failed");
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// An errored wait marks BOTH its own wait capsule and the execution capsule
+    /// as failed (the result text still lives only on the wait capsule).
+    #[test]
+    fn subagent_errored_wait_marks_execution_error() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T13:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"we","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T13:00:01Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}),
+            ),
+            rollout_line(
+                "2026-06-27T13:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"spawn_w","name":"spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":"risky"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T13:00:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"spawn_w",
+                    "output": serde_json::json!({"agent_id":"agent_w"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T13:00:04Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"wait_w","name":"wait_agent",
+                    "arguments": serde_json::json!({"targets":["agent_w"]}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T13:00:05Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"wait_w",
+                    "output": serde_json::json!({"status":{"agent_w":{"errored":"WAIT_BOOM"}}}).to_string(),
+                }),
+            ),
+        ];
+
+        let path = write_temp_rollout("waiterr", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "we")
+            .expect("parse ok");
+        let blocks: Vec<&ContentBlock> =
+            detail.turns.iter().flat_map(|t| t.blocks.iter()).collect();
+
+        // The wait capsule exists and carries the errored result text.
+        let wait_input = blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "collab_agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("wait capsule present");
+        assert!(wait_input.contains("WAIT_BOOM") && wait_input.contains("errored"));
+
+        // The execution capsule (spawn) is marked failed, with no result text on it.
+        let (output, is_error) = blocks
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    output_preview,
+                    is_error,
+                    ..
+                } if id == "spawn_w" => Some((output_preview.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("spawn_w result block present");
+        assert_eq!(output, None, "result stays on the wait capsule");
+        assert!(is_error, "errored wait → execution capsule failed");
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// The spawn execution capsule's input carries the sub-agent's `agent_id`
+    /// (UUID), so the card can badge it uniformly with the wait capsule.
+    #[test]
+    fn subagent_spawn_capsule_input_carries_agent_id() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T14:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"ai","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T14:00:01Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}),
+            ),
+            rollout_line(
+                "2026-06-27T14:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"spawn_x","name":"spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":"do it"}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-06-27T14:00:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"spawn_x",
+                    "output": serde_json::json!({"agent_id":"AGENT_UUID_X"}).to_string(),
+                }),
+            ),
+        ];
+
+        let path = write_temp_rollout("spawnid", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "ai")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    tool_name,
+                    input_preview,
+                    ..
+                } if id == "spawn_x" && tool_name == "Agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("spawn Agent capsule present");
+        let parsed: serde_json::Value =
+            serde_json::from_str(input).expect("spawn input is JSON");
+        assert_eq!(
+            parsed.get("agent_id").and_then(|v| v.as_str()),
+            Some("AGENT_UUID_X"),
+            "spawn capsule input must carry the agent_id"
+        );
+        // Original fields preserved.
+        assert_eq!(
+            parsed.get("subagent_type").and_then(|v| v.as_str()),
+            Some("worker")
+        );
 
         let _ = fs::remove_file(path);
     }

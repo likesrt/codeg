@@ -37,6 +37,7 @@ fn default_enabled(agent_type: AgentType) -> bool {
             | AgentType::Hermes
             | AgentType::CodeBuddy
             | AgentType::KimiCode
+            | AgentType::Pi
     )
 }
 

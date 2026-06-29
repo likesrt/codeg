@@ -1,7 +1,10 @@
-use axum::Json;
+use std::sync::Arc;
+
+use axum::{Extension, Json};
 use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
+use crate::app_state::AppState;
 use crate::commands::experts::{ExpertInstallStatus, LinkOp, LinkOpResult};
 use crate::commands::office_tools as ot;
 use crate::commands::office_tools::{OfficecliInfo, OfficecliSkill, SkillSyncReport};
@@ -38,8 +41,18 @@ pub async fn officecli_detect() -> Result<Json<OfficecliInfo>, AppCommandError> 
     Ok(Json(result))
 }
 
-pub async fn officecli_install() -> Result<Json<OfficecliInfo>, AppCommandError> {
-    let result = ot::officecli_install()
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficecliInstallParams {
+    pub task_id: String,
+}
+
+pub async fn officecli_install(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<OfficecliInstallParams>,
+) -> Result<Json<OfficecliInfo>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    let result = ot::officecli_install_core(params.task_id, &emitter)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))

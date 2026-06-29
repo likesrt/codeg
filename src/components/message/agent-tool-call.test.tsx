@@ -104,4 +104,29 @@ describe("AgentToolCallPart title", () => {
     )
     expect(screen.getByText("build")).toBeInTheDocument()
   })
+
+  it("badges the codex agent_id (shortened to first UUID segment) when present", () => {
+    renderCard(
+      basePart(
+        JSON.stringify({
+          subagent_type: "worker",
+          description: "build",
+          agent_id: "abcd1234-uuid-9",
+        }),
+        "output-available"
+      )
+    )
+    expect(screen.getByText("abcd1234")).toBeInTheDocument()
+    expect(screen.queryByText("abcd1234-uuid-9")).not.toBeInTheDocument()
+  })
+
+  it("shows no agent_id badge for non-codex agents (e.g. Claude Task)", () => {
+    renderCard(
+      basePart(
+        JSON.stringify({ subagent_type: "Explore", description: "map" }),
+        "output-available"
+      )
+    )
+    expect(screen.queryByText("abcd1234")).not.toBeInTheDocument()
+  })
 })

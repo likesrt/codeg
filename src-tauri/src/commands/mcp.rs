@@ -2292,6 +2292,9 @@ pub fn read_servers_for_agent_type(
         AgentType::Hermes => read_hermes_servers(),
         AgentType::CodeBuddy => read_codebuddy_servers(),
         AgentType::KimiCode => read_kimi_code_servers(),
+        // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
+        // third-party extension), so codeg manages no MCP servers for pi (v1).
+        AgentType::Pi => Ok(BTreeMap::new()),
     }
 }
 

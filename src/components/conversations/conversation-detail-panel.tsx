@@ -15,7 +15,6 @@ import {
   FileCode,
   FileImage,
   FileText,
-  Focus,
   Info,
   RefreshCw,
   SquarePen,
@@ -112,6 +111,11 @@ interface ConversationTabViewProps {
   agentType: AgentType
   workingDir?: string
   isActive: boolean
+  /** Drive the composer's flowing active-session border. True only for the
+   *  active tab while tiled across multiple sessions — the one place the flow
+   *  serves as the "which tile is active" cue. Distinct from `isActive`, which
+   *  also governs auto-focus/connect and is true even for a lone session. */
+  showActiveFlow: boolean
   reloadSignal: number
 }
 
@@ -181,6 +185,7 @@ const ConversationTabView = memo(function ConversationTabView({
   agentType,
   workingDir,
   isActive,
+  showActiveFlow,
   reloadSignal,
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
@@ -1362,6 +1367,7 @@ const ConversationTabView = memo(function ConversationTabView({
       onAddFeedback={feedback.featureEnabled ? feedback.openDialog : undefined}
       feedbackAddDisabled={!feedback.canSubmit}
       isActive={isActive}
+      showActiveFlow={showActiveFlow}
       queue={msgQueue}
       onEnqueue={mqEnqueue}
       onQueueReorder={mqReorder}
@@ -1445,6 +1451,7 @@ const ConversationTabView = memo(function ConversationTabView({
               attachmentTabId={tabId}
               draftStorageKey={draftStorageKey}
               isActive={isActive}
+              showActiveFlow={showActiveFlow}
               onAddFeedback={
                 feedback.featureEnabled ? feedback.openDialog : undefined
               }
@@ -1868,15 +1875,11 @@ export function ConversationDetailPanel() {
           canTile && !active ? () => switchTab(tab.id) : undefined
         }
       >
+        {/* The visible active cue is now the composer's flowing gradient border
+            (see message-input.tsx); keep a non-visual cue for assistive tech in
+            tiled mode, where the old top-center icon used to provide it. */}
         {canTile && active && (
-          <div
-            role="img"
-            aria-label={t("activeConversationIndicator")}
-            title={t("activeConversationIndicator")}
-            className="absolute top-2 left-1/2 z-20 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full bg-background/40 text-sidebar-primary shadow-sm ring-1 ring-sidebar-primary/20 backdrop-blur"
-          >
-            <Focus className="h-4 w-4" />
-          </div>
+          <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
         <ConversationTabView
           tabId={tab.id}
@@ -1884,6 +1887,7 @@ export function ConversationDetailPanel() {
           agentType={tab.agentType}
           workingDir={tab.workingDir ?? getFolder(tab.folderId)?.path}
           isActive={active}
+          showActiveFlow={canTile && active}
           reloadSignal={reloadByTabId[tab.id] ?? 0}
         />
       </div>

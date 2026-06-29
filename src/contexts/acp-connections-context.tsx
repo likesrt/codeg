@@ -522,6 +522,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+const PERMISSION_TOOL_INPUT_KEYS = [
+  "rawInput",
+  "raw_input",
+  "input",
+  "arguments",
+  "params",
+  "payload",
+] as const
+
 function asFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value
@@ -571,41 +580,144 @@ function extractPermissionToolCallId(toolCall: unknown): string | null {
   return null
 }
 
+function pickPermissionToolInput(record: Record<string, unknown>): unknown {
+  for (const key of PERMISSION_TOOL_INPUT_KEYS) {
+    const value = record[key]
+    if (value === undefined || value === null) continue
+    if (typeof value === "string" && value.trim().length === 0) continue
+    return value
+  }
+  return null
+}
+
+function serializePermissionInput(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === "string") {
+    return value.trim().length > 0 ? value : null
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return null
+  }
+}
+
 function serializePermissionToolCall(toolCall: unknown): string | null {
   const record = asRecord(toolCall)
   if (!record) return null
   try {
-    // Extract the actual tool input from the nested rawInput/raw_input field
-    // rather than serializing the entire permission wrapper (which includes
-    // internal fields like content, kind, title, toolCallId).
-    const nestedInput = record.rawInput ?? record.raw_input
-    if (nestedInput !== undefined && nestedInput !== null) {
-      if (typeof nestedInput === "string") return nestedInput
-      return JSON.stringify(nestedInput)
-    }
+    // Extract the actual tool input rather than serializing the entire
+    // permission wrapper (which includes internal fields like kind/status/id).
+    const nestedInput = pickPermissionToolInput(record)
+    const serializedNestedInput = serializePermissionInput(nestedInput)
+    if (serializedNestedInput) return serializedNestedInput
+
     // Fallback: strip wrapper-only fields to avoid rendering internal
     // permission structure as raw text.
     const wrapperKeys = new Set([
       "content",
       "kind",
+      "status",
       "title",
       "toolCallId",
       "tool_call_id",
       "callId",
       "call_id",
-      "rawInput",
-      "raw_input",
+      ...PERMISSION_TOOL_INPUT_KEYS,
     ])
     const rest: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(record)) {
       if (!wrapperKeys.has(k)) rest[k] = v
     }
-    return Object.keys(rest).length > 0
-      ? JSON.stringify(rest)
-      : JSON.stringify(record)
+    return Object.keys(rest).length > 0 ? JSON.stringify(rest) : null
   } catch {
     return null
   }
+}
+
+function findLiveToolCallInfo(
+  content: LiveContentBlock[],
+  toolCallId: string | null
+): ToolCallInfo | null {
+  if (!toolCallId) return null
+  const block = content.find(
+    (item) => item.type === "tool_call" && item.info.tool_call_id === toolCallId
+  )
+  return block?.type === "tool_call" ? block.info : null
+}
+
+function mergePermissionToolCallWithLiveInfo(
+  toolCall: unknown,
+  liveInfo: ToolCallInfo | null
+): unknown {
+  if (!liveInfo) return toolCall
+
+  const rawInput = serializePermissionInput(liveInfo.raw_input)
+  const record = asRecord(toolCall)
+  if (!record) {
+    if (!rawInput) return toolCall
+    return {
+      toolCallId: liveInfo.tool_call_id,
+      title: liveInfo.title,
+      kind: liveInfo.kind,
+      rawInput,
+    }
+  }
+
+  const next = { ...record }
+  let changed = false
+  const existingInput = serializePermissionInput(pickPermissionToolInput(next))
+  if (!existingInput && rawInput) {
+    next.rawInput = rawInput
+    changed = true
+  }
+  if (typeof next.title !== "string" || next.title.trim().length === 0) {
+    next.title = liveInfo.title
+    changed = true
+  }
+  if (typeof next.kind !== "string" || next.kind.trim().length === 0) {
+    next.kind = liveInfo.kind
+    changed = true
+  }
+  if (!extractPermissionToolCallId(next)) {
+    next.toolCallId = liveInfo.tool_call_id
+    changed = true
+  }
+  return changed ? next : toolCall
+}
+
+function mergePendingPermissionWithLiveInfo(
+  pendingPermission: PendingPermission | null,
+  liveInfo: ToolCallInfo | null
+): PendingPermission | null {
+  if (!pendingPermission || !liveInfo) return pendingPermission
+  const permissionCallId = extractPermissionToolCallId(
+    pendingPermission.tool_call
+  )
+  if (permissionCallId !== liveInfo.tool_call_id) return pendingPermission
+
+  const toolCall = mergePermissionToolCallWithLiveInfo(
+    pendingPermission.tool_call,
+    liveInfo
+  )
+  if (toolCall === pendingPermission.tool_call) return pendingPermission
+  return {
+    ...pendingPermission,
+    tool_call: toolCall,
+  }
+}
+
+function mergePendingPermissionWithLiveMessage(
+  pendingPermission: PendingPermission | null,
+  liveMessage: LiveMessage | null
+): PendingPermission | null {
+  const permissionCallId = extractPermissionToolCallId(
+    pendingPermission?.tool_call
+  )
+  const liveInfo = liveMessage
+    ? findLiveToolCallInfo(liveMessage.content, permissionCallId)
+    : null
+  return mergePendingPermissionWithLiveInfo(pendingPermission, liveInfo)
 }
 
 function extractPermissionToolTitle(toolCall: unknown): string | null {
@@ -1045,6 +1157,11 @@ function connectionsReducer(
         return next
       }
 
+      const hydratedLiveMessage = action.patch.liveMessage
+      const hydratedPendingPermission = mergePendingPermissionWithLiveMessage(
+        action.patch.pendingPermission,
+        hydratedLiveMessage ?? current.liveMessage
+      )
       const next = new Map(state)
       next.set(action.contextKey, {
         ...current,
@@ -1054,8 +1171,8 @@ function connectionsReducer(
         configOptions: action.patch.configOptions,
         availableCommands: action.patch.availableCommands,
         usage: action.patch.usage,
-        liveMessage: action.patch.liveMessage,
-        pendingPermission: action.patch.pendingPermission,
+        liveMessage: hydratedLiveMessage,
+        pendingPermission: hydratedPendingPermission,
         pendingAskQuestion: action.patch.pendingAskQuestion,
         pendingUserMessage: action.patch.pendingUserMessage,
         promptCapabilities: mergedPromptCapabilities,
@@ -1242,10 +1359,16 @@ function connectionsReducer(
           },
         ]
       }
+      const nextLiveMessage = { ...prev, content: newContent }
+      const nextInfo = findLiveToolCallInfo(newContent, action.tool_call_id)
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
-        liveMessage: { ...prev, content: newContent },
+        liveMessage: nextLiveMessage,
+        pendingPermission: mergePendingPermissionWithLiveInfo(
+          conn.pendingPermission,
+          nextInfo
+        ),
         claudeApiRetry: null,
       })
       return next
@@ -1348,10 +1471,16 @@ function connectionsReducer(
         ]
       }
 
+      const nextLiveMessage = { ...prev, content: newContent }
+      const nextInfo = findLiveToolCallInfo(newContent, action.tool_call_id)
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
-        liveMessage: { ...prev, content: newContent },
+        liveMessage: nextLiveMessage,
+        pendingPermission: mergePendingPermissionWithLiveInfo(
+          conn.pendingPermission,
+          nextInfo
+        ),
         claudeApiRetry: null,
       })
       return next
@@ -1373,7 +1502,15 @@ function connectionsReducer(
       if (!conn) return state
       let updatedLiveMessage = conn.liveMessage
       const permissionCallId = extractPermissionToolCallId(action.tool_call)
-      const permissionToolInput = serializePermissionToolCall(action.tool_call)
+      const existingInfo = updatedLiveMessage
+        ? findLiveToolCallInfo(updatedLiveMessage.content, permissionCallId)
+        : null
+      const permissionToolCall = mergePermissionToolCallWithLiveInfo(
+        action.tool_call,
+        existingInfo
+      )
+      const permissionToolInput =
+        serializePermissionToolCall(permissionToolCall)
       if (
         updatedLiveMessage &&
         permissionCallId &&
@@ -1441,7 +1578,7 @@ function connectionsReducer(
         liveMessage: updatedLiveMessage,
         pendingPermission: {
           request_id: action.request_id,
-          tool_call: action.tool_call,
+          tool_call: permissionToolCall,
           options: action.options,
         },
       })
@@ -2482,6 +2619,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         case "permission_request":
           flushStreamingQueue()
+          flushPendingToolCallUpdates()
           dispatch({
             type: "PERMISSION_REQUEST",
             contextKey,

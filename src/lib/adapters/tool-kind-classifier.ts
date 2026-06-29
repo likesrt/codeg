@@ -1,3 +1,5 @@
+import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
+
 export type ToolKindLabel =
   | "search"
   | "command"
@@ -47,6 +49,10 @@ const CHECK_USER_FEEDBACK_SUFFIX_RE = /[^a-z0-9]check_user_feedback$/
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
   if (name === "agent") return true
+  // codex live collab / sub-agent card (codex-acp 1.0.1 #223): owns a dedicated
+  // compact card, so it breaks the run and renders standalone, like the other
+  // agent-like tools, rather than folding into a generic tool-group.
+  if (name === COLLAB_AGENT_TOOL_NAME) return true
   if (
     name === "delegate_to_agent" ||
     name === "get_delegation_status" ||

@@ -14,6 +14,7 @@ use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::hermes::HermesParser;
 use crate::parsers::kimi_code::KimiCodeParser;
+use crate::parsers::pi::PiParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
@@ -170,6 +171,7 @@ fn list_conversations_sync(
         (AgentType::Hermes, Box::new(HermesParser::new())),
         (AgentType::CodeBuddy, Box::new(CodeBuddyParser::new())),
         (AgentType::KimiCode, Box::new(KimiCodeParser::new())),
+        (AgentType::Pi, Box::new(PiParser::new())),
     ];
 
     for (at, parser) in &parsers {
@@ -276,6 +278,7 @@ pub async fn get_conversation(
             AgentType::Hermes => Box::new(HermesParser::new()),
             AgentType::CodeBuddy => Box::new(CodeBuddyParser::new()),
             AgentType::KimiCode => Box::new(KimiCodeParser::new()),
+            AgentType::Pi => Box::new(PiParser::new()),
         };
 
         parser
@@ -517,6 +520,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Hermes => Box::new(HermesParser::new()),
                 AgentType::CodeBuddy => Box::new(CodeBuddyParser::new()),
                 AgentType::KimiCode => Box::new(KimiCodeParser::new()),
+                AgentType::Pi => Box::new(PiParser::new()),
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((d.turns, d.session_stats, None, d.summary.title)),

@@ -781,6 +781,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::Hermes,
         AgentType::CodeBuddy,
         AgentType::KimiCode,
+        AgentType::Pi,
     ];
     ALL.iter()
         .filter(|a| skill_storage_spec(**a).is_some())

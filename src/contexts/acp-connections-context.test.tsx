@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AcpConnectionsProvider,
   useAcpActions,
+  useConnectionStore,
 } from "@/contexts/acp-connections-context"
+import { parsePermissionToolCall } from "@/lib/permission-request"
+import type { AttachHandlers } from "@/lib/transport/types"
+import type { EventEnvelope, LiveSessionSnapshot } from "@/lib/types"
 
 // Shared spies + a stub EventStream. `vi.hoisted` runs before the mock
 // factories so they can close over this state. Mocking `getEventStream` to a
@@ -22,6 +26,7 @@ const h = vi.hoisted(() => {
     // per-test to exercise the desktop firehose path.
     eventStreamValue: stream as { attach: typeof attach } | null,
     actions: null as unknown as ReturnType<typeof useAcpActions> | null,
+    store: null as unknown as ReturnType<typeof useConnectionStore> | null,
     // api spies
     acpGetAgentStatus: vi.fn(),
     acpFindConnectionForConversation: vi.fn(),
@@ -29,6 +34,7 @@ const h = vi.hoisted(() => {
     acpDisconnect: vi.fn(),
     acpGetSessionSnapshot: vi.fn(),
     buildDelegationSeedEnvelopes: vi.fn(() => []),
+    denormalizeSnapshot: vi.fn(),
   }
 })
 
@@ -54,7 +60,7 @@ vi.mock("@/contexts/active-folder-context", () => ({
 }))
 
 vi.mock("@/lib/notification", () => ({
-  sendSystemNotification: vi.fn(),
+  sendSystemNotification: vi.fn(async () => undefined),
 }))
 
 vi.mock("@/lib/selector-prefs-storage", () => ({
@@ -64,11 +70,7 @@ vi.mock("@/lib/selector-prefs-storage", () => ({
 }))
 
 vi.mock("@/lib/snapshot-denormalize", () => ({
-  denormalizeSnapshot: vi.fn(() => ({
-    connectionId: "owner-conn",
-    eventSeq: 0,
-    activeDelegations: [],
-  })),
+  denormalizeSnapshot: h.denormalizeSnapshot,
 }))
 
 vi.mock("@/lib/api", () => ({
@@ -87,12 +89,14 @@ vi.mock("@/lib/api", () => ({
 
 function Probe() {
   const actions = useAcpActions()
+  const store = useConnectionStore()
   // Capture in an effect (not during render) so the lint rule that forbids
   // mutating external state mid-render stays happy; mountProvider flushes
   // effects before any test reads h.actions.
   useEffect(() => {
     h.actions = actions
-  }, [actions])
+    h.store = store
+  }, [actions, store])
   return null
 }
 
@@ -109,6 +113,7 @@ const TAB = "conv-1-claude_code-42"
 
 beforeEach(() => {
   h.attach.mockClear()
+  h.store = null
   h.eventStreamValue = h.stream
   h.buildDelegationSeedEnvelopes.mockClear()
   h.acpGetAgentStatus.mockReset()
@@ -116,6 +121,12 @@ beforeEach(() => {
   h.acpConnect.mockReset()
   h.acpDisconnect.mockReset()
   h.acpGetSessionSnapshot.mockReset()
+  h.denormalizeSnapshot.mockReset()
+  h.denormalizeSnapshot.mockReturnValue({
+    connectionId: "owner-conn",
+    eventSeq: 0,
+    activeDelegations: [],
+  })
   // Agent is installed + available so the connect preflight passes.
   h.acpGetAgentStatus.mockResolvedValue({
     agent_type: "claude_code",
@@ -127,6 +138,31 @@ beforeEach(() => {
   h.acpDisconnect.mockResolvedValue(undefined)
   h.acpGetSessionSnapshot.mockResolvedValue(null)
 })
+
+function latestAttachHandlers(): AttachHandlers {
+  const calls = h.attach.mock.calls as unknown as Array<
+    [unknown, unknown, AttachHandlers]
+  >
+  const call = calls[calls.length - 1]
+  expect(call).toBeTruthy()
+  if (!call) throw new Error("expected attach handlers")
+  return call[2]
+}
+
+function emitAcpEvent(handlers: AttachHandlers, envelope: EventEnvelope) {
+  act(() => {
+    handlers.onEvent(envelope)
+  })
+}
+
+function hydrateSnapshot(
+  handlers: AttachHandlers,
+  snapshot: LiveSessionSnapshot
+) {
+  act(() => {
+    handlers.onSnapshot(snapshot, snapshot.event_seq)
+  })
+}
 
 describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
   it("attaches as a viewer (no spawn) when a live connection is discovered", async () => {
@@ -285,5 +321,232 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
     expect(h.buildDelegationSeedEnvelopes).not.toHaveBeenCalled()
     // And teardown never killed the owner's connection.
     expect(h.acpDisconnect).not.toHaveBeenCalled()
+  })
+})
+
+describe("AcpConnectionsProvider permission request details", () => {
+  it("hydrates a permission request from an existing live tool call input", async () => {
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    const rawInput = JSON.stringify({ command: "pnpm test", cwd: "/tmp/x" })
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "tool_call",
+      tool_call_id: "call_1",
+      title: "Bash",
+      kind: "execute",
+      status: "pending",
+      content: null,
+      raw_input: rawInput,
+      raw_output: null,
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "permission_request",
+      request_id: "req-1",
+      tool_call: {
+        kind: "execute",
+        status: "pending",
+        toolCallId: "call_1",
+      },
+      options: [],
+    })
+
+    const permission = h.store!.getConnection(TAB)!.pendingPermission
+    expect(parsePermissionToolCall(permission?.tool_call).title).toBe("Bash")
+    expect(parsePermissionToolCall(permission?.tool_call).command).toBe(
+      "pnpm test"
+    )
+    expect(parsePermissionToolCall(permission?.tool_call).cwd).toBe("/tmp/x")
+  })
+
+  it("backfills an already-open permission request when tool input arrives later", async () => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      cb(0)
+      return 1
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+
+    try {
+      await mountProvider()
+
+      await act(async () => {
+        await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+      })
+
+      const handlers = latestAttachHandlers()
+
+      emitAcpEvent(handlers, {
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "permission_request",
+        request_id: "req-2",
+        tool_call: {
+          kind: "execute",
+          status: "pending",
+          toolCallId: "call_2",
+        },
+        options: [],
+      })
+
+      expect(
+        parsePermissionToolCall(
+          h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+        ).command
+      ).toBeNull()
+
+      emitAcpEvent(handlers, {
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "tool_call_update",
+        tool_call_id: "call_2",
+        title: "Bash",
+        status: "pending",
+        content: null,
+        raw_input: JSON.stringify({ command: "pnpm build" }),
+        raw_output: null,
+      })
+
+      expect(
+        parsePermissionToolCall(
+          h.store!.getConnection(TAB)!.pendingPermission?.tool_call
+        ).command
+      ).toBe("pnpm build")
+    } finally {
+      vi.stubGlobal("requestAnimationFrame", originalRaf)
+      vi.stubGlobal("cancelAnimationFrame", originalCancelRaf)
+    }
+  })
+
+  it("hydrates snapshot permission details from active tool call input", async () => {
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    const handlers = latestAttachHandlers()
+    h.denormalizeSnapshot.mockReturnValue({
+      connectionId: "spawned-conn",
+      status: "connected",
+      sessionId: "sess-1",
+      modes: null,
+      configOptions: null,
+      availableCommands: [],
+      usage: null,
+      liveMessage: {
+        id: "live-1",
+        role: "assistant",
+        startedAt: 0,
+        content: [
+          {
+            type: "tool_call",
+            info: {
+              tool_call_id: "call_snapshot",
+              title: "Bash",
+              kind: "execute",
+              status: "pending",
+              content: null,
+              raw_input: JSON.stringify({
+                command: "pnpm test -- --runInBand",
+                cwd: "/tmp/x",
+              }),
+              raw_output_chunks: [],
+              raw_output_total_bytes: 0,
+              locations: null,
+              meta: null,
+              images: [],
+            },
+          },
+        ],
+      },
+      pendingPermission: {
+        request_id: "req-snapshot",
+        tool_call: {
+          kind: "execute",
+          status: "pending",
+          toolCallId: "call_snapshot",
+        },
+        options: [],
+      },
+      pendingAskQuestion: null,
+      pendingUserMessage: null,
+      promptCapabilities: null,
+      selectorsReady: true,
+      supportsFork: false,
+      configStale: false,
+      configStaleKind: null,
+      eventSeq: 5,
+      activeDelegations: [],
+    })
+    hydrateSnapshot(handlers, {
+      connection_id: "spawned-conn",
+      conversation_id: null,
+      folder_id: null,
+      status: "connected",
+      external_id: "sess-1",
+      live_message: {
+        id: "live-1",
+        role: "assistant",
+        started_at: new Date(0).toISOString(),
+        content: [{ kind: "tool_call_ref", tool_call_id: "call_snapshot" }],
+      },
+      active_tool_calls: [
+        {
+          id: "call_snapshot",
+          kind: "execute",
+          label: "Bash",
+          status: "pending",
+          input: { command: "pnpm test -- --runInBand", cwd: "/tmp/x" },
+          output: null,
+          content: null,
+          locations: null,
+          meta: null,
+        },
+      ],
+      pending_permission: {
+        request_id: "req-snapshot",
+        tool_call_id: "call_snapshot",
+        tool_call: {
+          kind: "execute",
+          status: "pending",
+          toolCallId: "call_snapshot",
+        },
+        options: [],
+        created_at: new Date(0).toISOString(),
+      },
+      pending_question: null,
+      pending_user_message: null,
+      active_delegations: [],
+      feedback: [],
+      feedback_tool_available: false,
+      modes: null,
+      current_mode: null,
+      config_options: null,
+      prompt_capabilities: null,
+      usage: null,
+      fork_supported: false,
+      available_commands: [],
+      selectors_ready: true,
+      config_stale: false,
+      config_stale_kind: null,
+      event_seq: 5,
+    })
+
+    const permission = h.store!.getConnection(TAB)!.pendingPermission
+    const parsed = parsePermissionToolCall(permission?.tool_call)
+    expect(parsed.title).toBe("Bash")
+    expect(parsed.command).toBe("pnpm test -- --runInBand")
+    expect(parsed.cwd).toBe("/tmp/x")
   })
 })

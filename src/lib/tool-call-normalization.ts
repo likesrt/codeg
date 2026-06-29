@@ -1,3 +1,5 @@
+import { COLLAB_AGENT_TOOL_NAME, isCodexCollabInput } from "@/lib/collab-tool"
+
 const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "bash",
   "functions.shell_command": "bash",
@@ -385,6 +387,15 @@ export function inferLiveToolName(params: {
   // misclassify any title containing the word "agent" (e.g. "Inspect agent
   // config") as an Agent card before raw_input is even consulted.
   if ((params.title ?? "").trim().toLowerCase() === "agent") return "agent"
+
+  // codex collab / sub-agent activity (codex-acp 1.0.1 #223). The live ACP
+  // tool_call's title is the bare, free-form collab op (`spawn_agent`/
+  // `wait_agent`/`close_agent`/…), but its rawInput carries inter-agent fields
+  // no other tool emits. Detect by that shape so the call routes to the
+  // dedicated collab card regardless of the title (and ahead of `inferFromInput`,
+  // which returns null for this shape anyway, and the title alias that would
+  // otherwise collapse `spawn_agent`→"agent" / `wait_agent`→"task").
+  if (isCodexCollabInput(params.rawInput)) return COLLAB_AGENT_TOOL_NAME
 
   // The codeg-mcp delegation companion tools carry their authoritative identity
   // in `meta.claudeCode.toolName` — claude-agent-acp sets it to the raw

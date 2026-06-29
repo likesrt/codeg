@@ -109,6 +109,7 @@ import type {
   ModelProviderInfo,
   UpdateModelProviderResult,
   PluginCheckSummary,
+  OpenCodeCatalogProvider,
   QuickMessage,
   OfficecliInfo,
   OfficecliSkill,
@@ -497,6 +498,83 @@ export async function acpFetchKimiModels(params: {
 }
 
 /**
+ * Apply a structured Pi config update. Merge-writes pi's native
+ * `~/.pi/agent/settings.json` (`defaultProvider` / `defaultModel` /
+ * `defaultThinkingLevel`) and, when an API key is supplied,
+ * `~/.pi/agent/auth.json` (`{ "<provider>": { "type": "api_key", "key": ... } }`),
+ * preserving every other key in both files.
+ */
+export async function acpUpdatePiConfig(params: {
+  provider: string
+  model: string
+  thinkingLevel?: string
+  apiKey?: string
+  /** Custom/self-hosted provider endpoint. When set, `provider` is written to
+   * `models.json` (with `customApi` as the wire protocol). Omit for built-ins. */
+  customBaseUrl?: string
+  customApi?: string
+}): Promise<void> {
+  return getTransport().call("acp_update_pi_config", {
+    provider: params.provider,
+    model: params.model,
+    thinkingLevel: params.thinkingLevel ?? null,
+    apiKey: params.apiKey ?? null,
+    customBaseUrl: params.customBaseUrl ?? null,
+    customApi: params.customApi ?? null,
+  })
+}
+
+/**
+ * Read pi's current native config for the settings panel: the three
+ * `settings.json` model keys plus the provider names present in `auth.json`
+ * (sorted). Missing files surface as `null` / an empty list.
+ */
+export async function loadPiConfig(): Promise<{
+  defaultProvider: string | null
+  defaultModel: string | null
+  defaultThinkingLevel: string | null
+  authProviders: string[]
+  /** Custom/self-hosted providers defined in `models.json`, sorted by id. Used
+   * to rehydrate the custom-provider form and detect a custom `defaultProvider`. */
+  customProviders: { id: string; baseUrl: string; api: string }[]
+}> {
+  return getTransport().call("acp_load_pi_config", {})
+}
+
+/**
+ * Validate a user-supplied custom pi binary (BYO-pi): resolve it (path or
+ * `PATH`) and best-effort read its `--version`. A not-found binary returns
+ * `{ found: false, resolvedPath: null, version: null }` (not an error).
+ */
+export async function acpValidatePiCommand(command: string): Promise<{
+  found: boolean
+  resolvedPath: string | null
+  version: string | null
+}> {
+  return getTransport().call("acp_validate_pi_command", { command })
+}
+
+/**
+ * Install the `pi` binary (`@earendil-works/pi-coding-agent`) globally via npm.
+ * This is the prerequisite pi-acp spawns as `pi --mode rpc` — distinct from the
+ * `pi-acp` adapter that `acpPrepareNpxAgent` installs. Progress streams on the
+ * shared `app://agent-install` topic; pass `taskId` to `useAgentInstallStream`
+ * (or `acpInstallStream`) to receive the log lines.
+ */
+export async function acpInstallPiBinary(taskId: string): Promise<void> {
+  return getTransport().call(
+    "acp_install_pi_binary",
+    { taskId },
+    { timeoutMs: 600_000 }
+  )
+}
+
+/** Uninstall the global `pi` binary. Streams on `app://agent-install` too. */
+export async function acpUninstallPiBinary(taskId: string): Promise<void> {
+  return getTransport().call("acp_uninstall_pi_binary", { taskId })
+}
+
+/**
  * Launch Hermes's interactive setup in the OS terminal (desktop only). `kind`
  * picks the flow; the backend constructs the exact command from the registry
  * recipe (no arbitrary shell text crosses the boundary).
@@ -554,6 +632,14 @@ export async function acpPreflight(
 
 export async function opencodeListPlugins(): Promise<PluginCheckSummary> {
   return getTransport().call("opencode_list_plugins", {})
+}
+
+export async function opencodeProviderCatalog(
+  forceRefresh?: boolean
+): Promise<OpenCodeCatalogProvider[]> {
+  return getTransport().call("opencode_provider_catalog", {
+    forceRefresh: forceRefresh ?? null,
+  })
 }
 
 export async function opencodeInstallPlugins(
@@ -688,8 +774,18 @@ export async function officecliDetect(): Promise<OfficecliInfo> {
   return getTransport().call("officecli_detect")
 }
 
-export async function officecliInstall(): Promise<OfficecliInfo> {
-  return getTransport().call("officecli_install")
+export async function officecliInstall(taskId: string): Promise<OfficecliInfo> {
+  // The vendor installer downloads + extracts a multi-MB binary; allow well
+  // beyond the default 60s web-call timeout so slow networks don't surface a
+  // spurious timeout while progress is still streaming. Sits 30s ABOVE the
+  // backend's own 600s deadline so the backend's structured timeout error wins
+  // the race instead of a generic transport abort. `taskId` correlates the
+  // `app://officecli-install` stream the settings page subscribes to.
+  return getTransport().call(
+    "officecli_install",
+    { taskId },
+    { timeoutMs: 630_000 }
+  )
 }
 
 export async function officecliUninstall(): Promise<OfficecliInfo> {

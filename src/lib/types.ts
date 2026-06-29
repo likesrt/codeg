@@ -8,6 +8,7 @@ export type AgentType =
   | "hermes"
   | "code_buddy"
   | "kimi_code"
+  | "pi"
 
 export type AppErrorCode =
   | "invalid_input"
@@ -451,6 +452,7 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "hermes",
   "code_buddy",
   "kimi_code",
+  "pi",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map(
@@ -473,6 +475,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "hermes",
   "code_buddy",
   "kimi_code",
+  "pi",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: AgentType[] = [
@@ -762,6 +765,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   hermes: "Hermes Agent",
   code_buddy: "CodeBuddy",
   kimi_code: "Kimi Code",
+  pi: "Pi",
 }
 
 export const AGENT_COLORS: Record<AgentType, string> = {
@@ -774,6 +778,7 @@ export const AGENT_COLORS: Record<AgentType, string> = {
   hermes: "bg-amber-500",
   code_buddy: "bg-[#0052D9]",
   kimi_code: "bg-[#1783FF]",
+  pi: "bg-[#0D9488]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1585,6 +1590,10 @@ export interface OfficecliInfo {
   installed: boolean
   version: string | null
   path: string | null
+  // Set when the binary file is present (`installed = true`) but running it
+  // failed — e.g. a missing system library (libicu) on a slim Linux server.
+  // Carries an actionable diagnostic; null when officecli runs fine.
+  runtimeError: string | null
 }
 
 export interface OfficecliSkill {
@@ -2200,6 +2209,34 @@ export interface PluginCheckSummary {
   has_project_config_hint: boolean
 }
 
+// ─── OpenCode Provider Catalog (models.dev) ───
+
+/** A model entry under a catalog provider, normalized from models.dev. */
+export interface OpenCodeCatalogModel {
+  id: string
+  name: string
+  reasoning: boolean
+  tool_call: boolean
+  context: number | null
+  cost_in: number | null
+  cost_out: number | null
+}
+
+/**
+ * One provider from the models.dev catalog (the same registry OpenCode reads).
+ * `auth_kind` is `"oauth"` for providers OpenCode signs into via a browser flow
+ * (ChatGPT, GitHub Copilot, GitLab Duo), `"api"` otherwise.
+ */
+export interface OpenCodeCatalogProvider {
+  id: string
+  name: string
+  npm: string | null
+  env: string[]
+  doc: string | null
+  auth_kind: "api" | "oauth"
+  models: OpenCodeCatalogModel[]
+}
+
 export type PluginInstallEventKind = "started" | "log" | "completed" | "failed"
 
 export interface PluginInstallEvent {
@@ -2213,6 +2250,18 @@ export type AgentInstallEventKind = "started" | "log" | "completed" | "failed"
 export interface AgentInstallEvent {
   task_id: string
   kind: AgentInstallEventKind
+  payload: string
+}
+
+export type OfficecliInstallEventKind =
+  | "started"
+  | "log"
+  | "completed"
+  | "failed"
+
+export interface OfficecliInstallEvent {
+  task_id: string
+  kind: OfficecliInstallEventKind
   payload: string
 }
 

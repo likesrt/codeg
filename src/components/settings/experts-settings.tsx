@@ -22,6 +22,7 @@ import {
 import { revealItemInDir } from "@/lib/platform"
 import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
+import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AcpAgentInfo, ExpertLinkState, ExpertListItem } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
@@ -55,7 +56,9 @@ export function ExpertsSettings() {
         acpListAgents(),
       ])
       setExperts(expertList)
-      setAgents(agentList)
+      // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
+      // default-dir skill store, so it doesn't get a column here.
+      setAgents(agentList.filter((agent) => !piUsesCustomAgentDir(agent)))
       setReloadKey((k) => k + 1)
     } catch (err) {
       setLoadError(toErrorMessage(err))

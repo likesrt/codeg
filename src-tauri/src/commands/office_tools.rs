@@ -30,6 +30,7 @@ use crate::app_error::AppCommandError;
 use crate::commands::folders::resolve_tree_path;
 use crate::models::agent::AgentType;
 use crate::process::tokio_command;
+use crate::web::event_bridge::EventEmitter;
 
 // ─── Error type ─────────────────────────────────────────────────────────
 
@@ -81,6 +82,12 @@ pub struct OfficecliInfo {
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
+    /// Set when the binary file is present (`installed = true`) but actually
+    /// running it failed — e.g. a self-contained-.NET startup failure from a
+    /// missing system library (libicu) on a slim Linux server image. Carries a
+    /// human-readable, actionable diagnostic; `None` when officecli runs fine or
+    /// isn't installed at all.
+    pub runtime_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -329,17 +336,93 @@ pub(crate) fn officecli_agent_path_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(Path::to_path_buf))
 }
 
-async fn detect_version(binary: &Path) -> Option<String> {
-    let output = tokio_command(binary).arg("--version").output().await.ok()?;
-    if !output.status.success() {
-        return None;
+/// Recognize the self-contained-.NET "missing system dependency" startup
+/// failures in an officecli invocation's stderr and return an actionable hint.
+///
+/// OfficeCLI is a single self-contained binary with an embedded .NET runtime;
+/// on Linux that runtime still needs a few system libraries at startup — most
+/// commonly ICU (globalization). The slim server/Docker base image
+/// (`node:*-bookworm-slim`) doesn't ship `libicu`, so every officecli call
+/// aborts before doing any work and the raw .NET message ("Couldn't find a valid
+/// ICU package installed on the system") is opaque to most users. Map the known
+/// signatures to a fix; return `None` for unrecognized stderr (shown verbatim).
+fn officecli_runtime_dependency_hint(stderr: &str) -> Option<String> {
+    let lower = stderr.to_ascii_lowercase();
+    let missing_icu = lower.contains("valid icu package")
+        || lower.contains("libicu")
+        || (lower.contains("icu") && lower.contains("globalization"));
+    if missing_icu {
+        return Some(
+            "officecli could not start: the server is missing the ICU library its \
+             embedded .NET runtime needs. Install it in the runtime image and restart \
+             (Debian/Ubuntu: `apt-get install -y libicu72`; Alpine: `apk add icu-libs`), \
+             or upgrade to a codeg image that already includes it."
+                .to_string(),
+        );
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let version = stdout.trim().to_string();
-    if version.is_empty() {
-        None
-    } else {
-        Some(version)
+    if lower.contains("error while loading shared libraries") {
+        return Some(
+            "officecli could not start: a required system library is missing on the \
+             server. Install the library named in the error below and restart."
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Build a diagnostic for an officecli invocation that ran but failed, pairing a
+/// recognized actionable hint (missing libicu, …) with a bounded tail of the raw
+/// stderr so the underlying error is never hidden.
+fn officecli_run_failure_message(stderr: &str) -> String {
+    let stderr = stderr.trim();
+    match officecli_runtime_dependency_hint(stderr) {
+        Some(hint) if stderr.is_empty() => hint,
+        Some(hint) => format!("{hint}\n\nofficecli error: {}", bounded_tail(stderr, 600)),
+        None if stderr.is_empty() => {
+            "officecli exited with an error and produced no output".to_string()
+        }
+        None => format!("officecli error: {}", bounded_tail(stderr, 600)),
+    }
+}
+
+/// Outcome of probing an installed officecli binary by running `--version`.
+struct OfficecliProbe {
+    version: Option<String>,
+    runtime_error: Option<String>,
+}
+
+/// Run `officecli --version` to learn the version AND confirm the binary can
+/// actually execute. A present-but-unrunnable binary (e.g. missing libicu on a
+/// slim Linux server) yields `runtime_error` so the UI can show "installed but
+/// not runnable" instead of a misleading healthy "installed" badge.
+async fn probe_officecli(binary: &Path) -> OfficecliProbe {
+    match tokio_command(binary).arg("--version").output().await {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            OfficecliProbe {
+                version: (!version.is_empty()).then_some(version),
+                runtime_error: None,
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                "[office] `officecli --version` exited unsuccessfully ({}): {}",
+                output.status,
+                stderr.trim()
+            );
+            OfficecliProbe {
+                version: None,
+                runtime_error: Some(officecli_run_failure_message(&stderr)),
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[office] `officecli --version` could not be spawned: {e}");
+            OfficecliProbe {
+                version: None,
+                runtime_error: Some(format!("failed to run officecli: {e}")),
+            }
+        }
     }
 }
 
@@ -349,90 +432,222 @@ async fn detect_version(binary: &Path) -> Option<String> {
 pub async fn officecli_detect() -> OfficecliInfo {
     match resolve_officecli() {
         Some(path) => {
-            let version = detect_version(&path).await;
+            let probe = probe_officecli(&path).await;
             OfficecliInfo {
                 installed: true,
-                version,
+                version: probe.version,
                 path: Some(path.to_string_lossy().to_string()),
+                runtime_error: probe.runtime_error,
             }
         }
         None => OfficecliInfo {
             installed: false,
             version: None,
             path: None,
+            runtime_error: None,
         },
     }
 }
 
 // ─── Commands: install / uninstall ─────────────────────────────────────
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn officecli_install() -> Result<OfficecliInfo, OfficeToolsError> {
-    let _guard = mutation_lock().lock().await;
+// ─── Streamed install progress events ──────────────────────────────────
+//
+// The official installer downloads a multi-MB binary; on a slow network that
+// looks like a hang. Mirror the ACP agent-install UX: stream the installer's
+// stdout/stderr to the settings page line-by-line over a dedicated event
+// channel, tagged with the caller's `task_id` so concurrent installs don't
+// cross-contaminate. Shape matches `AgentInstallEvent` in `commands::acp`.
 
-    // Run the vendor's official installer script (mirror-first, GitHub
-    // fallback). It owns the download, checksum, install location, and — on
-    // Windows — the persistent User-PATH registration. See `officecli_install_command`.
+const OFFICECLI_INSTALL_EVENT: &str = "app://officecli-install";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum OfficecliInstallEventKind {
+    Started,
+    Log,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OfficecliInstallEvent {
+    task_id: String,
+    kind: OfficecliInstallEventKind,
+    payload: String,
+}
+
+fn emit_officecli_install_event(
+    emitter: &EventEmitter,
+    task_id: &str,
+    kind: OfficecliInstallEventKind,
+    payload: impl Into<String>,
+) {
+    crate::web::event_bridge::emit_event(
+        emitter,
+        OFFICECLI_INSTALL_EVENT,
+        OfficecliInstallEvent {
+            task_id: task_id.to_string(),
+            kind,
+            payload: payload.into(),
+        },
+    );
+}
+
+/// Tauri command: run the OfficeCLI installer, streaming progress as
+/// `app://officecli-install` events tagged with `task_id`. The work lives in
+/// `officecli_install_core` so the web handler can share it with its own emitter.
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn officecli_install(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<OfficecliInfo, OfficeToolsError> {
+    officecli_install_core(task_id, &EventEmitter::Tauri(app)).await
+}
+
+/// Run the vendor's official installer script (mirror-first, GitHub fallback),
+/// streaming its output to the UI as `app://officecli-install` log events. The
+/// script owns the download, checksum, install location, and — on Windows — the
+/// persistent User-PATH registration. See `officecli_install_command`.
+pub(crate) async fn officecli_install_core(
+    task_id: String,
+    emitter: &EventEmitter,
+) -> Result<OfficecliInfo, OfficeToolsError> {
+    emit_officecli_install_event(emitter, &task_id, OfficecliInstallEventKind::Started, "");
+
+    // Install and uninstall share `mutation_lock`. Acquire it AFTER the first
+    // stream event so the panel is responsive immediately, and surface a waiting
+    // hint when another operation already holds it (e.g. a second web client)
+    // rather than spinning silently for up to the install timeout.
+    let _guard = match mutation_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            emit_officecli_install_event(
+                emitter,
+                &task_id,
+                OfficecliInstallEventKind::Log,
+                "Waiting for another OfficeCLI operation to finish…",
+            );
+            mutation_lock().lock().await
+        }
+    };
+
+    emit_officecli_install_event(
+        emitter,
+        &task_id,
+        OfficecliInstallEventKind::Log,
+        "Running the OfficeCLI installer…",
+    );
+
     let cmd = officecli_install_command(current_install_os());
     let child = tokio_command(&cmd.program)
         .args(&cmd.args)
-        // Pipe output for diagnostics; null stdin so the installer can't block
-        // waiting on input it will never get.
+        // Pipe output so we can stream it; null stdin so the installer can't
+        // block waiting on input it will never get.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
-            OfficeToolsError::CommandFailed(format!(
+            let msg = format!(
                 "failed to run the OfficeCLI installer: {e} — install manually from {OFFICECLI_MANUAL_URL}"
-            ))
+            );
+            emit_officecli_install_event(
+                emitter,
+                &task_id,
+                OfficecliInstallEventKind::Failed,
+                &msg,
+            );
+            OfficeToolsError::CommandFailed(msg)
         })?;
 
-    // Bound the whole install (script fetch + binary download). On timeout the
-    // entire process tree is killed — not just the direct shell — so the vendor
-    // script's download descendant can't keep installing in the background and
-    // race a later retry/uninstall once `mutation_lock` is released.
-    let output = match wait_with_output_or_kill_tree(child, OFFICECLI_INSTALL_TIMEOUT).await {
-        Ok(Some(output)) => output,
-        Ok(None) => {
-            return Err(OfficeToolsError::CommandFailed(format!(
+    // Stream stdout+stderr line-by-line as Log events, bounded by the install
+    // timeout. On timeout the whole process tree is killed — not just the direct
+    // shell — so the vendor script's download descendant can't keep installing in
+    // the background and race a later retry/uninstall once `mutation_lock` is
+    // released. See `stream_install_or_kill_tree`.
+    let (maybe_status, stdout_tail, stderr_tail) =
+        stream_install_or_kill_tree(child, OFFICECLI_INSTALL_TIMEOUT, &task_id, emitter)
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "failed to run the OfficeCLI installer: {e} — install manually from {OFFICECLI_MANUAL_URL}"
+                );
+                emit_officecli_install_event(
+                    emitter,
+                    &task_id,
+                    OfficecliInstallEventKind::Failed,
+                    &msg,
+                );
+                OfficeToolsError::CommandFailed(msg)
+            })?;
+
+    let status = match maybe_status {
+        Some(status) => status,
+        None => {
+            let msg = format!(
                 "OfficeCLI install timed out after {}s — check your network and install manually from {OFFICECLI_MANUAL_URL}",
                 OFFICECLI_INSTALL_TIMEOUT.as_secs()
-            )));
-        }
-        Err(e) => {
-            return Err(OfficeToolsError::CommandFailed(format!(
-                "failed to run the OfficeCLI installer: {e} — install manually from {OFFICECLI_MANUAL_URL}"
-            )));
+            );
+            emit_officecli_install_event(
+                emitter,
+                &task_id,
+                OfficecliInstallEventKind::Failed,
+                &msg,
+            );
+            return Err(OfficeToolsError::CommandFailed(msg));
         }
     };
 
-    if !output.status.success() {
+    if !status.success() {
         // The official scripts report failures on stdout (PowerShell `Write-Host`,
         // bash `echo`) as much as stderr, so prefer stderr but fall back to stdout
         // — otherwise the toast can read just "OfficeCLI install failed:". Bound
         // the tail so a chatty script can't flood the UI.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let detail = if stderr.trim().is_empty() {
-            stdout.trim()
+        let detail = if stderr_tail.trim().is_empty() {
+            stdout_tail.trim()
         } else {
-            stderr.trim()
+            stderr_tail.trim()
         };
-        return Err(OfficeToolsError::CommandFailed(format!(
+        let msg = format!(
             "OfficeCLI install failed: {} — install manually from {OFFICECLI_MANUAL_URL}",
             bounded_tail(detail, 800)
-        )));
+        );
+        emit_officecli_install_event(emitter, &task_id, OfficecliInstallEventKind::Failed, &msg);
+        return Err(OfficeToolsError::CommandFailed(msg));
     }
 
     let info = officecli_detect().await;
-    if info.installed {
-        Ok(info)
-    } else {
-        Err(OfficeToolsError::CommandFailed(format!(
+    if !info.installed {
+        let msg = format!(
             "installation completed but the officecli binary was not found — install manually from {OFFICECLI_MANUAL_URL}"
-        )))
+        );
+        emit_officecli_install_event(emitter, &task_id, OfficecliInstallEventKind::Failed, &msg);
+        return Err(OfficeToolsError::CommandFailed(msg));
     }
+
+    // The installer placed the binary, but it must also actually RUN. A present-
+    // but-unrunnable binary (e.g. missing libicu on a slim Linux server) is not a
+    // usable install: report it as a failure with the actionable diagnostic
+    // rather than a misleading "installed successfully" that the caller would then
+    // follow with a doomed auto-sync (every load_skill would fail the same way).
+    if let Some(runtime_error) = &info.runtime_error {
+        emit_officecli_install_event(
+            emitter,
+            &task_id,
+            OfficecliInstallEventKind::Failed,
+            runtime_error.clone(),
+        );
+        return Err(OfficeToolsError::CommandFailed(runtime_error.clone()));
+    }
+
+    let done = match &info.version {
+        Some(version) => format!("OfficeCLI {version} installed successfully"),
+        None => "OfficeCLI installed successfully".to_string(),
+    };
+    emit_officecli_install_event(emitter, &task_id, OfficecliInstallEventKind::Completed, done);
+    Ok(info)
 }
 
 // ─── Official installer (shell out, mirror-first) ──────────────────────
@@ -458,36 +673,166 @@ fn bounded_tail(s: &str, max: usize) -> String {
     format!("…{}", &s[start..])
 }
 
-/// Await `child` to completion capturing its output, or — if it runs past
-/// `timeout` — kill the entire process tree and return `Ok(None)`.
+/// Read `reader` line-by-line as UTF-8-*lossy* text, invoking `on_line` for each
+/// line (trailing newline trimmed) and returning the accumulated text.
 ///
-/// Killing the *tree* (via `kill_tree`) rather than just the direct child
-/// matters: the vendor installer script downloads the multi-MB binary in a
+/// Unlike a `Lines`/`next_line()` loop — which returns `Err(InvalidData)` and so
+/// aborts the whole stream on the first non-UTF-8 byte — this preserves a
+/// non-UTF-8 line lossily. PowerShell emits OEM-codepage bytes (e.g. GBK on a
+/// zh-CN Windows) for non-ASCII installer/error text, so without this a single
+/// localized line would truncate both the live log and the failure-diagnostic
+/// tail. A genuine read error records a short note and stops — `break`, never
+/// `continue`, so a persistent error can't spin.
+async fn collect_lines_lossy<R, F>(mut reader: R, mut on_line: F) -> String
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    F: FnMut(&str),
+{
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf = Vec::new();
+    let mut collected = String::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                // Match `Lines` semantics: strip a trailing '\n' then one '\r'.
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                let line = String::from_utf8_lossy(&buf);
+                on_line(line.as_ref());
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(line.as_ref());
+            }
+            Err(e) => {
+                let note = format!("<install reader error: {e}>");
+                on_line(&note);
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(&note);
+                break;
+            }
+        }
+    }
+    collected
+}
+
+/// Stream `child`'s stdout+stderr line-by-line as OfficeCLI install Log events,
+/// bounded by `timeout`. Returns the exit status (`None` on timeout) plus the
+/// collected stdout/stderr tails for failure diagnostics.
+///
+/// Killing the *tree* (via `kill_tree`) on timeout rather than just the direct
+/// child matters: the vendor installer script downloads the multi-MB binary in a
 /// descendant process (`curl` under `install.sh`, `Invoke-WebRequest` under
 /// `install.ps1`). On timeout, dropping the wait future detaches the direct
 /// shell but would leave that descendant running — it could finish installing
 /// in the background and race a later retry/uninstall once `mutation_lock` is
 /// released. We deliberately do NOT use `Command::kill_on_drop`: it SIGKILLs the
 /// shell first, reparenting the descendant away so `kill_tree` could no longer
-/// reach it. Capturing the pid before the move and killing the tree on timeout
+/// reach it. Capturing the pid before the wait and killing the tree on timeout
 /// keeps the descendant reachable. `kill_tree` is best-effort (a pid that has
 /// already exited is a no-op); Tokio's orphan reaper reaps the killed children.
-async fn wait_with_output_or_kill_tree(
-    child: tokio::process::Child,
+async fn stream_install_or_kill_tree(
+    mut child: tokio::process::Child,
     timeout: Duration,
-) -> io::Result<Option<std::process::Output>> {
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> io::Result<(Option<std::process::ExitStatus>, String, String)> {
+    use tokio::io::BufReader;
+
     let pid = child.id();
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(result) => result.map(Some),
-        Err(_) => {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let stdout_handle = tokio::spawn({
+        let emitter = emitter.clone();
+        let task_id = task_id.to_string();
+        async move {
+            match stdout {
+                Some(out) => {
+                    collect_lines_lossy(BufReader::new(out), |line| {
+                        emit_officecli_install_event(
+                            &emitter,
+                            &task_id,
+                            OfficecliInstallEventKind::Log,
+                            line,
+                        );
+                    })
+                    .await
+                }
+                None => String::new(),
+            }
+        }
+    });
+
+    let stderr_handle = tokio::spawn({
+        let emitter = emitter.clone();
+        let task_id = task_id.to_string();
+        async move {
+            match stderr {
+                Some(err) => {
+                    collect_lines_lossy(BufReader::new(err), |line| {
+                        emit_officecli_install_event(
+                            &emitter,
+                            &task_id,
+                            OfficecliInstallEventKind::Log,
+                            line,
+                        );
+                    })
+                    .await
+                }
+                None => String::new(),
+            }
+        }
+    });
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            // `wait()` itself failed (rare). Best-effort kill the tree in case
+            // the process is still alive — same rationale as the timeout path —
+            // then abort the readers (which may never EOF) and surface the error.
             if let Some(pid) = pid {
                 if let Err(err) = kill_tree::tokio::kill_tree(pid).await {
                     tracing::error!("[office] kill_tree failed for install pid {pid}: {err}");
                 }
             }
-            Ok(None)
+            stdout_handle.abort();
+            stderr_handle.abort();
+            return Err(e);
         }
-    }
+        Err(_) => {
+            // Timed out: kill the whole tree (see note above), then return
+            // WITHOUT joining the readers. A descendant that survived a
+            // best-effort kill keeps its pipe write-end open, so the reader
+            // would never hit EOF — awaiting it here would pin `mutation_lock`
+            // forever, defeating the timeout. The timeout diagnostic doesn't
+            // need the collected tails, so abort the readers and return.
+            if let Some(pid) = pid {
+                if let Err(err) = kill_tree::tokio::kill_tree(pid).await {
+                    tracing::error!("[office] kill_tree failed for install pid {pid}: {err}");
+                }
+            }
+            stdout_handle.abort();
+            stderr_handle.abort();
+            return Ok((None, String::new(), String::new()));
+        }
+    };
+
+    // Normal exit: the process is gone, so the pipes are at EOF and these joins
+    // return promptly with the collected tails (used for failure diagnostics).
+    let stdout_tail = stdout_handle.await.unwrap_or_default();
+    let stderr_tail = stderr_handle.await.unwrap_or_default();
+
+    Ok((Some(status), stdout_tail, stderr_tail))
 }
 
 /// Where users can install OfficeCLI by hand when the network path fails.
@@ -503,10 +848,10 @@ const OFFICECLI_INSTALL_PS1_GITHUB_URL: &str =
 /// *and* the multi-MB binary the script then fetches. Generous (slow networks
 /// pulling tens of MB are fine) but bounded: a stalled mirror or hung download
 /// must never pin the mutation lock and the UI's "installing" state forever. On
-/// timeout the whole process tree is killed (see `wait_with_output_or_kill_tree`).
+/// timeout the whole process tree is killed (see `stream_install_or_kill_tree`).
 /// The per-request `curl`/`irm` timeouts below only bound the script fetch; this
 /// bounds everything.
-const OFFICECLI_INSTALL_TIMEOUT: Duration = Duration::from_secs(480);
+const OFFICECLI_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallOs {
@@ -541,11 +886,30 @@ fn officecli_install_command(os: InstallOs) -> OfficecliInstallCommand {
                 "-ExecutionPolicy".to_string(),
                 "Bypass".to_string(),
                 "-Command".to_string(),
-                // `-TimeoutSec` bounds each script fetch so a stalled mirror
-                // fails over to GitHub instead of hanging; the binary download
-                // the script then does is bounded by OFFICECLI_INSTALL_TIMEOUT.
+                // Hardening preamble. `iex $s` runs the vendor install.ps1 in THIS
+                // same process/scope, so these settings also govern the multi-MB
+                // binary download the script does via `Invoke-WebRequest`:
+                //   • TLS 1.2 — Windows PowerShell 5.1 on older/locked-down .NET
+                //     can default to TLS 1.0, which GitHub (and most CDNs) reject.
+                //     Add it ADDITIVELY (`-bor`, so existing protocols are kept)
+                //     and ONLY when the current value is not `SystemDefault`
+                //     (value 0): a modern host that lets the OS negotiate TLS 1.3
+                //     is left exactly as-is — no regression. Compare against `0`,
+                //     not the `SystemDefault` enum member (added in .NET 4.7;
+                //     referencing it throws on 4.5/4.6 and the catch would then
+                //     skip the upgrade on exactly the old hosts that need it).
+                //   • `$ProgressPreference` — silence `Invoke-WebRequest`'s progress
+                //     rendering, which slows the binary download by orders of
+                //     magnitude on PS 5.1 (and is just noise when stdout is piped).
+                //   • `[Console]::OutputEncoding` — emit UTF-8 (no BOM) so non-ASCII
+                //     installer/error text (OEM codepage on non-English Windows)
+                //     decodes in our line reader. Best-effort (the setter can throw
+                //     with no console attached); the lossy reader is the real net.
+                //   • `-TimeoutSec` bounds each script fetch so a stalled mirror
+                //     fails over to GitHub instead of hanging; the binary download
+                //     the script then does is bounded by OFFICECLI_INSTALL_TIMEOUT.
                 format!(
-                    "$ErrorActionPreference='Stop'; try {{ $s = irm -TimeoutSec 60 {OFFICECLI_INSTALL_PS1_MIRROR_URL} }} catch {{ $s = irm -TimeoutSec 60 {OFFICECLI_INSTALL_PS1_GITHUB_URL} }}; iex $s"
+                    "$ErrorActionPreference='Stop'; try {{ $sp=[Net.ServicePointManager]::SecurityProtocol; if([int]$sp -ne 0){{ [Net.ServicePointManager]::SecurityProtocol=$sp -bor [Net.SecurityProtocolType]::Tls12 }} }} catch {{}}; $ProgressPreference='SilentlyContinue'; try {{ [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false) }} catch {{}}; try {{ $s = irm -TimeoutSec 60 {OFFICECLI_INSTALL_PS1_MIRROR_URL} }} catch {{ $s = irm -TimeoutSec 60 {OFFICECLI_INSTALL_PS1_GITHUB_URL} }}; iex $s"
                 ),
             ],
         },
@@ -698,11 +1062,23 @@ pub async fn officecli_sync_skills() -> Result<SkillSyncReport, OfficeToolsError
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                report
-                    .errors
-                    .push(format!("{}: load_skill failed: {}", def.id, stderr.trim()));
+                let stderr = stderr.trim();
+                tracing::warn!(
+                    "[office] load_skill {} exited unsuccessfully ({}): {stderr}",
+                    def.load_id,
+                    out.status
+                );
+                // Map a known runtime-dependency failure (missing libicu, …) to a
+                // single actionable line; otherwise surface the raw stderr. The
+                // full detail is in the log line above regardless.
+                let msg = match officecli_runtime_dependency_hint(stderr) {
+                    Some(hint) => format!("{}: {hint}", def.id),
+                    None => format!("{}: load_skill failed: {stderr}", def.id),
+                };
+                report.errors.push(msg);
             }
             Err(e) => {
+                tracing::warn!("[office] load_skill {} could not be spawned: {e}", def.load_id);
                 report
                     .errors
                     .push(format!("{}: command error: {e}", def.id));
@@ -726,6 +1102,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::Hermes,
         AgentType::CodeBuddy,
         AgentType::KimiCode,
+        AgentType::Pi,
     ];
     ALL.iter()
         .filter(|a| skill_storage_spec(**a).is_some())
@@ -1175,6 +1552,54 @@ mod tests {
     }
 
     #[test]
+    fn runtime_dependency_hint_detects_missing_icu() {
+        // The exact .NET startup failure users hit on a slim Linux server image
+        // (node:*-bookworm-slim ships no system libicu).
+        for stderr in [
+            "Process terminated. Couldn't find a valid ICU package installed on the system. \
+             Please install libicu (or icu-libs) using your package manager and try again.",
+            "System.Globalization could not load ICU",
+            "error: libicu not found",
+        ] {
+            let hint = officecli_runtime_dependency_hint(stderr)
+                .unwrap_or_else(|| panic!("ICU failure should be recognized: {stderr}"));
+            assert!(hint.contains("libicu72"), "hint must name the fix: {hint}");
+        }
+    }
+
+    #[test]
+    fn runtime_dependency_hint_detects_missing_shared_library() {
+        let stderr =
+            "officecli: error while loading shared libraries: libfoo.so.1: cannot open shared \
+             object file: No such file or directory";
+        assert!(officecli_runtime_dependency_hint(stderr).is_some());
+    }
+
+    #[test]
+    fn runtime_dependency_hint_ignores_ordinary_errors() {
+        // A normal officecli error (e.g. unknown skill) must NOT be mislabeled as
+        // a missing-system-library problem.
+        assert!(officecli_runtime_dependency_hint("unknown skill id: pptx").is_none());
+        assert!(officecli_runtime_dependency_hint("").is_none());
+    }
+
+    #[test]
+    fn run_failure_message_pairs_hint_with_raw_stderr() {
+        let stderr = "Couldn't find a valid ICU package installed on the system.";
+        let msg = officecli_run_failure_message(stderr);
+        assert!(msg.contains("libicu72"), "actionable: {msg}");
+        assert!(msg.contains("officecli error:"), "keeps raw detail: {msg}");
+    }
+
+    #[test]
+    fn run_failure_message_handles_empty_stderr() {
+        let msg = officecli_run_failure_message("   ");
+        assert!(!msg.is_empty());
+        // No dangling "officecli error:" with nothing after it.
+        assert!(!msg.contains("officecli error:"), "no empty raw tail: {msg}");
+    }
+
+    #[test]
     fn install_command_uses_official_scripts() {
         let unix = officecli_install_command(InstallOs::Unix);
         assert_eq!(unix.program, "bash");
@@ -1219,6 +1644,47 @@ mod tests {
         assert!(win.contains("-TimeoutSec"), "{win}");
     }
 
+    #[test]
+    fn windows_install_command_hardening_preamble_ordered() {
+        let win = officecli_install_command(InstallOs::Windows).args.join(" ");
+
+        // The hardening preamble must run before the first network fetch, and
+        // `$ProgressPreference` must also reach the vendor script run via `iex`.
+        let tls = win
+            .find("SecurityProtocol")
+            .expect("sets SecurityProtocol");
+        let progress = win
+            .find("$ProgressPreference")
+            .expect("sets $ProgressPreference");
+        let encoding = win.find("OutputEncoding").expect("sets OutputEncoding");
+        let irm = win.find("irm").expect("fetches the script via irm");
+        let iex = win.find("iex").expect("runs the script via iex");
+
+        assert!(tls < irm, "TLS must be set before the first irm: {win}");
+        assert!(
+            progress < irm,
+            "$ProgressPreference must be set before the first irm: {win}"
+        );
+        assert!(
+            encoding < irm,
+            "OutputEncoding must be set before the first irm: {win}"
+        );
+        assert!(
+            progress < iex,
+            "$ProgressPreference must be set before iex: {win}"
+        );
+
+        // The TLS upgrade is additive (`-bor … Tls12`) and guarded on a
+        // non-SystemDefault (nonzero) value so a modern host that negotiates
+        // TLS 1.3 via the OS is left untouched — no regression.
+        assert!(win.contains("-bor"), "TLS upgrade must be additive: {win}");
+        assert!(win.contains("Tls12"), "must add TLS 1.2: {win}");
+        assert!(
+            win.contains("[int]$sp -ne 0"),
+            "TLS upgrade must be guarded on non-SystemDefault: {win}"
+        );
+    }
+
     /// On timeout the *whole tree* must die, not just the direct shell — the
     /// vendor script downloads the binary in a descendant. Models that with
     /// `sh` spawning a long-lived `sleep` grandchild and asserts the grandchild
@@ -1241,10 +1707,11 @@ mod tests {
             .spawn()
             .expect("spawn sh");
 
-        let result = wait_with_output_or_kill_tree(child, Duration::from_millis(300))
-            .await
-            .expect("no io error");
-        assert!(result.is_none(), "expected a timeout (Ok(None))");
+        let (status, _stdout, _stderr) =
+            stream_install_or_kill_tree(child, Duration::from_millis(300), "test", &EventEmitter::Noop)
+                .await
+                .expect("no io error");
+        assert!(status.is_none(), "expected a timeout (no exit status)");
 
         // Grandchild pid is written almost immediately; poll briefly for it.
         let mut gpid = None;
@@ -1290,5 +1757,54 @@ mod tests {
         let tail = bounded_tail(&multibyte, 800);
         assert!(tail.starts_with('…'));
         assert!(tail.chars().skip(1).all(|c| c == 'あ'));
+    }
+
+    #[tokio::test]
+    async fn collect_lines_lossy_preserves_lines_around_invalid_utf8() {
+        use std::io::Cursor;
+        // A non-UTF-8 segment (0xFF 0xFE — invalid start bytes, like GBK output
+        // on a non-English Windows) sits between two valid lines. The old
+        // `next_line()` loop would abort here and drop "third"; this must not.
+        let data = b"first\n\xff\xfe garbage\nthird\n".to_vec();
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(data), |l| seen.push(l.to_string())).await;
+
+        assert_eq!(seen.len(), 3, "all three lines emitted: {seen:?}");
+        assert_eq!(seen[0], "first");
+        assert_eq!(seen[2], "third");
+        assert!(
+            seen[1].contains('\u{fffd}'),
+            "invalid bytes preserved lossily, not dropped: {:?}",
+            seen[1]
+        );
+        assert!(collected.contains("first") && collected.contains("third"));
+        assert!(collected.contains('\u{fffd}'));
+    }
+
+    #[tokio::test]
+    async fn collect_lines_lossy_handles_crlf_and_partial_last_line() {
+        use std::io::Cursor;
+        // CRLF endings trimmed like `Lines`; a final line with no trailing
+        // newline is still emitted (then EOF stops the loop).
+        let data = b"a\r\nb\r\nno-newline".to_vec();
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(data), |l| seen.push(l.to_string())).await;
+
+        assert_eq!(seen, vec!["a", "b", "no-newline"]);
+        assert_eq!(collected, "a\nb\nno-newline");
+    }
+
+    #[tokio::test]
+    async fn collect_lines_lossy_empty_input_yields_nothing() {
+        use std::io::Cursor;
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(Vec::<u8>::new()), |l| seen.push(l.to_string()))
+                .await;
+
+        assert!(seen.is_empty());
+        assert!(collected.is_empty());
     }
 }

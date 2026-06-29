@@ -313,6 +313,31 @@ const KimiCodeColorIcon = memo(function KimiCodeColorIcon({
   )
 })
 
+const PiColorIcon = memo(function PiColorIcon({ size = "1em" }: IconProps) {
+  // pi's official mark (from pi-logo-on-light.svg) — rendered white on a black
+  // squircle to match pi's brand. The source paths use an 800-unit viewBox; the
+  // transform scales/centers the glyph into the 24-box.
+  return (
+    <svg
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Pi</title>
+      <rect width="24" height="24" rx="5.3" fill="#000000" />
+      <g fill="#FFFFFF" transform="translate(0.922 0.922) scale(0.027693)">
+        <path
+          fillRule="evenodd"
+          d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+        />
+        <path d="M517.36 400H634.72V634.72H517.36Z" />
+      </g>
+    </svg>
+  )
+})
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyIcon = React.ComponentType<any>
 
@@ -322,6 +347,7 @@ const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   gemini: GeminiCliColorIcon,
   open_claw: OpenClawColorIcon,
   kimi_code: KimiCodeColorIcon,
+  pi: PiColorIcon,
 }
 
 const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isDesktop } from "@/lib/platform"
 import Image from "next/image"
-import { useTranslations } from "next-intl"
+import { useLocale, useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import {
   BookOpenText,
@@ -12,8 +12,10 @@ import {
   ClipboardPaste,
   Cog,
   Copy,
+  FileStack,
   FolderSearch,
   GitFork,
+  Lock,
   MessageSquarePlus,
   MessageSquareText,
   Paperclip,
@@ -22,6 +24,7 @@ import {
   Search,
   Send,
   Command,
+  Sparkles,
   Square,
   TextSelect,
   Upload,
@@ -71,6 +74,8 @@ import {
   uploadAttachment,
   uploadLocalPathToRemote,
   isEmptyAttachmentError,
+  openSettingsWindow,
+  type SettingsSection,
   UPLOAD_MAX_BYTES,
   UPLOAD_I18N_KEY_TOO_LARGE,
   UPLOAD_I18N_KEY_NOT_A_FILE,
@@ -82,10 +87,12 @@ import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
 import { toast } from "sonner"
 import { disposeTauriListener } from "@/lib/tauri-listener"
+import { AGENT_LABELS } from "@/lib/types"
 import type {
   AgentSkillItem,
   AgentType,
   AvailableCommandInfo,
+  ExpertListItem,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -121,6 +128,10 @@ import {
 } from "@/lib/model-config-groups"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { useBuiltInExperts } from "@/hooks/use-built-in-experts"
+import { useEnabledSkillIds } from "@/hooks/use-enabled-skill-ids"
+import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
+import { OFFICE_ACTIONS, type OfficeAction } from "@/lib/office-actions"
 import {
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
@@ -194,6 +205,11 @@ interface MessageInputProps {
   attachmentTabId?: string | null
   draftStorageKey?: string | null
   isActive?: boolean
+  /** Paint the flowing active-session gradient on the composer border. Set only
+   *  for the active tab while tiled across multiple sessions; a lone or
+   *  non-tiled session keeps the plain default border. Independent of
+   *  `isActive` (which still drives auto-focus/connect). */
+  showActiveFlow?: boolean
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
   /** Id of the queue item being edited — the stable key for (re)hydration, so
    *  switching between two items with identical display text still reloads. */
@@ -476,6 +492,7 @@ export function MessageInput({
   attachmentTabId,
   draftStorageKey,
   isActive = false,
+  showActiveFlow = false,
   onEnqueue,
   editingItemId,
   editingDraftText,
@@ -520,6 +537,17 @@ export function MessageInput({
   const { shortcuts } = useShortcutSettings()
   const effectiveDraftStorageKey = draftStorageKey ?? null
   const resolvedPlaceholder = placeholder ?? t("askAnything")
+  // The "+" menu's expert / daily-office skill shortcuts mirror the welcome-page
+  // quick actions: localized labels (`tQa` reads the same namespace those cards
+  // use), the bundled experts, and per-agent skill-enabled gating.
+  const locale = useLocale()
+  const tQa = useTranslations("Folder.chat.welcomePanel.quickActions")
+  const experts = useBuiltInExperts()
+  const {
+    enabledIds,
+    ready: skillStatusReady,
+    supported: skillManagementSupported,
+  } = useEnabledSkillIds(agentType ?? null)
   const editorRef = useRef<RichComposerHandle>(null)
   // The editor owns the content now; this mirror of its empty state drives the
   // send button and `hasSendableContent`.
@@ -1778,6 +1806,106 @@ export function MessageInput({
     chain.insertReference(commandToReference(cmd)).insertContent(" ").run()
   }, [])
 
+  // ── "+" menu skill shortcuts (experts / daily office) ──
+  //
+  // Surface the welcome-page skill families inside an active conversation. Each
+  // item drops that skill's leading invocation badge into the composer. A skill
+  // not linked to the current agent is "locked": clicking it surfaces a hint
+  // (and a jump to Settings) instead of injecting a badge the agent can't act on
+  // — the same gating QuickActions applies, to avoid a wasted send.
+  const expertsSorted = useMemo(
+    () =>
+      [...experts].sort(
+        (a, b) =>
+          (a.metadata.sort_order ?? 0) - (b.metadata.sort_order ?? 0) ||
+          a.metadata.id.localeCompare(b.metadata.id)
+      ),
+    [experts]
+  )
+
+  const isSkillLocked = useCallback(
+    (id: string) => !!agentType && skillStatusReady && !enabledIds.has(id),
+    [agentType, skillStatusReady, enabledIds]
+  )
+
+  const notifySkillNotEnabled = useCallback(
+    (skillLabel: string, section: SettingsSection) => {
+      const agentLabel = agentType ? AGENT_LABELS[agentType] : ""
+      toast.warning(
+        tQa("notEnabled.title", { skill: skillLabel, agent: agentLabel }),
+        {
+          description: tQa("notEnabled.description"),
+          action: {
+            label: tQa("notEnabled.action"),
+            onClick: () => {
+              void openSettingsWindow(section).catch((err) =>
+                console.error("[MessageInput] failed to open settings:", err)
+              )
+            },
+          },
+        }
+      )
+    },
+    [agentType, tQa]
+  )
+
+  // Insert a skill shortcut: seed the template only into an *empty* composer
+  // (never clobber an in-progress draft), then prepend the skill as the leading
+  // invocation badge. Deferred to the next frame — inserting the badge mounts a
+  // React NodeView rendered with a synchronous flushSync(), which warns if run
+  // during React's commit phase (same pattern as the inject/hydration effects).
+  const insertSkillShortcut = useCallback(
+    (skill: { id: string; label: string }, template: string) => {
+      requestAnimationFrame(() => {
+        const handle = editorRef.current
+        const editor = handle?.getEditor()
+        if (!handle || !editor) return
+        if (template && isComposerEmpty(editor)) {
+          handle.setMarkdown(template)
+        }
+        applyExpertReference(editor, {
+          refType: "skill",
+          id: skill.id,
+          label: skill.label,
+          uri: null,
+          meta: { invocationPrefix: skillPrefix, scope: "expert" },
+        })
+        syncComposerEmpty()
+        handle.focus()
+      })
+    },
+    [skillPrefix, syncComposerEmpty]
+  )
+
+  const handleExpertShortcut = useCallback(
+    (item: ExpertListItem) => {
+      const label =
+        pickLocalized(item.metadata.display_name, locale) || item.metadata.id
+      if (isSkillLocked(item.metadata.id)) {
+        notifySkillNotEnabled(label, "experts")
+        return
+      }
+      // Experts are open-ended: just the leading badge, no canned template.
+      insertSkillShortcut({ id: item.metadata.id, label }, "")
+    },
+    [locale, isSkillLocked, notifySkillNotEnabled, insertSkillShortcut]
+  )
+
+  const handleOfficeShortcut = useCallback(
+    (action: OfficeAction) => {
+      const label = tQa(action.id as Parameters<typeof tQa>[0])
+      if (isSkillLocked(action.skillId)) {
+        notifySkillNotEnabled(label, "office-tools")
+        return
+      }
+      insertSkillShortcut(
+        { id: action.skillId, label },
+        tQa(action.promptKey as Parameters<typeof tQa>[0])
+      )
+    },
+    [tQa, isSkillLocked, notifySkillNotEnabled, insertSkillShortcut]
+  )
+
   const handlePickFiles = useCallback(async () => {
     if (disabled) return
     // Only wired up when `showNativePaperclip` is true (i.e. local desktop),
@@ -2718,10 +2846,19 @@ export function MessageInput({
                 // blank areas (padding, the dead space below a short message, the
                 // action-bar gaps) so the whole input reads as clickable-to-type;
                 // interactive controls re-assert their own cursor (see globals.css).
-                "codeg-composer-chrome @container relative flex flex-col bg-transparent transition-colors",
+                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-input bg-transparent transition-colors",
+                // Standard focus ring — always shown when the composer is
+                // focused (the plain default input style).
                 folderBranchPickerAttached
-                  ? "rounded-xl border border-input bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
-                  : "rounded-xl border border-input focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                  ? "bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
+                  : "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                // Active session, tiled across multiple sessions: a gradient
+                // flows around the border to mark which tile is active — but ONLY
+                // while the composer itself is not focused. Focusing it hides the
+                // flow (globals.css) so the default focus ring above takes over.
+                // A lone/non-tiled session (showActiveFlow=false) and inactive
+                // tiles show the plain default border.
+                showActiveFlow && "codeg-composer-flow",
                 !folderBranchPickerAttached &&
                   showDragActive &&
                   "ring-1 ring-primary/40",
@@ -2993,6 +3130,88 @@ export function MessageInput({
                           </div>
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
+                      {/* A custom-dir pi can't have skills managed by codeg's
+                          default-dir store, so hide these shortcuts instead of
+                          offering ones that lock with a Settings path the
+                          Experts/Office matrices also hide for this agent. */}
+                      {skillManagementSupported && (
+                        <>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger
+                              disabled={expertsSorted.length === 0}
+                            >
+                              <Sparkles className="size-4" />
+                              {t("experts")}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent
+                              className="min-w-44 overflow-y-auto"
+                              style={{
+                                maxWidth: "min(20rem, calc(100vw - 1rem))",
+                                maxHeight:
+                                  "min(32rem, var(--radix-dropdown-menu-content-available-height))",
+                              }}
+                            >
+                              {expertsSorted.map((item) => {
+                                const Icon = getExpertIcon(item.metadata.icon)
+                                const label =
+                                  pickLocalized(
+                                    item.metadata.display_name,
+                                    locale
+                                  ) || item.metadata.id
+                                return (
+                                  <DropdownMenuItem
+                                    key={item.metadata.id}
+                                    onClick={() => handleExpertShortcut(item)}
+                                  >
+                                    <Icon className="size-4" />
+                                    <span className="flex-1 truncate">
+                                      {label}
+                                    </span>
+                                    {isSkillLocked(item.metadata.id) && (
+                                      <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
+                                    )}
+                                  </DropdownMenuItem>
+                                )
+                              })}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <FileStack className="size-4" />
+                              {t("office")}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent
+                              className="min-w-44 overflow-y-auto"
+                              style={{
+                                maxWidth: "min(20rem, calc(100vw - 1rem))",
+                                maxHeight:
+                                  "min(32rem, var(--radix-dropdown-menu-content-available-height))",
+                              }}
+                            >
+                              {OFFICE_ACTIONS.map((action) => {
+                                const Icon = action.icon
+                                const label = tQa(
+                                  action.id as Parameters<typeof tQa>[0]
+                                )
+                                return (
+                                  <DropdownMenuItem
+                                    key={action.id}
+                                    onClick={() => handleOfficeShortcut(action)}
+                                  >
+                                    <Icon className="size-4" />
+                                    <span className="flex-1 truncate">
+                                      {label}
+                                    </span>
+                                    {isSkillLocked(action.skillId) && (
+                                      <Lock className="ml-auto size-3.5 shrink-0 text-muted-foreground/70" />
+                                    )}
+                                  </DropdownMenuItem>
+                                )
+                              })}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        </>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                   {hasInlineSelectors && (

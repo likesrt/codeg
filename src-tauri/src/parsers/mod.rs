@@ -7,6 +7,7 @@ pub mod hermes;
 pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
+pub mod pi;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -113,6 +114,17 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             root: kimi_code::resolve_kimi_code_home_dir(),
             is_file: false,
             include_top: Some(&["sessions", "session_index.jsonl"]),
+        },
+        ExternalSource {
+            // pi writes one JSONL per session under `~/.pi/agent/sessions/`
+            // (relocatable via `PI_CODING_AGENT_SESSION_DIR` /
+            // `PI_CODING_AGENT_DIR`). `resolve_pi_sessions_dir()` already points
+            // at the `sessions/` subtree, so sibling credentials (`auth.json`,
+            // `models.json`) under `~/.pi/agent` are never archived.
+            agent: "pi",
+            root: pi::resolve_pi_sessions_dir(),
+            is_file: false,
+            include_top: None,
         },
     ];
     if let Some(home) = dirs::home_dir() {

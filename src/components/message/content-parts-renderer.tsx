@@ -40,7 +40,9 @@ import {
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
 import { AskQuestionResultCard } from "./ask-question-result-card"
+import { CollabAgentCard } from "./collab-agent-card"
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
+import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
@@ -65,6 +67,7 @@ import {
   ChevronRightIcon,
   BrainIcon,
   MessageCircleQuestionMarkIcon,
+  UsersIcon,
 } from "lucide-react"
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -842,6 +845,8 @@ function getToolIcon(
   if (name === "taskcreate" || name === "taskupdate" || name === "tasklist")
     return <ListTodoIcon className={ICON_CLASS} />
   if (name === "agent") return getTaskToolIcon(input ?? null)
+  if (name === COLLAB_AGENT_TOOL_NAME)
+    return <UsersIcon className={ICON_CLASS} />
   if (name === "skill") return <SparklesIcon className={ICON_CLASS} />
   if (
     name === "enterplanmode" ||
@@ -2314,6 +2319,19 @@ const ToolCallPart = memo(function ToolCallPart({
 
   if (toolNameLower === "create_goal" || toolNameLower === "update_goal") {
     return <GoalToolCallPart part={{ ...part, toolName: normalizedToolName }} />
+  }
+
+  // codex live collab / sub-agent activity (codex-acp 1.0.1 #223): a compact
+  // streaming-time card showing the sub-agent message. Reconstructed into the
+  // richer "Agent" capsule from the rollout on history reload.
+  if (toolNameLower === COLLAB_AGENT_TOOL_NAME) {
+    return (
+      <CollabAgentCard
+        input={part.input ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
   }
 
   // Multi-agent delegation tool: surfaces an inline DelegatedSubThread

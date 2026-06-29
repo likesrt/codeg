@@ -26,6 +26,8 @@ import {
   inferLiveToolName,
   parseGoalUpdateTitle,
 } from "@/lib/tool-call-normalization"
+import { COLLAB_AGENT_TOOL_NAME, mergeCollabOp } from "@/lib/collab-tool"
+import { collapseLiveCollabBlocks } from "@/lib/collab-collapse"
 import { toErrorMessage } from "@/lib/app-error"
 
 export type ConversationSyncState = "idle" | "awaiting_persist"
@@ -440,6 +442,15 @@ function resolveLiveToolInput(
   toolName: string,
   info: ToolCallInfo
 ): string | null {
+  // codex collab tool calls drop the ACP `title` (the op: spawnAgent/wait/
+  // closeAgent/…) downstream — only `meta` is forwarded. Merge it back into the
+  // rawInput so the card can render an op-aware title. Live-only path; falls
+  // through to the raw input when there's no op or it isn't a JSON object.
+  if (toolName === COLLAB_AGENT_TOOL_NAME && info.raw_input) {
+    const merged = mergeCollabOp(info.raw_input, info.title)
+    if (merged) return merged
+  }
+
   if (info.raw_input && info.raw_input.trim().length > 0) {
     return info.raw_input
   }
@@ -474,6 +485,11 @@ function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage
 ): BuiltStreamingTurns {
+  // Consolidate codex collab capsules first (spawn execution + per-wait result,
+  // close folded in) so live matches the history reconstruction. No-op when the
+  // message has no collab tool calls. See collab-collapse.ts.
+  const content = collapseLiveCollabBlocks(liveMessage.content)
+
   // ── Phase 1: Identify agent → child relationships ──────────────────
   // Uses meta.claudeCode.parentToolUseId when available (precise), with
   // position-based fallback for agents that don't provide it.
@@ -501,7 +517,7 @@ function buildStreamingTurnsFromLiveMessage(
 
   // First pass: register all agent tool_call IDs
   const agentIds = new Set<string>()
-  for (const block of liveMessage.content) {
+  for (const block of content) {
     if (block.type !== "tool_call") continue
     if (getToolName(block.info) === "agent") {
       agentIds.add(block.info.tool_call_id)
@@ -514,7 +530,7 @@ function buildStreamingTurnsFromLiveMessage(
   // once it completes/fails, subsequent tool calls are treated as top-level.
   let positionalAgentId: string | null = null
 
-  for (const block of liveMessage.content) {
+  for (const block of content) {
     if (block.type === "tool_call") {
       const toolName = getToolName(block.info)
 
@@ -579,7 +595,7 @@ function buildStreamingTurnsFromLiveMessage(
   let currentGroupHasCompletedTool = false
   const inProgressToolCallIds = new Set<string>()
 
-  for (const block of liveMessage.content) {
+  for (const block of content) {
     const isContentBlock =
       block.type === "text" ||
       block.type === "thinking" ||

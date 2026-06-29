@@ -10,19 +10,7 @@ import {
 } from "react"
 import { useLocale, useTranslations } from "next-intl"
 import { toast } from "sonner"
-import {
-  BarChart3,
-  Box,
-  Clapperboard,
-  FileSpreadsheet,
-  FileText,
-  GraduationCap,
-  Lock,
-  Presentation,
-  Rocket,
-  TrendingUp,
-  type LucideIcon,
-} from "lucide-react"
+import { Lock, type LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { openSettingsWindow, type SettingsSection } from "@/lib/api"
@@ -31,6 +19,11 @@ import { useBuiltInExperts } from "@/hooks/use-built-in-experts"
 import { useEnabledSkillIds } from "@/hooks/use-enabled-skill-ids"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 import {
+  OFFICE_ACTIONS,
+  OFFICE_FEATURED_ACCENTS,
+  type OfficeAction,
+} from "@/lib/office-actions"
+import {
   loadQuickActionsTab,
   saveQuickActionsTab,
   type QuickActionsTab,
@@ -38,80 +31,16 @@ import {
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { AGENT_LABELS, type AgentType, type ExpertListItem } from "@/lib/types"
 
-interface OfficeAction {
-  /** Stable id; also the i18n label key (`<id>`) and description (`<id>Desc`). */
-  id: string
-  icon: LucideIcon
-  /** i18n key under `prompts.*` for the localized prompt template. */
-  promptKey: string
-  /** OfficeCLI skill invocation id, prepended as a leading badge on click. */
-  skillId: string
-}
-
 // Three primary office categories — prominent fixed cards (keep their color).
-const OFFICE_FIXED: (OfficeAction & { accent: string })[] = [
-  {
-    id: "excel",
-    icon: FileSpreadsheet,
-    promptKey: "prompts.excel",
-    skillId: "officecli-xlsx",
-    accent: "green",
-  },
-  {
-    id: "word",
-    icon: FileText,
-    promptKey: "prompts.word",
-    skillId: "officecli-docx",
-    accent: "blue",
-  },
-  {
-    id: "ppt",
-    icon: Presentation,
-    promptKey: "prompts.ppt",
-    skillId: "officecli-pptx",
-    accent: "orange",
-  },
-]
+const OFFICE_FIXED: (OfficeAction & { accent: string })[] =
+  OFFICE_ACTIONS.filter((action) => action.id in OFFICE_FEATURED_ACCENTS).map(
+    (action) => ({ ...action, accent: OFFICE_FEATURED_ACCENTS[action.id] })
+  )
 
 // Remaining office skills — de-colored bars in the scrolling row (icons kept).
-const OFFICE_SCROLL: OfficeAction[] = [
-  {
-    id: "pitchDeck",
-    icon: Rocket,
-    promptKey: "prompts.pitchDeck",
-    skillId: "officecli-pitch-deck",
-  },
-  {
-    id: "morph",
-    icon: Clapperboard,
-    promptKey: "prompts.morph",
-    skillId: "morph-ppt",
-  },
-  {
-    id: "morph3d",
-    icon: Box,
-    promptKey: "prompts.morph3d",
-    skillId: "morph-ppt-3d",
-  },
-  {
-    id: "academic",
-    icon: GraduationCap,
-    promptKey: "prompts.academic",
-    skillId: "officecli-academic-paper",
-  },
-  {
-    id: "financial",
-    icon: TrendingUp,
-    promptKey: "prompts.financial",
-    skillId: "officecli-financial-model",
-  },
-  {
-    id: "dashboard",
-    icon: BarChart3,
-    promptKey: "prompts.dashboard",
-    skillId: "officecli-data-dashboard",
-  },
-]
+const OFFICE_SCROLL: OfficeAction[] = OFFICE_ACTIONS.filter(
+  (action) => !(action.id in OFFICE_FEATURED_ACCENTS)
+)
 
 // Three featured coding experts get prominent fixed cards (color + curated
 // short description); the rest fill the scrolling row. ids match the bundled
@@ -355,7 +284,7 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
-  const { enabledIds, ready } = useEnabledSkillIds(agentType)
+  const { enabledIds, ready, supported } = useEnabledSkillIds(agentType)
   const lockHint = t("notEnabled.hint")
 
   // A skill card is locked when we know which agent will run (welcome mode
@@ -455,6 +384,11 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
       )
     return { codingFeatured: featured, codingRest: rest }
   }, [experts])
+
+  // A custom-dir pi can't have skills managed by codeg's default-dir store, so
+  // hide the shortcut cards rather than show ones that lock with a Settings
+  // path the Experts/Office matrices also hide for this agent.
+  if (!supported) return null
 
   return (
     <Tabs value={tab} onValueChange={handleTabChange}>

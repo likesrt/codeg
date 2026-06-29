@@ -308,3 +308,37 @@ describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
     ).toBe("update_goal")
   })
 })
+
+describe("inferLiveToolName codex collab detection", () => {
+  const collabRaw = JSON.stringify({
+    prompt: "run pnpm build",
+    senderThreadId: "t1",
+    receiverThreadIds: ["t2"],
+    agentsStates: [],
+    status: "in_progress",
+  })
+
+  it("routes collab tool calls by rawInput shape regardless of title", () => {
+    // codex-acp 1.0.1 #223: the live title is the bare collab op; detection is
+    // by the inter-agent rawInput shape, so any of spawn/wait/close collapses to
+    // the dedicated collab card — overriding the spawn_agent→"agent" /
+    // wait_agent→"task" title aliases.
+    for (const title of ["spawn_agent", "wait_agent", "close_agent"]) {
+      expect(
+        inferLiveToolName({ title, kind: "other", rawInput: collabRaw })
+      ).toBe("collab_agent")
+    }
+  })
+
+  it("does NOT treat the spawn_agent function_call args as collab", () => {
+    // Same title, but the non-collab input (no sender/receiver/agentsStates)
+    // must fall through to the title alias instead of the collab card.
+    expect(
+      inferLiveToolName({
+        title: "spawn_agent",
+        kind: "other",
+        rawInput: JSON.stringify({ agent_type: "worker", message: "go" }),
+      })
+    ).toBe("agent")
+  })
+})

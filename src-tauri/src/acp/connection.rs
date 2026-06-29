@@ -271,6 +271,37 @@ fn codex_app_server_log_dir() -> Option<String> {
     Some(dir.to_string_lossy().into_owned())
 }
 
+/// Pi runs through pi-acp, which spawns the actual `pi` binary at runtime. If
+/// `pi` (or the BYO-pi `PI_ACP_PI_COMMAND` override) isn't resolvable, pi-acp
+/// dies mid-connection with a raw ENOENT. This preflight resolves the effective
+/// command up front against the same `PATH` the child inherits and returns a
+/// clear message when it can't be found; `None` means launch may proceed.
+///
+/// The message contains the literal substring "is not installed", which the
+/// frontend matches to show the localized SDK-missing prompt with an "Open Agent
+/// Settings" action (see `src/contexts/acp-connections-context.tsx`). Do not
+/// change that substring.
+fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String> {
+    let custom = runtime_env
+        .get("PI_ACP_PI_COMMAND")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let command = custom.unwrap_or("pi");
+    if crate::commands::acp::resolve_pi_command_path(command).is_some() {
+        return None;
+    }
+    Some(match custom {
+        Some(cmd) => format!(
+            "Pi is not installed: the custom pi command \"{cmd}\" was not found. \
+             Update it in Agent Settings → Pi → Runtime."
+        ),
+        None => "Pi is not installed. Install it with: \
+                 npm install -g @earendil-works/pi-coding-agent \
+                 (or set a custom pi command in Agent Settings → Pi → Runtime)."
+            .to_string(),
+    })
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
@@ -281,6 +312,21 @@ async fn build_agent(
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
+            // pi-acp spawns the real `pi` binary; fail fast with a clear,
+            // install-prompt-routable error if it (or a BYO-pi override) isn't
+            // resolvable, rather than letting pi-acp die mid-connection on a raw
+            // ENOENT that surfaces as an opaque protocol error.
+            if agent_type == AgentType::Pi {
+                if let Some(message) = pi_launch_preflight(runtime_env) {
+                    return Err(AcpError::SdkNotInstalled(message));
+                }
+                // Trust the workspace codeg is launching pi into (default on, via
+                // the PI_ACP_TRUST_WORKSPACE env_json key) so pi loads the
+                // project's local config/skills without a redundant prompt. Gates
+                // config loading only, never execution; scoped, additive, and
+                // best-effort (never blocks the connect).
+                crate::commands::acp::seed_pi_workspace_trust(cwd, runtime_env);
+            }
             let mut merged_env = merge_agent_env(env, runtime_env);
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
@@ -1105,6 +1151,19 @@ async fn send_resume_session(
     })
 }
 
+/// Whether MCP servers forwarded over the ACP wire (`session/new.mcpServers`)
+/// actually reach the agent's model. Almost all adapters deliver them; pi-acp
+/// (0.0.31) accepts the `mcpServers` field but DROPS it — it never forwards MCP
+/// to the inner `pi --mode rpc` process, and pi has no native MCP. So forwarding
+/// either user servers or the built-in codeg-mcp companion to pi is futile, and
+/// injecting codeg-mcp would falsely mark delegation/feedback/ask as available
+/// (`feedback_tool_available`, a registered delegation token pi can never use).
+/// `supports_mcp` stays `true` for pi (session/new tolerates the field), so this
+/// is a separate, narrower gate. Gate codeg-mcp injection on it.
+fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
+    !matches!(agent_type, AgentType::Pi)
+}
+
 /// Load MCP servers configured for `agent_type` and convert them into the
 /// ACP wire format. Errors and unsupported entries are logged and skipped so
 /// a single malformed entry never blocks a session from starting.
@@ -1752,7 +1811,7 @@ async fn run_connection(
             // filter needed. The returned token is stashed on the session
             // state so connection teardown can revoke it. Skipped entirely
             // for agents that don't accept MCP over the wire (above).
-            let delegate_injection = if agent_supports_mcp {
+            let delegate_injection = if agent_supports_mcp && agent_delivers_wire_mcp(agent_type) {
                 if let Some(inj) = delegation_injection.as_ref() {
                     inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd).await
                 } else {
@@ -4761,6 +4820,34 @@ async fn emit_conversation_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_preflight_flags_missing_custom_command() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".to_string(),
+            "/nonexistent/definitely-not-pi-xyz".to_string(),
+        );
+        let msg =
+            pi_launch_preflight(&env).expect("an unresolvable custom pi command must be flagged");
+        // Frontend invariant: routes to the localized SDK-missing install prompt.
+        assert!(msg.contains("is not installed"), "got: {msg}");
+        assert!(msg.contains("definitely-not-pi-xyz"), "got: {msg}");
+    }
+
+    #[test]
+    fn pi_preflight_accepts_resolvable_custom_command() {
+        // A binary we know exists and is executable on this platform — proves the
+        // preflight clears (returns None) for a resolvable PI_ACP_PI_COMMAND.
+        let existing = if cfg!(windows) {
+            "C:\\Windows\\System32\\cmd.exe"
+        } else {
+            "/bin/sh"
+        };
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".to_string(), existing.to_string());
+        assert!(pi_launch_preflight(&env).is_none());
+    }
 
     #[test]
     fn prepend_path_unix_prepends_and_keeps_single_key() {

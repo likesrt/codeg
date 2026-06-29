@@ -41,6 +41,9 @@ interface ChatInputProps {
   attachmentTabId?: string | null
   draftStorageKey?: string | null
   isActive?: boolean
+  /** Show the composer's flowing active-session border. Set only for the active
+   *  tab when tiled across multiple sessions; passed through to MessageInput. */
+  showActiveFlow?: boolean
   queue?: QueuedMessage[]
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
   onQueueReorder?: (items: QueuedMessage[]) => void
@@ -95,6 +98,7 @@ export const ChatInput = memo(function ChatInput({
   attachmentTabId,
   draftStorageKey,
   isActive,
+  showActiveFlow,
   queue,
   onEnqueue,
   onQueueReorder,
@@ -162,6 +166,7 @@ export const ChatInput = memo(function ChatInput({
         attachmentTabId={attachmentTabId}
         draftStorageKey={draftStorageKey}
         isActive={isActive}
+        showActiveFlow={showActiveFlow}
         onEnqueue={onEnqueue}
         editingItemId={editingItemId}
         editingDraftText={editingDraftText}

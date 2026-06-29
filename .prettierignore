@@ -2,5 +2,6 @@ src-tauri/target/
 src-tauri/vendor/
 src-tauri/gen/
 src-tauri/experts/
+src-tauri/resources/opencode/models-dev.json
 docs/
 pnpm-lock.yaml

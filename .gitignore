@@ -41,10 +41,14 @@ coverage/
 /core
 /core.*
 
+# macOS signing material. Keep certificates and exported private keys out of git.
+*.cer
+*.csr
+*.p12
+certificate-base64.txt
+
 # Agent
-.claude/*
-!.claude/
-!.claude/CLAUDE.md
+.claude
 .docs
 docs/superpowers
 
