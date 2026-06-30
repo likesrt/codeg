@@ -53,6 +53,12 @@ vi.mock("@/contexts/aux-panel-context", () => ({
   useAuxPanelContext: () => ({ revealInFileTree: mockRevealInFileTree }),
 }))
 
+vi.mock("@/contexts/workbench-route-context", () => ({
+  useWorkbenchRoute: () => ({
+    openConversations: vi.fn(),
+  }),
+}))
+
 vi.mock("@/hooks/use-file-tree", () => ({
   useFileTree: () => ({
     allFiles: [],

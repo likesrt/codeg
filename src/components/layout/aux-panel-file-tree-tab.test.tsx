@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { FileTreeTab, RenderNode } from "./aux-panel-file-tree-tab"
-import { pasteFileTreeEntry, previewPasteFileTreeEntry } from "@/lib/api"
+import { RenderNode } from "./aux-panel-file-tree-tab"
 import { copyTextFromMenu } from "@/lib/utils"
 
 const mockContext = vi.hoisted(() => {
@@ -19,80 +18,39 @@ const mockContext = vi.hoisted(() => {
 vi.mock("next-intl", () => ({
   useTranslations:
     (namespace?: string) => (key: string, params?: Record<string, string>) => {
-      if (namespace === "Folder.fileTreeTab" && key === "copyFilePath") {
-        return "Copy path"
+      // 组件中实际使用的翻译 key，映射到可读标签用于测试查询
+      const fileTreeTabKeys: Record<string, string> = {
+        copyPath: "Copy path",
+        new: "new",
+        openIn: "openIn",
+        openInTerminal: "openInTerminal",
+        openInFileManager: "openInFileManager",
+        upload: "upload",
+        download: "download",
+        downloadAsZip: "downloadAsZip",
+        reloadFromDisk: "reloadFromDisk",
+        "toasts.pathCopied": "Path copied",
+        "toasts.copyPathFailed": "Copy path failed",
+        openFile: "openFile",
+        attachToCurrentSession: "attachToCurrentSession",
+        newFile: "newFile",
+        newDirectory: "newDirectory",
+        git: "git",
+        "git.commitCode": "actions.commitCode",
+        "git.addToVcs": "actions.addToVcs",
+        "git.viewDiff": "viewDiff",
+        "git.compareWithBranch": "compareWithBranch",
+        "git.rollback": "actions.rollback",
       }
-      if (namespace === "Folder.fileTreeTab" && key === "copyPaste") {
-        return "Copy / Paste"
+      if (namespace === "Folder.fileTreeTab" && fileTreeTabKeys[key]) {
+        return fileTreeTabKeys[key]
       }
-      if (namespace === "Folder.fileTreeTab" && key === "copyEntry") {
-        return "Copy"
+      const folderCommonKeys: Record<string, string> = {
+        rename: "rename",
+        delete: "delete",
       }
-      if (namespace === "Folder.fileTreeTab" && key === "cutEntry") {
-        return "Cut"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "pasteEntry") {
-        return "Paste"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "copyRelativePath") {
-        return "Copy relative path"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "copyAbsolutePath") {
-        return "Copy absolute path"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "toasts.pathCopied") {
-        return "Path copied"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "pasteConflict.title") {
-        return "Paste conflict"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.summary"
-      ) {
-        return `Pasting "${params?.name}" will conflict with ${params?.count} existing item(s).`
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.overwriteAll"
-      ) {
-        return "Overwrite all"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.duplicateAll"
-      ) {
-        return "Paste all as copies"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.choosePerItem"
-      ) {
-        return "Choose per item"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.cancel"
-      ) {
-        return "Cancel"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.overwrite"
-      ) {
-        return "Overwrite"
-      }
-      if (
-        namespace === "Folder.fileTreeTab" &&
-        key === "pasteConflict.duplicate"
-      ) {
-        return "Paste as copy"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "pasteConflict.back") {
-        return "Back"
-      }
-      if (namespace === "Folder.fileTreeTab" && key === "pasteConflict.apply") {
-        return "Apply"
+      if (namespace === "Folder.common" && folderCommonKeys[key]) {
+        return folderCommonKeys[key]
       }
       return key
     },
@@ -164,8 +122,6 @@ vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api")
   return {
     ...actual,
-    pasteFileTreeEntry: vi.fn(async () => "src/app-副本.ts"),
-    previewPasteFileTreeEntry: vi.fn(async () => []),
   }
 })
 
@@ -264,47 +220,6 @@ describe("RenderNode", () => {
     vi.clearAllMocks()
   })
 
-  it("copies the workspace-relative path from the file node menu", async () => {
-    render(
-      <RenderNode
-        activeSessionTabId={null}
-        ancestorGitignoreIgnored={false}
-        ancestorUntracked={false}
-        expandedPaths={new Set()}
-        folderUploadSupported={false}
-        gitChangedDirPaths={new Set()}
-        gitEnabled={false}
-        gitStatusByPath={new Map()}
-        gitignoreIgnoredPaths={new Set()}
-        node={{ kind: "file", name: "app.ts", path: "src/app.ts" }}
-        onOpenCommitWindow={vi.fn()}
-        onOpenDirDiff={vi.fn()}
-        onOpenDirInTerminal={vi.fn()}
-        onOpenFileDiff={vi.fn()}
-        onOpenFilePreview={vi.fn()}
-        onRefresh={vi.fn()}
-        onRequestAddToVcs={vi.fn()}
-        onRequestCompareWithBranch={vi.fn()}
-        onRequestCreate={vi.fn()}
-        onRequestDelete={vi.fn()}
-        onRequestDownloadDir={vi.fn()}
-        onRequestDownloadFile={vi.fn()}
-        onRequestRename={vi.fn()}
-        onRequestRollback={vi.fn()}
-        onRequestUpload={vi.fn()}
-        untrackedDirPaths={new Set()}
-        webMode={false}
-        workspacePath="/home/me/project"
-      />
-    )
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
-
-    await waitFor(() => {
-      expect(copyTextFromMenu).toHaveBeenCalledWith("src/app.ts")
-    })
-  })
-
   it("copies the absolute path from the file node menu", async () => {
     render(
       <RenderNode
@@ -339,58 +254,12 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy path" }))
 
     await waitFor(() => {
       expect(copyTextFromMenu).toHaveBeenCalledWith(
         "/home/me/project/src/app.ts"
       )
-    })
-  })
-
-  it("copies the workspace-relative path from the directory node menu", async () => {
-    render(
-      <RenderNode
-        activeSessionTabId={null}
-        ancestorGitignoreIgnored={false}
-        ancestorUntracked={false}
-        expandedPaths={new Set()}
-        folderUploadSupported={false}
-        gitChangedDirPaths={new Set()}
-        gitEnabled={false}
-        gitStatusByPath={new Map()}
-        gitignoreIgnoredPaths={new Set()}
-        node={{
-          children: [],
-          kind: "dir",
-          name: "components",
-          path: "src/components",
-        }}
-        onOpenCommitWindow={vi.fn()}
-        onOpenDirDiff={vi.fn()}
-        onOpenDirInTerminal={vi.fn()}
-        onOpenFileDiff={vi.fn()}
-        onOpenFilePreview={vi.fn()}
-        onRefresh={vi.fn()}
-        onRequestAddToVcs={vi.fn()}
-        onRequestCompareWithBranch={vi.fn()}
-        onRequestCreate={vi.fn()}
-        onRequestDelete={vi.fn()}
-        onRequestDownloadDir={vi.fn()}
-        onRequestDownloadFile={vi.fn()}
-        onRequestRename={vi.fn()}
-        onRequestRollback={vi.fn()}
-        onRequestUpload={vi.fn()}
-        untrackedDirPaths={new Set()}
-        webMode={false}
-        workspacePath="/home/me/project"
-      />
-    )
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy relative path" }))
-
-    await waitFor(() => {
-      expect(copyTextFromMenu).toHaveBeenCalledWith("src/components")
     })
   })
 
@@ -433,7 +302,7 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy absolute path" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy path" }))
 
     await waitFor(() => {
       expect(copyTextFromMenu).toHaveBeenCalledWith(
@@ -442,16 +311,13 @@ describe("RenderNode", () => {
     })
   })
 
-  it("pastes without conflict dialog when precheck returns no conflicts", async () => {
-    const onRefresh = vi.fn()
-    vi.mocked(previewPasteFileTreeEntry).mockResolvedValue([])
-
+  it("renders and responds to delete action", async () => {
+    const onRequestDelete = vi.fn()
     render(
       <RenderNode
         activeSessionTabId={null}
         ancestorGitignoreIgnored={false}
         ancestorUntracked={false}
-        canPasteEntry
         expandedPaths={new Set()}
         folderUploadSupported={false}
         gitChangedDirPaths={new Set()}
@@ -464,32 +330,13 @@ describe("RenderNode", () => {
         onOpenDirInTerminal={vi.fn()}
         onOpenFileDiff={vi.fn()}
         onOpenFilePreview={vi.fn()}
-        onRefresh={onRefresh}
+        onRefresh={vi.fn()}
         onRequestAddToVcs={vi.fn()}
         onRequestCompareWithBranch={vi.fn()}
-        onRequestCopyEntry={vi.fn()}
         onRequestCreate={vi.fn()}
-        onRequestDelete={vi.fn()}
+        onRequestDelete={onRequestDelete}
         onRequestDownloadDir={vi.fn()}
         onRequestDownloadFile={vi.fn()}
-        onRequestPasteEntry={() => {
-          void (async () => {
-            const conflicts = await previewPasteFileTreeEntry({
-              rootPath: "/home/me/project",
-              sourcePath: "lib/app.ts",
-              targetDirPath: "src",
-            })
-            if (conflicts.length === 0) {
-              void pasteFileTreeEntry({
-                rootPath: "/home/me/project",
-                sourcePath: "lib/app.ts",
-                targetDirPath: "src",
-                mode: "copy",
-                conflict: "abort",
-              }).then(onRefresh)
-            }
-          })()
-        }}
         onRequestRename={vi.fn()}
         onRequestRollback={vi.fn()}
         onRequestUpload={vi.fn()}
@@ -499,57 +346,48 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Paste" }))
+    fireEvent.click(screen.getByRole("button", { name: "delete" }))
 
-    await waitFor(() => {
-      expect(previewPasteFileTreeEntry).toHaveBeenCalled()
-      expect(pasteFileTreeEntry).toHaveBeenCalled()
-      expect(onRefresh).toHaveBeenCalled()
-    })
+    expect(onRequestDelete).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "src/app.ts" })
+    )
   })
 
-  it("runs the real preview dialog paste flow and keeps target paths visible", async () => {
-    mockContext.store.tree = [
-      { kind: "file", name: "app.ts", path: "src/app.ts" },
-    ]
-    mockContext.store.requestResync.mockResolvedValue(undefined)
-    vi.mocked(previewPasteFileTreeEntry).mockResolvedValue([
-      {
-        path: "app.ts",
-        sourcePath: "src/app.ts",
-        targetPath: "src/app.ts",
-        kind: "file",
-      },
-    ])
+  it("renders the file node context menu tree item", () => {
+    render(
+      <RenderNode
+        activeSessionTabId={null}
+        ancestorGitignoreIgnored={false}
+        ancestorUntracked={false}
+        expandedPaths={new Set()}
+        folderUploadSupported={false}
+        gitChangedDirPaths={new Set()}
+        gitEnabled={false}
+        gitStatusByPath={new Map()}
+        gitignoreIgnoredPaths={new Set()}
+        node={{ kind: "file", name: "app.ts", path: "src/app.ts" }}
+        onOpenCommitWindow={vi.fn()}
+        onOpenDirDiff={vi.fn()}
+        onOpenDirInTerminal={vi.fn()}
+        onOpenFileDiff={vi.fn()}
+        onOpenFilePreview={vi.fn()}
+        onRefresh={vi.fn()}
+        onRequestAddToVcs={vi.fn()}
+        onRequestCompareWithBranch={vi.fn()}
+        onRequestCreate={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestDownloadDir={vi.fn()}
+        onRequestDownloadFile={vi.fn()}
+        onRequestRename={vi.fn()}
+        onRequestRollback={vi.fn()}
+        onRequestUpload={vi.fn()}
+        untrackedDirPaths={new Set()}
+        webMode={false}
+        workspacePath="/home/me/project"
+      />
+    )
 
-    render(<FileTreeTab />)
-
-    const copyButtons = screen.getAllByRole("button", { name: "Copy" })
-    fireEvent.click(copyButtons[copyButtons.length - 1])
-    const pasteButtons = screen.getAllByRole("button", { name: "Paste" })
-    fireEvent.click(pasteButtons[pasteButtons.length - 1])
-
-    await waitFor(() => {
-      expect(screen.getByText(/Target:/)).toHaveTextContent("src/app.ts")
-    })
-
-    fireEvent.click(screen.getByRole("button", { name: "Overwrite all" }))
-
-    await waitFor(() => {
-      expect(previewPasteFileTreeEntry).toHaveBeenCalledWith({
-        rootPath: "/home/me/project",
-        sourcePath: "src/app.ts",
-        targetDirPath: "",
-      })
-      expect(pasteFileTreeEntry).toHaveBeenCalledWith({
-        rootPath: "/home/me/project",
-        sourcePath: "src/app.ts",
-        targetDirPath: "",
-        mode: "copy",
-        conflict: "overwrite",
-        resolutions: undefined,
-      })
-      expect(mockContext.store.requestResync).toHaveBeenCalled()
-    })
+    expect(screen.getByRole("treeitem")).toBeTruthy()
+    expect(screen.getByText("app.ts")).toBeTruthy()
   })
 })

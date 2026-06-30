@@ -496,7 +496,7 @@ interface RenderNodeProps {
   onRefresh: () => void
 }
 
-function RenderNode({
+export function RenderNode({
   node,
   expandedPaths,
   workspacePath,
