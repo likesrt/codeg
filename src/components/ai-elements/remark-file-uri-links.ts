@@ -20,8 +20,13 @@ function fileUriToLocalPath(uri: string): string | null {
   } catch {
     return null
   }
-  let path = parsed.pathname
-  if (/^\/[a-zA-Z]:[\\/]/.test(path)) path = path.slice(1)
+  // A non-empty host is a UNC authority: file://server/share/x parses as
+  // host="server", pathname="/share/x". Preserve it as //server/share/x
+  // instead of dropping to /share/x (a different, local path).
+  let path = parsed.host
+    ? `//${parsed.host}${parsed.pathname}`
+    : parsed.pathname
+  if (!parsed.host && /^\/[a-zA-Z]:[\\/]/.test(path)) path = path.slice(1)
   // Keep URL-encoded form so `%23` / `%3F` don't collide with fragment/query
   // boundaries when the click handler later splits on `#` / `?`.
   return `${path}${parsed.search}${parsed.hash}`

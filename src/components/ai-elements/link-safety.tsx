@@ -112,7 +112,11 @@ function parseLocalFileTarget(rawUrl: string): LocalFileTarget | null {
     try {
       const parsed = new URL(trimmed)
       const rawPathname = decodeUriSafely(parsed.pathname)
-      const normalizedPathname = stripLeadingSlashOnWindows(rawPathname)
+      // A non-empty host is a UNC authority (file://server/share/x) —
+      // preserve it as //server/share/x rather than dropping to /share/x.
+      const normalizedPathname = parsed.host
+        ? `//${parsed.host}${rawPathname}`
+        : stripLeadingSlashOnWindows(rawPathname)
       const pathAndLine = splitPathAndLine(normalizedPathname)
       if (!pathAndLine.path) return null
       return {

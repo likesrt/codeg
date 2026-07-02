@@ -10,6 +10,7 @@ import {
   expandHomePath,
   findOwningFolder,
   isHomeRelativePath,
+  isUncPath,
   joinRootRel,
   normalizeAbsPath,
   resetHomeDirCacheForTests,
@@ -58,6 +59,19 @@ describe("normalizeAbsPath", () => {
     expect(normalizeAbsPath("//server/share/../x")).toBe("//server/share/x")
     expect(normalizeAbsPath("//server/share/sub/../x")).toBe("//server/share/x")
     expect(normalizeAbsPath("//server/share/..")).toBe("//server/share")
+  })
+})
+
+describe("isUncPath", () => {
+  it("detects UNC paths, including backslash form", () => {
+    expect(isUncPath("//server/share/x.ts")).toBe(true)
+    expect(isUncPath("\\\\server\\share\\x.ts")).toBe(true)
+  })
+
+  it("is false for POSIX, drive, and relative paths", () => {
+    expect(isUncPath("/repo/a.ts")).toBe(false)
+    expect(isUncPath("C:/repo/a.ts")).toBe(false)
+    expect(isUncPath("src/a.ts")).toBe(false)
   })
 })
 

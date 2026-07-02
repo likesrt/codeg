@@ -17,6 +17,17 @@ import { isAbsoluteFilePath, normalizeSlashPath } from "@/lib/file-path-display"
 const WINDOWS_DRIVE_PREFIX = /^[a-zA-Z]:/
 
 /**
+ * True for a Windows UNC path (`//server/share/…`). Callers that resolve
+ * sub-resources through a URL round-trip (markdown/HTML preview) cannot
+ * carry the `//server/share` authority and must disable local resolution
+ * for such documents rather than collapse them to a wrong single-slash
+ * local path.
+ */
+export function isUncPath(path: string): boolean {
+  return normalizeSlashPath(path).startsWith("//")
+}
+
+/**
  * Canonical form used as tab identity: forward slashes; `.` and `..`
  * segments resolved (floored at the root — `..` can never climb above it,
  * so a lexical alias like `/repo/../etc/x` collapses to `/etc/x` and is

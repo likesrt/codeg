@@ -142,6 +142,22 @@ describe("link safety direct opening", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
   })
 
+  it("preserves the UNC authority of a file://server/share URI", async () => {
+    // new URL("file://server/share/doc.md") parses host=server,
+    // pathname=/share/doc.md — the opener must receive the full UNC path
+    // //server/share/doc.md, not the local /share/doc.md.
+    render(<LinkSafetyHarness url="file://server/share/doc.md" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith(
+        "//server/share/doc.md",
+        { line: undefined }
+      )
+    })
+  })
+
   it("passes ~ paths through for home expansion by the opener", async () => {
     render(<LinkSafetyHarness url="~/.claude/plans/notes.md" />)
 

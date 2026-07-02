@@ -17,6 +17,7 @@ import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import { formatFileRangeLabel } from "@/lib/reference-link"
 import {
   findOwningFolder,
+  isUncPath,
   normalizeAbsPath,
   splitAbsPath,
 } from "@/lib/file-open-target"
@@ -1824,12 +1825,22 @@ export function FileWorkspacePanel() {
     // The tab path is absolute, so the document directory is too — every
     // local reference below resolves to an absolute filesystem path.
     const fileDir = activeIo?.rootPath ?? null
+    // A UNC-hosted document (//server/share/…) cannot have its local
+    // sub-resources resolved: the "./x" → rehype-harden → "/x" round trip
+    // drops the //server/share authority, and a collapsed single-slash
+    // path like "/Windows/win.ini" would read a DIFFERENT local file. So
+    // for UNC docs we disable local resolution entirely — relative refs
+    // stay relative (harden externalizes them harmlessly) and the image
+    // loader / link opener treat nothing as a local path.
+    const localRefsEnabled = !fileDir || !isUncPath(fileDir)
     // Pre-resolve relative AND root-relative paths before Streamdown /
     // rehype-harden mangles them: relative ones against the document's own
     // directory, root-relative ones ("/assets/x.png") against the preview
     // root (owning folder when inside the workspace, else the directory).
     const preprocessedContent = normalizeMathDelimiters(
-      preprocessMarkdownPaths(renderedContent, fileDir ?? "", previewRoot)
+      localRefsEnabled
+        ? preprocessMarkdownPaths(renderedContent, fileDir ?? "", previewRoot)
+        : renderedContent
     )
 
     const markdownColdLoad =
@@ -1852,16 +1863,21 @@ export function FileWorkspacePanel() {
               components={{
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 img: ({ node, ...imgProps }) => (
-                  <PreviewImage {...imgProps} fileDir={fileDir} />
+                  <PreviewImage
+                    {...imgProps}
+                    fileDir={localRefsEnabled ? fileDir : null}
+                  />
                 ),
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 a: ({ node, href, children, ...aProps }) => {
                   // Protocol-relative "//host/…" is a WEB url — exclude it
                   // from the local branch (^\/\/) so it opens externally
                   // instead of being collapsed into a local file path.
+                  // localRefsEnabled is false for UNC docs: never route a
+                  // (possibly wrongly-collapsed) local target to the opener.
                   const isRelative =
                     href && !/^[a-z][a-z0-9+.-]*:|^#|^\/\//i.test(href)
-                  if (isRelative && href) {
+                  if (isRelative && href && localRefsEnabled) {
                     return (
                       <a
                         {...aProps}

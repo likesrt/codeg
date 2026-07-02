@@ -149,6 +149,21 @@ describe("file-workspace-panel routes active-tab openers by tab folder", () => {
     const gate = panelSource.slice(isLocalIdx, isLocalIdx + 300)
     expect(gate).toMatch(/\^\\\/\\\//)
   })
+
+  it("disables local markdown resolution for UNC-hosted documents", () => {
+    // A UNC document's local sub-resources cannot be resolved safely: the
+    // //server/share authority is lost through the harden round trip and a
+    // collapsed single-slash path would read a DIFFERENT local file. So
+    // preprocessing, the image loader, and the link opener are all gated on
+    // localRefsEnabled = non-UNC fileDir.
+    expect(panelSource).toMatch(
+      /const localRefsEnabled = !fileDir \|\| !isUncPath\(fileDir\)/
+    )
+    expect(panelSource).toMatch(
+      /fileDir=\{localRefsEnabled \? fileDir : null\}/
+    )
+    expect(panelSource).toMatch(/isRelative && href && localRefsEnabled/)
+  })
 })
 
 describe("aux file tree derives its selection from the absolute tab path", () => {
