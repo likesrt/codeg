@@ -15,7 +15,11 @@ import {
 import { useTranslations } from "next-intl"
 import { openPath } from "@/lib/platform"
 import { isHtmlPreviewable } from "@/lib/language-detect"
-import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useAppWorkspace } from "@/contexts/app-workspace-context"
+import {
+  FOLDER_THEME_COLOR_INHERIT,
+  normalizeFolderThemeColor,
+} from "@/lib/theme-presets"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -50,7 +54,7 @@ export function FileWorkspaceTabBar() {
     toggleFileTabPreview,
     toggleFilesMaximized,
   } = useWorkspaceActions()
-  const { activeFolder: folder } = useActiveFolder()
+  const { getFolder } = useAppWorkspace()
   const { shortcuts } = useShortcutSettings()
   const scrollRef = useRef<HTMLDivElement>(null)
   const isCoarsePointer = useIsCoarsePointer()
@@ -123,6 +127,9 @@ export function FileWorkspaceTabBar() {
   )
 
   const activeTab = fileTabs.find((tab) => tab.id === activeFileTabId)
+  const activeTabFolderPath = activeTab
+    ? (getFolder(activeTab.folderId)?.path ?? null)
+    : null
   const canPreview =
     activeTab?.kind === "file" &&
     (activeTab.language === "markdown" || isHtmlPreviewable(activeTab.path))
@@ -132,6 +139,13 @@ export function FileWorkspaceTabBar() {
     canPreview && activeFileTabId
       ? previewFileTabIds.has(activeFileTabId)
       : false
+
+  // Folder badge (dot + name) appears only while tabs from more than one
+  // folder coexist; a single-folder strip stays visually unchanged.
+  const showFolderBadges = useMemo(() => {
+    const ids = new Set(fileTabs.map((tab) => tab.folderId))
+    return ids.size > 1
+  }, [fileTabs])
 
   if (fileTabs.length === 0) {
     return (
@@ -168,11 +182,18 @@ export function FileWorkspaceTabBar() {
         )}
       >
         {fileTabs.map((tab) => {
+          const tabFolder = showFolderBadges
+            ? getFolder(tab.folderId)
+            : undefined
           return (
             <FileWorkspaceTabItem
               key={tab.id}
               tab={tab}
               active={tab.id === activeFileTabId}
+              folderName={tabFolder?.name ?? null}
+              folderThemeColor={
+                tabFolder ? normalizeFolderThemeColor(tabFolder.color) : null
+              }
               closeLabel={t("closeFileTab")}
               closeText={t("close")}
               closeOthersText={t("closeOthers")}
@@ -207,11 +228,11 @@ export function FileWorkspaceTabBar() {
           )}
         </button>
       )}
-      {canOpenInBrowser && activeTab?.path && folder?.path && (
+      {canOpenInBrowser && activeTab?.path && activeTabFolderPath && (
         <button
           type="button"
           onClick={() => {
-            openPath(`${folder.path}/${activeTab.path}`).catch(() => {})
+            openPath(`${activeTabFolderPath}/${activeTab.path}`).catch(() => {})
           }}
           className="shrink-0 flex items-center justify-center w-10 border-b border-border hover:bg-primary/8 transition-colors"
           aria-label={t("preview")}
@@ -246,6 +267,10 @@ export function FileWorkspaceTabBar() {
 interface FileWorkspaceTabItemProps {
   tab: FileWorkspaceTab
   active: boolean
+  // Folder badge primitives — null hides the badge (single-folder strip).
+  // Passed as primitives (not the folder object) to keep memo effective.
+  folderName: string | null
+  folderThemeColor: string | null
   closeLabel: string
   closeText: string
   closeOthersText: string
@@ -263,6 +288,8 @@ interface FileWorkspaceTabItemProps {
 const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   tab,
   active,
+  folderName,
+  folderThemeColor,
   closeLabel,
   closeText,
   closeOthersText,
@@ -336,6 +363,23 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
               {tab.title}
               {isDirty ? " *" : ""}
             </span>
+            {folderName && (
+              <span
+                className="flex items-center gap-1 max-w-[96px] shrink-0"
+                data-theme={
+                  folderThemeColor &&
+                  folderThemeColor !== FOLDER_THEME_COLOR_INHERIT
+                    ? folderThemeColor
+                    : undefined
+                }
+                title={folderName}
+              >
+                <span className="size-1.5 rounded-full bg-primary/70" />
+                <span className="truncate text-[10px] text-muted-foreground">
+                  {folderName}
+                </span>
+              </span>
+            )}
             <button
               type="button"
               className={cn(

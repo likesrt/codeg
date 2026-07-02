@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "Commit-Diff-Anfrage hat das Zeitlimit überschritten",
       "saveRequestTimedOut": "Speicheranfrage hat das Zeitlimit überschritten",
       "reloadRequestTimedOut": "Neuladeanfrage hat das Zeitlimit überschritten",
+      "folderUnavailable": "Der Ordner der Datei ist nicht mehr im Arbeitsbereich",
       "noChanges": "Keine Änderungen.",
       "noDiffOutput": "Keine Diff-Ausgabe.",
       "diffTitleWorkspace": "Diff · Arbeitsbereich",

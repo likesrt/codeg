@@ -14,6 +14,7 @@ import { Check, ChevronRight } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTabContext } from "@/contexts/tab-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -895,6 +896,7 @@ export function FileTreeTab() {
   const { activeFolder: folder } = useActiveFolder()
   const { tabs, activeTabId } = useTabContext()
   const { createTerminalInDirectory } = useTerminalContext()
+  const { getFolder } = useAppWorkspace()
   const { activeFileTab, activeFilePath, fileTabs } = useWorkspaceFileTabs()
   const {
     openBranchDiff,
@@ -2188,9 +2190,10 @@ export function FileTreeTab() {
   // decision carries the fetched FileEditContent so the watcher can write
   // it directly via applyExternalReload, avoiding a second readFileForEdit.
   const resolveFileChangeDecision = useCallback(
-    async (tabSnapshot: FileWorkspaceTab): Promise<FileChangeDecision> => {
-      const rootPath = folder?.path
-      if (!rootPath) return { kind: "none" }
+    async (
+      tabSnapshot: FileWorkspaceTab,
+      rootPath: string
+    ): Promise<FileChangeDecision> => {
       if (tabSnapshot.kind !== "file") return { kind: "none" }
       const path = tabSnapshot.path
       if (!path) return { kind: "none" }
@@ -2243,7 +2246,7 @@ export function FileTreeTab() {
 
       return { kind: "reload", path, latest }
     },
-    [folder?.path]
+    []
   )
 
   // Surface a conflict prompt for `decision`, deduping by signature so a
@@ -2293,8 +2296,14 @@ export function FileTreeTab() {
   //     content from the resolver to the context — instead of triggering
   //     a second readFileForEdit through openFilePreview.
   useEffect(() => {
-    if (!folder?.path) return
+    if (!folder?.path || folder.id == null) return
     if (!subscribeWorkspaceEnvelopes) return
+    // P1 transitional: this watcher subscribes to the ACTIVE folder's stream
+    // only, so reconciliation is scoped to tabs owned by that folder. Tabs
+    // from background folders are covered by the stale-on-folder-activation
+    // pass until per-folder watching lands (P2).
+    const watchedFolderId = folder.id
+    const watchedRootPath = folder.path
 
     const pendingPaths = new Set<string>()
     let pendingFullScan = false
@@ -2307,7 +2316,11 @@ export function FileTreeTab() {
       fullScan: boolean
     ): Promise<void> => {
       const openFileTabs = fileTabsRef.current.filter(
-        (t) => t.kind === "file" && t.path && !t.loading
+        (t) =>
+          t.kind === "file" &&
+          t.path &&
+          !t.loading &&
+          t.folderId === watchedFolderId
       )
 
       const candidates = (() => {
@@ -2328,11 +2341,11 @@ export function FileTreeTab() {
         // to trigger a refresh, and only when changed_paths actually
         // names the image (full-scan covers the resync fallback).
         if (isImageFile(path)) {
-          void reloadOpenFileBackground(path)
+          void reloadOpenFileBackground(watchedFolderId, path)
           continue
         }
 
-        const decision = await resolveFileChangeDecision(tab)
+        const decision = await resolveFileChangeDecision(tab, watchedRootPath)
         if (disposed) return
         if (decision.kind === "none") continue
 
@@ -2348,7 +2361,11 @@ export function FileTreeTab() {
           // user's focus is preserved either way and no second
           // readFileForEdit fires.
           externalConflictSignatureByPathRef.current.delete(decision.path)
-          void applyExternalReload(decision.path, decision.latest)
+          void applyExternalReload(
+            watchedFolderId,
+            decision.path,
+            decision.latest
+          )
           continue
         }
 
@@ -2362,9 +2379,9 @@ export function FileTreeTab() {
           externalConflictSignatureByPathRef.current.delete(decision.path)
           const liveTab = fileTabsRef.current.find((t) => t.id === tab.id)
           if (liveTab?.isDirty) {
-            markTabsStale(decision.path)
+            markTabsStale(watchedFolderId, decision.path)
           } else {
-            rejectFileTab(decision.path, decision.error)
+            rejectFileTab(watchedFolderId, decision.path, decision.error)
           }
           continue
         }
@@ -2372,7 +2389,7 @@ export function FileTreeTab() {
         if (isActive) {
           announceConflict(decision)
         } else {
-          markTabsStale(decision.path)
+          markTabsStale(watchedFolderId, decision.path)
         }
       }
     }
@@ -2431,6 +2448,7 @@ export function FileTreeTab() {
     }
   }, [
     folder?.path,
+    folder?.id,
     subscribeWorkspaceEnvelopes,
     resolveFileChangeDecision,
     applyExternalReload,
@@ -2453,27 +2471,42 @@ export function FileTreeTab() {
 
     const path = tab.path
     if (!tab.isDirty) {
-      void openFilePreview(path, { reload: true })
+      // Route the reload to the TAB's own folder — tabs from background
+      // folders coexist on the tab strip, so the active workspace folder
+      // is not necessarily the tab's owner.
+      void openFilePreview(path, { reload: true, folderId: tab.folderId })
       return
     }
 
+    // Dirty + stale: run conflict detection against the tab's own root.
+    const rootPath = getFolder(tab.folderId)?.path
+    if (!rootPath) return
     void (async () => {
-      const decision = await resolveFileChangeDecision(tab)
+      const decision = await resolveFileChangeDecision(tab, rootPath)
       if (decision.kind === "conflict") {
-        announceConflict(decision)
+        // P1 transitional: the conflict prompt's compare / reload /
+        // save-copy actions operate on the ACTIVE folder, so only
+        // announce conflicts for tabs it owns. A dirty tab from a
+        // background folder keeps its stale flag (nothing is lost) until
+        // per-folder conflict routing lands with the provider watcher.
+        if (tab.folderId === folder?.id) {
+          announceConflict(decision)
+        }
       } else if (decision.kind === "reload") {
-        void applyExternalReload(decision.path, decision.latest)
+        void applyExternalReload(tab.folderId, decision.path, decision.latest)
       } else if (decision.kind === "missing") {
         // File vanished while the dirty buffer sat in a non-active tab.
         // The buffer is still dirty here (this branch only runs for
         // tab.isDirty === true) so we keep markTabsStale on the path —
         // refusing to silently lose the user's unsaved edits. The user
         // discovers the deletion on save (backend recreates or errors).
-        markTabsStale(decision.path)
+        markTabsStale(tab.folderId, decision.path)
       }
     })()
   }, [
     activeFileTab,
+    folder?.id,
+    getFolder,
     openFilePreview,
     applyExternalReload,
     resolveFileChangeDecision,

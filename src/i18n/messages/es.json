@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "La solicitud de Diff de commit agotó el tiempo",
       "saveRequestTimedOut": "La solicitud de guardado agotó el tiempo",
       "reloadRequestTimedOut": "La solicitud de recarga agotó el tiempo",
+      "folderUnavailable": "La carpeta del archivo ya no está en el espacio de trabajo",
       "noChanges": "Sin cambios.",
       "noDiffOutput": "Sin salida de diff.",
       "diffTitleWorkspace": "Diferencias · Espacio de trabajo",

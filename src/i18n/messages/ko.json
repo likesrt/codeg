@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "커밋 Diff 요청 시간이 초과되었습니다",
       "saveRequestTimedOut": "저장 요청 시간이 초과되었습니다",
       "reloadRequestTimedOut": "다시 불러오기 요청 시간이 초과되었습니다",
+      "folderUnavailable": "이 파일의 폴더가 더 이상 워크스페이스에 없습니다",
       "noChanges": "변경 사항이 없습니다.",
       "noDiffOutput": "Diff 출력이 없습니다.",
       "diffTitleWorkspace": "Diff · 워크스페이스",

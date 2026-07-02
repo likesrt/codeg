@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "提交差异请求超时",
       "saveRequestTimedOut": "保存请求超时",
       "reloadRequestTimedOut": "重载请求超时",
+      "folderUnavailable": "该文件所属文件夹已不在工作区中",
       "noChanges": "暂无变更。",
       "noDiffOutput": "无差异输出。",
       "diffTitleWorkspace": "Diff · 工作区",

@@ -11,11 +11,12 @@ import type {
 import type { Monaco, OnMount } from "@monaco-editor/react"
 import { toast } from "sonner"
 import { useTranslations } from "next-intl"
-import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import { formatFileRangeLabel } from "@/lib/reference-link"
 import { joinFsPath } from "@/lib/path-utils"
+import { parseFileTabId } from "@/lib/file-tab-id"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -343,14 +344,6 @@ type DiffListContext =
   | { kind: "commit"; commitHash: string; commitMessage: string | null }
   | { kind: "working"; path: string }
   | { kind: "branch"; branch: string; path: string }
-
-function decodeDiffTabToken(token: string): string {
-  try {
-    return decodeURIComponent(token)
-  } catch {
-    return token
-  }
-}
 
 function normalizeDiffPath(rawPath: string): string | null {
   const trimmed = rawPath.trim().replace(/^"|"$/g, "")
@@ -876,8 +869,13 @@ export function FileWorkspacePanel() {
     updateActiveFileContent,
   } = useWorkspaceActions()
   const { tabs, activeTabId } = useTabContext()
-  const { activeFolder: folder } = useActiveFolder()
-  const folderPath = folder?.path ?? null
+  const { getFolder } = useAppWorkspace()
+  // The ACTIVE TAB's folder root — not the active workspace folder. Every
+  // preview / attach / diff affordance in this panel operates on the file
+  // shown in the active tab, which may belong to a background folder.
+  const folderPath = activeFileTab
+    ? (getFolder(activeFileTab.folderId)?.path ?? null)
+    : null
   const activeScope = activeFileTab?.id ?? "__default__"
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null)
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null)
@@ -1111,33 +1109,26 @@ export function FileWorkspacePanel() {
     if (!activeFileTab) return null
     if (activeFileTab.kind !== "diff") return null
 
-    const commitMatch = activeFileTab.id.match(/^diff:commit:([^:]+):all$/)
-    if (commitMatch) {
+    const parts = parseFileTabId(activeFileTab.id)
+    if (!parts) return null
+
+    if (parts.kind === "diff-commit" && parts.path === null) {
       return {
         kind: "commit",
-        commitHash: commitMatch[1],
+        commitHash: parts.commit,
         commitMessage: activeFileTab.description,
       }
     }
 
-    const workingOverviewMatch = activeFileTab.id.match(
-      /^diff:working-overview:(.+)$/
-    )
-    if (workingOverviewMatch) {
-      return {
-        kind: "working",
-        path: decodeDiffTabToken(workingOverviewMatch[1]),
-      }
+    if (parts.kind === "diff-working-overview") {
+      return { kind: "working", path: parts.path }
     }
 
-    const branchOverviewMatch = activeFileTab.id.match(
-      /^diff:branch-overview:([^:]+):(.+)$/
-    )
-    if (branchOverviewMatch) {
+    if (parts.kind === "diff-branch-overview") {
       return {
         kind: "branch",
-        branch: decodeDiffTabToken(branchOverviewMatch[1]),
-        path: decodeDiffTabToken(branchOverviewMatch[2]),
+        branch: parts.branch,
+        path: parts.path ?? "all",
       }
     }
 
@@ -1483,6 +1474,9 @@ export function FileWorkspacePanel() {
     if (!pendingFileReveal) return
     if (!isFileTab || !activeFileTab || activeFileTab.loading) return
     if (!activeFileTab.path) return
+    // Same relative path can be open from several folders — only reveal in
+    // the tab the request actually targeted.
+    if (activeFileTab.folderId !== pendingFileReveal.folderId) return
     if (
       normalizeWorkspacePath(activeFileTab.path) !==
       normalizeWorkspacePath(pendingFileReveal.path)
@@ -1614,13 +1608,14 @@ export function FileWorkspacePanel() {
   }
 
   if (activeFileTab.kind === "rich-diff") {
-    const isCommitDiff = activeFileTab.id.startsWith("diff:commit:")
-    const isExternalConflictDiff = activeFileTab.id.startsWith(
-      "diff:external-conflict:"
-    )
-    const commitHash = isCommitDiff
-      ? (activeFileTab.id.split(":")[2]?.slice(0, 7) ?? "")
-      : ""
+    const richDiffParts = parseFileTabId(activeFileTab.id)
+    const isCommitDiff = richDiffParts?.kind === "diff-commit"
+    const isExternalConflictDiff =
+      richDiffParts?.kind === "diff-external-conflict"
+    const commitHash =
+      richDiffParts?.kind === "diff-commit"
+        ? richDiffParts.commit.slice(0, 7)
+        : ""
     const origLabel = isCommitDiff
       ? `${commitHash}~1`
       : isExternalConflictDiff
@@ -1713,18 +1708,26 @@ export function FileWorkspacePanel() {
             })
           : (activeFileTab.description ?? diffListContext.path)
 
+    // Per-file diffs opened from an overview belong to the overview tab's
+    // folder — pass it explicitly so a background-folder overview never
+    // routes its rows through the active folder.
+    const overviewFolderId = activeFileTab.folderId
     const handleOpenDiff = async (path: string) => {
       if (diffListContext.kind === "commit") {
-        await openCommitDiff(diffListContext.commitHash, path)
+        await openCommitDiff(diffListContext.commitHash, path, undefined, {
+          folderId: overviewFolderId,
+        })
         return
       }
 
       if (diffListContext.kind === "branch") {
-        await openBranchDiff(diffListContext.branch, path)
+        await openBranchDiff(diffListContext.branch, path, {
+          folderId: overviewFolderId,
+        })
         return
       }
 
-      await openWorkingTreeDiff(path)
+      await openWorkingTreeDiff(path, { folderId: overviewFolderId })
     }
 
     const diffListColdLoad =

@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "انتهت مهلة طلب Diff للالتزام",
       "saveRequestTimedOut": "انتهت مهلة طلب الحفظ",
       "reloadRequestTimedOut": "انتهت مهلة طلب إعادة التحميل",
+      "folderUnavailable": "مجلد الملف لم يعد موجودًا في مساحة العمل",
       "noChanges": "لا توجد تغييرات.",
       "noDiffOutput": "لا يوجد مخرجات diff.",
       "diffTitleWorkspace": "Diff · مساحة العمل",

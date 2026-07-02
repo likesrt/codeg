@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "A solicitação de Diff de commit expirou",
       "saveRequestTimedOut": "A solicitação de salvamento expirou",
       "reloadRequestTimedOut": "A solicitação de recarga expirou",
+      "folderUnavailable": "A pasta do arquivo não está mais no espaço de trabalho",
       "noChanges": "Sem alterações.",
       "noDiffOutput": "Sem saída de diff.",
       "diffTitleWorkspace": "Diff · Espaço de trabalho",

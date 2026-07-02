@@ -1950,6 +1950,7 @@
       "commitDiffRequestTimedOut": "Commit diff request timed out",
       "saveRequestTimedOut": "Save request timed out",
       "reloadRequestTimedOut": "Reload request timed out",
+      "folderUnavailable": "The file's folder is no longer in the workspace",
       "noChanges": "No changes.",
       "noDiffOutput": "No diff output.",
       "diffTitleWorkspace": "Diff · Workspace",
