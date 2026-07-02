@@ -153,8 +153,12 @@ function parseExternalUrl(rawUrl: string): URL | null {
   if (!trimmed) return null
 
   if (trimmed.startsWith("//")) {
+    // Protocol-relative: pin to https rather than the page protocol — a
+    // Tauri webview's own scheme (tauri://localhost) would otherwise
+    // classify these as an unsupported protocol, and the desktop opener
+    // capability only allows concrete http(s) URLs.
     try {
-      return new URL(trimmed, window.location.href)
+      return new URL(`https:${trimmed}`)
     } catch {
       return null
     }
@@ -314,11 +318,19 @@ export function useOpenLinkOrFile() {
         return
       }
 
+      // Dispatch the CANONICAL form: a protocol-relative "//host/…" must
+      // reach the desktop opener as a concrete https URL — the opener
+      // capability only allows http(s), and raw "//…" would resolve
+      // against the webview's own scheme.
+      const openTarget = url.trim().startsWith("//")
+        ? `https:${url.trim()}`
+        : url
+
       try {
         if (OS_HANDLER_PROTOCOLS.has(protocol) && isWebOpenerEnvironment()) {
-          dispatchOsHandlerUrl(url)
+          dispatchOsHandlerUrl(openTarget)
         } else {
-          await openUrl(url)
+          await openUrl(openTarget)
         }
       } catch (error) {
         toast.error(t("errorFailedLink"), {

@@ -207,6 +207,27 @@ describe("link safety direct opening", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
   })
 
+  it("opens protocol-relative links on desktop as concrete https URLs", async () => {
+    // The Tauri opener capability only allows http(s) URLs; a raw "//host"
+    // would resolve against the webview's own scheme. The dispatch must
+    // canonicalize.
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.openUrl.mockResolvedValue(undefined)
+
+    render(<LinkSafetyHarness url="//cdn.example.com/app.js" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.openUrl).toHaveBeenCalledWith(
+        "https://cdn.example.com/app.js"
+      )
+    })
+    expect(window.open).not.toHaveBeenCalled()
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
+    expect(mocks.toastError).not.toHaveBeenCalled()
+  })
+
   it("routes desktop external links through the platform opener instead of streamdown", async () => {
     mocks.isDesktop.mockReturnValue(true)
     mocks.openUrl.mockResolvedValue(undefined)

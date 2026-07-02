@@ -20,6 +20,7 @@ import {
   normalizeAbsPath,
   splitAbsPath,
 } from "@/lib/file-open-target"
+import { buildMonacoModelPath } from "@/lib/monaco-model-path"
 import { parseFileTabId } from "@/lib/file-tab-id"
 import {
   useWorkspaceActions,
@@ -84,6 +85,13 @@ function resolveRelativePath(base: string, relative: string): string {
  * folder) so they also come out absolute — downstream consumers (image
  * loader, link opener) treat every local target as an absolute path.
  * The "./" prefix survives rehype-harden, which re-roots it to "/…".
+ *
+ * Known limitation: documents living under a Windows UNC root
+ * ("//server/share/…") lose the double-slash prefix in this pipeline (the
+ * "./…" → rehype-harden → "/…" round trip cannot carry an authority), so
+ * their relative sub-resources fail to load — a clean broken-image /
+ * failed-open, never a read of a different local file. Editing, saving,
+ * and watching UNC files are unaffected.
  */
 function preprocessMarkdownPaths(
   content: string,
@@ -233,15 +241,6 @@ function PreviewImage({
 }
 
 const AUTO_SAVE_DELAY_MS = 5000
-
-function buildMonacoModelPath(path: string | null, id: string): string {
-  if (!path) return `inmemory://model/${encodeURIComponent(id)}`
-  // Absolute paths would otherwise yield "file:////…" — trim the leading
-  // slashes; the scheme supplies them.
-  const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "")
-  const encoded = normalized.split("/").map(encodeURIComponent).join("/")
-  return `file:///${encoded}`
-}
 
 interface AddToChatPill {
   widget: MonacoEditorNs.IContentWidget
