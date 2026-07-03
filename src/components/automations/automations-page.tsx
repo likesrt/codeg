@@ -34,7 +34,7 @@ import {
 } from "lucide-react"
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { AutomationEditor } from "./automation-editor"
 import {
@@ -1023,7 +1023,7 @@ function RunHistory({
   onChanged: () => Promise<void>
 }) {
   const t = useTranslations("Automations")
-  const { openTab } = useTabContext()
+  const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const [runs, setRuns] = useState<AutomationRun[]>([])
   const [loading, setLoading] = useState(true)

@@ -7,7 +7,7 @@ import { gitCheckout, resolveWorktreeFolder } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { planBranchSwitch } from "@/lib/branch-switch"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import type { FolderDetail, WorktreeResolution } from "@/lib/types"
@@ -50,7 +50,7 @@ export function useSwitchToBranch(): (
   args: SwitchToBranchArgs
 ) => Promise<void> {
   const t = useTranslations("Folder.branchDropdown")
-  const { openNewConversationTab } = useTabContext()
+  const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask } = useTaskContext()
 

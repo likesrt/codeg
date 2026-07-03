@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabStore, useTabActions } from "@/contexts/tab-context"
 import type { AgentType } from "@/lib/types"
 
 /**
@@ -12,7 +12,8 @@ import type { AgentType } from "@/lib/types"
  */
 export function DeepLinkBootstrap() {
   const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
-  const { tabsHydrated, openTab } = useTabContext()
+  const tabsHydrated = useTabStore((s) => s.tabsHydrated)
+  const { openTab } = useTabActions()
   const ranRef = useRef(false)
 
   useEffect(() => {
@@ -103,7 +104,8 @@ type FocusRequest = {
  */
 export function PetFocusBridge() {
   const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
-  const { tabsHydrated, openTab } = useTabContext()
+  const tabsHydrated = useTabStore((s) => s.tabsHydrated)
+  const { openTab } = useTabActions()
 
   // Workspace state is read via getState() at attempt time; only the tab
   // half still needs a ref mirror (it lives in a context, not a store).

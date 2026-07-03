@@ -4,7 +4,7 @@ import { useCallback, useSyncExternalStore } from "react"
 import { Unplug } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useConnectionStore } from "@/contexts/acp-connections-context"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabStore } from "@/contexts/tab-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { AgentIcon } from "@/components/agent-icon"
 import {
@@ -41,7 +41,8 @@ const STATUS_STYLE: Record<
 export function StatusBarConnection() {
   const t = useTranslations("Folder.statusBar.connection")
   const store = useConnectionStore()
-  const { tabs, activeTabId } = useTabContext()
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
 
   // Subscribe to activeKey changes
   const subscribeActiveKey = useCallback(

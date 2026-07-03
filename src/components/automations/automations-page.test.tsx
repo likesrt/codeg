@@ -31,7 +31,7 @@ vi.mock("@/contexts/workbench-route-context", () => ({
   useWorkbenchRoute: () => ({ openConversations: vi.fn() }),
 }))
 vi.mock("@/contexts/tab-context", () => ({
-  useTabContext: () => ({ openTab: vi.fn() }),
+  useTabActions: () => ({ openTab: vi.fn() }),
 }))
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn().mockResolvedValue(() => {}),

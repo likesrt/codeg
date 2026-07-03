@@ -8,7 +8,7 @@ import { useLocale, useTranslations } from "next-intl"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { listAllConversations } from "@/lib/api"
@@ -57,7 +57,7 @@ export function SearchCommandDialog({
         : allConversations.filter((c) => c.folder_id === activeFolderId),
     [allConversations, activeFolderId]
   )
-  const { openTab } = useTabContext()
+  const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const { openFilePreview } = useWorkspaceActions()
   const { revealInFileTree } = useAuxPanelContext()

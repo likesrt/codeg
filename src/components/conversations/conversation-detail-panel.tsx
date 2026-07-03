@@ -25,7 +25,7 @@ import { toast } from "sonner"
 import { useAcpActions, useAcpEvent } from "@/contexts/acp-connections-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useSessionStats } from "@/contexts/session-stats-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
@@ -197,8 +197,14 @@ const ConversationTabView = memo(function ConversationTabView({
   )
   const upsertFolder = useAppWorkspaceStore((s) => s.upsertFolder)
   const folderId = activeFolderId ?? 0
+  // Subscribe to ONLY this tab's own row (identified by `tabId`), not the whole
+  // `tabs` array — so a sibling tab changing, or a tab-switch (isActive rides in
+  // as a prop), never re-renders this keep-alive panel. `find` returns the same
+  // object reference across derives until this tab itself changes.
+  const ownTab = useTabStore(
+    (s) => s.tabs.find((tab) => tab.id === tabId) ?? null
+  )
   const {
-    tabs,
     bindConversationTab,
     setChatDraftWorkingDir,
     setTabRuntimeConversationId,
@@ -207,7 +213,7 @@ const ConversationTabView = memo(function ConversationTabView({
     closeTab,
     confirmDraftAgent,
     setDraftAgentFromFallback,
-  } = useTabContext()
+  } = useTabActions()
   const { setSessionStats } = useSessionStats()
   const {
     appendOptimisticTurn,
@@ -268,10 +274,10 @@ const ConversationTabView = memo(function ConversationTabView({
   // real workingDir so the ACP connection can spawn BEFORE the first send — the
   // composer is gated on `connected` like any normal conversation (no offline
   // compose). Once bound it has a persisted row + workingDir and this is false.
-  const isChatDraft = useMemo(() => {
-    const ownTab = tabs.find((tab) => tab.id === tabId)
-    return ownTab?.isChat === true && !hasPersistedConversation
-  }, [tabs, tabId, hasPersistedConversation])
+  const isChatDraft = useMemo(
+    () => ownTab?.isChat === true && !hasPersistedConversation,
+    [ownTab, hasPersistedConversation]
+  )
 
   // Expose the runtime session key to the tab so the aux panel (Diff sidebar)
   // can look up live turns even before the DB conversation is created.
@@ -774,7 +780,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // createChatConversation, reusing this eager dir). The composer is gated
       // on `connected` for chat drafts too, so by the time we get here the agent
       // is live and the prompt is delivered inline — never parked in the queue.
-      const sendOwnTab = tabs.find((tab) => tab.id === tabId)
+      const sendOwnTab = ownTab
 
       if (!hasPersistedConversation && !canAutoConnect) {
         setAgentConnectError(tWelcome("enableAgentFirstPlaceholder"))
@@ -844,8 +850,7 @@ const ConversationTabView = memo(function ConversationTabView({
       }
 
       // Pin the tab if it was a temporary preview (single-click opened)
-      const currentTab = tabs.find((tab) => tab.id === tabId)
-      if (currentTab && !currentTab.isPinned) {
+      if (ownTab && !ownTab.isPinned) {
         pinTab(tabId)
       }
 
@@ -1009,7 +1014,7 @@ const ConversationTabView = memo(function ConversationTabView({
       setPendingCleanup,
       setSyncState,
       sharedT,
-      tabs,
+      ownTab,
       tWelcome,
       tabId,
       upsertFolder,
@@ -1535,15 +1540,11 @@ export function ConversationDetailPanel() {
   const { activeFolder: folder } = useActiveFolder()
   const conversations = useAppWorkspaceStore((s) => s.conversations)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
-  const {
-    tabs,
-    activeTabId,
-    isTileMode,
-    openNewConversationTab,
-    closeTab,
-    switchTab,
-    onPreviewTabReplaced,
-  } = useTabContext()
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const isTileMode = useTabStore((s) => s.isTileMode)
+  const { openNewConversationTab, closeTab, switchTab, onPreviewTabReplaced } =
+    useTabActions()
   const newConversation = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
     if (!activeTab || activeTab.conversationId != null) return null

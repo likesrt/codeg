@@ -22,7 +22,7 @@ import {
 } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { gitListAllBranches } from "@/lib/api"
 import {
   buildBranchTree,
@@ -137,8 +137,9 @@ export const ConversationFolderBranchPicker = memo(
     tabId,
   }: ConversationFolderBranchPickerProps) {
     const t = useTranslations("Folder.conversationContextBar")
-    const { tabs, activeTabId, openNewConversationTab, openChatModeTab } =
-      useTabContext()
+    const tabs = useTabStore((s) => s.tabs)
+    const activeTabId = useTabStore((s) => s.activeTabId)
+    const { openNewConversationTab, openChatModeTab } = useTabActions()
     const folders = useAppWorkspaceStore((s) => s.folders)
     const allFolders = useAppWorkspaceStore((s) => s.allFolders)
     const branches = useAppWorkspaceStore((s) => s.branches)
@@ -284,7 +285,8 @@ ConversationFolderBranchPicker.displayName = "ConversationFolderBranchPicker"
 export function useConversationFolderBranchPickerVisible(
   tabId?: string | null
 ): boolean {
-  const { tabs, activeTabId } = useTabContext()
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const lookupId = tabId ?? activeTabId
   const ownTab = tabs.find((x) => x.id === lookupId) ?? null

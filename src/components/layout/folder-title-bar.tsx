@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useIsMac } from "@/hooks/use-is-mac"
@@ -55,7 +55,7 @@ export function FolderTitleBar() {
   const { isOpen, toggle } = useSidebarContext()
   const { isOpen: auxPanelOpen, toggle: toggleAuxPanel } = useAuxPanelContext()
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
-  const { openNewConversationTab } = useTabContext()
+  const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()

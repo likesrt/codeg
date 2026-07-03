@@ -2,7 +2,7 @@
 
 import { useEffect } from "react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { subscribe } from "@/lib/platform"
 import { FOLDER_OPEN_IN_WORKSPACE_EVENT } from "@/lib/api"
@@ -21,7 +21,7 @@ import type { FolderDetail } from "@/lib/types"
  * extra round-trip is required to apply it.
  */
 export function WorkspaceOpenFolderListener() {
-  const { openNewConversationTab } = useTabContext()
+  const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
 
   useEffect(() => {

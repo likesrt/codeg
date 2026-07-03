@@ -14,7 +14,8 @@ let addFolderToWorkspaceById: ReturnType<typeof vi.fn>
 let capturedHandler: ((p: unknown) => void) | null = null
 
 vi.mock("@/contexts/tab-context", () => ({
-  useTabContext: () => tabs,
+  useTabStore: (selector: (s: typeof tabs) => unknown) => selector(tabs),
+  useTabActions: () => tabs,
 }))
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({

@@ -104,7 +104,7 @@ import type { GitBranchList, GitConflictInfo } from "@/lib/types"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useAlertContext } from "@/contexts/alert-context"
@@ -143,7 +143,7 @@ export function BranchDropdown() {
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
   const openWorktreeFolder = useAppWorkspaceStore((s) => s.openWorktreeFolder)
-  const { openNewConversationTab } = useTabContext()
+  const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask, removeTask } = useTaskContext()
   const { pushAlert } = useAlertContext()

@@ -16,6 +16,7 @@ import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
+import { resetTabStore } from "@/stores/tab-store"
 
 const listOpenedTabsMock = vi.fn()
 const saveOpenedTabsMock = vi.fn()
@@ -180,6 +181,10 @@ function seedWorkspaceStore() {
     foldersHydrated: true,
     setActiveFolderId: setActiveFolderIdMock,
   })
+  // The tab store is a module-level singleton: reset it (state + coordination
+  // vars + injected runtime + one-shot correction/recovery flags) after seeding
+  // the workspace store so `lastConversations` aligns with the seeded list.
+  resetTabStore()
 }
 
 let latestContext: ReturnType<typeof useTabContext> | null = null
@@ -1093,6 +1098,51 @@ describe("TabProvider cross-client sync", () => {
     expect(screen.getByTestId("tabs").textContent).not.toContain(
       "conv-1-codex-9"
     )
+  })
+
+  it("adopts the server snapshot when a save is rejected with no newer remote already applied", async () => {
+    // Regression: the reject path must reconcile even at the SAME version it
+    // just advanced to. A save based on v1 is rejected with the server's
+    // authoritative v2 set, and NO intervening remote has landed — so the local
+    // set must be replaced by the server's, not left stale (which would let the
+    // next local edit overwrite server truth).
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true)],
+      version: 1,
+    })
+    let resolveSave: (r: SaveTabsOutcome) => void = () => {}
+    saveOpenedTabsMock.mockImplementation(
+      () =>
+        new Promise<SaveTabsOutcome>((res) => {
+          resolveSave = res
+        })
+    )
+    await renderHydrated()
+
+    // Arm + fire a save (in flight, based on v1).
+    act(() => {
+      latestContext?.openTab(1, 2, "codex", true, "Second")
+    })
+    await waitFor(() => expect(saveOpenedTabsMock).toHaveBeenCalledTimes(1), {
+      timeout: 2000,
+    })
+
+    // Server rejects it (another client committed first), returning the
+    // authoritative v2 set = just conversation 9. No remote snapshot was applied
+    // in between, so `version` only advances via this rejection.
+    await act(async () => {
+      resolveSave({
+        accepted: false,
+        version: 2,
+        tabs: [tabItem(1, 9, true)],
+      })
+      await Promise.resolve()
+    })
+
+    // The server truth is adopted: c9 present, the locally-added c2 gone.
+    const tabsText = screen.getByTestId("tabs").textContent ?? ""
+    expect(tabsText).toContain("conv-1-codex-9")
+    expect(tabsText).not.toContain("conv-1-codex-2")
   })
 
   it("preserves a bound draft's local id and runtime session across a remote apply", async () => {

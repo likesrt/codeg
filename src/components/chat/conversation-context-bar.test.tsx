@@ -49,9 +49,13 @@ let tabs: Array<{
 let activeTabId: string | null = null
 
 vi.mock("@/contexts/tab-context", () => ({
-  useTabContext: () => ({
-    tabs,
-    activeTabId,
+  useTabStore: (
+    selector: (s: {
+      tabs: typeof tabs
+      activeTabId: typeof activeTabId
+    }) => unknown
+  ) => selector({ tabs, activeTabId }),
+  useTabActions: () => ({
     openNewConversationTab,
     openChatModeTab: vi.fn(),
   }),

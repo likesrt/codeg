@@ -2,11 +2,12 @@
 
 import { useMemo } from "react"
 import { GitBranch } from "lucide-react"
-import { useTabContext } from "@/contexts/tab-context"
+import { useTabStore } from "@/contexts/tab-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
 export function StatusBarSessionInfo() {
-  const { tabs, activeTabId } = useTabContext()
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabId = useTabStore((s) => s.activeTabId)
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) ?? null,

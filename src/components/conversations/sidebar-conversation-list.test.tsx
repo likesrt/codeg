@@ -199,13 +199,20 @@ vi.mock("@/contexts/active-folder-context", () => ({
 }))
 
 vi.mock("@/contexts/tab-context", () => ({
-  useTabContext: () => ({
-    ...stableTabFns,
-    activeTabId: store.activeTabId,
-    // Fresh array + fresh objects every render → worst-case churn, exactly what
-    // the list's reuseSelected/reuseSet must absorb to keep folders memoized.
-    tabs: store.tabSpec.map((t) => ({ ...t })),
-  }),
+  useTabActions: () => stableTabFns,
+  useTabStore: (
+    selector: (s: {
+      activeTabId: string | null
+      tabs: Array<Record<string, unknown>>
+    }) => unknown
+  ) =>
+    selector({
+      activeTabId: store.activeTabId,
+      // Fresh array + fresh objects every render → worst-case churn, exactly
+      // what the list's reuseSelected/reuseSet must absorb to keep folders
+      // memoized.
+      tabs: store.tabSpec.map((t) => ({ ...t })),
+    }),
 }))
 vi.mock("@/contexts/workbench-route-context", () => {
   // Stable singleton — the real provider memoizes these (useCallback([])), so a
