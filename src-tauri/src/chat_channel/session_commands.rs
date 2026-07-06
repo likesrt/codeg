@@ -124,7 +124,7 @@ pub async fn handle_folder_picker(
         body.push_str(&format!("{}. {}{} ({})\n", i + 1, f.name, marker, f.path));
         buttons.push(MessageButton {
             id: format!("cfg:folder:{}", f.id),
-            label: truncate_button_label(&format!("{}{}", i + 1, f.name), 40),
+            label: truncate_button_label(&format!("{}. {}", i + 1, f.name), 40),
             style: ButtonStyle::Default,
         });
     }
@@ -1340,6 +1340,20 @@ mod tests {
 
         assert_eq!(ctx.current_agent_type.as_deref(), Some("codex"));
         assert_eq!(message.title.as_deref(), Some("Agent Selected"));
+    }
+
+    #[tokio::test]
+    async fn folder_picker_button_label_separates_index_and_name() {
+        let db = fresh_in_memory_db().await;
+        let channel_id = seed_chat_channel(&db).await;
+        seed_folder(&db, "/tmp/codeg-picker-label").await;
+
+        let message = handle_folder_picker(&db.conn, channel_id, "sender-1", Lang::En, "/").await;
+        let SessionCommandMessage::Interactive(message) = message else {
+            panic!("folder picker should return interactive message");
+        };
+
+        assert_eq!(message.buttons[0].label, "1. codeg-picker-label");
     }
 
     #[tokio::test]
