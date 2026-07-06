@@ -106,7 +106,10 @@ pub fn spawn_command_dispatcher(
             )
             .await;
 
-            if response.message.is_none() && response.extra_messages.is_empty() {
+            if response.message.is_none()
+                && response.extra_messages.is_empty()
+                && response.post_action.is_none()
+            {
                 tracing::debug!("[ChatChannel] dispatch result: no response");
                 continue;
             };
@@ -118,46 +121,71 @@ pub fn spawn_command_dispatcher(
             messages.extend(response.extra_messages);
 
             for (message, target) in messages {
-                tracing::info!(
-                    "[ChatChannel] dispatch result: title={:?}, body_len={}",
-                    message.title(),
-                    message.body_len()
-                );
+                send_dispatch_message(&db_conn, &manager, cmd.channel_id, text, message, target)
+                    .await;
+            }
 
-                // Send response back via the same channel
-                let send_result = match &message {
-                    DispatchMessage::Rich(message) => {
-                        manager.send_to_target(&target, message).await
-                    }
-                    DispatchMessage::Interactive(message) => {
-                        manager.send_interactive_to_target(&target, message).await
-                    }
-                };
-                let (status, error_detail) = match &send_result {
-                    Ok(_) => ("sent", None),
-                    Err(e) => {
-                        tracing::error!(
-                            "[ChatChannel] failed to send response for {:?} to channel {}: {e}",
-                            text,
-                            cmd.channel_id
-                        );
-                        ("failed", Some(e.to_string()))
-                    }
-                };
-
-                let _ = chat_channel_message_log_service::create_log(
-                    &db_conn,
-                    cmd.channel_id,
-                    "outbound",
-                    "command_response",
-                    &message.to_plain_text(),
-                    status,
-                    error_detail,
-                )
-                .await;
+            if let Some(action) = response.post_action {
+                if let Some((message, target)) =
+                    session_commands::handle_post_action(action, &db_conn, &conn_mgr, &bridge).await
+                {
+                    send_dispatch_message(
+                        &db_conn,
+                        &manager,
+                        cmd.channel_id,
+                        text,
+                        DispatchMessage::Rich(message),
+                        target,
+                    )
+                    .await;
+                }
             }
         }
     })
+}
+
+async fn send_dispatch_message(
+    db: &DatabaseConnection,
+    manager: &ChatChannelManager,
+    channel_id: i32,
+    command_text: &str,
+    message: DispatchMessage,
+    target: ChannelMessageTarget,
+) {
+    tracing::info!(
+        "[ChatChannel] dispatch result: title={:?}, body_len={}",
+        message.title(),
+        message.body_len()
+    );
+
+    let send_result = match &message {
+        DispatchMessage::Rich(message) => manager.send_to_target(&target, message).await,
+        DispatchMessage::Interactive(message) => {
+            manager.send_interactive_to_target(&target, message).await
+        }
+    };
+    let (status, error_detail) = match &send_result {
+        Ok(_) => ("sent", None),
+        Err(e) => {
+            tracing::error!(
+                "[ChatChannel] failed to send response for {:?} to channel {}: {e}",
+                command_text,
+                channel_id
+            );
+            ("failed", Some(e.to_string()))
+        }
+    };
+
+    let _ = chat_channel_message_log_service::create_log(
+        db,
+        channel_id,
+        "outbound",
+        "command_response",
+        &message.to_plain_text(),
+        status,
+        error_detail,
+    )
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,6 +342,7 @@ async fn dispatch_command(
                     .into_iter()
                     .map(|(message, target)| (DispatchMessage::Rich(message), target))
                     .collect(),
+                post_action: result.post_action,
             }
         }
         "sessions" => DispatchResponse::current(
@@ -366,6 +395,7 @@ struct DispatchResponse {
     message: Option<DispatchMessage>,
     target: ChannelMessageTarget,
     extra_messages: Vec<(DispatchMessage, ChannelMessageTarget)>,
+    post_action: Option<session_commands::CommandPostAction>,
 }
 
 impl DispatchResponse {
@@ -374,6 +404,7 @@ impl DispatchResponse {
             message: Some(DispatchMessage::Rich(message)),
             target: target.clone(),
             extra_messages: Vec::new(),
+            post_action: None,
         }
     }
 
@@ -392,6 +423,7 @@ impl DispatchResponse {
             }),
             target: target.clone(),
             extra_messages: Vec::new(),
+            post_action: None,
         }
     }
 
@@ -400,6 +432,7 @@ impl DispatchResponse {
             message: None,
             target: target.clone(),
             extra_messages: Vec::new(),
+            post_action: None,
         }
     }
 }

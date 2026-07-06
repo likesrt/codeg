@@ -43,6 +43,7 @@ pub struct CommandMessageResult {
     pub message: RichMessage,
     pub response_target: ChannelMessageTarget,
     pub extra_responses: Vec<(RichMessage, ChannelMessageTarget)>,
+    pub post_action: Option<CommandPostAction>,
 }
 
 impl CommandMessageResult {
@@ -51,8 +52,22 @@ impl CommandMessageResult {
             message,
             response_target: target.clone(),
             extra_responses: Vec::new(),
+            post_action: None,
         }
     }
+}
+
+pub enum CommandPostAction {
+    SendLinkedPrompt {
+        connection_id: String,
+        folder_id: i32,
+        conversation_id: i32,
+        text: String,
+        channel_id: i32,
+        sender_id: String,
+        response_target: ChannelMessageTarget,
+        lang: Lang,
+    },
 }
 
 pub enum SessionCommandMessage {
@@ -623,44 +638,6 @@ pub async fn handle_task(
         .await;
     }
 
-    if let Err(e) = send_chat_prompt_linked(
-        db,
-        conn_mgr,
-        &connection_id,
-        folder_id,
-        conv.id,
-        task_description,
-    )
-    .await
-    {
-        bridge.lock().await.remove(&connection_id);
-        if session_target.is_telegram_forum_topic() {
-            if let Ok(Some(binding)) =
-                thread_binding_service::get_by_target(db, &session_target).await
-            {
-                let _ = thread_binding_service::clear_connection(db, binding.id).await;
-            }
-        } else {
-            let _ = sender_context_service::clear_session(db, channel_id, sender_id).await;
-        }
-        let _ = conn_mgr.cancel(db, &connection_id).await;
-        let _ = conversation_service::update_status(
-            db,
-            conv.id,
-            conversation::ConversationStatus::Cancelled,
-        )
-        .await;
-        return CommandMessageResult {
-            message: RichMessage::error(format!(
-                "{}{}",
-                i18n::failed_to_send_message_label(lang),
-                e
-            )),
-            response_target: session_target,
-            extra_responses: Vec::new(),
-        };
-    }
-
     let started_message =
         RichMessage::info(format!("[{}] #{} @ {}", agent_type, conv.id, folder.name,))
             .with_title(i18n::task_started_title(lang));
@@ -675,8 +652,76 @@ pub async fn handle_task(
 
     CommandMessageResult {
         message: started_message,
-        response_target: session_target,
+        response_target: session_target.clone(),
         extra_responses,
+        post_action: Some(CommandPostAction::SendLinkedPrompt {
+            connection_id,
+            folder_id,
+            conversation_id: conv.id,
+            text: task_description.to_string(),
+            channel_id,
+            sender_id: sender_id.to_string(),
+            response_target: session_target,
+            lang,
+        }),
+    }
+}
+
+pub async fn handle_post_action(
+    action: CommandPostAction,
+    db: &DatabaseConnection,
+    conn_mgr: &ConnectionManager,
+    bridge: &Arc<Mutex<SessionBridge>>,
+) -> Option<(RichMessage, ChannelMessageTarget)> {
+    match action {
+        CommandPostAction::SendLinkedPrompt {
+            connection_id,
+            folder_id,
+            conversation_id,
+            text,
+            channel_id,
+            sender_id,
+            response_target,
+            lang,
+        } => {
+            if let Err(e) = send_chat_prompt_linked(
+                db,
+                conn_mgr,
+                &connection_id,
+                folder_id,
+                conversation_id,
+                &text,
+            )
+            .await
+            {
+                bridge.lock().await.remove(&connection_id);
+                if response_target.is_telegram_forum_topic() {
+                    if let Ok(Some(binding)) =
+                        thread_binding_service::get_by_target(db, &response_target).await
+                    {
+                        let _ = thread_binding_service::clear_connection(db, binding.id).await;
+                    }
+                } else {
+                    let _ = sender_context_service::clear_session(db, channel_id, &sender_id).await;
+                }
+                let _ = conn_mgr.cancel(db, &connection_id).await;
+                let _ = conversation_service::update_status(
+                    db,
+                    conversation_id,
+                    conversation::ConversationStatus::Cancelled,
+                )
+                .await;
+                return Some((
+                    RichMessage::error(format!(
+                        "{}{}",
+                        i18n::failed_to_send_message_label(lang),
+                        e
+                    )),
+                    response_target,
+                ));
+            }
+            None
+        }
     }
 }
 
