@@ -41,12 +41,23 @@ vi.mock("@/contexts/app-workspace-context", () => ({
   useAppWorkspace: () => ({ conversations: [] }),
 }))
 
+vi.mock("@/stores/app-workspace-store", () => ({
+  useAppWorkspaceStore: (selector?: (s: unknown) => unknown) => {
+    if (typeof selector === "function") {
+      return selector({ conversations: [], allFolders: [], getFolder: () => undefined })
+    }
+    return { conversations: [], allFolders: [], getFolder: () => undefined }
+  },
+}))
+
 vi.mock("@/contexts/tab-context", () => ({
   useTabContext: () => ({ openTab: mockOpenTab }),
+  useTabActions: () => ({ openTab: mockOpenTab }),
 }))
 
 vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceContext: () => ({ openFilePreview: mockOpenFilePreview }),
+  useWorkspaceActions: () => ({ openFilePreview: mockOpenFilePreview }),
 }))
 
 vi.mock("@/contexts/aux-panel-context", () => ({
