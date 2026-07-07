@@ -84,13 +84,13 @@ const LEDGER_CAP: usize = 32;
 const MAX_EPISODE_MESSAGES: usize = 512;
 /// Absolute episode bound: a SINGLE autonomous turn can exceed
 /// `MAX_EPISODE_MESSAGES` without ever hitting a boundary (a heavy /loop
-/// iteration runs hundreds of tool calls in one turn), and every tick clones
-/// + regroups + re-hashes the whole episode — unbounded, that's O(n²) work
-/// over the turn. Past this valve the episode is force-rotated mid-turn: the
-/// in-progress turn renders split across two overlay cards (a visible seam,
-/// corrected by the next detail refetch) in exchange for a hard cap on
-/// per-tick work. Double the boundary threshold so normal boundary rotation
-/// always wins for multi-turn episodes.
+/// iteration runs hundreds of tool calls in one turn), and every tick
+/// clones + regroups + re-hashes the whole episode — unbounded, that's
+/// O(n²) work over the turn. Past this valve the episode is force-rotated
+/// mid-turn: the in-progress turn renders split across two overlay cards (a
+/// visible seam, corrected by the next detail refetch) in exchange for a
+/// hard cap on per-tick work. Double the boundary threshold so normal
+/// boundary rotation always wins for multi-turn episodes.
 const FORCE_ROTATE_MESSAGES: usize = MAX_EPISODE_MESSAGES * 2;
 
 /// Fingerprints of prompts codeg itself sent on this connection, so the
