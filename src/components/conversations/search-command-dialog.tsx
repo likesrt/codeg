@@ -135,11 +135,6 @@ function useBaseSearchState() {
         : allConversations.filter((c) => c.folder_id === activeFolderId),
     [allConversations, activeFolderId]
   )
-  const { openTab } = useTabActions()
-  const { openConversations } = useWorkbenchRoute()
-  const { openFilePreview } = useWorkspaceActions()
-  const { revealInFileTree } = useAuxPanelContext()
-
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   const [query, setQuery] = useState("")
   const folderPath = folder?.path ?? ""
