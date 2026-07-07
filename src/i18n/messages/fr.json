@@ -2545,6 +2545,16 @@
         "opWait": "Récupération du résultat du sous-agent",
         "opClose": "Fermeture du sous-agent",
         "opResume": "Reprise du sous-agent"
+      },
+      "backgroundTasks": {
+        "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",
+        "settling": "Synchronisation des résultats d'arrière-plan…",
+        "settledFallback": "Tâche en arrière-plan terminée ({status})",
+        "cardRunning": "En cours d'exécution en arrière-plan",
+        "cardLaunchedPending": "Tâche lancée en arrière-plan",
+        "cardCompleted": "Tâche en arrière-plan terminée",
+        "cardFinishedWithStatus": "Tâche en arrière-plan terminée ({status})",
+        "cardResultPending": "Résultat pas encore reçu"
       }
     },
     "diffPreview": {

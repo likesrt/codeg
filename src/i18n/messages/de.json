@@ -2545,6 +2545,16 @@
         "opWait": "Sub-Agent-Ergebnis wird abgerufen",
         "opClose": "Sub-Agent wird geschlossen",
         "opResume": "Sub-Agent wird fortgesetzt"
+      },
+      "backgroundTasks": {
+        "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
+        "settling": "Hintergrundergebnisse werden synchronisiert…",
+        "settledFallback": "Hintergrundaufgabe beendet ({status})",
+        "cardRunning": "Läuft im Hintergrund",
+        "cardLaunchedPending": "Hintergrundaufgabe gestartet",
+        "cardCompleted": "Hintergrundaufgabe abgeschlossen",
+        "cardFinishedWithStatus": "Hintergrundaufgabe beendet ({status})",
+        "cardResultPending": "Ergebnis steht noch aus"
       }
     },
     "diffPreview": {

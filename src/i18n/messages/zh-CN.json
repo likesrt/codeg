@@ -2545,6 +2545,16 @@
         "opWait": "获取子智能体结果",
         "opClose": "结束子智能体",
         "opResume": "恢复子智能体"
+      },
+      "backgroundTasks": {
+        "running": "{count} 个后台任务运行中",
+        "settling": "正在同步后台结果…",
+        "settledFallback": "后台任务已结束（{status}）",
+        "cardRunning": "后台运行中",
+        "cardLaunchedPending": "已启动后台任务",
+        "cardCompleted": "后台任务已完成",
+        "cardFinishedWithStatus": "后台任务已结束（{status}）",
+        "cardResultPending": "结果尚未返回"
       }
     },
     "diffPreview": {

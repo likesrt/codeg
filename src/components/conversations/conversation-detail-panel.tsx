@@ -34,6 +34,7 @@ import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
+import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
 import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
@@ -242,6 +243,7 @@ const ConversationTabView = memo(function ConversationTabView({
     syncTurnMetadata,
     removeConversation,
     setAcpLoadError,
+    setDbConversationId,
     setExternalId,
     setLiveMessage,
     setPendingCleanup,
@@ -330,7 +332,19 @@ const ConversationTabView = memo(function ConversationTabView({
 
   useEffect(() => {
     dbConvIdRef.current = dbConversationId
-  }, [dbConversationId])
+    // Bind the DB row id onto the runtime session when the two ids diverge
+    // (draft-started tab: virtual runtime key, row created on first send).
+    // `refetchDetail` on the runtime key fetches with this binding — without
+    // it, a settle-driven refetch (background task finished) asks the backend
+    // for the virtual id and silently fails, leaving stale live turns on
+    // screen forever.
+    if (
+      dbConversationId != null &&
+      dbConversationId !== effectiveConversationId
+    ) {
+      setDbConversationId(effectiveConversationId, dbConversationId)
+    }
+  }, [dbConversationId, effectiveConversationId, setDbConversationId])
 
   useEffect(() => {
     selectedAgentRef.current = selectedAgent
@@ -926,6 +940,10 @@ const ConversationTabView = memo(function ConversationTabView({
             sendFolderId = res.folderId
             dbConvIdRef.current = newConversationId
             setExternalId(effectiveConversationId, sessionIdRef.current ?? null)
+            // Bind the DB id BEFORE the prompt goes out. The mirror effect
+            // below also binds, but only after a re-render — this closes that
+            // window and covers the unmounted-early return just under it.
+            setDbConversationId(effectiveConversationId, newConversationId)
             if (!mountedRef.current) {
               setPendingCleanup(effectiveConversationId, true)
               refreshConversations()
@@ -958,6 +976,8 @@ const ConversationTabView = memo(function ConversationTabView({
             // DB persistence of external_id is now backend-driven from
             // send_prompt_linked once the row is linked, so no explicit DB write here.
             setExternalId(effectiveConversationId, sessionIdRef.current ?? null)
+            // Bind the DB id BEFORE the prompt goes out (see the chat branch).
+            setDbConversationId(effectiveConversationId, newConversationId)
             if (!mountedRef.current) {
               // Component unmounted while creating — mark for deferred cleanup
               // so the background turn_complete handler can clean up later.
@@ -1031,6 +1051,7 @@ const ConversationTabView = memo(function ConversationTabView({
       pinTab,
       refreshConversations,
       selectedAgent,
+      setDbConversationId,
       setExternalId,
       setPendingCleanup,
       setSyncState,
@@ -1359,7 +1380,12 @@ const ConversationTabView = memo(function ConversationTabView({
 
   return (
     <ConversationShell
-      topBanner={<SessionConfigStaleBanner contextKey={tabId} />}
+      topBanner={
+        <>
+          <SessionConfigStaleBanner contextKey={tabId} />
+          <BackgroundTasksChip contextKey={tabId} />
+        </>
+      }
       status={connStatus}
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}

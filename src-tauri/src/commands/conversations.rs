@@ -496,9 +496,8 @@ pub async fn get_folder_conversation_core(
         .await
         .map_err(AppCommandError::from)?;
 
-    let (mut turns, session_stats, resolved_ext_id, parsed_title) = if let Some(ref ext_id) =
-        summary.external_id
-    {
+    let (mut turns, session_stats, resolved_ext_id, parsed_title, transcript_watermark) =
+        if let Some(ref ext_id) = summary.external_id {
         let at = summary.agent_type;
         let eid = ext_id.clone();
         let db_created_at = summary.created_at;
@@ -523,7 +522,13 @@ pub async fn get_folder_conversation_core(
                 AgentType::Pi => Box::new(PiParser::new()),
             };
             match parser.get_conversation(&eid) {
-                Ok(d) => Ok((d.turns, d.session_stats, None, d.summary.title)),
+                Ok(d) => Ok((
+                    d.turns,
+                    d.session_stats,
+                    None,
+                    d.summary.title,
+                    d.transcript_watermark,
+                )),
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
                     // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
@@ -561,12 +566,13 @@ pub async fn get_folder_conversation_core(
                                         d.session_stats,
                                         Some(new_ext_id),
                                         d.summary.title,
+                                        d.transcript_watermark,
                                     ));
                                 }
                             }
                         }
                     }
-                    Ok((vec![], None, None, None))
+                    Ok((vec![], None, None, None, None))
                 }
                 Err(e) => Err(parse_error_to_app_error(e)),
             }
@@ -579,7 +585,7 @@ pub async fn get_folder_conversation_core(
             .with_detail(e.to_string())
         })??
     } else {
-        (vec![], None, None, None)
+        (vec![], None, None, None, None)
     };
 
     // If we resolved a different external_id (e.g. ACP UUID → parser branch ID),
@@ -607,6 +613,7 @@ pub async fn get_folder_conversation_core(
             summary,
             turns,
             session_stats,
+            transcript_watermark,
             in_flight_user_turn_id: None,
         },
         parsed_title,

@@ -502,9 +502,11 @@ impl ConnectionManager {
 
     /// Disconnect connections that have been idle longer than `idle_timeout`.
     /// "Idle" means: status is `Connected`, no `pending_permission`, no
-    /// activity (no events, no commands) for at least `idle_timeout`.
-    /// `Prompting` connections are always preserved (a turn is in flight).
-    /// Returns the number of connections that were disconnected.
+    /// launched-but-unresolved background work (async sub-agent / background
+    /// shell — disconnecting kills the agent CLI and the background work with
+    /// it), and no activity (no events, no commands) for at least
+    /// `idle_timeout`. `Prompting` connections are always preserved (a turn is
+    /// in flight). Returns the number of connections that were disconnected.
     pub async fn sweep_idle(&self, idle_timeout: Duration) -> usize {
         let now = chrono::Utc::now();
         let timeout = match chrono::Duration::from_std(idle_timeout) {
@@ -525,6 +527,9 @@ impl ConnectionManager {
                     continue;
                 }
                 if state.pending_permission.is_some() {
+                    continue;
+                }
+                if state.has_active_background_work(now) {
                     continue;
                 }
                 let elapsed = now.signed_duration_since(state.last_activity_at);
@@ -4212,6 +4217,46 @@ mod tests {
             "Connection with pending permission must not be swept (user is mid-decision)"
         );
         assert!(mgr.connections.lock().await.contains_key("permission"));
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_skips_active_background_work() {
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(
+            &mgr,
+            "background",
+            AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        backdate_last_activity(&mgr, "background", 600).await;
+        {
+            let state = mgr.get_state("background").await.unwrap();
+            let mut state = state.write().await;
+            // Mirror what apply_event(BackgroundActivity) records: pending
+            // work plus a recent watcher heartbeat.
+            state.background_outstanding = 1;
+            state.background_activity_at = Some(chrono::Utc::now());
+        }
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+        assert_eq!(
+            n, 0,
+            "Connection with unresolved background work must not be swept \
+             (disconnecting kills the agent CLI and the background task with it)"
+        );
+        assert!(mgr.connections.lock().await.contains_key("background"));
+
+        // Once the watcher settles the work (outstanding back to 0), the same
+        // connection becomes sweepable again.
+        {
+            let state = mgr.get_state("background").await.unwrap();
+            let mut state = state.write().await;
+            state.background_outstanding = 0;
+            state.last_activity_at = chrono::Utc::now() - chrono::Duration::seconds(600);
+        }
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+        assert_eq!(n, 1, "settled background work no longer exempts the sweep");
     }
 
     #[tokio::test]
