@@ -107,8 +107,14 @@
       "fontSize": "Font size",
       "ligatures": "Enable font ligatures",
       "ligaturesUnavailable": "This font has no ligatures",
+      "wordWrap": "Enable word wrap",
       "terminalLigaturesHint": "Terminal ligatures apply only to bundled coding fonts.",
       "preview": "Preview"
+    },
+    "welcomePanel": {
+      "sectionTitle": "Mode selection area",
+      "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
+      "showQuickActions": "Show on the new conversation page"
     }
   },
   "SystemSettings": {
@@ -1420,6 +1426,7 @@
       "addToChat": "Add to Chat",
       "addSelectionToChatDone": "Added {label} to the conversation",
       "addFileToChat": "Add File to Chat",
+      "toggleWordWrap": "Toggle Word Wrap",
       "addFileToChatDone": "Added {label} to the conversation",
       "viewDiff": "View Diff",
       "openFile": "Open File",
@@ -1736,6 +1743,7 @@
       "collapseTracked": "Collapse tracked changes",
       "expandUntracked": "Expand untracked files",
       "collapseUntracked": "Collapse untracked files",
+      "showRemainingItems": "Show {count} more items",
       "actions": {
         "commitCode": "Commit code",
         "rollback": "Rollback",
@@ -2084,7 +2092,7 @@
         "quickMessages": "Quick messages",
         "quickMessagesEmpty": "No quick messages yet",
         "quickMessagesLoading": "Loading...",
-        "paste": "Paste",
+        "pasteAsPlainText": "Paste as plain text",
         "cut": "Cut",
         "copy": "Copy",
         "selectAll": "Select all",
@@ -2268,7 +2276,6 @@
       "linkSafety": {
         "errorCannotOpen": "Cannot open local file",
         "errorNoWorkspace": "No workspace folder is currently active.",
-        "errorOutsideWorkspace": "The file is outside the current workspace folder.",
         "errorFailedOpen": "Failed to open local file",
         "errorFailedLink": "Failed to open link",
         "errorUnsupportedLinkProtocol": "This link protocol is not supported."
@@ -2577,6 +2584,16 @@
         "opWait": "Fetching sub-agent result",
         "opClose": "Closing sub-agent",
         "opResume": "Resuming sub-agent"
+      },
+      "backgroundTasks": {
+        "running": "{count, plural, one {# background task running} other {# background tasks running}}",
+        "settling": "Syncing background results…",
+        "settledFallback": "Background task finished ({status})",
+        "cardRunning": "Running in background",
+        "cardLaunchedPending": "Launched in background",
+        "cardCompleted": "Background task completed",
+        "cardFinishedWithStatus": "Background task finished ({status})",
+        "cardResultPending": "Result not returned yet"
       }
     },
     "diffPreview": {
@@ -2588,7 +2605,8 @@
       },
       "hunkLabel": "Hunk {index}",
       "loadingHunk": "Loading hunk...",
-      "noDiffData": "No diff data"
+      "noDiffData": "No diff data",
+      "showRemainingLines": "Show {count} more lines"
     },
     "conversationContextBar": {
       "folderTitle": "Working folder",

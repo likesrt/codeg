@@ -39,6 +39,13 @@ Codeg (Code Generation) ist ein Multi-Agent-Coding-Workspace. Es vereint mehrere
     </td>
     <td>Vielen Dank an Compshare für die Unterstützung dieses Projekts! Compshare ist die KI-Cloud-Plattform von UCloud und bietet preiswerte monatliche und nutzungsbasierte Plan-Tarife für inländische Modell-Agents ab 49 ¥/Monat. Zusätzlich bietet sie stabilen, offiziell weitergeleiteten Zugriff auf Modelle aus Übersee. Unterstützt Claude Code, Codex und API-Aufrufe. Enterprise-tauglich: hohe Parallelität, 24/7-Support, Self-Service-Rechnungsstellung. Wer sich über <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">diesen Link</a> registriert, erhält 5 ¥ Plattformguthaben gratis!</td>
   </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
+      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
+    </td>
+    <td>Vielen Dank an 随想AI中转站 für die Unterstützung dieses Projekts! 随想AI中转站 ist ein zuverlässiger und effizienter API-Relay-Anbieter mit Relay-Diensten für Claude, Codex, Gemini und mehr. Neue Konten erhalten nach der <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">Registrierung</a> für jedes tägliche Einchecken 0,5 ¥ Testguthaben; Aufladungen werden 1:1 gutgeschrieben – ohne Abo, Bezahlung nach Verbrauch. Mehrfach redundante Leitungen, regionsübergreifende Notfallwiederherstellung und automatisches Failover halten langlebige SSE-Verbindungen unterbrechungsfrei.</td>
+  </tr>
 </table>
 
 > Möchten Sie Codeg-Sponsor werden? [Schreiben Sie uns gerne eine E-Mail.](mailto:itpkcn@gmail.com)

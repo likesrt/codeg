@@ -34,8 +34,8 @@ import {
   XCircle,
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspace } from "@/contexts/app-workspace-context"
-import { useTabContext } from "@/contexts/tab-context"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -75,6 +75,7 @@ import {
   FOLDER_THEME_COLOR_INHERIT,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
+  normalizeFolderThemeColor,
   type FolderThemeColor,
   type ThemeColor,
 } from "@/lib/theme-presets"
@@ -137,33 +138,6 @@ import { toErrorMessage } from "@/lib/app-error"
 // paint) but a no-op-safe passive effect during the static-export prerender.
 const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect
-
-const THEME_COLOR_SET = new Set<string>(THEME_COLORS)
-
-const LEGACY_FOLDER_COLOR_MAP: Record<string, FolderThemeColor> = {
-  foreground: FOLDER_THEME_COLOR_INHERIT,
-  "#ef4444": "red",
-  "#f97316": "orange",
-  "#eab308": "yellow",
-  "#84cc16": "green",
-  "#22c55e": "green",
-  "#06b6d4": "blue",
-  "#8b5cf6": "violet",
-  "#d946ef": "rose",
-  "#ec4899": "rose",
-}
-
-function normalizeFolderThemeColor(
-  color: string | null | undefined
-): FolderThemeColor {
-  if (!color) return FOLDER_THEME_COLOR_INHERIT
-  const normalized = color.toLowerCase()
-  if (normalized === FOLDER_THEME_COLOR_INHERIT) {
-    return FOLDER_THEME_COLOR_INHERIT
-  }
-  if (THEME_COLOR_SET.has(normalized)) return normalized as ThemeColor
-  return LEGACY_FOLDER_COLOR_MAP[normalized] ?? FOLDER_THEME_COLOR_INHERIT
-}
 
 const FolderHeader = memo(function FolderHeader({
   folderId,
@@ -598,31 +572,35 @@ export function SidebarConversationList({
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
   useZoomLevel()
-  const {
-    folders,
-    allFolders,
-    conversations,
-    conversationsLoading: loading,
-    conversationsError: error,
-    refreshConversations,
-    updateConversationLocal,
-    removeFolderFromWorkspace,
-    reorderFolders,
-    openFolder,
-    refreshFolder,
-  } = useAppWorkspace()
+  const folders = useAppWorkspaceStore((s) => s.folders)
+  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  const conversations = useAppWorkspaceStore((s) => s.conversations)
+  const loading = useAppWorkspaceStore((s) => s.conversationsLoading)
+  const error = useAppWorkspaceStore((s) => s.conversationsError)
+  const refreshConversations = useAppWorkspaceStore(
+    (s) => s.refreshConversations
+  )
+  const updateConversationLocal = useAppWorkspaceStore(
+    (s) => s.updateConversationLocal
+  )
+  const removeFolderFromWorkspace = useAppWorkspaceStore(
+    (s) => s.removeFolderFromWorkspace
+  )
+  const reorderFolders = useAppWorkspaceStore((s) => s.reorderFolders)
+  const openFolder = useAppWorkspaceStore((s) => s.openFolder)
+  const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
   const refreshing = loading
   const { activeFolder } = useActiveFolder()
 
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const tabs = useTabStore((s) => s.tabs)
   const {
     openTab,
     closeConversationTab,
     closeTabsByFolder,
     openNewConversationTab,
     openChatModeTab,
-    activeTabId,
-    tabs,
-  } = useTabContext()
+  } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask } = useTaskContext()
 

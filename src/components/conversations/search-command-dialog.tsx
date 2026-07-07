@@ -8,10 +8,10 @@ import { File, Folder } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspace } from "@/contexts/app-workspace-context"
-import { useTabContext } from "@/contexts/tab-context"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useWorkspaceContext } from "@/contexts/workspace-context"
+import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { listAllConversations, searchFiles } from "@/lib/api"
 import type {
   AgentType,
@@ -126,15 +126,23 @@ function useBaseSearchState() {
   const dateFnsLocale =
     locale === "zh-CN" ? zhCN : locale === "zh-TW" ? zhTW : enUS
   const { activeFolder: folder, activeFolderId } = useActiveFolder()
-  const { conversations: allConversations } = useAppWorkspace()
-  const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
-  const [query, setQuery] = useState("")
+  const allConversations = useAppWorkspaceStore((s) => s.conversations)
   const folderId = activeFolderId ?? 0
-  const folderPath = folder?.path ?? ""
   const conversations = useMemo(
-    () => getFolderConversations(allConversations, activeFolderId),
+    () =>
+      activeFolderId == null
+        ? []
+        : allConversations.filter((c) => c.folder_id === activeFolderId),
     [allConversations, activeFolderId]
   )
+  const { openTab } = useTabActions()
+  const { openConversations } = useWorkbenchRoute()
+  const { openFilePreview } = useWorkspaceActions()
+  const { revealInFileTree } = useAuxPanelContext()
+
+  const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
+  const [query, setQuery] = useState("")
+  const folderPath = folder?.path ?? ""
   return {
     t,
     dateFnsLocale,
@@ -147,21 +155,6 @@ function useBaseSearchState() {
     query,
     setQuery,
   }
-}
-
-/**
- * Filters workspace conversations to the active folder.
- * @param conversations All conversations loaded in the workspace.
- * @param activeFolderId Current folder id, or null when no folder is active.
- * @returns Conversations belonging to the active folder only.
- * @remarks Null active folder returns an empty list to avoid global leakage.
- */
-function getFolderConversations(
-  conversations: DbConversationSummary[],
-  activeFolderId: number | null
-): DbConversationSummary[] {
-  if (activeFolderId == null) return []
-  return conversations.filter((c) => c.folder_id === activeFolderId)
 }
 
 /**
@@ -707,8 +700,8 @@ function useSearchActions(
   content: ReturnType<typeof useContentSearch>,
   onOpenChange: (open: boolean) => void
 ) {
-  const { openTab } = useTabContext()
-  const { openFilePreview } = useWorkspaceContext()
+  const { openTab } = useTabActions()
+  const { openFilePreview } = useWorkspaceActions()
   const { revealInFileTree } = useAuxPanelContext()
   const handleSelectConversation = useSelectConversation(openTab, onOpenChange)
   const handleSelectFile = useSelectFile(

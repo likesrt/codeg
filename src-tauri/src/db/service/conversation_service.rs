@@ -510,10 +510,13 @@ pub async fn list_all(
     Ok(summaries)
 }
 
-/// List delegation children of a single parent conversation, oldest first.
-/// Returns rows where `parent_id == parent_conversation_id`. Soft-deleted
-/// children are filtered out so a removed sub-session stays hidden in the
-/// parent's tool-call view too.
+/// List delegation children of a single parent conversation, newest first
+/// (`created_at` DESC), matching the sidebar's newest-on-top ordering so a
+/// freshly-spawned sub-agent surfaces right under its parent. The only other
+/// consumer (`inject_delegation_meta`) keys these by `parent_tool_use_id` and
+/// is order-agnostic. Returns rows where `parent_id == parent_conversation_id`.
+/// Soft-deleted children are filtered out so a removed sub-session stays hidden
+/// in the parent's tool-call view too.
 pub async fn list_children(
     conn: &DatabaseConnection,
     parent_conversation_id: i32,
@@ -521,7 +524,11 @@ pub async fn list_children(
     let rows = conversation::Entity::find()
         .filter(conversation::Column::ParentId.eq(parent_conversation_id))
         .filter(conversation::Column::DeletedAt.is_null())
-        .order_by_asc(conversation::Column::CreatedAt)
+        .order_by_desc(conversation::Column::CreatedAt)
+        // Explicit id tie-break so same-timestamp siblings are deterministic and
+        // match the frontend re-sort (which tie-breaks id DESC): the raw fetch
+        // snapshot and a live-inserted child then land in the same order.
+        .order_by_desc(conversation::Column::Id)
         .all(conn)
         .await?;
     let mut summaries: Vec<DbConversationSummary> = rows.into_iter().map(conv_to_summary).collect();
@@ -615,6 +622,54 @@ mod tests {
         );
         assert_eq!(rows[0].id, child_a);
         assert_eq!(rows[0].parent_id, Some(parent_a));
+    }
+
+    #[tokio::test]
+    async fn list_children_orders_newest_first() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-list-children-order").await;
+        let parent = create(&db.conn, folder, AgentType::ClaudeCode, Some("P".into()), None)
+            .await
+            .expect("parent");
+        // Two children created oldest → newest under the same parent.
+        let first = create_with_delegation(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("first".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-1".into(),
+                delegation_call_id: "call-1".into(),
+            }),
+        )
+        .await
+        .expect("first child");
+        let second = create_with_delegation(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("second".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-2".into(),
+                delegation_call_id: "call-2".into(),
+            }),
+        )
+        .await
+        .expect("second child");
+
+        // The sidebar shows sub-sessions newest-first so a freshly-spawned
+        // sub-agent surfaces right under its parent.
+        let rows = list_children(&db.conn, parent.id).await.expect("list");
+        let ids: Vec<i32> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(
+            ids,
+            vec![second.id, first.id],
+            "newest child must come first"
+        );
     }
 
     #[tokio::test]

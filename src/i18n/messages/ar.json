@@ -107,8 +107,14 @@
       "fontSize": "حجم الخط",
       "ligatures": "تفعيل الحروف المتصلة",
       "ligaturesUnavailable": "هذا الخط لا يحتوي على حروف متصلة",
+      "wordWrap": "تفعيل التفاف النص",
       "terminalLigaturesHint": "تنطبق الحروف المتصلة في الطرفية على خطوط البرمجة المضمّنة فقط.",
       "preview": "معاينة"
+    },
+    "welcomePanel": {
+      "sectionTitle": "منطقة اختيار الوضع",
+      "sectionDescription": "بطاقات الاختصار «تطوير الكود / الأعمال المكتبية» التي تظهر أعلى مربع الإدخال في صفحة المحادثة الجديدة.",
+      "showQuickActions": "العرض في صفحة المحادثة الجديدة"
     }
   },
   "SystemSettings": {
@@ -1420,6 +1426,7 @@
       "addToChat": "إضافة إلى المحادثة",
       "addSelectionToChatDone": "تمت إضافة {label} إلى المحادثة",
       "addFileToChat": "إضافة الملف إلى المحادثة",
+      "toggleWordWrap": "تبديل التفاف النص",
       "addFileToChatDone": "تمت إضافة {label} إلى المحادثة",
       "viewDiff": "عرض Diff",
       "openFile": "فتح الملف",
@@ -1736,6 +1743,7 @@
       "collapseTracked": "طي التغييرات المتعقبة",
       "expandUntracked": "توسيع الملفات غير المتعقبة",
       "collapseUntracked": "طي الملفات غير المتعقبة",
+      "showRemainingItems": "عرض {count} عنصر إضافي",
       "actions": {
         "commitCode": "التزام الكود",
         "rollback": "تراجع",
@@ -2082,7 +2090,7 @@
         "quickMessages": "الرسائل السريعة",
         "quickMessagesEmpty": "لا توجد رسائل سريعة بعد",
         "quickMessagesLoading": "جارٍ التحميل...",
-        "paste": "لصق",
+        "pasteAsPlainText": "لصق كنص عادي",
         "cut": "قص",
         "copy": "نسخ",
         "selectAll": "تحديد الكل",
@@ -2268,7 +2276,6 @@
       "linkSafety": {
         "errorCannotOpen": "تعذر فتح الملف المحلي",
         "errorNoWorkspace": "لا يوجد مجلد مساحة عمل نشط حالياً.",
-        "errorOutsideWorkspace": "الملف خارج مجلد مساحة العمل الحالي.",
         "errorFailedOpen": "فشل فتح الملف المحلي",
         "errorFailedLink": "فشل فتح الرابط",
         "errorUnsupportedLinkProtocol": "بروتوكول الرابط هذا غير مدعوم."
@@ -2577,6 +2584,16 @@
         "opWait": "جلب نتيجة الوكيل الفرعي",
         "opClose": "إغلاق الوكيل الفرعي",
         "opResume": "استئناف الوكيل الفرعي"
+      },
+      "backgroundTasks": {
+        "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
+        "settling": "جارٍ مزامنة نتائج الخلفية…",
+        "settledFallback": "انتهت مهمة الخلفية ({status})",
+        "cardRunning": "قيد التشغيل في الخلفية",
+        "cardLaunchedPending": "بدأت مهمة الخلفية",
+        "cardCompleted": "اكتملت مهمة الخلفية",
+        "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
+        "cardResultPending": "لم تصل النتيجة بعد"
       }
     },
     "diffPreview": {
@@ -2588,7 +2605,8 @@
       },
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
-      "noDiffData": "لا توجد بيانات diff"
+      "noDiffData": "لا توجد بيانات diff",
+      "showRemainingLines": "عرض {count} سطر إضافي"
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",

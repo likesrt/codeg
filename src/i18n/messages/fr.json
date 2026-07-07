@@ -107,8 +107,14 @@
       "fontSize": "Taille de police",
       "ligatures": "Activer les ligatures",
       "ligaturesUnavailable": "Cette police n’a pas de ligatures",
+      "wordWrap": "Activer le retour à la ligne",
       "terminalLigaturesHint": "Les ligatures du terminal ne s’appliquent qu’aux polices de programmation intégrées.",
       "preview": "Aperçu"
+    },
+    "welcomePanel": {
+      "sectionTitle": "Zone de sélection du mode",
+      "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",
+      "showQuickActions": "Afficher sur la page de nouvelle conversation"
     }
   },
   "SystemSettings": {
@@ -1420,6 +1426,7 @@
       "addToChat": "Ajouter au chat",
       "addSelectionToChatDone": "{label} ajouté à la conversation",
       "addFileToChat": "Ajouter le fichier au chat",
+      "toggleWordWrap": "Basculer le retour à la ligne",
       "addFileToChatDone": "{label} ajouté à la conversation",
       "viewDiff": "Voir le Diff",
       "openFile": "Ouvrir le fichier",
@@ -1736,6 +1743,7 @@
       "collapseTracked": "Réduire les changements suivis",
       "expandUntracked": "Développer les fichiers non suivis",
       "collapseUntracked": "Réduire les fichiers non suivis",
+      "showRemainingItems": "Afficher {count} éléments de plus",
       "actions": {
         "commitCode": "Commit du code",
         "rollback": "Annuler",
@@ -2082,7 +2090,7 @@
         "quickMessages": "Messages rapides",
         "quickMessagesEmpty": "Aucun message rapide pour l'instant",
         "quickMessagesLoading": "Chargement...",
-        "paste": "Coller",
+        "pasteAsPlainText": "Coller en texte brut",
         "cut": "Couper",
         "copy": "Copier",
         "selectAll": "Tout sélectionner",
@@ -2268,7 +2276,6 @@
       "linkSafety": {
         "errorCannotOpen": "Impossible d'ouvrir le fichier local",
         "errorNoWorkspace": "Aucun dossier d'espace de travail n'est actuellement actif.",
-        "errorOutsideWorkspace": "Le fichier se trouve en dehors du dossier de l'espace de travail actuel.",
         "errorFailedOpen": "Échec de l'ouverture du fichier local",
         "errorFailedLink": "Échec de l'ouverture du lien",
         "errorUnsupportedLinkProtocol": "Ce protocole de lien n’est pas pris en charge."
@@ -2577,6 +2584,16 @@
         "opWait": "Récupération du résultat du sous-agent",
         "opClose": "Fermeture du sous-agent",
         "opResume": "Reprise du sous-agent"
+      },
+      "backgroundTasks": {
+        "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",
+        "settling": "Synchronisation des résultats d'arrière-plan…",
+        "settledFallback": "Tâche en arrière-plan terminée ({status})",
+        "cardRunning": "En cours d'exécution en arrière-plan",
+        "cardLaunchedPending": "Tâche lancée en arrière-plan",
+        "cardCompleted": "Tâche en arrière-plan terminée",
+        "cardFinishedWithStatus": "Tâche en arrière-plan terminée ({status})",
+        "cardResultPending": "Résultat pas encore reçu"
       }
     },
     "diffPreview": {
@@ -2588,7 +2605,8 @@
       },
       "hunkLabel": "Bloc {index}",
       "loadingHunk": "Chargement du hunk...",
-      "noDiffData": "Aucune donnée diff"
+      "noDiffData": "Aucune donnée diff",
+      "showRemainingLines": "Afficher {count} lignes de plus"
     },
     "conversationContextBar": {
       "folderTitle": "Dossier de travail",
