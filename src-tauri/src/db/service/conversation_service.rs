@@ -236,19 +236,34 @@ pub async fn update_pin(
     Ok(())
 }
 
+/// Persist the agent session id (`external_id`) for a conversation as a single
+/// conditional UPDATE guarded on `deleted_at IS NULL`. A soft-deleted (or
+/// missing) row matches nothing and the call is a silent no-op — it returns Ok
+/// either way, since every caller treats "no live row" as nothing to do.
+///
+/// The `deleted_at IS NULL` guard matters because `SessionStarted` writes are
+/// not serialized against deletes: a conversation can be soft-deleted while its
+/// ACP connection stays live and bound (delete only soft-marks the row; it does
+/// not disconnect the agent). A fork in particular emits `SessionStarted{S2}`
+/// whose lifecycle handler calls this with the still-bound `conversation_id`;
+/// without the guard that late write would re-point a deleted row's session id
+/// from S1 to S2 and bump `updated_at`, half-resurrecting an invisible row.
+/// Writing `WHERE id = ? AND deleted_at IS NULL` makes such a stale event a
+/// no-op. (Fork's own current-row re-point in `persist_fork_outcome` is guarded
+/// the same way.)
 pub async fn update_external_id(
     conn: &DatabaseConnection,
     conversation_id: i32,
     external_id: String,
 ) -> Result<(), DbError> {
-    let conv = conversation::Entity::find_by_id(conversation_id)
-        .one(conn)
-        .await?
-        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
-    let mut active: conversation::ActiveModel = conv.into();
-    active.external_id = Set(Some(external_id));
-    active.updated_at = Set(Utc::now());
-    active.update(conn).await?;
+    use sea_orm::sea_query::Expr;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::ExternalId, Expr::value(external_id))
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .exec(conn)
+        .await?;
     Ok(())
 }
 
@@ -822,6 +837,72 @@ mod tests {
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
         assert_eq!(summary.title.as_deref(), Some("My name"));
         assert!(summary.title_locked, "manual rename must lock the title");
+    }
+
+    #[tokio::test]
+    async fn update_external_id_skips_soft_deleted_row() {
+        // A late/stale `SessionStarted` write — e.g. a fork's SessionStarted{S2}
+        // landing after the user deleted the conversation — must NOT mutate a
+        // soft-deleted row. `update_external_id` is guarded on `deleted_at IS
+        // NULL`, so it is a silent no-op: the deleted row keeps its old
+        // external_id and is never half-resurrected.
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-extid-deleted").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("Doomed".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        update_external_id(&db.conn, row.id, "session-S1".into())
+            .await
+            .expect("seed external_id");
+        soft_delete(&db.conn, row.id).await.expect("soft delete");
+
+        // The guarded write must no-op (Ok) without touching the deleted row.
+        update_external_id(&db.conn, row.id, "session-S2".into())
+            .await
+            .expect("a stale SessionStarted write must be a no-op, not an error");
+
+        // Inspect the raw row directly — `get_by_id` filters deleted rows out.
+        let raw = conversation::Entity::find_by_id(row.id)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row still exists (soft-deleted)");
+        assert!(raw.deleted_at.is_some(), "row must remain soft-deleted");
+        assert_eq!(
+            raw.external_id.as_deref(),
+            Some("session-S1"),
+            "a stale external_id write must not re-point a soft-deleted row"
+        );
+
+        // Sanity: the guard is not over-broad — a LIVE row still updates.
+        let live = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("Live".into()),
+            None,
+        )
+        .await
+        .expect("create live");
+        update_external_id(&db.conn, live.id, "session-S9".into())
+            .await
+            .expect("live update");
+        let live_raw = conversation::Entity::find_by_id(live.id)
+            .one(&db.conn)
+            .await
+            .expect("query live")
+            .expect("live row");
+        assert_eq!(
+            live_raw.external_id.as_deref(),
+            Some("session-S9"),
+            "a live row must still receive its external_id"
+        );
     }
 
     #[tokio::test]

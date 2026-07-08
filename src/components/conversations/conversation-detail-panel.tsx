@@ -1092,11 +1092,29 @@ const ConversationTabView = memo(function ConversationTabView({
         // Backend performs all DB writes in one transaction-shaped call:
         // - current row: external_id=S2, title="[Fork] ..."
         // - sibling row: created with external_id=S1, status=pending_review
-        const { forkedSessionId } = await acpFork(connectionId)
+        // Pass (conversationId, folderId) so a conversation opened from history
+        // — whose connection resumed via session_id but isn't row-linked until
+        // its first prompt — is adopted by the backend before forking (a
+        // fork-send forks BEFORE that prompt). No-op once already linked. Use
+        // the real persisted DB id (`dbConvIdRef`, same as the send path below),
+        // NOT the runtime key `effectiveConversationId` which can be virtual.
+        const { forkedSessionId } = await acpFork(
+          connectionId,
+          dbConvIdRef.current,
+          folderId
+        )
         // Update runtime session id to S2 (frontend in-memory state only)
         sessionIdRef.current = forkedSessionId
         setExternalId(effectiveConversationId, forkedSessionId)
 
+        // NOTE: a fork is a transcript discontinuity — the row's session flips
+        // S1→S2, and S2 is a COPY of S1's transcript plus the turns to come.
+        // The pre-fork history is NOT re-surfaced here: the backend background
+        // watcher correctly excludes the fork-copied prefix from the out-of-turn
+        // overlay (see `baseline_offset_since`), so `detail.turns` (S1 parse) +
+        // the new local turns render each exchange exactly once. No detail
+        // refetch is needed or wanted — an early one races the forked turn and
+        // can drop the just-sent message.
         refreshConversations()
         // Send the message on the forked session (S2)
         handleSend(draft, selectedModeIdArg)
@@ -1130,6 +1148,7 @@ const ConversationTabView = memo(function ConversationTabView({
       mqGetQueueLength,
       mqEnqueue,
       effectiveConversationId,
+      folderId,
       handleSend,
       refreshConversations,
       setExternalId,

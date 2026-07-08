@@ -2312,7 +2312,7 @@
         "elapsedHours": "{value}س",
         "elapsedMinutes": "{value}د",
         "elapsedSeconds": "{value}ث",
-        "toolUseCount": "{count} أداة {count, plural, one {use} other {uses}}"
+        "toolUseCount": "{count} استخدام للأداة"
       },
       "tool": {
         "parameters": "المعلمات",

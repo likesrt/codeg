@@ -875,17 +875,30 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
 }
 
 /// The arm baseline separating pre-existing history from records written
-/// during this watch's lifetime: the byte offset of the first COMPLETE line
-/// whose record timestamp is at or after `epoch`, or — when no such record
-/// exists yet — the end of the last COMPLETE line. The fallback deliberately
-/// excludes a trailing partial line: a fragment present at arm time is a
-/// record being flushed RIGHT NOW (post-epoch by definition), and baselining
-/// past it (EOF) would leave only its unparseable suffix for the tail reader,
-/// silently dropping the very record the epoch baseline exists to preserve.
-/// Lines without a parseable timestamp are treated as history-side until a
-/// timestamped record crosses the boundary. `None` only when the file can't
-/// be read. One-shot cost at arm time (runs inside the tick's
-/// `spawn_blocking`).
+/// during this watch's lifetime: the byte offset of the first COMPLETE
+/// CONVERSATION line (a `user`/`assistant` record) whose timestamp is at or
+/// after `epoch`, or — when no such record exists yet — the end of the last
+/// COMPLETE line. The fallback deliberately excludes a trailing partial line:
+/// a fragment present at arm time is a record being flushed RIGHT NOW
+/// (post-epoch by definition), and baselining past it (EOF) would leave only
+/// its unparseable suffix for the tail reader, silently dropping the very
+/// record the epoch baseline exists to preserve.
+///
+/// Only `user`/`assistant` records delimit the boundary; every other record
+/// type (and any line without a parseable timestamp) is skipped. This is
+/// load-bearing for FORK: a fork copies the parent transcript into the new
+/// session file preserving each record's ORIGINAL, pre-fork timestamp, then
+/// writes fresh metadata records (`queue-operation`, `mode`, …) at the FILE
+/// HEAD stamped at fork time. Those head records are AHEAD of the copied
+/// history by byte offset but AFTER it by timestamp, so keying the boundary on
+/// "first record at/after epoch" of ANY type would return the head metadata's
+/// offset and drag the entire copied history (which renders via the detail
+/// fetch) into the out-of-turn overlay — duplicating it. Restricting the
+/// boundary to conversation records lands it on the first genuinely-new turn,
+/// with the copied history (older timestamps) correctly on the history side.
+/// The skipped metadata carries no turn or accounting the watcher consumes.
+/// `None` only when the file can't be read. One-shot cost at arm time (runs
+/// inside the tick's `spawn_blocking`).
 fn baseline_offset_since(path: &PathBuf, epoch: std::time::SystemTime) -> Option<u64> {
     let bytes = std::fs::read(path).ok()?;
     let epoch: chrono::DateTime<chrono::Utc> = epoch.into();
@@ -902,6 +915,12 @@ fn baseline_offset_since(path: &PathBuf, epoch: std::time::SystemTime) -> Option
         let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
             continue;
         };
+        // Only real conversation records anchor the boundary; fork-time head
+        // metadata (see the doc comment) must never be the boundary.
+        let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if record_type != "user" && record_type != "assistant" {
+            continue;
+        }
         let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()) else {
             continue;
         };
@@ -1102,6 +1121,40 @@ mod tests {
         assert_eq!(
             baseline_offset_since(&path, epoch("2030-01-01T00:00:00Z")),
             Some(full)
+        );
+    }
+
+    /// FORK layout regression. A fork copies the parent transcript (records keep
+    /// their ORIGINAL, pre-fork timestamps) and writes fresh `queue-operation`
+    /// metadata at the FILE HEAD stamped at fork time. That head record is
+    /// post-epoch by timestamp but sits BEFORE the copied history by byte
+    /// offset, so a boundary keyed on "first record at/after epoch" of ANY type
+    /// would land at offset 0 and pull the entire copied history into the
+    /// out-of-turn overlay — duplicating what the detail fetch already renders.
+    /// The boundary must skip non-conversation records and land on the first
+    /// genuinely-new turn.
+    #[test]
+    fn baseline_skips_fork_head_metadata_and_lands_on_the_first_new_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        // Fork-time metadata at the head (post-epoch stamp), then the copied
+        // history (original pre-fork stamps), then the genuinely-new prompt.
+        let queue_op = r#"{"type":"queue-operation","timestamp":"2026-07-07T03:50:00.100Z","uuid":"q-1"}"#;
+        let copied_user = r#"{"type":"user","timestamp":"2026-07-07T03:46:00.000Z","uuid":"u-hi","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
+        let copied_asst = r#"{"type":"assistant","timestamp":"2026-07-07T03:46:05.000Z","uuid":"a-hi","message":{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}}"#;
+        let new_user = r#"{"type":"user","timestamp":"2026-07-07T03:50:10.000Z","uuid":"u-hello","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#;
+        write_lines(&path, &[queue_op, copied_user, copied_asst, new_user]);
+
+        // Fork epoch sits after the copied history but before the new turn. The
+        // boundary must be the new turn's byte offset (past the head metadata
+        // AND the copied history), never offset 0.
+        let new_turn_offset = (queue_op.len() + 1) as u64
+            + (copied_user.len() + 1) as u64
+            + (copied_asst.len() + 1) as u64;
+        assert_eq!(
+            baseline_offset_since(&path, epoch("2026-07-07T03:50:00.000Z")),
+            Some(new_turn_offset),
+            "fork-time head metadata must not drag the copied history past the baseline"
         );
     }
 
