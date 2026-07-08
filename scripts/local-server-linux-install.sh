@@ -170,6 +170,9 @@ get_remote_version() {
 
 # ===== 下载安装 =====
 
+# 全局临时目录变量，用于 trap 清理（local 变量在 trap 中不可用）
+_CLEANUP_TMP=""
+
 # 下载指定 release 的 assets 并安装二进制和 web 资源
 # 参数：$1 - release tag，$2 - 架构（amd64/arm64）
 # 返回：无。副作用：覆盖安装 codeg-server/codeg-mcp 二进制，解压 web 资源
@@ -179,22 +182,21 @@ download_and_install() {
   local download_base
   download_base=$(proxy_url "https://github.com/$REPO/releases/download/$tag")
 
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
-  trap 'rm -rf "$tmp_dir"' EXIT
+  _CLEANUP_TMP=$(mktemp -d)
+  trap 'rm -rf "$_CLEANUP_TMP"' EXIT
 
   # 下载二进制
   log_info "下载 codeg-server-linux-$arch ..."
-  curl -fsSL "$download_base/codeg-server-linux-$arch" -o "$tmp_dir/codeg-server"
-  chmod +x "$tmp_dir/codeg-server"
+  curl -fsSL "$download_base/codeg-server-linux-$arch" -o "$_CLEANUP_TMP/codeg-server"
+  chmod +x "$_CLEANUP_TMP/codeg-server"
 
   log_info "下载 codeg-mcp-linux-$arch ..."
-  curl -fsSL "$download_base/codeg-mcp-linux-$arch" -o "$tmp_dir/codeg-mcp"
-  chmod +x "$tmp_dir/codeg-mcp"
+  curl -fsSL "$download_base/codeg-mcp-linux-$arch" -o "$_CLEANUP_TMP/codeg-mcp"
+  chmod +x "$_CLEANUP_TMP/codeg-mcp"
 
   # 下载 web 资源
   log_info "下载 codeg-web.tar.gz ..."
-  curl -fsSL "$download_base/codeg-web.tar.gz" -o "$tmp_dir/codeg-web.tar.gz"
+  curl -fsSL "$download_base/codeg-web.tar.gz" -o "$_CLEANUP_TMP/codeg-web.tar.gz"
 
   # 安装二进制到 /usr/local/bin/
   mkdir -p "$INSTALL_DIR"
@@ -204,15 +206,17 @@ download_and_install() {
     systemctl stop codeg-server || true
   fi
 
-  cp "$tmp_dir/codeg-server" "$INSTALL_DIR/codeg-server"
-  cp "$tmp_dir/codeg-mcp" "$INSTALL_DIR/codeg-mcp"
+  cp "$_CLEANUP_TMP/codeg-server" "$INSTALL_DIR/codeg-server"
+  cp "$_CLEANUP_TMP/codeg-mcp" "$INSTALL_DIR/codeg-mcp"
 
   # 解压 web 资源
   mkdir -p "$WEB_DIR"
   rm -rf "$WEB_DIR"/*
-  tar -C "$WEB_DIR" -xzf "$tmp_dir/codeg-web.tar.gz" --strip-components=1
+  tar -C "$WEB_DIR" -xzf "$_CLEANUP_TMP/codeg-web.tar.gz" --strip-components=1
 
-  rm -rf "$tmp_dir"
+  rm -rf "$_CLEANUP_TMP"
+  _CLEANUP_TMP=""
+  trap - EXIT
   log_info "二进制和 web 资源安装完成"
 }
 

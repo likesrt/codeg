@@ -147,6 +147,32 @@ ask_tool_selection() {
 
 # ===== 安装函数 =====
 
+# GitHub 代理列表（空字符串表示直连，按优先级排列）
+GITHUB_PROXIES=(
+  "https://cdn.gh-proxy.org/"
+  "https://gh-proxy.com/"
+  "https://mirror.ghproxy.com/"
+  ""
+)
+
+# 尝试从 GitHub 下载文件，自动尝试多个代理直到成功
+# 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径
+# 返回：成功返回 0，所有代理都失败返回 1
+github_download() {
+  local url="$1"
+  local output="$2"
+
+  for proxy in "${GITHUB_PROXIES[@]}"; do
+    local full_url="${proxy}${url}"
+    if curl -fsSL --connect-timeout 10 --max-time 120 "$full_url" -o "$output" 2>/dev/null; then
+      log_info "下载成功"
+      return 0
+    fi
+    log_warn "下载失败，尝试下一个源 ..."
+  done
+  return 1
+}
+
 # 安装 uv（Python 包管理器）到 $TOOLS_ROOT/uv
 # 参数：无
 # 返回：无。副作用：安装 uv/uvx 并追加到 INSTALLED_TOOLS
@@ -155,20 +181,24 @@ install_uv() {
   local uv_root="$TOOLS_ROOT/uv"
   mkdir -p "$uv_root/bin" "$uv_root/cache"
 
-  if [ "$MIRROR" = "cn" ]; then
-    # 国内通过 ghproxy 加速 GitHub 下载
-    local arch uv_arch
-    arch=$(detect_arch)
-    uv_arch="x86_64"
-    [ "$arch" = "arm64" ] && uv_arch="aarch64"
-    curl -LsSf "https://cdn.gh-proxy.org/https://github.com/astral-sh/uv/releases/download/$CODEG_UV_VERSION/uv-$uv_arch-unknown-linux-gnu.tar.gz" \
-      | tar xz -C "$uv_root"
-    cp "$uv_root"/uv-$uv_arch-unknown-linux-gnu/* "$uv_root/bin/" 2>/dev/null || true
-  else
-    # 官方安装器，通过 UV_INSTALL_DIR 指定安装路径
-    export UV_INSTALL_DIR="$uv_root/bin"
-    curl -LsSf "https://astral.sh/uv/install.sh" | sh -s -- -v "$CODEG_UV_VERSION"
+  local arch uv_arch
+  arch=$(detect_arch)
+  uv_arch="x86_64"
+  [ "$arch" = "arm64" ] && uv_arch="aarch64"
+
+  local github_url="https://github.com/astral-sh/uv/releases/download/$CODEG_UV_VERSION/uv-$uv_arch-unknown-linux-gnu.tar.gz"
+  local tmp_file
+  tmp_file=$(mktemp)
+
+  # 尝试多个代理下载
+  if ! github_download "$github_url" "$tmp_file"; then
+    rm -f "$tmp_file"
+    log_error "uv 下载失败，所有代理均不可用"
   fi
+
+  tar xzf "$tmp_file" -C "$uv_root"
+  cp "$uv_root"/uv-$uv_arch-unknown-linux-gnu/* "$uv_root/bin/" 2>/dev/null || true
+  rm -f "$tmp_file"
 
   "$uv_root/bin/uv" --version >/dev/null
   INSTALLED_TOOLS="$INSTALLED_TOOLS uv"
@@ -244,22 +274,21 @@ install_nvm_node() {
 install_bun() {
   log_info "安装 Bun $CODEG_BUN_VERSION ..."
   local bun_root="$TOOLS_ROOT/bun"
+  local arch
+  arch=$(detect_arch)
 
-  if [ "$MIRROR" = "cn" ]; then
-    # 国内从 GitHub releases 通过 ghproxy 下载二进制
-    local arch
-    arch=$(detect_arch)
-    mkdir -p "$bun_root/bin"
-    curl -L "https://cdn.gh-proxy.org/https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip" -o /tmp/bun.zip
-    unzip -o /tmp/bun.zip -d /tmp/bun-extract
-    cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
-    chmod +x "$bun_root/bin/bun"
-    rm -rf /tmp/bun.zip /tmp/bun-extract
-  else
-    # 官方安装器，通过 BUN_INSTALL 指定安装路径
-    export BUN_INSTALL="$bun_root"
-    curl -fsSL https://bun.sh/install | sh -s "bun-v$CODEG_BUN_VERSION"
+  local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip"
+
+  # 尝试多个代理下载
+  if ! github_download "$github_url" /tmp/bun.zip; then
+    log_error "Bun 下载失败，所有代理均不可用"
   fi
+
+  mkdir -p "$bun_root/bin"
+  unzip -o /tmp/bun.zip -d /tmp/bun-extract
+  cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
+  chmod +x "$bun_root/bin/bun"
+  rm -rf /tmp/bun.zip /tmp/bun-extract
 
   "$bun_root/bin/bun" --version >/dev/null
   INSTALLED_TOOLS="$INSTALLED_TOOLS bun"
@@ -346,19 +375,30 @@ install_java() {
 
   # Temurin JDK 17.0.13 的下载文件名
   local filename="OpenJDK17U-jdk_${java_arch}_linux_hotspot_17.0.13_8.tar.gz"
-
-  local url
-  if [ "$MIRROR" = "cn" ]; then
-    # 清华镜像
-    url="https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/${java_arch}/linux/$filename"
-  else
-    # 官方 GitHub
-    url="https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B8/$filename"
-  fi
+  local github_url="https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B8/$filename"
 
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  curl -fsSL "$url" -o "$tmp_dir/$filename"
+
+  # 国内用清华镜像，否则用 github_download 多代理备选
+  if [ "$MIRROR" = "cn" ]; then
+    local tsinghua_url="https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/${java_arch}/linux/$filename"
+    log_info "从清华镜像下载 Java ..."
+    curl -fsSL "$tsinghua_url" -o "$tmp_dir/$filename" || {
+      # 清华镜像失败时回退到 github_download
+      log_warn "清华镜像下载失败，尝试 GitHub 代理 ..."
+      github_download "$github_url" "$tmp_dir/$filename" || {
+        rm -rf "$tmp_dir"
+        log_error "Java 下载失败"
+      }
+    }
+  else
+    github_download "$github_url" "$tmp_dir/$filename" || {
+      rm -rf "$tmp_dir"
+      log_error "Java 下载失败"
+    }
+  fi
+
   rm -rf "$java_root"
   mkdir -p "$java_root"
   tar -C "$java_root" --strip-components=1 -xzf "$tmp_dir/$filename"
