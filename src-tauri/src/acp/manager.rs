@@ -1248,6 +1248,18 @@ impl ConnectionManager {
         &self,
         db: &AppDatabase,
         conn_id: &str,
+        // Caller-supplied linkage for a connection that resumed a historical
+        // conversation but hasn't sent a prompt through it yet. Such a
+        // connection is bound to its session via `session_id` (resume) but its
+        // conversation ROW isn't linked until the first prompt fires
+        // `ConversationLinked` (see `send_prompt_linked`). A fork-send forks
+        // BEFORE that first prompt, so without adopting the row here the fork
+        // would reject as unlinked. Ignored when the connection is already
+        // linked (the common new-conversation-then-fork path), and both must be
+        // `Some` to link (a `conversation_id` needs its `folder_id`, mirroring
+        // `send_prompt_linked`'s Branch A contract).
+        link_conversation_id: Option<i32>,
+        link_folder_id: Option<i32>,
     ) -> Result<ForkResultInfo, AcpError> {
         let (state_arc, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
@@ -1273,6 +1285,30 @@ impl ConnectionManager {
         // back to `Cancelled`.
         let prompt_lock = self.clone_prompt_lock(conn_id).await?;
         let prompt_guard = prompt_lock.lock_owned().await;
+
+        // Link the conversation row on demand, under the prompt lock so it
+        // can't race a concurrent first prompt. A conversation opened from
+        // history resumes via `session_id`, but its row is bound to the
+        // connection only when the first prompt fires `ConversationLinked`;
+        // fork-send forks first, so adopt the caller-supplied row here (the
+        // same existing-row path as `send_prompt_linked` Branch A). No-op when
+        // already linked, or when the caller didn't supply both ids (the check
+        // below then rejects, unchanged).
+        if state_arc.read().await.conversation_id.is_none() {
+            if let (Some(cid), Some(fid)) = (link_conversation_id, link_folder_id) {
+                emit_with_state(
+                    &state_arc,
+                    &emitter,
+                    AcpEvent::ConversationLinked {
+                        conversation_id: cid,
+                        folder_id: fid,
+                        parent_conversation_id: None,
+                        parent_tool_use_id: None,
+                    },
+                )
+                .await;
+            }
+        }
 
         // Fork requires a linked conversation row — the sibling we're about
         // to create exists to preserve THIS row's pre-fork history. Without
@@ -2946,7 +2982,7 @@ mod tests {
             s.turn_in_flight = true; // a turn is already running
         }
 
-        let res = mgr.fork_session(&db, conn_id).await;
+        let res = mgr.fork_session(&db, conn_id, None, None).await;
         assert!(
             matches!(res, Err(AcpError::TurnInProgress)),
             "fork must reject with TurnInProgress while a turn is in flight, got {res:?}"
@@ -2985,7 +3021,7 @@ mod tests {
             .await
             .conversation_id = Some(9);
 
-        let res = mgr.fork_session(&db, conn_id).await;
+        let res = mgr.fork_session(&db, conn_id, None, None).await;
         assert!(res.is_err(), "fork with a dead receiver must fail");
         assert!(
             !mgr.get_state(conn_id)
@@ -3080,7 +3116,7 @@ mod tests {
         // DROPS this caller future. The detached persistence task must survive.
         let timed = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            mgr.fork_session(&db, "c-shield"),
+            mgr.fork_session(&db, "c-shield", None, None),
         )
         .await;
         assert!(
@@ -4676,7 +4712,7 @@ mod tests {
         let (mgr, join) =
             manager_with_fake_fork("c-fork", pre.id, "session-S2", "session-S1").await;
         let result = mgr
-            .fork_session(&db, "c-fork")
+            .fork_session(&db, "c-fork", None, None)
             .await
             .expect("fork_session should succeed");
         let _ = join.await;
@@ -4722,7 +4758,7 @@ mod tests {
         .unwrap();
         let (mgr, join) =
             manager_with_fake_fork("c-restack", pre.id, "session-S2", "session-S1").await;
-        let result = mgr.fork_session(&db, "c-restack").await.unwrap();
+        let result = mgr.fork_session(&db, "c-restack", None, None).await.unwrap();
         let _ = join.await;
 
         let current = conversation_service::get_by_id(&db.conn, pre.id)
@@ -4760,7 +4796,7 @@ mod tests {
         .unwrap();
         let (mgr, join) =
             manager_with_fake_fork("c-nosp", pre.id, "session-S2", "session-S1").await;
-        mgr.fork_session(&db, "c-nosp").await.unwrap();
+        mgr.fork_session(&db, "c-nosp", None, None).await.unwrap();
         let _ = join.await;
 
         let current = conversation_service::get_by_id(&db.conn, pre.id)
@@ -4806,7 +4842,7 @@ mod tests {
 
         let (mgr, join) =
             manager_with_fake_fork("c-latest", pre.id, "session-S2", "session-S1").await;
-        let result = mgr.fork_session(&db, "c-latest").await.unwrap();
+        let result = mgr.fork_session(&db, "c-latest", None, None).await.unwrap();
         let _ = join.await;
 
         let current = conversation_service::get_by_id(&db.conn, pre.id)
@@ -4849,7 +4885,7 @@ mod tests {
         )
         .await;
         let err = mgr
-            .fork_session(&db, "c-missing")
+            .fork_session(&db, "c-missing", None, None)
             .await
             .expect_err("fork against a missing row must error");
         let _ = join.await;
@@ -4898,7 +4934,7 @@ mod tests {
         let (mgr, join) =
             manager_with_fake_fork("c-deleted", pre.id, "session-S2", "session-S1").await;
         let err = mgr
-            .fork_session(&db, "c-deleted")
+            .fork_session(&db, "c-deleted", None, None)
             .await
             .expect_err("fork against a soft-deleted row must error");
         let _ = join.await;
@@ -4944,13 +4980,102 @@ mod tests {
             map.insert("c-unbound".into(), fake_connection("c-unbound", None));
         }
         let err = mgr
-            .fork_session(&db, "c-unbound")
+            .fork_session(&db, "c-unbound", None, None)
             .await
             .expect_err("unbound fork must error");
         assert!(
             err.to_string().contains("linked conversation row"),
             "error should mention missing linkage, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn fork_session_links_unbound_row_from_caller_ids() {
+        // Bug #2: a conversation opened from history resumes via `session_id`
+        // but its row isn't bound to the connection until the first prompt
+        // fires `ConversationLinked`. A fork-send forks BEFORE that prompt, so
+        // fork_session must adopt the caller-supplied (conversation_id,
+        // folder_id) and succeed — instead of rejecting as unlinked (which is
+        // exactly what the user hit forking a conversation opened from history).
+        use crate::acp::connection::ConnectionCommand;
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/fork-relink").await;
+        let pre = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("History".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+            .await
+            .unwrap();
+
+        // A connection with NO linked conversation_id — mirrors a fresh resume
+        // of a historical conversation that hasn't sent a prompt yet.
+        let (tx, mut rx) = mpsc::channel::<ConnectionCommand>(4);
+        let mut state = SessionState::new(
+            "c-relink".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "test-window".to_string(),
+            None,
+        );
+        state.conversation_id = None;
+        state.status = ConnectionStatus::Connected;
+        let conn = AgentConnection {
+            id: "c-relink".to_string(),
+            agent_type: AgentType::ClaudeCode,
+            status: ConnectionStatus::Connected,
+            owner_window_label: "test-window".to_string(),
+            cmd_tx: tx,
+            state: Arc::new(RwLock::new(state)),
+            emitter: EventEmitter::Noop,
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+            config_fingerprint: String::new(),
+            last_observed_fingerprint: String::new(),
+        };
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert("c-relink".to_string(), conn);
+        }
+        let join = tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                if let ConnectionCommand::Fork { reply } = cmd {
+                    let _ = reply.send(Ok(crate::acp::types::ForkProtocolResult {
+                        forked_session_id: "session-S2".to_string(),
+                        original_session_id: "session-S1".to_string(),
+                    }));
+                    return;
+                }
+            }
+        });
+
+        let result = mgr
+            .fork_session(&db, "c-relink", Some(pre.id), Some(folder_id))
+            .await
+            .expect("fork must link the unbound row from caller ids and succeed");
+        let _ = join.await;
+
+        assert_eq!(result.forked_session_id, "session-S2");
+        // The connection is now linked to the row...
+        let linked = mgr.get_state("c-relink").await.expect("connection exists");
+        assert_eq!(linked.read().await.conversation_id, Some(pre.id));
+        // ...the current row is re-pointed to S2 with a `[Fork]` title...
+        let current = conversation_service::get_by_id(&db.conn, pre.id)
+            .await
+            .unwrap();
+        assert_eq!(current.external_id.as_deref(), Some("session-S2"));
+        assert_eq!(current.title.as_deref(), Some("[Fork] History"));
+        // ...and a sibling preserves the pre-fork S1 history.
+        let sibling = conversation_service::get_by_id(&db.conn, result.sibling_conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(sibling.external_id.as_deref(), Some("session-S1"));
     }
 
     // --- wait_for_session_options polling ----------------------------------
