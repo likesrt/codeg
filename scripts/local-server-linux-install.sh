@@ -352,13 +352,16 @@ first_time_setup() {
   echo ""
 }
 
-# 执行更新流程：重启服务，更新版本记录
+# 执行更新流程：更新管理脚本、重启服务、更新版本记录
 # 参数：$1 - release tag
 # 返回：无
 do_update() {
   local tag="$1"
 
   log_info "更新到 $tag ..."
+
+  # 更新管理脚本（codeg 和 codeg-init-tools）
+  install_scripts
 
   # 重启服务（download_and_install 已停止旧服务）
   systemctl start codeg-server
