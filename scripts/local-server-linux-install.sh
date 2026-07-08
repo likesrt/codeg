@@ -92,11 +92,12 @@ ask_proxy_mode() {
     return
   fi
 
-  echo ""
-  echo "请选择 GitHub 代理方式："
-  echo "  1) 自动检测（推荐）"
-  echo "  2) 使用代理"
-  echo "  3) 不使用代理"
+  # 菜单文字输出到 stderr，避免被 $(...) 捕获到返回值
+  echo "" >&2
+  echo "请选择 GitHub 代理方式：" >&2
+  echo "  1) 自动检测（推荐）" >&2
+  echo "  2) 使用代理" >&2
+  echo "  3) 不使用代理" >&2
   read -r -p "请选择 [1-3]（默认 1）: " choice </dev/tty
   echo "${choice:-1}"
 }
