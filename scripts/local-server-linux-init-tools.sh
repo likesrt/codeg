@@ -283,8 +283,8 @@ install_nvm_node() {
   nvm alias default "$CODEG_NODE_VERSION"
   nvm use --silent default
 
-  # 创建 current 软链接，方便非交互式 shell 使用
-  ln -sfn "$(npm prefix -g)" "$nvm_dir/current"
+  # 创建 current 软链接指向当前 Node 版本目录（确保 bin/node、bin/npm 可直接访问）
+  ln -sfn "$NVM_DIR/versions/node/$(nvm current)" "$nvm_dir/current"
 
   # 安装包管理器
   if [ "$MIRROR" = "cn" ]; then
@@ -566,6 +566,7 @@ rebuild_env_paths() {
   has_tool uv && tool_env="${tool_env}UV_INSTALL_DIR=$TOOLS_ROOT/uv/bin"$'\n'"UV_CACHE_DIR=$TOOLS_ROOT/uv/cache"$'\n'
   has_tool python && tool_env="${tool_env}PYTHON_ROOT=$TOOLS_ROOT/python"$'\n'
   has_tool node && tool_env="${tool_env}NVM_DIR=$TOOLS_ROOT/nvm"$'\n'"NVM_SYMLINK_CURRENT=true"$'\n'
+  has_tool bun && tool_env="${tool_env}BUN_INSTALL=$TOOLS_ROOT/bun"$'\n'
   has_tool rust && tool_env="${tool_env}CARGO_HOME=$TOOLS_ROOT/cargo"$'\n'"RUSTUP_HOME=$TOOLS_ROOT/rustup"$'\n'
   has_tool go && tool_env="${tool_env}GOROOT=$TOOLS_ROOT/go"$'\n'"GOPATH=$TOOLS_ROOT/gopath"$'\n'
   has_tool java && tool_env="${tool_env}JAVA_HOME=$TOOLS_ROOT/java"$'\n'
@@ -607,6 +608,7 @@ update_profile_d() {
     has_tool uv && echo "export UV_INSTALL_DIR=\"$TOOLS_ROOT/uv/bin\"" && echo "export UV_CACHE_DIR=\"$TOOLS_ROOT/uv/cache\""
     has_tool python && echo "export PYTHON_ROOT=\"$TOOLS_ROOT/python\""
     has_tool node && echo "export NVM_DIR=\"$TOOLS_ROOT/nvm\"" && echo "export NVM_SYMLINK_CURRENT=true"
+    has_tool bun && echo "export BUN_INSTALL=\"$TOOLS_ROOT/bun\""
     has_tool rust && echo "export CARGO_HOME=\"$TOOLS_ROOT/cargo\"" && echo "export RUSTUP_HOME=\"$TOOLS_ROOT/rustup\""
     has_tool go && echo "export GOROOT=\"$TOOLS_ROOT/go\"" && echo "export GOPATH=\"$TOOLS_ROOT/gopath\""
     has_tool java && echo "export JAVA_HOME=\"$TOOLS_ROOT/java\""
