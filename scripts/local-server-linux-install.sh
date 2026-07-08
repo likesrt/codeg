@@ -26,8 +26,10 @@ ENV_FILE="/opt/codeg/.env"
 VERSION_FILE="/opt/codeg/.version"
 SERVICE_FILE="/etc/systemd/system/codeg-server.service"
 
-# 代理相关变量（detect_proxy 会设置）
-USE_PROXY=0
+# 代理相关变量（detect_proxy 会设置，按域名独立控制）
+API_NEED_PROXY=0
+RAW_NEED_PROXY=0
+DOWNLOAD_NEED_PROXY=0
 PROXY_PREFIX=""
 
 # 系统依赖列表
@@ -73,46 +75,81 @@ detect_arch() {
   esac
 }
 
-# 检测 GitHub 是否可直连，决定是否使用代理
+# 检测单个 URL 是否可直连
+# 参数：$1 - URL
+# 返回：可直连返回 0，不可直连返回 1
+check_url() {
+  curl -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
+}
+
+# 检测 GitHub 各域名连通性，按域名独立决定是否使用代理
 # 优先级：CODEG_PROXY 环境变量 > 自动检测
 # 参数：无
-# 返回：无。副作用：设置 USE_PROXY 和 PROXY_PREFIX
+# 返回：无。副作用：设置 API/RAW/DOWNLOAD_NEED_PROXY 和 PROXY_PREFIX
 detect_proxy() {
   # 用户通过环境变量显式指定代理
   if [ -n "${CODEG_PROXY:-}" ]; then
     if [ "$CODEG_PROXY" = "none" ]; then
-      USE_PROXY=0
       log_info "CODEG_PROXY=none，强制不使用代理"
     else
-      USE_PROXY=1
       PROXY_PREFIX="$CODEG_PROXY"
+      API_NEED_PROXY=1
+      RAW_NEED_PROXY=1
+      DOWNLOAD_NEED_PROXY=1
       log_info "使用指定代理：$PROXY_PREFIX"
     fi
     return
   fi
 
-  # 自动检测：尝试直连 GitHub API
   log_info "检测 GitHub 连通性 ..."
-  if curl -fsSL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$REPO" >/dev/null 2>&1; then
-    USE_PROXY=0
-    log_info "GitHub 可直连，不使用代理"
+  PROXY_PREFIX="$DEFAULT_PROXY"
+
+  # 分别检测三个域名（连通性可能不同）
+  if check_url "https://api.github.com/repos/$REPO"; then
+    API_NEED_PROXY=0
   else
-    USE_PROXY=1
-    PROXY_PREFIX="$DEFAULT_PROXY"
-    log_info "GitHub 无法直连，启用代理：$PROXY_PREFIX"
+    API_NEED_PROXY=1
+  fi
+
+  if check_url "$RAW_BASE/local-server-linux-install.sh"; then
+    RAW_NEED_PROXY=0
+  else
+    RAW_NEED_PROXY=1
+  fi
+
+  if check_url "https://github.com/$REPO/releases"; then
+    DOWNLOAD_NEED_PROXY=0
+  else
+    DOWNLOAD_NEED_PROXY=1
+  fi
+
+  local total=$((API_NEED_PROXY + RAW_NEED_PROXY + DOWNLOAD_NEED_PROXY))
+  if [ "$total" -eq 0 ]; then
+    log_info "GitHub 全部可直连，不使用代理"
+  else
+    log_info "部分域名需要代理（api=$API_NEED_PROXY raw=$RAW_NEED_PROXY download=$DOWNLOAD_NEED_PROXY）"
   fi
 }
 
-# 给 URL 加上代理前缀（如果需要代理）
+# 给 URL 加上代理前缀（根据域名独立判断是否走代理）
 # 参数：$1 - 原始完整 URL
 # 返回：echo 输出处理后的 URL
 proxy_url() {
   local url="$1"
-  if [ "$USE_PROXY" -eq 1 ]; then
-    echo "${PROXY_PREFIX}${url}"
-  else
-    echo "$url"
-  fi
+  case "$url" in
+    *"api.github.com"*)
+      [ "$API_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
+      ;;
+    *"raw.githubusercontent.com"*)
+      [ "$RAW_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
+      ;;
+    *"github.com"*)
+      [ "$DOWNLOAD_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
+      ;;
+    *)
+      echo "$url"
+      ;;
+  esac
 }
 
 # ===== 系统依赖安装 =====
