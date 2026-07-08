@@ -82,12 +82,12 @@ check_url() {
   curl -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
 }
 
-# 交互式询问代理方式（stdin 非终端时跳过，走自动检测）
+# 交互式询问代理方式（通过 /dev/tty 读取，支持 curl|bash 管道模式）
 # 参数：无
 # 返回：echo 输出 1（自动检测）、2（使用代理）、3（不使用代理）
 ask_proxy_mode() {
-  # 通过管道执行时（curl | bash）stdin 不是终端，跳过交互
-  if [ ! -t 0 ]; then
+  # /dev/tty 不可用时（纯非交互环境）走自动检测
+  if [ ! -e /dev/tty ]; then
     echo 1
     return
   fi
@@ -97,7 +97,7 @@ ask_proxy_mode() {
   echo "  1) 自动检测（推荐）"
   echo "  2) 使用代理"
   echo "  3) 不使用代理"
-  read -r -p "请选择 [1-3]（默认 1）: " choice
+  read -r -p "请选择 [1-3]（默认 1）: " choice </dev/tty
   echo "${choice:-1}"
 }
 
