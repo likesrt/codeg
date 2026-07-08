@@ -6,11 +6,18 @@ set -euo pipefail
 # 功能：从 GitHub Releases 下载 codeg-server 二进制和 web 资源，配置 systemd 服务
 # 用法：curl -fsSL https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 #       或：bash local-server-linux-install.sh [--force]
+# 国内服务器如果无法下载本脚本，可使用代理：
+#       curl -fsSL https://cdn.gh-proxy.org/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
+# 也可通过环境变量 CODEG_PROXY 指定代理前缀：
+#       CODEG_PROXY=https://cdn.gh-proxy.org/ bash local-server-linux-install.sh
 # ============================================================
 
 # ===== 常量 =====
 REPO="likesrt/codeg"
 GITHUB_API="https://api.github.com/repos/$REPO/releases"
+GITHUB_BASE="https://github.com/$REPO"
+RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
+DEFAULT_PROXY="https://cdn.gh-proxy.org/"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/opt/codeg/data"
 WEB_DIR="/opt/codeg/web"
@@ -18,7 +25,10 @@ TOOLS_DIR="/opt/codeg/tools"
 ENV_FILE="/opt/codeg/.env"
 VERSION_FILE="/opt/codeg/.version"
 SERVICE_FILE="/etc/systemd/system/codeg-server.service"
-RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
+
+# 代理相关变量（detect_proxy 会设置）
+USE_PROXY=0
+PROXY_PREFIX=""
 
 # 系统依赖列表
 SYSTEM_DEPS=(
@@ -61,6 +71,48 @@ detect_arch() {
     aarch64|arm64) echo "arm64" ;;
     *) log_error "不支持的架构：$(uname -m)" ;;
   esac
+}
+
+# 检测 GitHub 是否可直连，决定是否使用代理
+# 优先级：CODEG_PROXY 环境变量 > 自动检测
+# 参数：无
+# 返回：无。副作用：设置 USE_PROXY 和 PROXY_PREFIX
+detect_proxy() {
+  # 用户通过环境变量显式指定代理
+  if [ -n "${CODEG_PROXY:-}" ]; then
+    if [ "$CODEG_PROXY" = "none" ]; then
+      USE_PROXY=0
+      log_info "CODEG_PROXY=none，强制不使用代理"
+    else
+      USE_PROXY=1
+      PROXY_PREFIX="$CODEG_PROXY"
+      log_info "使用指定代理：$PROXY_PREFIX"
+    fi
+    return
+  fi
+
+  # 自动检测：尝试直连 GitHub API
+  log_info "检测 GitHub 连通性 ..."
+  if curl -fsSL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$REPO" >/dev/null 2>&1; then
+    USE_PROXY=0
+    log_info "GitHub 可直连，不使用代理"
+  else
+    USE_PROXY=1
+    PROXY_PREFIX="$DEFAULT_PROXY"
+    log_info "GitHub 无法直连，启用代理：$PROXY_PREFIX"
+  fi
+}
+
+# 给 URL 加上代理前缀（如果需要代理）
+# 参数：$1 - 原始完整 URL
+# 返回：echo 输出处理后的 URL
+proxy_url() {
+  local url="$1"
+  if [ "$USE_PROXY" -eq 1 ]; then
+    echo "${PROXY_PREFIX}${url}"
+  else
+    echo "$url"
+  fi
 }
 
 # ===== 系统依赖安装 =====
@@ -110,7 +162,9 @@ get_local_version() {
 # 参数：无
 # 返回：echo 输出最新 tag（local-server-linux-YYYYMMDD-HHMM）
 get_remote_version() {
-  curl -fsSL "$GITHUB_API" 2>/dev/null \
+  local api_url
+  api_url=$(proxy_url "$GITHUB_API")
+  curl -fsSL "$api_url" 2>/dev/null \
     | jq -r '[.[] | select(.tag_name | startswith("local-server-linux-"))][0].tag_name // empty'
 }
 
@@ -122,7 +176,8 @@ get_remote_version() {
 download_and_install() {
   local tag="$1"
   local arch="$2"
-  local download_base="https://github.com/$REPO/releases/download/$tag"
+  local download_base
+  download_base=$(proxy_url "https://github.com/$REPO/releases/download/$tag")
 
   local tmp_dir
   tmp_dir=$(mktemp -d)
@@ -234,10 +289,13 @@ EOF
 install_scripts() {
   log_info "安装管理脚本 ..."
 
-  curl -fsSL "$RAW_BASE/local-server-linux-ctl.sh" -o "$INSTALL_DIR/codeg"
+  local raw_base
+  raw_base=$(proxy_url "$RAW_BASE")
+
+  curl -fsSL "$raw_base/local-server-linux-ctl.sh" -o "$INSTALL_DIR/codeg"
   chmod +x "$INSTALL_DIR/codeg"
 
-  curl -fsSL "$RAW_BASE/local-server-linux-init-tools.sh" -o "$INSTALL_DIR/codeg-init-tools"
+  curl -fsSL "$raw_base/local-server-linux-init-tools.sh" -o "$INSTALL_DIR/codeg-init-tools"
   chmod +x "$INSTALL_DIR/codeg-init-tools"
 
   log_info "管理脚本安装完成"
@@ -328,6 +386,9 @@ main() {
   local arch
   arch=$(detect_arch)
   log_info "检测到架构：$arch"
+
+  # 检测 GitHub 代理需求
+  detect_proxy
 
   # 安装系统依赖
   install_system_deps

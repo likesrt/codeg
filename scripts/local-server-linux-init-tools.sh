@@ -161,7 +161,7 @@ install_uv() {
     arch=$(detect_arch)
     uv_arch="x86_64"
     [ "$arch" = "arm64" ] && uv_arch="aarch64"
-    curl -LsSf "https://ghproxy.com/https://github.com/astral-sh/uv/releases/download/$CODEG_UV_VERSION/uv-$uv_arch-unknown-linux-gnu.tar.gz" \
+    curl -LsSf "https://cdn.gh-proxy.org/https://github.com/astral-sh/uv/releases/download/$CODEG_UV_VERSION/uv-$uv_arch-unknown-linux-gnu.tar.gz" \
       | tar xz -C "$uv_root"
     cp "$uv_root"/uv-$uv_arch-unknown-linux-gnu/* "$uv_root/bin/" 2>/dev/null || true
   else
@@ -250,7 +250,7 @@ install_bun() {
     local arch
     arch=$(detect_arch)
     mkdir -p "$bun_root/bin"
-    curl -L "https://ghproxy.com/https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip" -o /tmp/bun.zip
+    curl -L "https://cdn.gh-proxy.org/https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip" -o /tmp/bun.zip
     unzip -o /tmp/bun.zip -d /tmp/bun-extract
     cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
     chmod +x "$bun_root/bin/bun"
