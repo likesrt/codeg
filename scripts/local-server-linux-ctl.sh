@@ -9,11 +9,18 @@ set -euo pipefail
 # ============================================================
 
 # ===== 常量 =====
+REPO="likesrt/codeg"
 SERVICE_NAME="codeg-server"
 ENV_FILE="/opt/codeg/.env"
-INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh"
+INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/$REPO/main/scripts/local-server-linux-install.sh"
+RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
 # GitHub 代理前缀（国内服务器自动使用）
 GH_PROXY="https://cdn.gh-proxy.org/"
+# 管理脚本列表
+SCRIPTS=(
+  "local-server-linux-ctl.sh:codeg"
+  "local-server-linux-init-tools.sh:codeg-init-tools"
+)
 
 # 打印菜单标题
 # 参数：无
@@ -38,6 +45,7 @@ print_menu() {
   echo "  8) 设置开机自启"
   echo "  9) 关闭开机自启"
   echo "  0) 更新到最新版"
+  echo "  s) 更新管理脚本"
   echo "  q) 退出"
   echo "  ─────────────────────────"
 }
@@ -134,6 +142,28 @@ do_update() {
   curl --http1.1 -fsSL "$url" | bash
 }
 
+# 仅更新管理脚本（codeg 和 codeg-init-tools），不更新二进制
+# 参数：无
+# 返回：无
+do_update_scripts() {
+  echo "正在更新管理脚本 ..."
+  # 检测代理
+  local proxy=""
+  if ! curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$RAW_BASE/local-server-linux-ctl.sh" >/dev/null 2>&1; then
+    proxy="$GH_PROXY"
+    echo "GitHub 无法直连，使用代理"
+  fi
+
+  for entry in "${SCRIPTS[@]}"; do
+    local remote_file="${entry%%:*}"
+    local local_name="${entry##*:}"
+    echo "  下载 $remote_file -> /usr/local/bin/$local_name"
+    curl --http1.1 -fsSL "${proxy}${RAW_BASE}/${remote_file}" -o "/usr/local/bin/$local_name"
+    chmod +x "/usr/local/bin/$local_name"
+  done
+  echo "管理脚本更新完成"
+}
+
 # 执行菜单选择对应的操作
 # 参数：$1 - 菜单选项
 # 返回：无
@@ -150,6 +180,7 @@ handle_choice() {
     8) do_enable ;;
     9) do_disable ;;
     0) do_update ;;
+    s|S) do_update_scripts ;;
     q|Q) echo "再见"; exit 0 ;;
     *) echo "无效选项：$choice" ;;
   esac
@@ -186,7 +217,8 @@ print_help() {
   init      初始化工具链
   enable    设置开机自启
   disable   关闭开机自启
-  update    更新到最新版
+  update          更新到最新版（全部）
+  update-scripts  仅更新管理脚本
 
 不带子命令时进入交互式菜单。
 EOF
@@ -218,6 +250,7 @@ main() {
     enable) do_enable ;;
     disable) do_disable ;;
     update) do_update ;;
+    update-scripts) do_update_scripts ;;
     -h|--help|help) print_help ;;
     *)
       echo "未知子命令：$subcmd"

@@ -108,7 +108,7 @@ ask_mirror_preference() {
 ask_tool_selection() {
   echo ""
   echo "请选择要安装的工具链（多选，空格分隔）："
-  echo "  1) pyenv + Python $CODEG_PYTHON_VERSION"
+  echo "  1) Python $CODEG_PYTHON_VERSION（uv 管理，无需编译）"
   echo "  2) nvm + Node.js $CODEG_NODE_VERSION（含 pnpm/yarn）"
   echo "  3) Rust stable + cargo-xwin"
   echo "  4) Bun $CODEG_BUN_VERSION"
@@ -212,29 +212,51 @@ install_uv() {
   log_info "uv 安装完成"
 }
 
-# 安装 pyenv 和指定版本 Python
+# 用 uv 安装预编译 Python（无需编译，快��可靠）
 # 参数：无
-# 返回：无。副作用：克隆 pyenv 到 $TOOLS_ROOT/pyenv，安装 Python 并装 pip/setuptools/wheel
+# 返回：无。副作用：通过 uv 下载预编译 Python 到 $TOOLS_ROOT/python
 install_pyenv_python() {
-  log_info "安装 pyenv + Python $CODEG_PYTHON_VERSION ..."
-  local pyenv_root="$TOOLS_ROOT/pyenv"
-  local git_url="https://github.com/pyenv/pyenv.git"
-  [ "$MIRROR" = "cn" ] && git_url="https://gitee.com/mirrors/pyenv.git"
+  log_info "安装 Python $CODEG_PYTHON_VERSION（uv 预编译）..."
 
-  if [ ! -x "$pyenv_root/bin/pyenv" ]; then
-    git clone --depth=1 "$git_url" "$pyenv_root"
+  # 确保 uv 可用，不可用时自动安装
+  local uv_bin="$TOOLS_ROOT/uv/bin/uv"
+  if [ ! -x "$uv_bin" ]; then
+    log_info "uv 未安装，先安装 uv ..."
+    install_uv
+    uv_bin="$TOOLS_ROOT/uv/bin/uv"
   fi
 
-  export PYENV_ROOT="$pyenv_root"
-  export PATH="$pyenv_root/bin:$pyenv_root/shims:$PATH"
-  eval "$(pyenv init -)"
+  local python_root="$TOOLS_ROOT/python"
+  mkdir -p "$python_root"
 
-  pyenv install -s "$CODEG_PYTHON_VERSION"
-  pyenv global "$CODEG_PYTHON_VERSION"
-  python -m pip install --upgrade pip setuptools wheel
+  # 用 uv 下载并安装预编译 Python
+  UV_PYTHON_INSTALL_DIR="$python_root" "$uv_bin" python install "$CODEG_PYTHON_VERSION"
+
+  # 查找安装后的 Python 路径（uv 的目录结构含架构信息）
+  local python_path python_dir
+  python_path=$(UV_PYTHON_INSTALL_DIR="$python_root" "$uv_bin" python find "$CODEG_PYTHON_VERSION" 2>/dev/null || true)
+  if [ -z "$python_path" ] || [ ! -x "$python_path" ]; then
+    python_dir=$(ls -d "$python_root"/cpython-"$CODEG_PYTHON_VERSION"-linux-*gnu/install 2>/dev/null | head -1)
+    [ -z "$python_dir" ] && log_error "未找到 Python 安装目录"
+    python_path="$python_dir/bin/python3"
+  fi
+  python_dir=$(dirname "$(dirname "$python_path")")
+
+  # 创建 python/pip 软链接
+  mkdir -p "$python_root/bin"
+  ln -sf "$python_path" "$python_root/bin/python"
+  ln -sf "$python_path" "$python_root/bin/python3"
+  ln -sf "$python_dir/bin/pip" "$python_root/bin/pip" 2>/dev/null || true
+  ln -sf "$python_dir/bin/pip3" "$python_root/bin/pip3" 2>/dev/null || true
+
+  # 安装基础包（国内镜像加速 pip）
+  if [ "$MIRROR" = "cn" ]; then
+    "$python_root/bin/pip" config set global.index-url https://mirrors.aliyun.com/pypi/simple/ 2>/dev/null || true
+  fi
+  "$python_root/bin/pip" install --upgrade pip setuptools wheel 2>/dev/null || true
 
   INSTALLED_TOOLS="$INSTALLED_TOOLS python"
-  log_info "pyenv + Python 安装完成"
+  log_info "Python 安装完成"
 }
 
 # 安装 nvm 和指定版本 Node.js，附带 pnpm 和 yarn
@@ -487,18 +509,16 @@ install_browsers() {
   log_info "安装浏览器自动化工具 ..."
 
   # 确保 Python 可用
-  local pyenv_root="$TOOLS_ROOT/pyenv"
-  if [ ! -x "$pyenv_root/bin/pyenv" ]; then
+  local python_bin="$TOOLS_ROOT/python/bin/python"
+  local pip_bin="$TOOLS_ROOT/python/bin/pip"
+  if [ ! -x "$python_bin" ]; then
     log_error "浏览器自动化需要先安装 Python（选项 1）"
     return 1
   fi
-  export PYENV_ROOT="$pyenv_root"
-  export PATH="$pyenv_root/bin:$pyenv_root/shims:$PATH"
-  eval "$(pyenv init -)"
 
   # 安装 playwright 和 camoufox
-  pip install "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
-  python -m playwright install chromium
+  "$pip_bin" install "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
+  "$python_bin" -m playwright install chromium
   camoufox fetch
 
   INSTALLED_TOOLS="$INSTALLED_TOOLS browsers"
@@ -520,7 +540,7 @@ has_tool() {
 build_tool_path() {
   local paths=""
   has_tool uv && paths="$paths$TOOLS_ROOT/uv/bin:"
-  has_tool python && paths="$paths$TOOLS_ROOT/pyenv/shims:$TOOLS_ROOT/pyenv/bin:"
+  has_tool python && paths="$paths$TOOLS_ROOT/python/bin:"
   has_tool node && paths="$paths$TOOLS_ROOT/nvm/current/bin:"
   has_tool bun && paths="$paths$TOOLS_ROOT/bun/bin:"
   has_tool rust && paths="$paths$TOOLS_ROOT/cargo/bin:"
@@ -544,7 +564,7 @@ rebuild_env_paths() {
   local tool_env=""
   tool_env="${tool_env}PATH=${full_path}"$'\n'
   has_tool uv && tool_env="${tool_env}UV_INSTALL_DIR=$TOOLS_ROOT/uv/bin"$'\n'"UV_CACHE_DIR=$TOOLS_ROOT/uv/cache"$'\n'
-  has_tool python && tool_env="${tool_env}PYENV_ROOT=$TOOLS_ROOT/pyenv"$'\n'
+  has_tool python && tool_env="${tool_env}PYTHON_ROOT=$TOOLS_ROOT/python"$'\n'
   has_tool node && tool_env="${tool_env}NVM_DIR=$TOOLS_ROOT/nvm"$'\n'"NVM_SYMLINK_CURRENT=true"$'\n'
   has_tool rust && tool_env="${tool_env}CARGO_HOME=$TOOLS_ROOT/cargo"$'\n'"RUSTUP_HOME=$TOOLS_ROOT/rustup"$'\n'
   has_tool go && tool_env="${tool_env}GOROOT=$TOOLS_ROOT/go"$'\n'"GOPATH=$TOOLS_ROOT/gopath"$'\n'
@@ -585,7 +605,7 @@ update_profile_d() {
     echo "# 由 codeg-init-tools 自动生成，请勿手动编辑"
     echo "export PATH=\"$full_path\""
     has_tool uv && echo "export UV_INSTALL_DIR=\"$TOOLS_ROOT/uv/bin\"" && echo "export UV_CACHE_DIR=\"$TOOLS_ROOT/uv/cache\""
-    has_tool python && echo "export PYENV_ROOT=\"$TOOLS_ROOT/pyenv\""
+    has_tool python && echo "export PYTHON_ROOT=\"$TOOLS_ROOT/python\""
     has_tool node && echo "export NVM_DIR=\"$TOOLS_ROOT/nvm\"" && echo "export NVM_SYMLINK_CURRENT=true"
     has_tool rust && echo "export CARGO_HOME=\"$TOOLS_ROOT/cargo\"" && echo "export RUSTUP_HOME=\"$TOOLS_ROOT/rustup\""
     has_tool go && echo "export GOROOT=\"$TOOLS_ROOT/go\"" && echo "export GOPATH=\"$TOOLS_ROOT/gopath\""
