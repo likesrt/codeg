@@ -82,8 +82,27 @@ check_url() {
   curl -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
 }
 
+# 交互式询问代理方式（stdin 非终端时跳过，走自动检测）
+# 参数：无
+# 返回：echo 输出 1（自动检测）、2（使用代理）、3（不使用代理）
+ask_proxy_mode() {
+  # 通过管道执行时（curl | bash）stdin 不是终端，跳过交互
+  if [ ! -t 0 ]; then
+    echo 1
+    return
+  fi
+
+  echo ""
+  echo "请选择 GitHub 代理方式："
+  echo "  1) 自动检测（推荐）"
+  echo "  2) 使用代理"
+  echo "  3) 不使用代理"
+  read -r -p "请选择 [1-3]（默认 1）: " choice
+  echo "${choice:-1}"
+}
+
 # 检测 GitHub 各域名连通性，按域名独立决定是否使用代理
-# 优先级：CODEG_PROXY 环境变量 > 自动检测
+# 优先级：CODEG_PROXY 环境变量 > 交互式选择 > 自动检测
 # 参数：无
 # 返回：无。副作用：设置 API/RAW/DOWNLOAD_NEED_PROXY 和 PROXY_PREFIX
 detect_proxy() {
@@ -101,10 +120,29 @@ detect_proxy() {
     return
   fi
 
-  log_info "检测 GitHub 连通性 ..."
   PROXY_PREFIX="$DEFAULT_PROXY"
 
-  # 分别检测三个域名（连通性可能不同）
+  # 交互式选择代理方式
+  local mode
+  mode=$(ask_proxy_mode)
+  case "$mode" in
+    2)
+      # 用户选择使用代理
+      API_NEED_PROXY=1
+      RAW_NEED_PROXY=1
+      DOWNLOAD_NEED_PROXY=1
+      log_info "已选择使用代理：$PROXY_PREFIX"
+      return
+      ;;
+    3)
+      # 用户选择不使用代理
+      log_info "已选择不使用代理"
+      return
+      ;;
+  esac
+
+  # 自动检测：分别检测三个域名
+  log_info "自动检测 GitHub 连通性 ..."
   if check_url "https://api.github.com/repos/$REPO"; then
     API_NEED_PROXY=0
   else
