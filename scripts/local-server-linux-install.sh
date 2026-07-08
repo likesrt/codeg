@@ -79,7 +79,14 @@ detect_arch() {
 # 参数：$1 - URL
 # 返回：可直连返回 0，不可直连返回 1
 check_url() {
-  curl -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
+  curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
+}
+
+# 统一下载函数，强制 HTTP/1.1 避免代理 HTTP/2 协议错误
+# 参数：透传给 curl 的所有参数
+# 返回：curl 的退出码
+dl() {
+  curl --http1.1 "$@"
 }
 
 # 交互式询问代理方式（通过 /dev/tty 读取，支持 curl|bash 管道模式）
@@ -240,7 +247,7 @@ get_local_version() {
 get_remote_version() {
   local api_url
   api_url=$(proxy_url "$GITHUB_API")
-  curl -fsSL "$api_url" 2>/dev/null \
+  dl -fsSL "$api_url" 2>/dev/null \
     | jq -r '[.[] | select(.tag_name | startswith("local-server-linux-"))][0].tag_name // empty'
 }
 
@@ -263,16 +270,16 @@ download_and_install() {
 
   # 下载二进制
   log_info "下载 codeg-server-linux-$arch ..."
-  curl -fsSL "$download_base/codeg-server-linux-$arch" -o "$_CLEANUP_TMP/codeg-server"
+  dl -fsSL "$download_base/codeg-server-linux-$arch" -o "$_CLEANUP_TMP/codeg-server"
   chmod +x "$_CLEANUP_TMP/codeg-server"
 
   log_info "下载 codeg-mcp-linux-$arch ..."
-  curl -fsSL "$download_base/codeg-mcp-linux-$arch" -o "$_CLEANUP_TMP/codeg-mcp"
+  dl -fsSL "$download_base/codeg-mcp-linux-$arch" -o "$_CLEANUP_TMP/codeg-mcp"
   chmod +x "$_CLEANUP_TMP/codeg-mcp"
 
   # 下载 web 资源
   log_info "下载 codeg-web.tar.gz ..."
-  curl -fsSL "$download_base/codeg-web.tar.gz" -o "$_CLEANUP_TMP/codeg-web.tar.gz"
+  dl -fsSL "$download_base/codeg-web.tar.gz" -o "$_CLEANUP_TMP/codeg-web.tar.gz"
 
   # 安装二进制到 /usr/local/bin/
   mkdir -p "$INSTALL_DIR"
@@ -372,10 +379,10 @@ install_scripts() {
   local raw_base
   raw_base=$(proxy_url "$RAW_BASE")
 
-  curl -fsSL "$raw_base/local-server-linux-ctl.sh" -o "$INSTALL_DIR/codeg"
+  dl -fsSL "$raw_base/local-server-linux-ctl.sh" -o "$INSTALL_DIR/codeg"
   chmod +x "$INSTALL_DIR/codeg"
 
-  curl -fsSL "$raw_base/local-server-linux-init-tools.sh" -o "$INSTALL_DIR/codeg-init-tools"
+  dl -fsSL "$raw_base/local-server-linux-init-tools.sh" -o "$INSTALL_DIR/codeg-init-tools"
   chmod +x "$INSTALL_DIR/codeg-init-tools"
 
   log_info "管理脚本安装完成"

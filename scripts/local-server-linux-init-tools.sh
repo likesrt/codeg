@@ -79,6 +79,13 @@ detect_arch() {
   esac
 }
 
+# 统一下载函数，强制 HTTP/1.1 避免代理 HTTP/2 协议错误
+# 参数：透传给 curl 的所有参数
+# 返回：curl 的退出码
+dl() {
+  curl --http1.1 "$@"
+}
+
 # 询问全局镜像源偏好，设置 MIRROR 变量
 # 参数：无
 # 返回：无。副作用：设置 MIRROR 为 cn 或 official
@@ -164,7 +171,7 @@ github_download() {
 
   for proxy in "${GITHUB_PROXIES[@]}"; do
     local full_url="${proxy}${url}"
-    if curl -fsSL --connect-timeout 10 --max-time 120 "$full_url" -o "$output" 2>/dev/null; then
+    if dl -fsSL --connect-timeout 10 --max-time 120 "$full_url" -o "$output" 2>/dev/null; then
       log_info "下载成功"
       return 0
     fi
@@ -245,7 +252,7 @@ install_nvm_node() {
   fi
 
   if [ ! -s "$nvm_dir/nvm.sh" ]; then
-    curl -fsSL "$nvm_url" | bash
+    dl -fsSL "$nvm_url" | bash
   fi
 
   export NVM_DIR="$nvm_dir"
@@ -310,9 +317,9 @@ install_rust() {
     # 国内镜像通过 rsproxy 加速
     export RUSTUP_DIST_SERVER="https://rsproxy.cn"
     export RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
-    curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --profile default
+  dl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --profile default
   else
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
+    dl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
   fi
 
   . "$cargo_home/env"
@@ -343,7 +350,7 @@ install_go() {
   local archive="go$CODEG_GO_VERSION.linux-$go_arch.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  curl -fsSL "$base_url/$archive" -o "$tmp_dir/$archive"
+  dl -fsSL "$base_url/$archive" -o "$tmp_dir/$archive"
 
   rm -rf "$go_root"
   mkdir -p "$TOOLS_ROOT" "$TOOLS_ROOT/gopath/bin"
@@ -384,7 +391,7 @@ install_java() {
   if [ "$MIRROR" = "cn" ]; then
     local tsinghua_url="https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/${java_arch}/linux/$filename"
     log_info "从清华镜像下载 Java ..."
-    curl -fsSL "$tsinghua_url" -o "$tmp_dir/$filename" || {
+    dl -fsSL "$tsinghua_url" -o "$tmp_dir/$filename" || {
       # 清华镜像失败时回退到 github_download
       log_warn "清华镜像下载失败，尝试 GitHub 代理 ..."
       github_download "$github_url" "$tmp_dir/$filename" || {
@@ -434,7 +441,7 @@ install_php() {
   local archive="php-$CODEG_PHP_VERSION.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  curl -fsSL "$base_url/$archive" -o "$tmp_dir/$archive"
+  dl -fsSL "$base_url/$archive" -o "$tmp_dir/$archive"
   tar -C "$tmp_dir" -xzf "$tmp_dir/$archive"
 
   # 编译配置：启用常用扩展
@@ -461,7 +468,7 @@ install_php() {
   # 安装 composer
   local composer_url="https://getcomposer.org/download/$CODEG_COMPOSER_VERSION/composer.phar"
   [ "$MIRROR" = "cn" ] && composer_url="https://mirrors.aliyun.com/composer/$CODEG_COMPOSER_VERSION/composer.phar"
-  curl -fsSL "$composer_url" -o "$php_root/bin/composer"
+  dl -fsSL "$composer_url" -o "$php_root/bin/composer"
   chmod +x "$php_root/bin/composer"
 
   cd -

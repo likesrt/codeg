@@ -126,12 +126,12 @@ do_disable() {
 do_update() {
   echo "正在更新 codeg-server ..."
   local url="$INSTALL_SCRIPT_URL"
-  # 检测 GitHub 连通性，失败则使用代理
-  if ! curl -fsSL --connect-timeout 5 --max-time 10 "$INSTALL_SCRIPT_URL" >/dev/null 2>&1; then
+  # 检测 GitHub 连通性，失败则使用代理（强制 HTTP/1.1 避免代理协议错误）
+  if ! curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$INSTALL_SCRIPT_URL" >/dev/null 2>&1; then
     url="${GH_PROXY}${INSTALL_SCRIPT_URL}"
     echo "GitHub 无法直连，使用代理"
   fi
-  curl -fsSL "$url" | bash
+  curl --http1.1 -fsSL "$url" | bash
 }
 
 # 执行菜单选择对应的操作
