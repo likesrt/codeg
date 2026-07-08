@@ -12,6 +12,8 @@ set -euo pipefail
 SERVICE_NAME="codeg-server"
 ENV_FILE="/opt/codeg/.env"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh"
+# GitHub 代理前缀（国内服务器自动使用）
+GH_PROXY="https://cdn.gh-proxy.org/"
 
 # 打印菜单标题
 # 参数：无
@@ -118,12 +120,18 @@ do_disable() {
   echo "已关闭开机自启"
 }
 
-# 更新 codeg-server 到最新版（重新执行安装脚本）
+# 更新 codeg-server 到最新版（自动检测代理，重新执行安装脚本）
 # 参数：无
 # 返回：无
 do_update() {
   echo "正在更新 codeg-server ..."
-  curl -fsSL "$INSTALL_SCRIPT_URL" | bash
+  local url="$INSTALL_SCRIPT_URL"
+  # 检测 GitHub 连通性，失败则使用代理
+  if ! curl -fsSL --connect-timeout 5 --max-time 10 "$INSTALL_SCRIPT_URL" >/dev/null 2>&1; then
+    url="${GH_PROXY}${INSTALL_SCRIPT_URL}"
+    echo "GitHub 无法直连，使用代理"
+  fi
+  curl -fsSL "$url" | bash
 }
 
 # 执行菜单选择对应的操作
