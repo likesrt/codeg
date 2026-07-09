@@ -465,7 +465,16 @@ install_java() {
   fi
   log_info "安装 Java OpenJDK 17 ..."
 
-  apt-get install -y --no-install-recommends openjdk-17-jdk || {
+  # Debian/Ubuntu 的 JDK 包名可能不同，尝试多个
+  local java_pkg=""
+  if apt-cache show openjdk-17-jdk >/dev/null 2>&1; then
+    java_pkg="openjdk-17-jdk"
+  elif apt-cache show openjdk-17-jdk-headless >/dev/null 2>&1; then
+    java_pkg="openjdk-17-jdk-headless"
+  else
+    java_pkg="default-jdk"
+  fi
+  apt-get install -y --no-install-recommends "$java_pkg" || {
     log_warn "apt 安装 Java 失败"
     return 1
   }
@@ -474,7 +483,9 @@ install_java() {
   local java_home
   java_home=$(dirname "$(dirname "$(readlink -f "$(which java 2>/dev/null)")")" 2>/dev/null || true)
   if [ -z "$java_home" ] || [ ! -d "$java_home" ]; then
-    java_home="/usr/lib/jvm/java-17-openjdk-amd64"
+    # 自动查找 JVM 目录
+    java_home=$(ls -d /usr/lib/jvm/java-*-openjdk-* /usr/lib/jvm/default-java 2>/dev/null | head -1 || true)
+    [ -z "$java_home" ] && { log_warn "未找到 Java 安装路径"; return 1; }
   fi
   mkdir -p "$TOOLS_ROOT/java/bin"
   ln -sf "$java_home/bin/java" "$TOOLS_ROOT/java/bin/java"
