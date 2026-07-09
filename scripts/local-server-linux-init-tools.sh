@@ -53,6 +53,7 @@ log_warn() {
 # 返回：无
 log_error() {
   echo -e "\033[31m[ERROR]\033[0m $1" >&2
+  exit 1
 }
 
 # 检测当前是否以 root 运行，非 root 则退出
@@ -344,21 +345,25 @@ install_bun() {
   fi
   log_info "安装 Bun $CODEG_BUN_VERSION ..."
   local bun_root="$TOOLS_ROOT/bun"
-  local arch
-  arch=$(detect_arch)
-
-  local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip"
-
-  # 尝试多个代理下载
-  if ! github_download "$github_url" /tmp/bun.zip; then
-    log_error "Bun 下载失败，所有代理均不可用"
-  fi
-
   mkdir -p "$bun_root/bin"
-  unzip -o /tmp/bun.zip -d /tmp/bun-extract
-  cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
-  chmod +x "$bun_root/bin/bun"
-  rm -rf /tmp/bun.zip /tmp/bun-extract
+
+  if [ "$MIRROR" = "cn" ]; then
+    # 国内用 npm 安装（npmmirror，Node 已安装）
+    npm install -g "bun@$CODEG_BUN_VERSION"
+    ln -sf "$NVM_DIR/current/bin/bun" "$bun_root/bin/bun"
+  else
+    # 官方源从 GitHub 下载二进制
+    local arch
+    arch=$(detect_arch)
+    local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip"
+    if ! github_download "$github_url" /tmp/bun.zip; then
+      log_error "Bun 下载失败，所有代理均不可用"
+    fi
+    unzip -o /tmp/bun.zip -d /tmp/bun-extract
+    cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
+    chmod +x "$bun_root/bin/bun"
+    rm -rf /tmp/bun.zip /tmp/bun-extract
+  fi
 
   "$bun_root/bin/bun" --version >/dev/null
   INSTALLED_TOOLS="$INSTALLED_TOOLS bun"
