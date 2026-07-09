@@ -534,105 +534,35 @@ setup_java_links() {
   log_info "Java 安装完成"
 }
 
-# 安装 PHP 编译依赖
+# 用 apt 安装 PHP 和常用扩展
 # 参数：无
-# 返回：无。副作用：通过 apt 安装 PHP 编译所需的系统包
-install_php_deps() {
-  log_info "安装 PHP 编译依赖 ..."
-  apt-get update -qq
-  apt-get install -y --no-install-recommends \
-    libxml2-dev libcurl4-openssl-dev libssl-dev libzip-dev \
-    libsqlite3-dev libonig-dev libpng-dev libicu-dev \
-    libfreetype-dev libjpeg62-turbo-dev libwebp-dev \
-    autoconf re2c bison
-}
-
-# 编译安装 PHP 和 composer
-# 参数：无
-# 返回：无。副作用：下载 PHP 源码编译到 $TOOLS_ROOT/php，安装 composer
+# 返回：成功返回 0，失败返回 1
 install_php() {
   if [ -x "$TOOLS_ROOT/php/bin/php" ]; then
     log_info "PHP 已安装，跳过"
     INSTALLED_TOOLS="$INSTALLED_TOOLS php"
     return
   fi
-  log_info "安装 PHP $CODEG_PHP_VERSION（编译需要约 10-20 分钟）..."
-  install_php_deps
+  log_info "安装 PHP（apt）..."
 
-  local php_root="$TOOLS_ROOT/php"
-  local archive="php-$CODEG_PHP_VERSION.tar.gz"
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
+  # 直接用 apt 安装 PHP 及常用扩展，不再从源码编译
+  # Debian 13 默认版本较低但可靠，如需 8.5 请手动编译
+  apt-get install -y --no-install-recommends \
+    php-cli php-curl php-mbstring php-xml php-zip php-sqlite3 php-mysql \
+    php-gd php-intl php-soap php-bcmath php-opcache php-sockets \
+    2>/dev/null || {
+    log_warn "PHP apt 安装失败"
+    return 1
+  }
 
-  # 下载 PHP 源码
-  local ok=0
-  if [ "$MIRROR" = "cn" ]; then
-    # 国内：php.net 通过代理，备选直连
-    # github_download 对非 GitHub URL 不适用，用 dl 直接下载
-    if dl -fsSL --connect-timeout 30 --max-time 120 "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" 2>/dev/null; then
-      ok=1
-    else
-      log_warn "php.net 直连失败，尝试代理 ..."
-      github_download "https://github.com/php/php-src/archive/php-$CODEG_PHP_VERSION.tar.gz" "$tmp_dir/$archive" 2>/dev/null && ok=1
-    fi
-  else
-    dl -fsSL "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" && ok=1
-  fi
-  [ "$ok" -eq 0 ] && { log_warn "PHP 源码下载失败"; return 1; }
-
-  tar -C "$tmp_dir" -xzf "$tmp_dir/$archive"
-
-  # 确定解压后的目录名（php.net 和 GitHub 格式不同）
-  local php_src_dir
-  if [ -d "$tmp_dir/php-$CODEG_PHP_VERSION" ]; then
-    php_src_dir="php-$CODEG_PHP_VERSION"
-  elif [ -d "$tmp_dir/php-src-php-$CODEG_PHP_VERSION" ]; then
-    php_src_dir="php-src-php-$CODEG_PHP_VERSION"
-  else
-    # 自动查找解压后的唯一目录
-    php_src_dir=$(ls -d "$tmp_dir"/*/ | head -1 | xargs basename 2>/dev/null || true)
-    [ -z "$php_src_dir" ] && { log_warn "未找到 PHP 源码目录"; return 1; }
-  fi
-  cd "$tmp_dir/$php_src_dir"
-  ./configure \
-    --prefix="$php_root" \
-    --with-config-file-path="$php_root/etc" \
-    --enable-mbstring \
-    --with-curl \
-    --with-openssl \
-    --enable-xml \
-    --with-zip \
-    --with-sqlite3 \
-    --enable-pdo \
-    --with-pdo-sqlite \
-    --with-mysqli \
-    --with-pdo-mysql \
-    --enable-gd \
-    --with-freetype \
-    --with-jpeg \
-    --with-webp \
-    --enable-intl \
-    --enable-soap \
-    --enable-sockets \
-    --enable-exif \
-    --enable-ftp \
-    --enable-bcmath \
-    --enable-opcache \
-    --disable-cgi \
-    --disable-phpdbg
-  make -j"$(nproc)"
-  make install
+  # 链接到统一路径
+  mkdir -p "$TOOLS_ROOT/php/bin"
+  ln -sf "$(which php)" "$TOOLS_ROOT/php/bin/php"
 
   # 安装 composer
   local composer_url="https://getcomposer.org/download/$CODEG_COMPOSER_VERSION/composer.phar"
-  [ "$MIRROR" = "cn" ] && composer_url="https://mirrors.aliyun.com/composer/$CODEG_COMPOSER_VERSION/composer.phar"
-  dl -fsSL "$composer_url" -o "$php_root/bin/composer"
-  chmod +x "$php_root/bin/composer"
-
-  cd -
-  rm -rf "$tmp_dir"
-
-  "$php_root/bin/php" -v | head -1
+  dl -fsSL "$composer_url" -o "$TOOLS_ROOT/php/bin/composer" 2>/dev/null || true
+  chmod +x "$TOOLS_ROOT/php/bin/composer" 2>/dev/null || true
   INSTALLED_TOOLS="$INSTALLED_TOOLS php"
   log_info "PHP 安装完成"
 }
