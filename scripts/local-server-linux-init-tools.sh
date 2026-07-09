@@ -440,7 +440,6 @@ install_go() {
   rm -rf "$go_root"
   mkdir -p "$TOOLS_ROOT" "$TOOLS_ROOT/gopath/bin"
   tar -C "$TOOLS_ROOT" -xzf "$tmp_dir/$archive"
-  mv "$TOOLS_ROOT/go" "$go_root"
   rm -rf "$tmp_dir"
 
   "$go_root/bin/go" version >/dev/null
