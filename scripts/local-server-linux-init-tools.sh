@@ -184,6 +184,11 @@ github_download() {
 # 参数：无
 # 返回：无。副作用：安装 uv/uvx 并追加到 INSTALLED_TOOLS
 install_uv() {
+  if [ -x "$TOOLS_ROOT/uv/bin/uv" ]; then
+    log_info "uv 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS uv"
+    return
+  fi
   log_info "安装 uv $CODEG_UV_VERSION ..."
   local uv_root="$TOOLS_ROOT/uv"
   mkdir -p "$uv_root/bin" "$uv_root/cache"
@@ -216,6 +221,11 @@ install_uv() {
 # 参数：无
 # 返回：无。副作用：通过 uv 下载预编译 Python 到 $TOOLS_ROOT/python
 install_pyenv_python() {
+  if [ -x "$TOOLS_ROOT/python/bin/python" ]; then
+    log_info "Python 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS python"
+    return
+  fi
   log_info "安装 Python $CODEG_PYTHON_VERSION（uv 预编译）..."
 
   # 确保 uv 可用，不可用时自动安装
@@ -263,6 +273,11 @@ install_pyenv_python() {
 # 参数：无
 # 返回：无。副作用：安�� nvm 到 $TOOLS_ROOT/nvm
 install_nvm_node() {
+  if [ -x "$TOOLS_ROOT/nvm/current/bin/node" ] && [ -s "$TOOLS_ROOT/nvm/nvm.sh" ]; then
+    log_info "nvm + Node.js 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS node"
+    return
+  fi
   log_info "安装 nvm + Node.js $CODEG_NODE_VERSION ..."
   local nvm_dir="$TOOLS_ROOT/nvm"
 
@@ -322,6 +337,11 @@ install_nvm_node() {
 # 参数：无
 # 返回：无。副作用：安装 Bun 并追加到 INSTALLED_TOOLS
 install_bun() {
+  if [ -x "$TOOLS_ROOT/bun/bin/bun" ]; then
+    log_info "Bun 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS bun"
+    return
+  fi
   log_info "安装 Bun $CODEG_BUN_VERSION ..."
   local bun_root="$TOOLS_ROOT/bun"
   local arch
@@ -349,6 +369,11 @@ install_bun() {
 # 参数：无
 # 返回：无。副作用：安装 rustup/cargo 到 $TOOLS_ROOT/cargo 和 $TOOLS_ROOT/rustup
 install_rust() {
+  if [ -x "$TOOLS_ROOT/cargo/bin/rustc" ]; then
+    log_info "Rust 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS rust"
+    return
+  fi
   log_info "安装 Rust stable + cargo-xwin ..."
   local cargo_home="$TOOLS_ROOT/cargo"
   local rustup_home="$TOOLS_ROOT/rustup"
@@ -382,6 +407,11 @@ install_rust() {
 # 参数：无
 # 返回：无。副作用：下载并解压 Go tarball，设置 GOROOT/GOPATH
 install_go() {
+  if [ -x "$TOOLS_ROOT/go/bin/go" ]; then
+    log_info "Go 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS go"
+    return
+  fi
   log_info "安装 Go $CODEG_GO_VERSION ..."
   local go_root="$TOOLS_ROOT/go"
   local go_arch
@@ -416,6 +446,11 @@ install_go() {
 # 参数：无
 # 返回：无。副作用：下载并解压 JDK tarball
 install_java() {
+  if [ -x "$TOOLS_ROOT/java/bin/java" ]; then
+    log_info "Java 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS java"
+    return
+  fi
   log_info "安装 Java OpenJDK 17.0.13 (Temurin) ..."
   local java_root="$TOOLS_ROOT/java"
   local arch java_arch
@@ -474,6 +509,11 @@ install_php_deps() {
 # 参数：无
 # 返回：无。副作用：下载 PHP 源码编译到 $TOOLS_ROOT/php，安装 composer
 install_php() {
+  if [ -x "$TOOLS_ROOT/php/bin/php" ]; then
+    log_info "PHP 已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS php"
+    return
+  fi
   log_info "安装 PHP $CODEG_PHP_VERSION（编译需要约 10-20 分钟）..."
   install_php_deps
 
@@ -527,6 +567,11 @@ install_php() {
 # 参数：无
 # 返回：无。副作用：通过 pip 装 playwright/camoufox，通过 playwright CLI 装 chromium
 install_browsers() {
+  if "$TOOLS_ROOT/python/bin/python" -c "import playwright; import camoufox" 2>/dev/null; then
+    log_info "浏览器自动化已安装，跳过"
+    INSTALLED_TOOLS="$INSTALLED_TOOLS browsers"
+    return
+  fi
   log_info "安装浏览器自动化工具 ..."
 
   # 确保 Python 可用
