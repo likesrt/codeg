@@ -268,18 +268,30 @@ download_and_install() {
   _CLEANUP_TMP=$(mktemp -d)
   trap 'rm -rf "$_CLEANUP_TMP"' EXIT
 
-  # 下载二进制
-  log_info "下载 codeg-server-linux-$arch ..."
-  dl -fsSL "$download_base/codeg-server-linux-$arch" -o "$_CLEANUP_TMP/codeg-server"
+  # 下载二进制（代理失败时回退直连）
+  local dl_files=(
+    "codeg-server-linux-$arch:codeg-server"
+    "codeg-mcp-linux-$arch:codeg-mcp"
+    "codeg-web.tar.gz:codeg-web.tar.gz"
+  )
+
+  for entry in "${dl_files[@]}"; do
+    local dl_file="${entry%%:*}"
+    local dl_name="${entry##*:}"
+    log_info "下载 $dl_file ..."
+
+    # 先尝试代理 URL，失败则回退直连
+    if ! dl -fsSL "$download_base/$dl_file" -o "$_CLEANUP_TMP/$dl_name" 2>/dev/null; then
+      if [ "$DOWNLOAD_NEED_PROXY" -eq 1 ]; then
+        local direct_url="https://github.com/$REPO/releases/download/$tag/$dl_file"
+        log_info "代理失败，尝试直连 ..."
+        dl -fsSL "$direct_url" -o "$_CLEANUP_TMP/$dl_name"
+      fi
+    fi
+  done
+
   chmod +x "$_CLEANUP_TMP/codeg-server"
-
-  log_info "下载 codeg-mcp-linux-$arch ..."
-  dl -fsSL "$download_base/codeg-mcp-linux-$arch" -o "$_CLEANUP_TMP/codeg-mcp"
   chmod +x "$_CLEANUP_TMP/codeg-mcp"
-
-  # 下载 web 资源
-  log_info "下载 codeg-web.tar.gz ..."
-  dl -fsSL "$download_base/codeg-web.tar.gz" -o "$_CLEANUP_TMP/codeg-web.tar.gz"
 
   # 安装二进制到 /usr/local/bin/
   mkdir -p "$INSTALL_DIR"
