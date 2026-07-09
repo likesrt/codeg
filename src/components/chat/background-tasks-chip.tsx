@@ -58,7 +58,7 @@ export function BackgroundTasksChip({ contextKey }: { contextKey: string }) {
 
   return (
     <div className="border-b border-sky-500/20 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-700 dark:text-sky-300">
-      <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
+      <div className="mx-auto flex w-full max-w-3xl items-center justify-center gap-2">
         {/* Plain animate-spin on purpose: a motion-safe gate would freeze the
             only "still working" signal for Reduce Motion users. */}
         <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />

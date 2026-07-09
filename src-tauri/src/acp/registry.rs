@@ -24,7 +24,7 @@ pub enum AgentDistribution {
     /// Used for ACP agents distributed as Python packages (e.g. Hermes).
     Uvx {
         version: &'static str,
-        /// The `uvx --from` package spec, e.g. "hermes-agent[acp,mcp]==0.18.0".
+        /// The `uvx --from` package spec, e.g. "hermes-agent[acp,mcp]==0.18.2".
         package: &'static str,
         /// The console-script entry point to run, e.g. "hermes-acp".
         cmd: &'static str,
@@ -240,34 +240,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.17.14",
+                version: "1.17.15",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-darwin-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-darwin-x64.zip",
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-linux-arm64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-linux-x64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-windows-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.14/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.15/opencode-windows-x64.zip",
                     },
                 ],
             },
@@ -278,13 +278,13 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Hermes Agent",
             description: "Nous Research's self-improving agent (ACP via uvx)",
             distribution: AgentDistribution::Uvx {
-                version: "0.18.0",
-                package: "hermes-agent[acp,mcp]==0.18.0",
+                version: "0.18.2",
+                package: "hermes-agent[acp,mcp]==0.18.2",
                 cmd: "hermes-acp",
                 args: &[],
                 env: &[],
                 uv_required: Some("0.5.0"),
-                // hermes-agent 0.18.0 is `requires-python = ">=3.11,<3.14"`, and
+                // hermes-agent 0.18.2 is `requires-python = ">=3.11,<3.14"`, and
                 // its win32 dep `pywinpty` (>=2.0.0,<3) has no Python 3.14 wheel
                 // (the 2.0.15 source build fails against PyO3's 3.13 ceiling).
                 // Without this pin uvx grabs the machine's default interpreter
@@ -300,8 +300,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.117.1",
-                package: "@tencent-ai/codebuddy-code@2.117.1",
+                version: "2.117.2",
+                package: "@tencent-ai/codebuddy-code@2.117.2",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -314,8 +314,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.23.1",
-                package: "@moonshot-ai/kimi-code@0.23.1",
+                version: "0.23.2",
+                package: "@moonshot-ai/kimi-code@0.23.2",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -459,14 +459,14 @@ mod tests {
         assert_npx_version(AgentType::Cline, "3.0.38", "cline@3.0.38", None);
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.117.1",
-            "@tencent-ai/codebuddy-code@2.117.1",
+            "2.117.2",
+            "@tencent-ai/codebuddy-code@2.117.2",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.23.1",
-            "@moonshot-ai/kimi-code@0.23.1",
+            "0.23.2",
+            "@moonshot-ai/kimi-code@0.23.2",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -476,13 +476,13 @@ mod tests {
             None,
         );
         assert_npx_version(AgentType::Pi, "0.0.31", "pi-acp@0.0.31", Some("22.0.0"));
-        assert_binary_version(AgentType::OpenCode, "1.17.14", "/releases/download/v1.17.14/");
+        assert_binary_version(AgentType::OpenCode, "1.17.15", "/releases/download/v1.17.15/");
         assert_uvx_version(
             AgentType::Hermes,
-            "0.18.0",
-            "hermes-agent[acp,mcp]==0.18.0",
+            "0.18.2",
+            "hermes-agent[acp,mcp]==0.18.2",
             Some("0.5.0"),
-            // hermes-agent 0.18.0 is requires-python `<3.14`; uvx must pin an
+            // hermes-agent 0.18.2 is requires-python `<3.14`; uvx must pin an
             // interpreter it (and its win32 `pywinpty` dep) supports.
             Some("3.13"),
         );
