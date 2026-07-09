@@ -543,13 +543,33 @@ install_php() {
   install_php_deps
 
   local php_root="$TOOLS_ROOT/php"
-  local base_url="https://www.php.net/distributions"
-  [ "$MIRROR" = "cn" ] && base_url="https://cn2.php.net/distributions"
-
   local archive="php-$CODEG_PHP_VERSION.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  dl -fsSL "$base_url/$archive" -o "$tmp_dir/$archive"
+
+  # 尝试多个下载源
+  local urls=()
+  if [ "$MIRROR" = "cn" ]; then
+    # 国内优先尝试多个镜像
+    urls=(
+      "https://s.itho.me/day/2025/php-$CODEG_PHP_VERSION.tar.gz"
+      "https://www.php.net/distributions/$archive"
+    )
+  else
+    urls=("https://www.php.net/distributions/$archive")
+  fi
+
+  local ok=0
+  for php_url in "${urls[@]}"; do
+    log_info "尝试下载：$php_url"
+    if dl -fsSL "$php_url" -o "$tmp_dir/$archive" 2>/dev/null; then
+      ok=1
+      break
+    fi
+    log_warn "下载失败，尝试下一个源 ..."
+  done
+  [ "$ok" -eq 0 ] && { log_warn "PHP 源码下载失败"; return 1; }
+
   tar -C "$tmp_dir" -xzf "$tmp_dir/$archive"
 
   # 编译配置：启用常用扩展
@@ -609,18 +629,16 @@ install_browsers() {
   fi
   log_info "安装浏览器自动化工具 ..."
 
-  # 确保 Python 可用
   local python_bin="$TOOLS_ROOT/python/bin/python"
-  local pip_bin="$TOOLS_ROOT/python/bin/pip"
   if [ ! -x "$python_bin" ]; then
     log_warn "浏览器自动化需要先安装 Python（选项 1）"; return 1
-    return 1
   fi
 
-  # 安装 playwright 和 camoufox
-  "$pip_bin" install "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
+  # uv 管理的 Python 需要用 uv pip 安装包
+  local uv_bin="$TOOLS_ROOT/uv/bin/uv"
+  "$uv_bin" pip install --system "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
   "$python_bin" -m playwright install chromium
-  camoufox fetch
+  "$python_bin" -m camoufox fetch
 
   INSTALLED_TOOLS="$INSTALLED_TOOLS browsers"
   log_info "浏览器自动化工具安装完成"
