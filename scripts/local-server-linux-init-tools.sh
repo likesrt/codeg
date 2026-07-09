@@ -14,7 +14,7 @@ CODEG_PNPM_VERSION=10.18.0
 CODEG_YARN_VERSION=1.22.22
 CODEG_NVM_VERSION=v0.40.3
 CODEG_GO_VERSION=1.25.4
-CODEG_BUN_VERSION=1.2.21
+CODEG_BUN_VERSION=1.3.14
 CODEG_UV_VERSION=0.7.12
 CODEG_JAVA_VERSION=17.0.13-tem
 CODEG_PHP_VERSION=8.5.0
@@ -353,14 +353,18 @@ install_bun() {
     ln -sf "$NVM_DIR/current/bin/bun" "$bun_root/bin/bun"
   else
     # 官方源从 GitHub 下载二进制
-    local arch
-    arch=$(detect_arch)
-    local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$arch.zip"
+    local bun_arch
+    case "$(uname -m)" in
+      x86_64) bun_arch="x64" ;;
+      aarch64|arm64) bun_arch="aarch64" ;;
+      *) log_error "不支持的 Bun 架构：$(uname -m)" ;;
+    esac
+    local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$bun_arch.zip"
     if ! github_download "$github_url" /tmp/bun.zip; then
       log_error "Bun 下载失败，所有代理均不可用"
     fi
     unzip -o /tmp/bun.zip -d /tmp/bun-extract
-    cp "/tmp/bun-extract/bun-linux-$arch/bun" "$bun_root/bin/"
+    cp "/tmp/bun-extract/bun-linux-$bun_arch/bun" "$bun_root/bin/"
     chmod +x "$bun_root/bin/bun"
     rm -rf /tmp/bun.zip /tmp/bun-extract
   fi
