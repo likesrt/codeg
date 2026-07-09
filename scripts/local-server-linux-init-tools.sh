@@ -219,12 +219,37 @@ install_uv() {
   log_info "uv 安装完成"
 }
 
-# 用 uv 安装预编译 Python（无需编译，快��可靠）
+# 刷新 Python 的脚本软链接（playwright、camoufox 等）
+refresh_python_symlinks() {
+  local python_root="$TOOLS_ROOT/python"
+  local python_path
+  python_path=$(ls -d "$python_root"/cpython-*/install/bin/python3 2>/dev/null | head -1)
+  [ -z "$python_path" ] && return 0
+
+  local python_dir
+  python_dir=$(dirname "$(dirname "$python_path")")
+  local scripts_dir="$(dirname "$python_dir")/bin"
+
+  mkdir -p "$python_root/bin"
+  ln -sf "$python_path" "$python_root/bin/python" 2>/dev/null || true
+  ln -sf "$python_path" "$python_root/bin/python3" 2>/dev/null || true
+  ln -sf "$python_dir/bin/pip" "$python_root/bin/pip" 2>/dev/null || true
+  ln -sf "$python_dir/bin/pip3" "$python_root/bin/pip3" 2>/dev/null || true
+
+  if [ -d "$scripts_dir" ]; then
+    for s in "$scripts_dir"/*; do
+      [ -f "$s" ] && ln -sf "$s" "$python_root/bin/$(basename "$s")" 2>/dev/null || true
+    done
+  fi
+}
+
+# 用 uv 安装预编译 Python（无需编译）
 # 参数：无
-# 返回：无。副作用：通过 uv 下载预编译 Python 到 $TOOLS_ROOT/python
+# 返回：无
 install_pyenv_python() {
   if [ -x "$TOOLS_ROOT/python/bin/python" ]; then
     log_info "Python 已安装，跳过"
+    refresh_python_symlinks
     INSTALLED_TOOLS="$INSTALLED_TOOLS python"
     return
   fi
@@ -254,12 +279,7 @@ install_pyenv_python() {
   fi
   python_dir=$(dirname "$(dirname "$python_path")")
 
-  # 创建 python/pip 软链接
-  mkdir -p "$python_root/bin"
-  ln -sf "$python_path" "$python_root/bin/python"
-  ln -sf "$python_path" "$python_root/bin/python3"
-  ln -sf "$python_dir/bin/pip" "$python_root/bin/pip" 2>/dev/null || true
-  ln -sf "$python_dir/bin/pip3" "$python_root/bin/pip3" 2>/dev/null || true
+  refresh_python_symlinks
 
   # 安装基础包（国内镜像加速 pip）
   if [ "$MIRROR" = "cn" ]; then
