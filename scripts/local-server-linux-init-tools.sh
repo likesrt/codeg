@@ -261,29 +261,42 @@ install_pyenv_python() {
 
 # 安装 nvm 和指定版本 Node.js，附带 pnpm 和 yarn
 # 参数：无
-# 返回：无。副作用：安装 nvm 到 $TOOLS_ROOT/nvm，Node 到 nvm 管理目录，创建 current 软链接
+# 返回：无。副作用：安�� nvm 到 $TOOLS_ROOT/nvm
 install_nvm_node() {
   log_info "安装 nvm + Node.js $CODEG_NODE_VERSION ..."
   local nvm_dir="$TOOLS_ROOT/nvm"
 
-  # 清理旧系统级安装（可能从之前失败或默认路径遗留）
+  # 清理旧安装残留
   if [ -d /root/.nvm ]; then
     rm -rf /root/.nvm
   fi
 
-  # 必须先设置 NVM_DIR，nvm 安装脚本才会安装到正确位置
+  # 必须先 export NVM_DIR，install.sh 才能识别
   export NVM_DIR="$nvm_dir"
   mkdir -p "$nvm_dir"
 
-  local nvm_url="https://raw.githubusercontent.com/nvm-sh/nvm/$CODEG_NVM_VERSION/install.sh"
-  if [ "$MIRROR" = "cn" ]; then
-    nvm_url="https://gitee.com/mirrors/nvm/raw/$CODEG_NVM_VERSION/install.sh"
-    export NVM_NODEJS_ORG_MIRROR="https://npmmirror.com/mirrors/node"
-  fi
+  # 国内让 nvm 从 npmmirror 下载 Node
+  [ "$MIRROR" = "cn" ] && export NVM_NODEJS_ORG_MIRROR="https://npmmirror.com/mirrors/node"
 
-  # PROFILE=/dev/null 避免 nvm 修改 ~/.bashrc
+  # 安装 nvm 本身
   if [ ! -s "$nvm_dir/nvm.sh" ]; then
-    PROFILE=/dev/null dl -fsSL "$nvm_url" | bash
+    local nvm_github_url="https://raw.githubusercontent.com/nvm-sh/nvm/$CODEG_NVM_VERSION/install.sh"
+    local tmp_nvm
+    tmp_nvm=$(mktemp)
+
+    if [ "$MIRROR" = "cn" ]; then
+      # 国内用 github_download 多代理下载 install.sh
+      github_download "$nvm_github_url" "$tmp_nvm" || {
+        rm -f "$tmp_nvm"
+        log_error "nvm 下载失败，所有代理均不可用"
+      }
+    else
+      # 官方源直接下载
+      dl -fsSL "$nvm_github_url" -o "$tmp_nvm"
+    fi
+
+    PROFILE=/dev/null bash "$tmp_nvm"
+    rm -f "$tmp_nvm"
   fi
 
   . "$nvm_dir/nvm.sh"
@@ -291,10 +304,10 @@ install_nvm_node() {
   nvm alias default "$CODEG_NODE_VERSION"
   nvm use --silent default
 
-  # 创建 current 软链接指向当前 Node 版本目录（确保 bin/node、bin/npm 可直接访问）
+  # 创建 current 软链接指向当前 Node 版本目录
   ln -sfn "$NVM_DIR/versions/node/$(nvm current)" "$nvm_dir/current"
 
-  # 安装包管理器
+  # npm 包管理器
   if [ "$MIRROR" = "cn" ]; then
     npm config set registry https://registry.npmmirror.com
   fi
