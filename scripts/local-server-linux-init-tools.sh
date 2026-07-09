@@ -564,26 +564,34 @@ install_php() {
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  # 下载 PHP 源码：国内用 GitHub 代理下载，官方用 php.net
+  # 下载 PHP 源码
+  local ok=0
   if [ "$MIRROR" = "cn" ]; then
-    local php_github_url="https://github.com/php/php-src/archive/php-$CODEG_PHP_VERSION.tar.gz"
-    github_download "$php_github_url" "$tmp_dir/$archive" || {
-      log_warn "PHP 源码下载失败"; return 1
-    }
+    # 国内：php.net 通过代理，备选直连
+    # github_download 对非 GitHub URL 不适用，用 dl 直接下载
+    if dl -fsSL --connect-timeout 30 --max-time 120 "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" 2>/dev/null; then
+      ok=1
+    else
+      log_warn "php.net 直连失败，尝试代理 ..."
+      github_download "https://github.com/php/php-src/archive/php-$CODEG_PHP_VERSION.tar.gz" "$tmp_dir/$archive" 2>/dev/null && ok=1
+    fi
   else
-    dl -fsSL "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" || {
-      log_warn "PHP 源码下载失败"; return 1
-    }
+    dl -fsSL "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" && ok=1
   fi
+  [ "$ok" -eq 0 ] && { log_warn "PHP 源码下载失败"; return 1; }
 
   tar -C "$tmp_dir" -xzf "$tmp_dir/$archive"
 
-  # GitHub 和 php.net 的 tarball 目录名不同
+  # 确定解压后的目录名（php.net 和 GitHub 格式不同）
   local php_src_dir
-  if [ "$MIRROR" = "cn" ]; then
+  if [ -d "$tmp_dir/php-$CODEG_PHP_VERSION" ]; then
+    php_src_dir="php-$CODEG_PHP_VERSION"
+  elif [ -d "$tmp_dir/php-src-php-$CODEG_PHP_VERSION" ]; then
     php_src_dir="php-src-php-$CODEG_PHP_VERSION"
   else
-    php_src_dir="php-$CODEG_PHP_VERSION"
+    # 自动查找解压后的唯一目录
+    php_src_dir=$(ls -d "$tmp_dir"/*/ | head -1 | xargs basename 2>/dev/null || true)
+    [ -z "$php_src_dir" ] && { log_warn "未找到 PHP 源码目录"; return 1; }
   fi
   cd "$tmp_dir/$php_src_dir"
   ./configure \
@@ -653,9 +661,8 @@ install_browsers() {
   export PLAYWRIGHT_BROWSERS_PATH="$browsers_dir"
   export BROWSER_BIN="$browsers_dir"
 
-  # uv pip 安装，明确指定 Python 路径
-  local uv_bin="$TOOLS_ROOT/uv/bin/uv"
-  "$uv_bin" pip install --python "$python_bin" "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
+  # uv pip 安装，加 --break-system-packages 绕过 uv 管理的 Python 限制
+  "$python_bin" -m pip install --break-system-packages "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
   "$python_bin" -m playwright install chromium
   "$python_bin" -m camoufox fetch --browser-dir "$browsers_dir"
 
