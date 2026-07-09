@@ -772,6 +772,9 @@ main() {
     esac
   done
 
+  # 刷新 Python 脚本链接（浏览器安装后可能新增 playwright/camoufox）
+  refresh_python_symlinks
+
   # 更新环境变量配置
   rebuild_env_paths
   update_profile_d
