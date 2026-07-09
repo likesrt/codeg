@@ -276,6 +276,9 @@ install_pyenv_python() {
 install_nvm_node() {
   if [ -x "$TOOLS_ROOT/nvm/current/bin/node" ] && [ -s "$TOOLS_ROOT/nvm/nvm.sh" ]; then
     log_info "nvm + Node.js 已安装，跳过"
+    # 仍需 source nvm，后续工具（Bun）依赖 npm
+    export NVM_DIR="$TOOLS_ROOT/nvm"
+    . "$TOOLS_ROOT/nvm/nvm.sh"
     INSTALLED_TOOLS="$INSTALLED_TOOLS node"
     return
   fi
