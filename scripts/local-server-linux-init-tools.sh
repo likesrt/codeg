@@ -224,22 +224,30 @@ refresh_python_symlinks() {
   local python_root="$TOOLS_ROOT/python"
   local python_path
   python_path=$(ls -d "$python_root"/cpython-*/install/bin/python3 2>/dev/null | head -1)
-  [ -z "$python_path" ] && return 0
+  if [ -z "$python_path" ]; then
+    log_warn "未找到 Python 安装目录，跳过脚本链接"
+    return 0
+  fi
 
-  local python_dir
+  local python_dir scripts_dir
   python_dir=$(dirname "$(dirname "$python_path")")
-  local scripts_dir="$(dirname "$python_dir")/bin"
+  scripts_dir="$(dirname "$python_dir")/bin"
 
   mkdir -p "$python_root/bin"
-  ln -sf "$python_path" "$python_root/bin/python" 2>/dev/null || true
-  ln -sf "$python_path" "$python_root/bin/python3" 2>/dev/null || true
+  ln -sf "$python_path" "$python_root/bin/python"
+  ln -sf "$python_path" "$python_root/bin/python3"
   ln -sf "$python_dir/bin/pip" "$python_root/bin/pip" 2>/dev/null || true
   ln -sf "$python_dir/bin/pip3" "$python_root/bin/pip3" 2>/dev/null || true
 
   if [ -d "$scripts_dir" ]; then
+    local count=0
     for s in "$scripts_dir"/*; do
-      [ -f "$s" ] && ln -sf "$s" "$python_root/bin/$(basename "$s")" 2>/dev/null || true
+      if [ -f "$s" ]; then
+        ln -sf "$s" "$python_root/bin/$(basename "$s")" 2>/dev/null || true
+        count=$((count + 1))
+      fi
     done
+    log_info "已链接 $count 个 Python 脚本到 $python_root/bin"
   fi
 }
 
