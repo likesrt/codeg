@@ -463,28 +463,49 @@ install_java() {
     INSTALLED_TOOLS="$INSTALLED_TOOLS java"
     return 0
   fi
-  log_info "安装 Java OpenJDK 17 ..."
+  log_info "安装 Java OpenJDK 17 (Temurin) ..."
 
-  # Debian/Ubuntu 的 JDK 包名可能不同，尝试多个
-  local java_pkg=""
-  if apt-cache show openjdk-17-jdk >/dev/null 2>&1; then
-    java_pkg="openjdk-17-jdk"
-  elif apt-cache show openjdk-17-jdk-headless >/dev/null 2>&1; then
-    java_pkg="openjdk-17-jdk-headless"
-  else
-    java_pkg="default-jdk"
+  # 添加 Adoptium 官方仓库（Debian 13 默认不含 JDK 17）
+  if ! apt-cache show temurin-17-jdk >/dev/null 2>&1; then
+    log_info "添加 Adoptium 仓库 ..."
+
+    local gpg_key="/usr/share/keyrings/adoptium.gpg"
+    if [ ! -f "$gpg_key" ]; then
+      # 使用 dl --http1.1 避免协议错误
+      dl -fsSL "https://packages.adoptium.net/artifactory/api/gpg/key/public" \
+        | gpg --dearmor --yes -o "$gpg_key" || {
+        log_warn "Adoptium GPG 密钥下载失败，尝试 default-jdk"
+        apt-get install -y --no-install-recommends default-jdk || { log_warn "Java 安装失败"; return 1; }
+        setup_java_links
+        return 0
+      }
+    fi
+
+    printf 'Types: deb\nURIs: https://packages.adoptium.net/artifactory/deb\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-By: %s\n' \
+      "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+      "$(dpkg --print-architecture)" \
+      "$gpg_key" \
+      > /etc/apt/sources.list.d/adoptium.sources
+
+    apt-get update -qq
   fi
-  apt-get install -y --no-install-recommends "$java_pkg" || {
-    log_warn "apt 安装 Java 失败"
+
+  apt-get install -y --no-install-recommends temurin-17-jdk || {
+    log_warn "Java 安装失败"
     return 1
   }
 
-  # 从 apt 安装路径创建软链接
+  setup_java_links
+}
+
+# 设置 Java 软链接到统一路径
+# 参数：无
+# 返回：无
+setup_java_links() {
   local java_home
   java_home=$(dirname "$(dirname "$(readlink -f "$(which java 2>/dev/null)")")" 2>/dev/null || true)
   if [ -z "$java_home" ] || [ ! -d "$java_home" ]; then
-    # 自动查找 JVM 目录
-    java_home=$(ls -d /usr/lib/jvm/java-*-openjdk-* /usr/lib/jvm/default-java 2>/dev/null | head -1 || true)
+    java_home=$(ls -d /usr/lib/jvm/java-*-openjdk-* /usr/lib/jvm/temurin-17-* /usr/lib/jvm/default-java 2>/dev/null | head -1 || true)
     [ -z "$java_home" ] && { log_warn "未找到 Java 安装路径"; return 1; }
   fi
   mkdir -p "$TOOLS_ROOT/java/bin"
