@@ -115,7 +115,7 @@ ask_tool_selection() {
   echo "  4) Bun $CODEG_BUN_VERSION"
   echo "  5) Go $CODEG_GO_VERSION"
   echo "  6) uv $CODEG_UV_VERSION"
-  echo "  7) Java OpenJDK 17.0.13（Temurin）"
+  echo "  7) Java OpenJDK 17（apt 安装）"
   echo "  8) PHP $CODEG_PHP_VERSION（含 composer）"
   echo "  9) 浏览器自动化（playwright + camoufox）"
   echo "  a) 全部安装（不含浏览器）"
@@ -206,7 +206,8 @@ install_uv() {
   # 尝试多个代理下载
   if ! github_download "$github_url" "$tmp_file"; then
     rm -f "$tmp_file"
-    log_error "uv 下载失败，所有代理均不可用"
+    log_warn "uv 下载失败，所有代理均不可用"
+    return 1
   fi
 
   tar xzf "$tmp_file" -C "$uv_root"
@@ -248,7 +249,7 @@ install_pyenv_python() {
   python_path=$(UV_PYTHON_INSTALL_DIR="$python_root" "$uv_bin" python find "$CODEG_PYTHON_VERSION" 2>/dev/null || true)
   if [ -z "$python_path" ] || [ ! -x "$python_path" ]; then
     python_dir=$(ls -d "$python_root"/cpython-"$CODEG_PYTHON_VERSION"-linux-*gnu/install 2>/dev/null | head -1)
-    [ -z "$python_dir" ] && log_error "未找到 Python 安装目录"
+    [ -z "$python_dir" ] && { log_warn "未找到 Python 安装目录"; return 1; }
     python_path="$python_dir/bin/python3"
   fi
   python_dir=$(dirname "$(dirname "$python_path")")
@@ -307,7 +308,7 @@ install_nvm_node() {
       # 国内用 github_download 多代理下载 install.sh
       github_download "$nvm_github_url" "$tmp_nvm" || {
         rm -f "$tmp_nvm"
-        log_error "nvm 下载失败，所有代理均不可用"
+        log_warn "nvm 下载失败，所有代理均不可用"; return 1
       }
     else
       # 官方源直接下载
@@ -364,7 +365,7 @@ install_bun() {
     esac
     local github_url="https://github.com/oven-sh/bun/releases/download/bun-v$CODEG_BUN_VERSION/bun-linux-$bun_arch.zip"
     if ! github_download "$github_url" /tmp/bun.zip; then
-      log_error "Bun 下载失败，所有代理均不可用"
+      log_warn "Bun 下载失败，所有代理均不可用"; return 1
     fi
     unzip -o /tmp/bun.zip -d /tmp/bun-extract
     cp "/tmp/bun-extract/bun-linux-$bun_arch/bun" "$bun_root/bin/"
@@ -453,54 +454,33 @@ install_go() {
   log_info "Go 安装完成"
 }
 
-# 安装 Java OpenJDK (Temurin) 到 $TOOLS_ROOT/java
+# 安装 Java OpenJDK 17 到 $TOOLS_ROOT/java
 # 参数：无
-# 返回：无。副作用：下载并解压 JDK tarball
+# 返回：成功返回 0，失败返回 1
 install_java() {
   if [ -x "$TOOLS_ROOT/java/bin/java" ]; then
     log_info "Java 已安装，跳过"
     INSTALLED_TOOLS="$INSTALLED_TOOLS java"
-    return
+    return 0
   fi
-  log_info "安装 Java OpenJDK 17.0.13 (Temurin) ..."
-  local java_root="$TOOLS_ROOT/java"
-  local arch java_arch
-  arch=$(detect_arch)
-  java_arch="x64"
-  [ "$arch" = "arm64" ] && java_arch="aarch64"
+  log_info "安装 Java OpenJDK 17 ..."
 
-  # Temurin JDK 17.0.13 的下载文件名
-  local filename="OpenJDK17U-jdk_${java_arch}_linux_hotspot_17.0.13_8.tar.gz"
-  local github_url="https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B8/$filename"
+  apt-get install -y --no-install-recommends openjdk-17-jdk || {
+    log_warn "apt 安装 Java 失败"
+    return 1
+  }
 
-  local tmp_dir
-  tmp_dir=$(mktemp -d)
-
-  # 国内用清华镜像，否则用 github_download 多代理备选
-  if [ "$MIRROR" = "cn" ]; then
-    local tsinghua_url="https://mirrors.tuna.tsinghua.edu.cn/Adoptium/17/jdk/${java_arch}/linux/$filename"
-    log_info "从清华镜像下载 Java ..."
-    dl -fsSL "$tsinghua_url" -o "$tmp_dir/$filename" || {
-      # 清华镜像失败时回退到 github_download
-      log_warn "清华镜像下载失败，尝试 GitHub 代理 ..."
-      github_download "$github_url" "$tmp_dir/$filename" || {
-        rm -rf "$tmp_dir"
-        log_error "Java 下载失败"
-      }
-    }
-  else
-    github_download "$github_url" "$tmp_dir/$filename" || {
-      rm -rf "$tmp_dir"
-      log_error "Java 下载失败"
-    }
+  # 从 apt 安装路径创建软链接
+  local java_home
+  java_home=$(dirname "$(dirname "$(readlink -f "$(which java 2>/dev/null)")")" 2>/dev/null || true)
+  if [ -z "$java_home" ] || [ ! -d "$java_home" ]; then
+    java_home="/usr/lib/jvm/java-17-openjdk-amd64"
   fi
+  mkdir -p "$TOOLS_ROOT/java/bin"
+  ln -sf "$java_home/bin/java" "$TOOLS_ROOT/java/bin/java"
+  ln -sf "$java_home/bin/javac" "$TOOLS_ROOT/java/bin/javac"
 
-  rm -rf "$java_root"
-  mkdir -p "$java_root"
-  tar -C "$java_root" --strip-components=1 -xzf "$tmp_dir/$filename"
-  rm -rf "$tmp_dir"
-
-  "$java_root/bin/java" -version 2>&1 | head -1
+  "$TOOLS_ROOT/java/bin/java" -version 2>&1 | head -1
   INSTALLED_TOOLS="$INSTALLED_TOOLS java"
   log_info "Java 安装完成"
 }
@@ -513,7 +493,9 @@ install_php_deps() {
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     libxml2-dev libcurl4-openssl-dev libssl-dev libzip-dev \
-    libsqlite3-dev libonig-dev libpng-dev autoconf re2c bison
+    libsqlite3-dev libonig-dev libpng-dev libicu-dev \
+    libfreetype-dev libjpeg62-turbo-dev libwebp-dev \
+    autoconf re2c bison
 }
 
 # 编译安装 PHP 和 composer
@@ -551,11 +533,21 @@ install_php() {
     --with-sqlite3 \
     --enable-pdo \
     --with-pdo-sqlite \
+    --with-mysqli \
+    --with-pdo-mysql \
     --enable-gd \
+    --with-freetype \
+    --with-jpeg \
+    --with-webp \
+    --enable-intl \
+    --enable-soap \
+    --enable-sockets \
+    --enable-exif \
     --enable-ftp \
     --enable-bcmath \
     --enable-opcache \
-    --disable-cgi
+    --disable-cgi \
+    --disable-phpdbg
   make -j"$(nproc)"
   make install
 
@@ -589,7 +581,7 @@ install_browsers() {
   local python_bin="$TOOLS_ROOT/python/bin/python"
   local pip_bin="$TOOLS_ROOT/python/bin/pip"
   if [ ! -x "$python_bin" ]; then
-    log_error "浏览器自动化需要先安装 Python（选项 1）"
+    log_warn "浏览器自动化需要先安装 Python（选项 1）"; return 1
     return 1
   fi
 
@@ -734,18 +726,18 @@ main() {
 
   mkdir -p "$TOOLS_ROOT"
 
-  # 按选择安装工具
+  # 按选择安装工具（失败跳过，不影响后续工具）
   for tool in $SELECTED_TOOLS; do
     case "$tool" in
-      uv) install_uv ;;
-      python) install_pyenv_python ;;
-      node) install_nvm_node ;;
-      bun) install_bun ;;
-      rust) install_rust ;;
-      go) install_go ;;
-      java) install_java ;;
-      php) install_php ;;
-      browsers) install_browsers ;;
+      uv) install_uv || log_warn "uv 安装失败，跳过" ;;
+      python) install_pyenv_python || log_warn "Python 安装失败，跳过" ;;
+      node) install_nvm_node || log_warn "nvm 安装失败，跳过" ;;
+      bun) install_bun || log_warn "Bun 安装失败，跳过" ;;
+      rust) install_rust || log_warn "Rust 安装失败，跳过" ;;
+      go) install_go || log_warn "Go 安装失败，跳过" ;;
+      java) install_java || log_warn "Java 安装失败，跳过" ;;
+      php) install_php || log_warn "PHP 安装失败，跳过" ;;
+      browsers) install_browsers || log_warn "浏览器安装失败，跳过" ;;
     esac
   done
 
