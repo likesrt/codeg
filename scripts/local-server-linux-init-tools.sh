@@ -463,39 +463,56 @@ install_java() {
     INSTALLED_TOOLS="$INSTALLED_TOOLS java"
     return 0
   fi
-  log_info "安装 Java OpenJDK 17 (Temurin) ..."
+  log_info "安装 Java OpenJDK 17 ..."
 
-  # 添加 Adoptium 官方仓库（Debian 13 默认不含 JDK 17）
-  if ! apt-cache show temurin-17-jdk >/dev/null 2>&1; then
-    log_info "添加 Adoptium 仓库 ..."
-
-    local gpg_key="/usr/share/keyrings/adoptium.gpg"
-    if [ ! -f "$gpg_key" ]; then
-      # 使用 dl --http1.1 避免协议错误
-      dl -fsSL "https://packages.adoptium.net/artifactory/api/gpg/key/public" \
-        | gpg --dearmor --yes -o "$gpg_key" || {
-        log_warn "Adoptium GPG 密钥下载失败，尝试 default-jdk"
-        apt-get install -y --no-install-recommends default-jdk || { log_warn "Java 安装失败"; return 1; }
-        setup_java_links
-        return 0
-      }
-    fi
-
-    printf 'Types: deb\nURIs: https://packages.adoptium.net/artifactory/deb\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-By: %s\n' \
-      "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
-      "$(dpkg --print-architecture)" \
-      "$gpg_key" \
-      > /etc/apt/sources.list.d/adoptium.sources
-
-    apt-get update -qq
+  # 方式 1：尝试直接 apt 安装 temurin-17-jdk
+  if apt-cache show temurin-17-jdk >/dev/null 2>&1; then
+    apt-get install -y --no-install-recommends temurin-17-jdk && { setup_java_links; return 0; }
   fi
 
-  apt-get install -y --no-install-recommends temurin-17-jdk || {
-    log_warn "Java 安装失败"
-    return 1
-  }
+  # 方式 2：添加 Adoptium 仓库
+  local gpg_key="/usr/share/keyrings/adoptium.gpg"
+  if [ ! -f "$gpg_key" ]; then
+    if dl -fsSL "https://packages.adoptium.net/artifactory/api/gpg/key/public" 2>/dev/null \
+      | gpg --dearmor --yes -o "$gpg_key" 2>/dev/null; then
+      # GPG 密钥下载成功，添加仓库
+      printf 'Types: deb\nURIs: https://packages.adoptium.net/artifactory/deb\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-By: %s\n' \
+        "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+        "$(dpkg --print-architecture)" \
+        "$gpg_key" \
+        > /etc/apt/sources.list.d/adoptium.sources
+      apt-get update -qq
+      apt-get install -y --no-install-recommends temurin-17-jdk && { setup_java_links; return 0; }
+    fi
+  fi
 
-  setup_java_links
+  # 方式 3：从 GitHub 下载 .tar.gz（多代理）
+  log_info "从 GitHub 下载 JDK 17 ..."
+  local java_arch
+  case "$(uname -m)" in
+    x86_64) java_arch="x64" ;;
+    aarch64|arm64) java_arch="aarch64" ;;
+    *) log_warn "不支持的架构"; return 1 ;;
+  esac
+  local jdk_file="OpenJDK17U-jdk_${java_arch}_linux_hotspot_17.0.13_8.tar.gz"
+  local jdk_url="https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13+8/$jdk_file"
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+  if github_download "$jdk_url" "$tmp_dir/$jdk_file"; then
+    rm -rf "$TOOLS_ROOT/java"
+    mkdir -p "$TOOLS_ROOT/java"
+    tar -C "$TOOLS_ROOT/java" --strip-components=1 -xzf "$tmp_dir/$jdk_file"
+    rm -rf "$tmp_dir"
+    setup_java_links
+    return 0
+  fi
+  rm -rf "$tmp_dir"
+
+  # 方式 4：兜底 default-jdk（可能是 JDK 21）
+  log_warn "JDK 17 下载失败，回退到系统默认 JDK"
+  apt-get install -y --no-install-recommends default-jdk && { setup_java_links; return 0; }
+  log_warn "Java 安装失败"
+  return 1
 }
 
 # 设置 Java 软链接到统一路径
@@ -547,33 +564,28 @@ install_php() {
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  # 尝试多个下载源
-  local urls=()
+  # 下载 PHP 源码：国内用 GitHub 代理下载，官方用 php.net
   if [ "$MIRROR" = "cn" ]; then
-    # 国内优先尝试多个镜像
-    urls=(
-      "https://s.itho.me/day/2025/php-$CODEG_PHP_VERSION.tar.gz"
-      "https://www.php.net/distributions/$archive"
-    )
+    local php_github_url="https://github.com/php/php-src/archive/php-$CODEG_PHP_VERSION.tar.gz"
+    github_download "$php_github_url" "$tmp_dir/$archive" || {
+      log_warn "PHP 源码下载失败"; return 1
+    }
   else
-    urls=("https://www.php.net/distributions/$archive")
+    dl -fsSL "https://www.php.net/distributions/$archive" -o "$tmp_dir/$archive" || {
+      log_warn "PHP 源码下载失败"; return 1
+    }
   fi
-
-  local ok=0
-  for php_url in "${urls[@]}"; do
-    log_info "尝试下载：$php_url"
-    if dl -fsSL "$php_url" -o "$tmp_dir/$archive" 2>/dev/null; then
-      ok=1
-      break
-    fi
-    log_warn "下载失败，尝试下一个源 ..."
-  done
-  [ "$ok" -eq 0 ] && { log_warn "PHP 源码下载失败"; return 1; }
 
   tar -C "$tmp_dir" -xzf "$tmp_dir/$archive"
 
-  # 编译配置：启用常用扩展
-  cd "$tmp_dir/php-$CODEG_PHP_VERSION"
+  # GitHub 和 php.net 的 tarball 目录名不同
+  local php_src_dir
+  if [ "$MIRROR" = "cn" ]; then
+    php_src_dir="php-src-php-$CODEG_PHP_VERSION"
+  else
+    php_src_dir="php-$CODEG_PHP_VERSION"
+  fi
+  cd "$tmp_dir/$php_src_dir"
   ./configure \
     --prefix="$php_root" \
     --with-config-file-path="$php_root/etc" \
@@ -634,11 +646,21 @@ install_browsers() {
     log_warn "浏览器自动化需要先安装 Python（选项 1）"; return 1
   fi
 
-  # uv 管理的 Python 需要用 uv pip 安装包
+  local browsers_dir="$TOOLS_ROOT/browsers"
+  mkdir -p "$browsers_dir"
+
+  # 设置统一浏览器缓存路径，Python 和 Node.js 的 Playwright 共享
+  export PLAYWRIGHT_BROWSERS_PATH="$browsers_dir"
+  export BROWSER_BIN="$browsers_dir"
+
+  # uv pip 安装，明确指定 Python 路径
   local uv_bin="$TOOLS_ROOT/uv/bin/uv"
-  "$uv_bin" pip install --system "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
+  "$uv_bin" pip install --python "$python_bin" "playwright==$CODEG_PLAYWRIGHT_VERSION" camoufox
   "$python_bin" -m playwright install chromium
-  "$python_bin" -m camoufox fetch
+  "$python_bin" -m camoufox fetch --browser-dir "$browsers_dir"
+
+  # 写入 PLAYWRIGHT_BROWSERS_PATH 到 .env 常量区（供后续 rebuild_env_paths 使用）
+  BROWSER_PATH_SET=1
 
   INSTALLED_TOOLS="$INSTALLED_TOOLS browsers"
   log_info "浏览器自动化工具安装完成"
@@ -690,6 +712,7 @@ rebuild_env_paths() {
   has_tool go && tool_env="${tool_env}GOROOT=$TOOLS_ROOT/go"$'\n'"GOPATH=$TOOLS_ROOT/gopath"$'\n'
   has_tool java && tool_env="${tool_env}JAVA_HOME=$TOOLS_ROOT/java"$'\n'
   has_tool php && tool_env="${tool_env}PHP_HOME=$TOOLS_ROOT/php"$'\n'
+  has_tool browsers && tool_env="${tool_env}PLAYWRIGHT_BROWSERS_PATH=$TOOLS_ROOT/browsers"$'\n'
 
   # 如果 .env 不存在，创建空文件
   touch "$ENV_FILE"
@@ -732,6 +755,7 @@ update_profile_d() {
     has_tool go && echo "export GOROOT=\"$TOOLS_ROOT/go\"" && echo "export GOPATH=\"$TOOLS_ROOT/gopath\""
     has_tool java && echo "export JAVA_HOME=\"$TOOLS_ROOT/java\""
     has_tool php && echo "export PHP_HOME=\"$TOOLS_ROOT/php\""
+    has_tool browsers && echo "export PLAYWRIGHT_BROWSERS_PATH=\"$TOOLS_ROOT/browsers\""
   } > "$PROFILE_D_FILE"
 
   chmod +x "$PROFILE_D_FILE"
