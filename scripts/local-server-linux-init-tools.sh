@@ -265,6 +265,14 @@ install_pyenv_python() {
 install_nvm_node() {
   log_info "安装 nvm + Node.js $CODEG_NODE_VERSION ..."
   local nvm_dir="$TOOLS_ROOT/nvm"
+
+  # 清理旧系统级安装（可能从之前失败或默认路径遗留）
+  if [ -d /root/.nvm ]; then
+    rm -rf /root/.nvm
+  fi
+
+  # 必须先设置 NVM_DIR，nvm 安装脚本才会安装到正确位置
+  export NVM_DIR="$nvm_dir"
   mkdir -p "$nvm_dir"
 
   local nvm_url="https://raw.githubusercontent.com/nvm-sh/nvm/$CODEG_NVM_VERSION/install.sh"
@@ -273,11 +281,11 @@ install_nvm_node() {
     export NVM_NODEJS_ORG_MIRROR="https://npmmirror.com/mirrors/node"
   fi
 
+  # PROFILE=/dev/null 避免 nvm 修改 ~/.bashrc
   if [ ! -s "$nvm_dir/nvm.sh" ]; then
-    dl -fsSL "$nvm_url" | bash
+    PROFILE=/dev/null dl -fsSL "$nvm_url" | bash
   fi
 
-  export NVM_DIR="$nvm_dir"
   . "$nvm_dir/nvm.sh"
   nvm install "$CODEG_NODE_VERSION"
   nvm alias default "$CODEG_NODE_VERSION"
@@ -681,12 +689,22 @@ main() {
   log_info "工具链安装完成！"
   echo "  已安装：$INSTALLED_TOOLS"
   echo ""
+  echo "  ──────────────────────────────────────"
+  echo "  立即让当前 shell 使用工具链："
+  echo "    source /etc/profile.d/codeg-tools.sh"
+  echo ""
   echo "  让 codeg-server 继承新 PATH："
   echo "    codeg restart"
   echo ""
-  echo "  登录 shell 使用工具链："
-  echo "    source /etc/profile.d/codeg-tools.sh"
-  echo "    （或重新登录）"
+  echo "  验证安装："
+  echo "    python --version"
+  echo "    node --version"
+  echo "    npm --version"
+  echo "    go version"
+  echo "    cargo --version"
+  echo "    java -version"
+  echo "    php -v"
+  echo "  ──────────────────────────────────────"
 }
 
 main "$@"
