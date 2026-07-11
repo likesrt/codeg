@@ -600,6 +600,8 @@ pub struct AcpUpdateAgentConfigParams {
     pub opencode_auth_json: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
+    pub grok_config_toml: Option<String>,
+    pub grok_structured: Option<crate::acp::types::GrokStructuredConfig>,
 }
 
 pub async fn acp_update_agent_config(
@@ -613,6 +615,8 @@ pub async fn acp_update_agent_config(
         params.opencode_auth_json,
         params.codex_auth_json,
         params.codex_config_toml,
+        params.grok_config_toml,
+        params.grok_structured,
         &state.db,
         &state.connection_manager,
         &state.data_dir,

@@ -72,6 +72,7 @@ Codeg (Code Generation) is a multi-agent coding workspace. It brings multiple ag
 - Parallel development with built-in `git worktree` flows
 - **Project Boot** — visually scaffold new projects with live preview
 - **Office Documents** — create, analyze, proofread, and edit `.docx` / `.xlsx` / `.pptx` through the bundled `officecli` toolset, with live in-tab preview that refreshes as the agent edits
+- **Scientific Research** — bundled science skills (hypothesis generation, experimental design, statistics, visualization, critical appraisal, literature search) any agent can invoke, managed per-agent like the office and expert toolsets
 - **Automations** — save a composer setup as a reusable automation that runs headlessly, on a cron schedule or on demand
 - **Chat Channels** — connect Telegram, Lark (Feishu), iLink (Weixin) and more to your coding agents for real-time notifications, full session interaction, and remote task control
 - MCP management (local scan + registry search/install)
@@ -147,8 +148,24 @@ Work with Word, Excel, and PowerPoint files as a first-class workflow. The bundl
 - **Create & Edit** — generate new documents or modify existing `.docx` / `.xlsx` / `.pptx` files, including charts, tables, and formatting
 - **Analyze & Proofread** — inspect document structure, surface formatting issues, and proofread content
 - **Live Preview** — open a `.docx` / `.xlsx` / `.pptx` in a file tab and it renders inline, refreshing automatically as the agent edits — backed by a long-lived `officecli watch` server (reverse-proxied and capability-authenticated so it works in web and standalone-server deployments)
-- **Quick Actions** — the welcome page offers Coding and Office tabs that drop the matching skill invocation and a prompt template into the composer with one click; a skill that isn't enabled for the selected agent shows a lock badge linking to where you can turn it on
+- **Quick Actions** — the welcome page offers Coding, Office, and Scientific Research tabs that drop the matching skill invocation and a prompt template into the composer with one click; a skill that isn't enabled for the selected agent shows a lock badge linking to where you can turn it on
 - **Office Tools settings** — a dedicated settings page installs `officecli` and manages its document skills through a skill-by-agent matrix: toggle any (skill, agent) pair, flip a skill across all agents or every skill for one agent, and apply bulk changes at once
+
+</details>
+
+<details>
+<summary><h2>Scientific Research</h2></summary>
+
+Turn any agent into a rigorous research assistant. Codeg bundles a curated set of MIT-licensed **scientific-research skills** — from ideation to analysis to write-up — that install into the shared central skill store and link into whichever agents you choose, exactly like the expert and office toolsets.
+
+### What it does
+
+- **Curated skills** — hypothesis generation, experimental design, statistical power, statistical analysis, exploratory data analysis, scientific visualization, critical appraisal, peer review, citation management, scholar evaluation, paper lookup, and AI schematics
+- **Quick Actions** — the welcome page's Scientific Research tab drops the matching skill invocation plus a localized prompt template into the composer with one click
+- **Science settings** — a dedicated settings page manages the skills through a skill-by-agent matrix, with badges flagging skills that need an API key or a Python environment
+- **Offline-first** — skill text is bundled and works without network; scripts that call external services (OpenRouter, scholarly APIs) are opt-in and clearly marked
+
+Skills are vendored from [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills); re-sync with `scripts/sync-science-skills.sh` (pins an upstream commit, enforces an MIT-only license gate, and asserts byte-identity).
 
 </details>
 
@@ -431,6 +448,7 @@ Next.js 16 (Static Export) + React 19
 - [ACP](https://agentclientprotocol.com) — the Agent Client Protocol (ACP) is the foundation that enables Codeg to connect with multiple agents
 - [Superpowers](https://github.com/obra/superpowers) — powers Codeg's expert skills module
 - [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — powers Codeg's Office documents workflow
+- [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) — powers Codeg's Scientific Research skills (MIT-licensed subset)
 
 ## License
 

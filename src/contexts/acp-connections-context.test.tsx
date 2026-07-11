@@ -7,8 +7,13 @@ import {
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
 import { parsePermissionToolCall } from "@/lib/permission-request"
+import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import type { AttachHandlers } from "@/lib/transport/types"
-import type { EventEnvelope, LiveSessionSnapshot } from "@/lib/types"
+import type {
+  EventEnvelope,
+  LiveSessionSnapshot,
+  SessionConfigOptionInfo,
+} from "@/lib/types"
 
 // Shared spies + a stub EventStream. `vi.hoisted` runs before the mock
 // factories so they can close over this state. Mocking `getEventStream` to a
@@ -898,5 +903,98 @@ describe("out-of-turn wire guard + background activity", () => {
     expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
 
     resetConversationRuntimeStore()
+  })
+})
+
+describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
+  function grokModelOptions(current: string): SessionConfigOptionInfo[] {
+    return [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        kind: {
+          type: "select",
+          current_value: current,
+          options: [
+            { value: "grok-4.5", name: "Grok 4.5" },
+            { value: "grok-composer-2.5-fast", name: "Composer 2.5" },
+          ],
+          groups: [],
+        },
+      },
+    ]
+  }
+
+  async function connectGrokOwner(): Promise<AttachHandlers> {
+    h.acpGetAgentStatus.mockResolvedValue({
+      agent_type: "grok",
+      enabled: true,
+      available: true,
+      installed_version: "0.2.94",
+    })
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "grok", "/tmp/x", "sess-1")
+    })
+    return latestAttachHandlers()
+  }
+
+  it("reverts the optimistic pick, surfaces the localized error, and keeps the attempted preference", async () => {
+    const handlers = await connectGrokOwner()
+
+    // Composer selector arrives with grok-4.5 active.
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+    expect(
+      h.store!.getConnection(TAB)!.configOptions?.[0]?.kind.current_value
+    ).toBe("grok-4.5")
+
+    // User optimistically switches to the cross-agent-type Composer model.
+    vi.mocked(saveConfigPreference).mockClear()
+    await act(async () => {
+      await h.actions!.setConfigOption(TAB, "model", "grok-composer-2.5-fast")
+    })
+    // Optimistic: the selector shows the pick and the preference is persisted.
+    expect(
+      h.store!.getConnection(TAB)!.configOptions?.[0]?.kind.current_value
+    ).toBe("grok-composer-2.5-fast")
+    expect(saveConfigPreference).toHaveBeenCalledTimes(1)
+    expect(saveConfigPreference).toHaveBeenCalledWith(
+      "grok",
+      "model",
+      "grok-composer-2.5-fast"
+    )
+
+    // Backend rejects the switch mid-conversation: it re-emits the authoritative
+    // options (revert) followed by the coded, recoverable error.
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "session_config_options",
+      config_options: grokModelOptions("grok-4.5"),
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "Cannot switch to that model in an existing conversation.",
+      agent_type: "grok",
+      code: "grok_model_switch_incompatible_agent",
+    })
+
+    const conn = h.store!.getConnection(TAB)!
+    // The selector snapped back to the model actually in effect.
+    expect(conn.configOptions?.[0]?.kind.current_value).toBe("grok-4.5")
+    // The coded error is localized (the useTranslations mock echoes the key) —
+    // NOT the raw fallback message.
+    expect(conn.error).toBe("backendErrors.grokModelSwitchIncompatibleAgent")
+    // The attempted model stays the saved preference (no revert of the persisted
+    // choice), so a fresh session lands on Composer where the switch succeeds.
+    expect(saveConfigPreference).toHaveBeenCalledTimes(1)
   })
 })

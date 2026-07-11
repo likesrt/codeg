@@ -3276,6 +3276,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.turnFailedEmpty", {
                   agent: agentLabel,
                 })
+              case "grok_model_switch_incompatible_agent":
+                return t("backendErrors.grokModelSwitchIncompatibleAgent", {
+                  agent: agentLabel,
+                })
               default:
                 return e.message
             }

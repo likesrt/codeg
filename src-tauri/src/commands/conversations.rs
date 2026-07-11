@@ -12,6 +12,7 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
+use crate::parsers::grok::GrokParser;
 use crate::parsers::hermes::HermesParser;
 use crate::parsers::kimi_code::KimiCodeParser;
 use crate::parsers::pi::PiParser;
@@ -172,6 +173,7 @@ fn list_conversations_sync(
         (AgentType::CodeBuddy, Box::new(CodeBuddyParser::new())),
         (AgentType::KimiCode, Box::new(KimiCodeParser::new())),
         (AgentType::Pi, Box::new(PiParser::new())),
+        (AgentType::Grok, Box::new(GrokParser::new())),
     ];
 
     for (at, parser) in &parsers {
@@ -279,6 +281,7 @@ pub async fn get_conversation(
             AgentType::CodeBuddy => Box::new(CodeBuddyParser::new()),
             AgentType::KimiCode => Box::new(KimiCodeParser::new()),
             AgentType::Pi => Box::new(PiParser::new()),
+            AgentType::Grok => Box::new(GrokParser::new()),
         };
 
         parser
@@ -520,6 +523,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::CodeBuddy => Box::new(CodeBuddyParser::new()),
                 AgentType::KimiCode => Box::new(KimiCodeParser::new()),
                 AgentType::Pi => Box::new(PiParser::new()),
+                AgentType::Grok => Box::new(GrokParser::new()),
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((

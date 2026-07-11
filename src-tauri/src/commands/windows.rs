@@ -313,6 +313,7 @@ fn resolve_settings_route(section: Option<&str>) -> &'static str {
         Some("mcp") => "settings/mcp",
         Some("skills") => "settings/skills",
         Some("experts") => "settings/experts",
+        Some("science") => "settings/science",
         Some("office-tools") => "settings/office-tools",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",

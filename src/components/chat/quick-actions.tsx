@@ -25,6 +25,11 @@ import {
   type OfficeAction,
 } from "@/lib/office-actions"
 import {
+  RESEARCH_ACTIONS,
+  RESEARCH_FEATURED_ACCENTS,
+  type ResearchAction,
+} from "@/lib/research-actions"
+import {
   loadQuickActionsTab,
   saveQuickActionsTab,
   type QuickActionsTab,
@@ -41,6 +46,20 @@ const OFFICE_FIXED: (OfficeAction & { accent: string })[] =
 // Remaining office skills — de-colored bars in the scrolling row (icons kept).
 const OFFICE_SCROLL: OfficeAction[] = OFFICE_ACTIONS.filter(
   (action) => !(action.id in OFFICE_FEATURED_ACCENTS)
+)
+
+// Three primary research skills — prominent fixed cards (keep their color).
+const RESEARCH_FIXED: (ResearchAction & { accent: string })[] =
+  RESEARCH_ACTIONS.filter(
+    (action) => action.id in RESEARCH_FEATURED_ACCENTS
+  ).map((action) => ({
+    ...action,
+    accent: RESEARCH_FEATURED_ACCENTS[action.id],
+  }))
+
+// Remaining research skills — de-colored bars in the scrolling row.
+const RESEARCH_SCROLL: ResearchAction[] = RESEARCH_ACTIONS.filter(
+  (action) => !(action.id in RESEARCH_FEATURED_ACCENTS)
 )
 
 // Three featured coding experts get prominent fixed cards (color + curated
@@ -92,6 +111,11 @@ const ACCENTS: Record<string, { icon: string; surface: string }> = {
     icon: "text-purple-600 dark:text-purple-400",
     surface:
       "border-purple-500/20 hover:border-purple-500/40 hover:bg-purple-500/5",
+  },
+  violet: {
+    icon: "text-violet-600 dark:text-violet-400",
+    surface:
+      "border-violet-500/20 hover:border-violet-500/40 hover:bg-violet-500/5",
   },
 }
 
@@ -329,7 +353,12 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
   // conversation shows the previous choice.
   const [tab, setTab] = useState<QuickActionsTab>(() => loadQuickActionsTab())
   const handleTabChange = useCallback((value: string) => {
-    const next: QuickActionsTab = value === "office" ? "office" : "coding"
+    const next: QuickActionsTab =
+      value === "office"
+        ? "office"
+        : value === "research"
+          ? "research"
+          : "coding"
     setTab(next)
     saveQuickActionsTab(next)
   }, [])
@@ -339,6 +368,21 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
       const label = t(action.id as Parameters<typeof t>[0])
       if (isLocked(action.skillId)) {
         notifyNotEnabled(label, "office-tools")
+        return
+      }
+      onSelect({
+        text: t(action.promptKey as Parameters<typeof t>[0]),
+        skill: { id: action.skillId, label },
+      })
+    },
+    [onSelect, t, isLocked, notifyNotEnabled]
+  )
+
+  const handleResearch = useCallback(
+    (action: ResearchAction) => {
+      const label = t(action.id as Parameters<typeof t>[0])
+      if (isLocked(action.skillId)) {
+        notifyNotEnabled(label, "science")
         return
       }
       onSelect({
@@ -409,6 +453,12 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
         >
           {t("tabs.office")}
         </TabsTrigger>
+        <TabsTrigger
+          value="research"
+          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+        >
+          {t("tabs.research")}
+        </TabsTrigger>
       </TabsList>
 
       <TabsContent value="coding" className="flex flex-col gap-2">
@@ -478,6 +528,39 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
                 label={t(action.id as Parameters<typeof t>[0])}
                 title={t(`${action.id}Desc` as Parameters<typeof t>[0])}
                 onClick={() => handleOffice(action)}
+                locked={isLocked(action.skillId)}
+                lockHint={lockHint}
+              />
+            ))
+          }
+        </Marquee>
+      </TabsContent>
+
+      <TabsContent value="research" className="flex flex-col gap-2">
+        <div className="grid grid-cols-3 gap-2">
+          {RESEARCH_FIXED.map((action) => (
+            <BigCard
+              key={action.id}
+              icon={action.icon}
+              accent={action.accent}
+              title={t(action.id as Parameters<typeof t>[0])}
+              description={t(`${action.id}Desc` as Parameters<typeof t>[0])}
+              onClick={() => handleResearch(action)}
+              locked={isLocked(action.skillId)}
+              lockHint={lockHint}
+            />
+          ))}
+        </div>
+        <Marquee itemCount={RESEARCH_SCROLL.length}>
+          {(clone) =>
+            RESEARCH_SCROLL.map((action) => (
+              <SkillBar
+                key={`${action.id}-${clone ? "c" : "r"}`}
+                clone={clone}
+                icon={action.icon}
+                label={t(action.id as Parameters<typeof t>[0])}
+                title={t(`${action.id}Desc` as Parameters<typeof t>[0])}
+                onClick={() => handleResearch(action)}
                 locked={isLocked(action.skillId)}
                 lockHint={lockHint}
               />

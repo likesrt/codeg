@@ -20,7 +20,7 @@ describe("RichComposer", () => {
   it("mounts and reports an empty document via the handle", async () => {
     const { ref } = await mount()
     expect(ref.current?.isEmpty()).toBe(true)
-    expect(ref.current?.getMarkdown()).toBe("")
+    expect(ref.current?.getText()).toBe("")
   })
 
   it("paints the placeholder on the empty document", async () => {
@@ -39,15 +39,16 @@ describe("RichComposer", () => {
     expect(textbox).toHaveAttribute("aria-label", "Message")
   })
 
-  it("round-trips markdown through the handle and notifies onChange", async () => {
+  it("round-trips text through the handle and notifies onChange", async () => {
     const onChange = vi.fn()
     const { ref } = await mount({ onChange })
 
     act(() => {
-      ref.current?.setMarkdown("hello **world**")
+      ref.current?.setText("hello **world**")
     })
 
-    expect(ref.current?.getMarkdown()).toContain("**world**")
+    // Plain text: the markdown-looking syntax is preserved literally.
+    expect(ref.current?.getText()).toContain("**world**")
     expect(ref.current?.isEmpty()).toBe(false)
     expect(onChange).toHaveBeenCalled()
     const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1]
@@ -62,18 +63,19 @@ describe("RichComposer", () => {
   it("preserves CJK content through the handle", async () => {
     const { ref } = await mount()
     act(() => {
-      ref.current?.setMarkdown("发送给智能体的消息")
+      ref.current?.setText("发送给智能体的消息")
     })
-    expect(ref.current?.getMarkdown()).toContain("发送给智能体的消息")
+    expect(ref.current?.getText()).toContain("发送给智能体的消息")
   })
 
-  it("initializes from defaultMarkdown without firing onChange", async () => {
+  it("initializes from defaultText without firing onChange", async () => {
     const onChange = vi.fn()
     const { ref } = await mount({
-      defaultMarkdown: "# Heading",
+      defaultText: "# Heading",
       onChange,
     })
-    expect(ref.current?.getMarkdown().trim()).toBe("# Heading")
+    // Inserted as literal text (no heading formatting).
+    expect(ref.current?.getText().trim()).toBe("# Heading")
     // onCreate sets content with emitUpdate:false → no spurious change events.
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -91,11 +93,11 @@ function dispatchKey(
   })
 }
 
-describe("RichComposer imperative inserts (Phase 3)", () => {
-  it("inserts markdown at the cursor", async () => {
+describe("RichComposer imperative inserts", () => {
+  it("inserts text at the cursor (markdown syntax stays literal)", async () => {
     const { ref } = await mount()
-    act(() => ref.current?.insertMarkdownAtCursor("hello **world**"))
-    expect(ref.current?.getMarkdown()).toContain("**world**")
+    act(() => ref.current?.insertTextAtCursor("hello **world**"))
+    expect(ref.current?.getText()).toContain("**world**")
   })
 
   it("inserts a reference badge and exposes it via getJSON", async () => {
@@ -124,7 +126,7 @@ describe("RichComposer imperative inserts (Phase 3)", () => {
         ],
       })
     )
-    expect(ref.current?.getMarkdown()).toContain("from json")
+    expect(ref.current?.getText()).toContain("from json")
     expect(ref.current?.isEmpty()).toBe(false)
   })
 
@@ -149,7 +151,7 @@ describe("RichComposer imperative inserts (Phase 3)", () => {
   })
 })
 
-describe("RichComposer configurable submit / newline (Phase 3)", () => {
+describe("RichComposer configurable submit / newline", () => {
   it("submits on a plain Enter by default", async () => {
     const onSubmit = vi.fn()
     const { ref } = await mount({ onSubmit })
@@ -204,7 +206,7 @@ describe("RichComposer configurable submit / newline (Phase 3)", () => {
 
   it("does not swallow Enter when no onSubmit handler is provided", async () => {
     const { ref } = await mount()
-    act(() => ref.current?.setMarkdown("hello"))
+    act(() => ref.current?.setText("hello"))
     act(() => ref.current?.focus())
     dispatchKey(ref, { key: "Enter" })
     // Enter fell through to the editor default (paragraph split), not swallowed.

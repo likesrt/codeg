@@ -13,9 +13,14 @@
 //! * **Accounting** — launch acks are detected from the record-level
 //!   `toolUseResult` (`status:"async_launched"` → `agentId`, or
 //!   `backgroundTaskId` for background shells; these fields exist ONLY on
-//!   disk, never on the wire), settled by `<task-notification>` records
-//!   (matching `<task-id>`), re-armed when the main agent resumes a settled
-//!   sub-agent via `SendMessage`, and expired past
+//!   disk, never on the wire), settled by any of: a `<task-notification>`
+//!   record (matching `<task-id>`), a `TaskOutput` result whose structured
+//!   `task.status` reached a terminal state, or a `TaskStop`/`KillShell`
+//!   call. Background shells almost never emit a `<task-notification>` (they
+//!   are collected inline via `TaskOutput` or just left running), so those
+//!   two extra signals are what keep the count from stranding. Entries are
+//!   re-armed when the main agent resumes a settled sub-agent via
+//!   `SendMessage`, and expired past
 //!   [`background_keepalive_max_age`]. The outstanding count is mirrored into
 //!   `SessionState` (via `apply_event`) to exempt the connection from both
 //!   idle sweeps — disconnecting kills the agent CLI, and the background work
@@ -593,8 +598,10 @@ impl WatchState {
         Ok(lines)
     }
 
-    /// Task accounting for one record: launch acks, `<task-notification>`
-    /// settlements, and `SendMessage` re-arms of settled sub-agents.
+    /// Task accounting for one record: launch acks; settlements via a
+    /// `<task-notification>` record, a `TaskOutput` result reaching a terminal
+    /// `task.status`, or a `TaskStop`/`KillShell` call; and `SendMessage`
+    /// re-arms of settled sub-agents.
     fn account(&mut self, value: &serde_json::Value, settled: &mut Vec<BackgroundSettledInfo>) {
         let record_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match record_type {
@@ -629,6 +636,34 @@ impl WatchState {
                             },
                         );
                     }
+
+                    // Settle a task the agent collected via `TaskOutput`: its
+                    // structured `task.status` reaching a terminal state means
+                    // the task finished (exit recorded), even though no
+                    // `<task-notification>` was ever written — the agent
+                    // awaited it inline. This is the DOMINANT settle path for
+                    // background shells, which almost never notify. No `settled`
+                    // push on purpose: an inline-awaited collection must not
+                    // raise an out-of-turn OS notification (the agent is
+                    // mid-turn and already holds the result); only the
+                    // outstanding count drops. `settled_ids` still records it so
+                    // a later `SendMessage` resume can re-arm.
+                    if let Some(task) = tur.get("task") {
+                        if let Some(id) = task
+                            .get("task_id")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            let status =
+                                task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                            if is_terminal_task_status(status) && self.tasks.remove(id).is_some() {
+                                self.settled_ids.insert(id.to_string());
+                                tracing::info!(
+                                    "[bg-watch] settled task={id} via TaskOutput status={status}"
+                                );
+                            }
+                        }
+                    }
                 }
                 if let Some(text) = user_record_text(value) {
                     let trimmed = text.trim_start();
@@ -653,9 +688,6 @@ impl WatchState {
                 }
             }
             "assistant" => {
-                // A settled sub-agent can be resumed: `SendMessage(to: <id>)`
-                // re-arms its accounting entry (it will notify again — the
-                // notification's own <note> documents multi-notify).
                 let Some(blocks) = value
                     .get("message")
                     .and_then(|m| m.get("content"))
@@ -667,25 +699,47 @@ impl WatchState {
                     if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
                         continue;
                     }
-                    if block.get("name").and_then(|n| n.as_str()) != Some("SendMessage") {
-                        continue;
-                    }
-                    let Some(to) = block
-                        .get("input")
-                        .and_then(|i| i.get("to"))
-                        .and_then(|t| t.as_str())
-                    else {
-                        continue;
-                    };
-                    if self.settled_ids.remove(to) {
-                        tracing::info!("[bg-watch] re-armed resumed task={to}");
-                        self.tasks.insert(
-                            to.to_string(),
-                            TaskEntry {
-                                kind: "agent",
-                                started_at: Instant::now(),
-                            },
-                        );
+                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let input = block.get("input");
+                    match name {
+                        // A settled sub-agent can be resumed: `SendMessage(to:
+                        // <id>)` re-arms its accounting entry (it will notify
+                        // again — the notification's own <note> documents
+                        // multi-notify).
+                        "SendMessage" => {
+                            let Some(to) =
+                                input.and_then(|i| i.get("to")).and_then(|t| t.as_str())
+                            else {
+                                continue;
+                            };
+                            if self.settled_ids.remove(to) {
+                                tracing::info!("[bg-watch] re-armed resumed task={to}");
+                                self.tasks.insert(
+                                    to.to_string(),
+                                    TaskEntry {
+                                        kind: "agent",
+                                        started_at: Instant::now(),
+                                    },
+                                );
+                            }
+                        }
+                        // Explicit kill: the background task's process is gone,
+                        // so it must leave the outstanding count now — no
+                        // completion notification will follow. `TaskStop` names
+                        // it via `task_id`, `KillShell` via `shell_id`.
+                        "TaskStop" | "KillShell" => {
+                            if let Some(id) = input
+                                .and_then(|i| i.get("task_id").or_else(|| i.get("shell_id")))
+                                .and_then(|t| t.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                if self.tasks.remove(id).is_some() {
+                                    self.settled_ids.insert(id.to_string());
+                                    tracing::info!("[bg-watch] settled task={id} via {name}");
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -934,6 +988,25 @@ fn baseline_offset_since(path: &PathBuf, epoch: std::time::SystemTime) -> Option
     Some(offset)
 }
 
+/// Whether a `TaskOutput` `task.status` is terminal — the task has stopped and
+/// must leave the outstanding count. `"running"` (a non-blocking poll of a
+/// still-live task) is deliberately excluded so a status check doesn't clear a
+/// task that is genuinely still working.
+fn is_terminal_task_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed"
+            | "failed"
+            | "canceled"
+            | "cancelled"
+            | "killed"
+            | "stopped"
+            | "timeout"
+            | "timed_out"
+            | "error"
+    )
+}
+
 fn hash_turn(turn: &MessageTurn) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     match serde_json::to_string(turn) {
@@ -1001,6 +1074,23 @@ mod tests {
     fn assistant_text(uuid: &str, text: &str) -> String {
         format!(
             r#"{{"type":"assistant","timestamp":"2026-07-07T03:47:08.000Z","uuid":"{uuid}","message":{{"role":"assistant","model":"claude-sonnet-5","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        )
+    }
+
+    /// Real-shape `TaskOutput` result: a tool-result user record whose
+    /// structured `toolUseResult.task` carries `task_id` + `status` (shape
+    /// captured from a live transcript on 2026-07-08).
+    fn taskoutput_result(task_id: &str, status: &str) -> String {
+        format!(
+            r#"{{"type":"user","timestamp":"2026-07-07T03:47:30.000Z","uuid":"u-to-{task_id}-{status}","message":{{"role":"user","content":[{{"tool_use_id":"toolu_out_{task_id}","type":"tool_result","content":[{{"type":"text","text":"<task_id>{task_id}</task_id> <status>{status}</status>"}}]}}]}},"toolUseResult":{{"retrieval_status":"success","task":{{"task_id":"{task_id}","task_type":"local_bash","status":"{status}","exitCode":0}}}}}}"#
+        )
+    }
+
+    /// Real-shape `TaskStop` call (assistant tool_use naming the task via
+    /// `task_id`).
+    fn taskstop(task_id: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-07-07T03:47:31.000Z","uuid":"a-stop-{task_id}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_stop_{task_id}","name":"TaskStop","input":{{"task_id":"{task_id}"}}}}]}}}}"#
         )
     }
 
@@ -1397,6 +1487,59 @@ mod tests {
         // response is the rendered out-of-turn content.
         assert_eq!(turns.len(), 1);
         assert!(turns[0].id.starts_with("bg-"));
+    }
+
+    /// The dominant real-world shell path: a background shell is launched, the
+    /// agent awaits it with `TaskOutput{block:true}`, and the result's
+    /// `task.status` goes terminal — with NO `<task-notification>` ever
+    /// written. That collection must clear the outstanding count (the bug:
+    /// only `<task-notification>` used to settle, so these stranded for the
+    /// full keep-alive max-age). A non-terminal poll must NOT clear it.
+    #[test]
+    fn taskoutput_terminal_status_settles_background_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        // A non-blocking poll while still running must not touch the count.
+        write_lines(&path, &[&taskoutput_result("bash1", "running")]);
+        assert!(
+            tick_now(&mut ws, &ledger).is_none(),
+            "a running TaskOutput poll must not change accounting"
+        );
+
+        // The collected completion settles it — no notification involved.
+        write_lines(&path, &[&taskoutput_result("bash1", "completed")]);
+        let (_, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(outstanding, 0, "TaskOutput completion must clear the count");
+        assert!(
+            settled.is_empty(),
+            "inline-awaited collection must not raise an OS notification"
+        );
+    }
+
+    /// An explicit `TaskStop` settles the task immediately — the process is
+    /// gone and no completion notification will follow.
+    #[test]
+    fn taskstop_settles_background_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("bash9")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let (_, outstanding, ..) = unpack(tick_now(&mut ws, &ledger).expect("ack event"));
+        assert_eq!(outstanding, 1);
+
+        write_lines(&path, &[&taskstop("bash9")]);
+        let (_, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(outstanding, 0, "TaskStop must clear the count");
+        assert!(settled.is_empty());
     }
 
     #[test]

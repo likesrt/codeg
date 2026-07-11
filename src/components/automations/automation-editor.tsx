@@ -92,9 +92,9 @@ export function AutomationEditor({
   const [agentType, setAgentType] = useState<AgentType>(
     automation?.agent_type ?? "claude_code"
   )
-  // Mirrors the composer's Markdown for live validation; the authoritative value
-  // is read from the editor ref at submit (so a prefilled edit validates even
-  // before the user types — defaultMarkdown applies without firing onChange).
+  // Mirrors the composer's plain text for live validation; the authoritative
+  // value is read from the editor ref at submit (so a prefilled edit validates
+  // even before the user types — defaultText applies without firing onChange).
   const [prompt, setPrompt] = useState(automation?.config?.display_text ?? "")
   const [folderId, setFolderId] = useState<number | null>(
     automation?.root_folder_id ?? folders[0]?.id ?? null
@@ -228,7 +228,7 @@ export function AutomationEditor({
   const submit = async () => {
     setError(null)
     const editor = editorRef.current?.getEditor()
-    const displayText = (editorRef.current?.getMarkdown() ?? prompt).trim()
+    const displayText = (editorRef.current?.getText() ?? prompt).trim()
     if (!name.trim()) return setError(t("errorName"))
     if (!displayText) return setError(t("errorPrompt"))
     if (trigger === "schedule" && !cron.trim()) return setError(t("errorCron"))
@@ -381,14 +381,14 @@ export function AutomationEditor({
         <ComposerInvocationsPopup inv={invocations} />
         <RichComposer
           ref={editorRef}
-          defaultMarkdown={automation?.config?.display_text ?? ""}
+          defaultText={automation?.config?.display_text ?? ""}
           placeholder={t("promptPlaceholder")}
           ariaLabel={t("prompt")}
           referenceSearch={referenceSearch}
           mentionUiLabels={mentionUiLabels}
           tabLabels={referenceGroupLabels}
-          onChange={(md) => {
-            setPrompt(md)
+          onChange={(text) => {
+            setPrompt(text)
             invocations.detect()
           }}
           isExternalMenuOpen={invocations.isOpen}

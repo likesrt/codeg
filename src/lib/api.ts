@@ -31,6 +31,7 @@ import type {
   QuestionAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  GrokStructuredConfig,
   AgentSkillScope,
   AgentSkillLayout,
   AgentSkillItem,
@@ -40,6 +41,7 @@ import type {
   ExpertInstallStatus,
   LinkOp,
   LinkOpResult,
+  ScienceListItem,
   FolderHistoryEntry,
   FolderDetail,
   CreateChatConversationResult,
@@ -428,6 +430,10 @@ export async function acpUpdateAgentConfig(
     opencode_auth_json?: string | null
     codex_auth_json?: string | null
     codex_config_toml?: string | null
+    grok_config_toml?: string | null
+    /** Grok structured controls (mode / reasoning effort); merged onto the
+     * on-disk config.toml server-side. */
+    grok_structured?: GrokStructuredConfig | null
   }
 ): Promise<number> {
   return getTransport().call("acp_update_agent_config", {
@@ -436,6 +442,8 @@ export async function acpUpdateAgentConfig(
     opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
+    grokConfigToml: params.grok_config_toml ?? null,
+    grokStructured: params.grok_structured ?? null,
   })
 }
 
@@ -780,6 +788,62 @@ export async function expertsReadContent(expertId: string): Promise<string> {
 
 export async function expertsOpenCentralDir(): Promise<string> {
   return getTransport().call("experts_open_central_dir")
+}
+
+// ─── Science (built-in scientific-research skills) ──────────────────────
+// Link statuses reuse the Expert* DTOs (like office tools do): the
+// `expertId` field carries the science skill id.
+
+export async function scienceList(): Promise<ScienceListItem[]> {
+  return getTransport().call("science_list")
+}
+
+export async function scienceGetInstallStatus(
+  skillId: string
+): Promise<ExpertInstallStatus[]> {
+  return getTransport().call("science_get_install_status", { skillId })
+}
+
+/** One round-trip snapshot of every (science skill, agent) link state. */
+export async function scienceListAllInstallStatuses(): Promise<
+  ExpertInstallStatus[]
+> {
+  return getTransport().call("science_list_all_install_statuses")
+}
+
+/** Apply a batch of enable/disable ops; returns one result per op. */
+export async function scienceApplyLinks(
+  ops: LinkOp[]
+): Promise<LinkOpResult[]> {
+  return getTransport().call("science_apply_links", { ops })
+}
+
+export async function scienceLinkToAgent(params: {
+  skillId: string
+  agentType: AgentType
+}): Promise<ExpertInstallStatus> {
+  return getTransport().call("science_link_to_agent", {
+    skillId: params.skillId,
+    agentType: params.agentType,
+  })
+}
+
+export async function scienceUnlinkFromAgent(params: {
+  skillId: string
+  agentType: AgentType
+}): Promise<void> {
+  return getTransport().call("science_unlink_from_agent", {
+    skillId: params.skillId,
+    agentType: params.agentType,
+  })
+}
+
+export async function scienceReadContent(skillId: string): Promise<string> {
+  return getTransport().call("science_read_content", { skillId })
+}
+
+export async function scienceOpenCentralDir(): Promise<string> {
+  return getTransport().call("science_open_central_dir")
 }
 
 // ─── Office tools ───
@@ -1734,6 +1798,7 @@ export type SettingsSection =
   | "mcp"
   | "skills"
   | "experts"
+  | "science"
   | "office-tools"
   | "shortcuts"
   | "system"
