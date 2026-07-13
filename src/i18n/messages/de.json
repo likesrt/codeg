@@ -51,6 +51,7 @@
       "experts": "Experten",
       "science": "Wissenschaft",
       "office_tools": "Office-Tools",
+      "skill_packs": "Skill-Pakete",
       "quick_messages": "Schnellnachrichten",
       "logs": "Laufzeitprotokolle"
     }
@@ -601,7 +602,7 @@
       "notRun": "Prüfungen wurden noch nicht ausgeführt."
     },
     "grok": {
-      "configDescription": "Konfiguriere Grok hier. Die Steuerelemente unten (Berechtigungsmodus, Denkaufwand) werden in ~/.grok/config.toml zusammengeführt und behalten deine anderen Schlüssel und Kommentare. Die Anmeldung nutzt deinen XAI_API_KEY oder `grok login`. Andere Schlüssel bleiben unter Erweitert bearbeitbar.",
+      "configDescription": "Konfiguriere Grok hier. Die folgenden Steuerelemente – Berechtigungsmodus, Reasoning-Aufwand, ein optionales benutzerdefiniertes Modell (eigener Endpunkt) und die Verdichtung – werden in ~/.grok/config.toml zusammengeführt, wobei deine anderen Schlüssel und Kommentare erhalten bleiben. Die Anmeldung nutzt deinen XAI_API_KEY oder `grok login`. Weitere Schlüssel bleiben unter „Erweitert“ bearbeitbar.",
       "permissionModeLabel": "Berechtigungsmodus",
       "permissionAsk": "Jedes Mal fragen",
       "permissionAlwaysApprove": "Immer zulassen",
@@ -618,7 +619,24 @@
       "advancedToggle": "Erweitert (rohe config.toml)",
       "configTomlNative": "config.toml (nativ)",
       "configTomlHint": "Wird wortwörtlich als gesamte ~/.grok/config.toml gespeichert. Ungültiges TOML wird abgelehnt, sodass ein Tippfehler deine Datei nie abschneidet.",
-      "configTomlPlaceholder": "# Andere Schlüssel als die Steuerelemente oben, z. B.\n# [mcp_servers.*], [cli], [permission]-Regeln."
+      "configTomlPlaceholder": "# Andere Schlüssel als die Steuerelemente oben, z. B.\n# [mcp_servers.*], [cli], [permission]-Regeln.",
+      "customModelTitle": "Benutzerdefiniertes Modell (eigener Endpunkt)",
+      "customModelHint": "Richte Grok auf einen benutzerdefinierten oder selbst gehosteten Endpunkt. codeg schreibt einen `[model.*]`-Block pro Modell und legt es als Standard fest. Lasse die Modell-ID leer, um es zu entfernen.",
+      "customModelIdLabel": "Modell-ID",
+      "customModelIdPlaceholder": "z. B. grok-custom",
+      "customModelIdHint": "Wird als `[model.*]`-Block registriert und als Modellname an die API gesendet; außerdem als `[models].default` gesetzt.",
+      "customBaseUrlLabel": "Basis-URL",
+      "customBaseUrlPlaceholder": "https://api.x.ai/v1 (Standard)",
+      "customApiBackendLabel": "API-Backend",
+      "backendResponses": "Responses",
+      "backendChatCompletions": "Chat Completions",
+      "backendMessages": "Messages (Anthropic)",
+      "customApiKeyLabel": "API-Schlüssel",
+      "customApiKeyHint": "Inline in `[model.*].api_key` gespeichert, nur für diesen Endpunkt.",
+      "customContextWindowLabel": "Kontextfenster (Tokens)",
+      "customContextWindowHint": "Optional. Steuert den Zeitpunkt der automatischen Verdichtung; leer lassen für den Standard des Endpunkts.",
+      "autoCompactLabel": "Schwellenwert für Auto-Verdichtung (%)",
+      "autoCompactHint": "Verdichtet die Unterhaltung, wenn die Kontextnutzung diesen Prozentsatz erreicht (Grok-Standard 85). Wird in `[session]` geschrieben."
     },
     "codex": {
       "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key, Modellname und reasoning effort und synchronisiert mit `auth.json` / `config.toml`.",
@@ -1031,7 +1049,8 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Agent-Einstellungen werden geladen..."
+    "agentsLoading": "Agent-Einstellungen werden geladen...",
+    "skillPacksLoading": "Skill-Pakete werden geladen…"
   },
   "GeneralSettings": {
     "loading": "Wird geladen...",
@@ -2058,6 +2077,7 @@
           "spawnFailed": "{agent} konnte nicht gestartet werden: {message}",
           "downloadFailed": "{agent}-Download fehlgeschlagen: {message}",
           "sessionLoadResourceNotFound": "{agent}-Sitzung konnte nicht geladen werden. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
+          "sessionLoadUnavailable": "{agent} konnte diese Sitzung nicht wiederherstellen – sie wurde möglicherweise beendet oder der Agent wurde gestoppt. Neu laden, um es erneut zu versuchen, oder eine neue Konversation starten.",
           "turnFailedRefusal": "{agent} hat die Fortsetzung dieser Runde abgelehnt. Häufig deutet das auf einen Backend- oder Gateway-Fehler hin. Bitte prüfen Sie die Agent-Logs.",
           "turnFailedMaxTokens": "{agent} hat das Token-Limit für diese Runde erreicht.",
           "turnFailedMaxTurnRequests": "{agent} hat die maximale Anzahl zulässiger Anfragen für diese Runde erreicht.",
@@ -2142,6 +2162,7 @@
         "slashSearchEmpty": "Keine passenden Befehle",
         "experts": "Experten",
         "office": "Büroarbeit",
+        "research": "Forschung",
         "attachLocalUpload": "Lokale Datei hochladen",
         "attachServerFile": "Serverdatei auswählen",
         "attachUploadTooLarge": "{names} überschreitet das Upload-Limit von {limit}MB und wurde übersprungen.",
@@ -3202,6 +3223,22 @@
     },
     "autoPreviewLabel": "Vorschau automatisch öffnen",
     "autoPreviewHint": "Wenn ein Agent eine Word-, Excel- oder PowerPoint-Datei erstellt oder bearbeitet, wird die Live-Vorschau automatisch geöffnet."
+  },
+  "SkillPacksSettings": {
+    "title": "Skill-Pakete",
+    "description": "Kuratierte Skill-Pakete, die codeg zentral verwaltet und mit deinen KI-Agenten verknüpft – Programmierexperten, wissenschaftliche Forschung und Office-Dokumenttools. Unten pro Agent aktivierbar.",
+    "tabs": {
+      "experts": "Experten",
+      "science": "Wissenschaft",
+      "office": "Office-Tools"
+    },
+    "actions": {
+      "openCentralDir": "Zentralen Ordner öffnen",
+      "refresh": "Aktualisieren"
+    },
+    "toasts": {
+      "openFolderFailed": "Ordner konnte nicht geöffnet werden"
+    }
   },
   "QuickMessagesSettings": {
     "title": "Schnellnachrichten",

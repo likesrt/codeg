@@ -51,6 +51,7 @@
       "experts": "Experts",
       "science": "Science",
       "office_tools": "Office Tools",
+      "skill_packs": "Skill Packs",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs"
     }
@@ -601,7 +602,7 @@
       "notRun": "Checks have not run yet."
     },
     "grok": {
-      "configDescription": "Configure Grok here. The controls below — permission mode and reasoning effort — merge into ~/.grok/config.toml, preserving your other keys and comments. Sign-in uses your XAI_API_KEY or `grok login`. Other keys stay editable under Advanced.",
+      "configDescription": "Configure Grok here. The controls below — permission mode, reasoning effort, an optional custom (BYO endpoint) model, and compaction — merge into ~/.grok/config.toml, preserving your other keys and comments. Sign-in uses your XAI_API_KEY or `grok login`. Other keys stay editable under Advanced.",
       "permissionModeLabel": "Permission mode",
       "permissionAsk": "Ask every time",
       "permissionAlwaysApprove": "Always approve",
@@ -618,7 +619,24 @@
       "advancedToggle": "Advanced (raw config.toml)",
       "configTomlNative": "config.toml (native)",
       "configTomlHint": "Saved verbatim as the whole ~/.grok/config.toml. Invalid TOML is rejected so a typo never truncates your file.",
-      "configTomlPlaceholder": "# Keys other than the controls above, e.g.\n# [mcp_servers.*], [cli], [permission] rules."
+      "configTomlPlaceholder": "# Keys other than the controls above, e.g.\n# [mcp_servers.*], [cli], [permission] rules.",
+      "customModelTitle": "Custom model (BYO endpoint)",
+      "customModelHint": "Point Grok at a custom or self-hosted endpoint. codeg writes a per-model `[model.*]` block and makes it the default. Leave the Model ID empty to remove it.",
+      "customModelIdLabel": "Model ID",
+      "customModelIdPlaceholder": "e.g. grok-custom",
+      "customModelIdHint": "Registered as a `[model.*]` block and sent to the API as the model name; also set as `[models].default`.",
+      "customBaseUrlLabel": "Base URL",
+      "customBaseUrlPlaceholder": "https://api.x.ai/v1 (default)",
+      "customApiBackendLabel": "API backend",
+      "backendResponses": "Responses",
+      "backendChatCompletions": "Chat Completions",
+      "backendMessages": "Messages (Anthropic)",
+      "customApiKeyLabel": "API Key",
+      "customApiKeyHint": "Stored inline in `[model.*].api_key`, scoped to this endpoint.",
+      "customContextWindowLabel": "Context window (tokens)",
+      "customContextWindowHint": "Optional. Drives auto-compact timing; leave empty for the endpoint default.",
+      "autoCompactLabel": "Auto-compact threshold (%)",
+      "autoCompactHint": "Compact the conversation when context usage reaches this percent (Grok default 85). Written to `[session]`."
     },
     "codex": {
       "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
@@ -1031,7 +1049,8 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Loading agent settings..."
+    "agentsLoading": "Loading agent settings...",
+    "skillPacksLoading": "Loading skill packs…"
   },
   "GeneralSettings": {
     "loading": "Loading...",
@@ -2058,6 +2077,7 @@
           "spawnFailed": "Failed to start {agent}: {message}",
           "downloadFailed": "{agent} download failed: {message}",
           "sessionLoadResourceNotFound": "{agent} session failed to load. Reload to retry, or start a new conversation.",
+          "sessionLoadUnavailable": "{agent} couldn't restore this session — it may have ended or the agent stopped. Reload to retry, or start a new conversation.",
           "turnFailedRefusal": "{agent} refused to continue this turn. This often indicates a backend or gateway error — check the agent's logs.",
           "turnFailedMaxTokens": "{agent} reached the maximum token limit for this turn.",
           "turnFailedMaxTurnRequests": "{agent} reached the maximum number of allowed requests for this turn.",
@@ -2144,6 +2164,7 @@
         "slashSearchEmpty": "No matching commands",
         "experts": "Experts",
         "office": "Office Work",
+        "research": "Scientific Research",
         "attachUploadTooLarge": "{names} exceeds the {limit}MB upload limit and was skipped.",
         "attachUploadFailed": "Failed to upload {names}.",
         "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
@@ -3214,6 +3235,22 @@
     },
     "autoPreviewLabel": "Auto-open preview",
     "autoPreviewHint": "When an agent creates or edits a Word, Excel, or PowerPoint file, open its live preview automatically."
+  },
+  "SkillPacksSettings": {
+    "title": "Skill Packs",
+    "description": "Curated skill bundles that codeg manages centrally and links into your AI agents — coding experts, scientific research, and office document tools. Enable them per agent below.",
+    "tabs": {
+      "experts": "Experts",
+      "science": "Science",
+      "office": "Office Tools"
+    },
+    "actions": {
+      "openCentralDir": "Open central folder",
+      "refresh": "Refresh"
+    },
+    "toasts": {
+      "openFolderFailed": "Failed to open folder"
+    }
   },
   "QuickMessagesSettings": {
     "title": "Quick Messages",

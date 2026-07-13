@@ -51,6 +51,7 @@
       "experts": "Expertos",
       "science": "Ciencia",
       "office_tools": "Herramientas de oficina",
+      "skill_packs": "Paquetes de habilidades",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución"
     }
@@ -601,7 +602,7 @@
       "notRun": "Las comprobaciones aún no se han ejecutado."
     },
     "grok": {
-      "configDescription": "Configura Grok aquí. Los controles de abajo (modo de permisos y esfuerzo de razonamiento) se fusionan en ~/.grok/config.toml conservando tus otras claves y comentarios. El inicio de sesión usa tu XAI_API_KEY o `grok login`. Las demás claves se editan en Avanzado.",
+      "configDescription": "Configura Grok aquí. Los controles siguientes —modo de permisos, esfuerzo de razonamiento, un modelo personalizado opcional (endpoint propio) y la compactación— se combinan en ~/.grok/config.toml, conservando tus otras claves y comentarios. El inicio de sesión usa tu XAI_API_KEY o `grok login`. Las demás claves siguen siendo editables en Avanzado.",
       "permissionModeLabel": "Modo de permisos",
       "permissionAsk": "Preguntar siempre",
       "permissionAlwaysApprove": "Aprobar siempre",
@@ -618,7 +619,24 @@
       "advancedToggle": "Avanzado (config.toml sin procesar)",
       "configTomlNative": "config.toml (nativo)",
       "configTomlHint": "Se guarda literalmente como todo el ~/.grok/config.toml. El TOML no válido se rechaza para que una errata no trunque tu archivo.",
-      "configTomlPlaceholder": "# Claves distintas de los controles de arriba, p. ej.\n# [mcp_servers.*], [cli], reglas [permission]."
+      "configTomlPlaceholder": "# Claves distintas de los controles de arriba, p. ej.\n# [mcp_servers.*], [cli], reglas [permission].",
+      "customModelTitle": "Modelo personalizado (endpoint propio)",
+      "customModelHint": "Apunta Grok a un endpoint personalizado o autoalojado. codeg escribe un bloque `[model.*]` por modelo y lo establece como predeterminado. Deja el ID de modelo vacío para eliminarlo.",
+      "customModelIdLabel": "ID del modelo",
+      "customModelIdPlaceholder": "p. ej. grok-custom",
+      "customModelIdHint": "Se registra como un bloque `[model.*]` y se envía a la API como nombre del modelo; también se establece como `[models].default`.",
+      "customBaseUrlLabel": "URL base",
+      "customBaseUrlPlaceholder": "https://api.x.ai/v1 (predeterminado)",
+      "customApiBackendLabel": "Backend de la API",
+      "backendResponses": "Responses",
+      "backendChatCompletions": "Chat Completions",
+      "backendMessages": "Messages (Anthropic)",
+      "customApiKeyLabel": "Clave de API",
+      "customApiKeyHint": "Se guarda en línea en `[model.*].api_key`, limitada a este endpoint.",
+      "customContextWindowLabel": "Ventana de contexto (tokens)",
+      "customContextWindowHint": "Opcional. Determina el momento de la autocompactación; déjalo vacío para el valor predeterminado del endpoint.",
+      "autoCompactLabel": "Umbral de autocompactación (%)",
+      "autoCompactHint": "Compacta la conversación cuando el uso del contexto alcanza este porcentaje (predeterminado de Grok: 85). Se escribe en `[session]`."
     },
     "codex": {
       "configDescription": "Admite configuración rápida de URL de API, API Key, nombre del modelo y reasoning effort, y sincroniza con `auth.json` / `config.toml`.",
@@ -1031,7 +1049,8 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Cargando configuración de agentes..."
+    "agentsLoading": "Cargando configuración de agentes...",
+    "skillPacksLoading": "Cargando paquetes de habilidades…"
   },
   "GeneralSettings": {
     "loading": "Cargando...",
@@ -2058,6 +2077,7 @@
           "spawnFailed": "No se pudo iniciar {agent}: {message}",
           "downloadFailed": "La descarga de {agent} falló: {message}",
           "sessionLoadResourceNotFound": "Error al cargar la sesión de {agent}. Recarga para reintentar o inicia una nueva conversación.",
+          "sessionLoadUnavailable": "{agent} no pudo restaurar esta sesión; es posible que haya finalizado o que el agente se haya detenido. Recarga para reintentar o inicia una nueva conversación.",
           "turnFailedRefusal": "{agent} rechazó continuar este turno. Suele indicar un error de backend o pasarela. Revisa los registros del agente.",
           "turnFailedMaxTokens": "{agent} alcanzó el límite máximo de tokens para este turno.",
           "turnFailedMaxTurnRequests": "{agent} alcanzó el número máximo de solicitudes permitidas para este turno.",
@@ -2142,6 +2162,7 @@
         "slashSearchEmpty": "Sin comandos coincidentes",
         "experts": "Expertos",
         "office": "Ofimática",
+        "research": "Investigación",
         "attachLocalUpload": "Subir archivo local",
         "attachServerFile": "Seleccionar archivo del servidor",
         "attachUploadTooLarge": "{names} supera el límite de carga de {limit}MB y se omitió.",
@@ -3202,6 +3223,22 @@
     },
     "autoPreviewLabel": "Abrir vista previa automáticamente",
     "autoPreviewHint": "Cuando un agente crea o edita un archivo de Word, Excel o PowerPoint, abre su vista previa en vivo automáticamente."
+  },
+  "SkillPacksSettings": {
+    "title": "Paquetes de habilidades",
+    "description": "Paquetes de habilidades seleccionados que codeg gestiona de forma centralizada y vincula a tus agentes de IA: expertos en programación, investigación científica y herramientas de documentos de oficina. Actívalos por agente abajo.",
+    "tabs": {
+      "experts": "Expertos",
+      "science": "Ciencia",
+      "office": "Herramientas de oficina"
+    },
+    "actions": {
+      "openCentralDir": "Abrir carpeta central",
+      "refresh": "Actualizar"
+    },
+    "toasts": {
+      "openFolderFailed": "Error al abrir la carpeta"
+    }
   },
   "QuickMessagesSettings": {
     "title": "Mensajes rápidos",
