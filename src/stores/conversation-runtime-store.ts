@@ -906,6 +906,132 @@ export function buildStreamingTurnsFromLiveMessage(
   return { turns, inProgressToolCallIds }
 }
 
+/** Metadata backfilled onto a local assistant turn by the post-turn reparse. */
+export interface TurnMetadataPatch {
+  index: number
+  usage?: TurnUsage | null
+  duration_ms?: number | null
+  model?: string | null
+  completed_at?: string | null
+}
+
+/**
+ * Align a fresh parse's assistant turns onto this session's completed local
+ * assistant turns and emit the metadata (usage / duration / model /
+ * completed_at) to backfill onto each.
+ *
+ * The subtlety is history. `localTurns` holds ONLY turns completed in the
+ * current session; persisted history lives in `detail`. The fresh parse
+ * returns history + this session's turns in order, so the local turns line up
+ * with the parse TAIL, past the `persistedAssistantCount` historical turns —
+ * hence the slice below before any offset math.
+ *
+ * That boundary is also what makes the "fold extra parser sub-turns into
+ * local[0]" step correct. When the parser splits the current reply into MORE
+ * sub-turns than the live stream did, the leading unmatched SESSION turns are
+ * genuine sub-turns of local[0] and their stats must be summed in (so the
+ * post-stream total matches a fresh reload). Folding the FULL parse instead —
+ * the original bug — summed every historical turn's duration/usage into the
+ * first reply after resuming a conversation; because {@link
+ * conversationRuntimeReducer}'s PATCH_TURN_METADATA is first-write-wins, that
+ * wrong value then stuck until a full reload cleared localTurns and rendered
+ * each parsed turn directly.
+ *
+ * A parse that hasn't caught up yet (fewer session turns than local) simply
+ * yields no patch for the unmatched turns, so the caller's retry can pick up
+ * the complete parse rather than lock in a stale historical value.
+ */
+export function computeTurnMetadataPatches(params: {
+  localAssistantIndices: number[]
+  parsedAssistantTurns: MessageTurn[]
+  persistedAssistantCount: number
+}): TurnMetadataPatch[] {
+  const { localAssistantIndices, parsedAssistantTurns } = params
+  // Drop the persisted history at the front of the parse; only this session's
+  // turns can align to localTurns. Clamp so a detail/parse count skew (e.g. a
+  // transient in-flight partial in `detail`) can't slice past the end.
+  const historyBoundary = Math.min(
+    Math.max(params.persistedAssistantCount, 0),
+    parsedAssistantTurns.length
+  )
+  const sessionParsedTurns = parsedAssistantTurns.slice(historyBoundary)
+
+  const offset = sessionParsedTurns.length - localAssistantIndices.length
+  const patches: TurnMetadataPatch[] = []
+
+  for (let i = 0; i < localAssistantIndices.length; i++) {
+    const parsedIdx = offset + i
+    let usageToApply: TurnUsage | null | undefined
+    let durationToApply: number | null | undefined
+    let modelToApply: string | null | undefined
+    // For the merged-sub-turn case (offset > 0), the latest completion is
+    // sessionParsedTurns[offset + i] (the sub-turn we matched); earlier
+    // rolled-in parsed turns precede it in time, so we don't aggregate
+    // completion timestamps.
+    let completedAtToApply: string | null | undefined
+
+    if (parsedIdx >= 0 && parsedIdx < sessionParsedTurns.length) {
+      const pt = sessionParsedTurns[parsedIdx]
+      usageToApply = pt.usage
+      durationToApply = pt.duration_ms
+      modelToApply = pt.model
+      completedAtToApply = pt.completed_at
+    }
+
+    // When the parser splits the response into more sub-turns than the live
+    // stream did (offset > 0), roll the leading unmatched SESSION turns'
+    // usage/duration into local[0] so that sum(local) equals sum(parsed) for
+    // this session. `sessionParsedTurns` already excludes history, so this
+    // never folds an older turn's stats in.
+    if (i === 0 && offset > 0) {
+      for (let j = 0; j < offset; j++) {
+        const extra = sessionParsedTurns[j]
+        if (extra.usage) {
+          if (!usageToApply) {
+            usageToApply = { ...extra.usage }
+          } else {
+            usageToApply = {
+              input_tokens:
+                usageToApply.input_tokens + extra.usage.input_tokens,
+              output_tokens:
+                usageToApply.output_tokens + extra.usage.output_tokens,
+              cache_creation_input_tokens:
+                usageToApply.cache_creation_input_tokens +
+                extra.usage.cache_creation_input_tokens,
+              cache_read_input_tokens:
+                usageToApply.cache_read_input_tokens +
+                extra.usage.cache_read_input_tokens,
+            }
+          }
+        }
+        if (typeof extra.duration_ms === "number") {
+          durationToApply = (durationToApply ?? 0) + extra.duration_ms
+        }
+        if (!modelToApply && extra.model) {
+          modelToApply = extra.model
+        }
+      }
+    }
+
+    if (
+      !usageToApply &&
+      !durationToApply &&
+      !modelToApply &&
+      !completedAtToApply
+    )
+      continue
+    patches.push({
+      index: localAssistantIndices[i],
+      usage: usageToApply,
+      duration_ms: durationToApply,
+      model: modelToApply,
+      completed_at: completedAtToApply,
+    })
+  }
+
+  return patches
+}
+
 function upsertExternalIdIndex(
   index: Map<string, number>,
   previousExternalId: string | null,
@@ -2010,89 +2136,18 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
             const parsedAssistantTurns = parsed.turns.filter(
               (t) => t.role === "assistant"
             )
-
-            const offset =
-              parsedAssistantTurns.length - localAssistantIndices.length
-            const patches: Array<{
-              index: number
-              usage?: TurnUsage | null
-              duration_ms?: number | null
-              model?: string | null
-              completed_at?: string | null
-            }> = []
-
-            for (let i = 0; i < localAssistantIndices.length; i++) {
-              const parsedIdx = offset + i
-              let usageToApply: TurnUsage | null | undefined
-              let durationToApply: number | null | undefined
-              let modelToApply: string | null | undefined
-              // For the merged-sub-turn case (offset > 0), the latest
-              // completion is parsed[offset + i] (the sub-turn we matched);
-              // earlier rolled-in parsed turns precede it in time, so we
-              // don't aggregate completion timestamps.
-              let completedAtToApply: string | null | undefined
-
-              if (parsedIdx >= 0 && parsedIdx < parsedAssistantTurns.length) {
-                const pt = parsedAssistantTurns[parsedIdx]
-                usageToApply = pt.usage
-                durationToApply = pt.duration_ms
-                modelToApply = pt.model
-                completedAtToApply = pt.completed_at
-              }
-
-              // When the parser splits the response into more sub-turns
-              // than the live stream did (offset > 0), roll the leading
-              // unmatched parsed turns' usage/duration into local[0] so
-              // that sum(local) equals sum(parsed). Without this, the
-              // mid-stream stats row under-reports tokens vs. a fresh
-              // historical reload, which clears localTurns and shows
-              // every parsed turn directly.
-              if (i === 0 && offset > 0) {
-                for (let j = 0; j < offset; j++) {
-                  const extra = parsedAssistantTurns[j]
-                  if (extra.usage) {
-                    if (!usageToApply) {
-                      usageToApply = { ...extra.usage }
-                    } else {
-                      usageToApply = {
-                        input_tokens:
-                          usageToApply.input_tokens + extra.usage.input_tokens,
-                        output_tokens:
-                          usageToApply.output_tokens +
-                          extra.usage.output_tokens,
-                        cache_creation_input_tokens:
-                          usageToApply.cache_creation_input_tokens +
-                          extra.usage.cache_creation_input_tokens,
-                        cache_read_input_tokens:
-                          usageToApply.cache_read_input_tokens +
-                          extra.usage.cache_read_input_tokens,
-                      }
-                    }
-                  }
-                  if (typeof extra.duration_ms === "number") {
-                    durationToApply = (durationToApply ?? 0) + extra.duration_ms
-                  }
-                  if (!modelToApply && extra.model) {
-                    modelToApply = extra.model
-                  }
-                }
-              }
-
-              if (
-                !usageToApply &&
-                !durationToApply &&
-                !modelToApply &&
-                !completedAtToApply
-              )
-                continue
-              patches.push({
-                index: localAssistantIndices[i],
-                usage: usageToApply,
-                duration_ms: durationToApply,
-                model: modelToApply,
-                completed_at: completedAtToApply,
-              })
-            }
+            // Persisted history lives in `detail`, not `localTurns`; the fresh
+            // parse returns history + this session's turns. Pass the boundary
+            // so the alignment maps local turns to the parse TAIL and never
+            // folds a historical turn's stats into the first resumed reply.
+            const persistedAssistantCount = (cur.detail?.turns ?? []).filter(
+              (t) => t.role === "assistant"
+            ).length
+            const patches = computeTurnMetadataPatches({
+              localAssistantIndices,
+              parsedAssistantTurns,
+              persistedAssistantCount,
+            })
 
             if (patches.length > 0 || parsed.session_stats) {
               dispatch({
