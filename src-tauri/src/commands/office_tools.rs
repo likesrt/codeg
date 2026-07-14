@@ -233,6 +233,13 @@ const SKILLS: &[SkillDef] = &[
     },
 ];
 
+/// Ids of all OfficeCLI-managed skills. Used by the custom-skills pack to
+/// exclude built-in ids from the "custom" set (all packs share the central
+/// store).
+pub(crate) fn bundled_skill_ids() -> Vec<String> {
+    SKILLS.iter().map(|s| s.id.to_string()).collect()
+}
+
 fn skill_defs() -> &'static [SkillDef] {
     SKILLS
 }

@@ -82,12 +82,12 @@ describe("buildGrokStructuredConfig — Grok panel save payload", () => {
     expect(
       buildGrokStructuredConfig(
         grokDraft({
-          grokPermissionMode: "always-approve",
+          grokPermissionMode: "bypassPermissions",
           grokReasoningEffort: "high",
         })
       )
     ).toEqual({
-      permissionMode: "always-approve",
+      permissionMode: "bypassPermissions",
       defaultReasoningEffort: "high",
       ...emptyCustoms,
     })

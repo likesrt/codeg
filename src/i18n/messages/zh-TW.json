@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "在此設定 Grok。下方控制項——權限模式、推理強度、選用的自訂（自帶端點）模型與壓縮——會合併寫入 ~/.grok/config.toml，並保留你的其他鍵與註解。登入使用你的 XAI_API_KEY 或 `grok login`。其他鍵可在「進階」中編輯。",
       "permissionModeLabel": "權限模式",
-      "permissionAsk": "每次詢問",
+      "permissionDefault": "每次詢問",
+      "permissionAcceptEdits": "自動批准編輯",
+      "permissionAuto": "智慧自動批准",
       "permissionAlwaysApprove": "永遠允許",
       "reasoningEffortLabel": "推理級別",
       "effortLow": "低（較快）",
@@ -623,7 +625,7 @@
       "customModelTitle": "自訂模型（自帶端點）",
       "customModelHint": "讓 Grok 指向自訂或自架端點。codeg 會寫入按模型的 `[model.*]` 區塊並設為預設模型。清空模型 ID 即可移除。",
       "customModelIdLabel": "模型 ID",
-      "customModelIdPlaceholder": "例如 grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "註冊為 `[model.*]` 區塊，並作為模型名稱傳送給 API；同時設為 `[models].default`。",
       "customBaseUrlLabel": "Base URL",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1（預設）",
@@ -2870,6 +2872,8 @@
     "nameRequired": "請輸入頻道名稱。",
     "tokenRequired": "請輸入 Token。",
     "chatIdRequired": "請輸入 Chat ID。",
+    "topicMode": "話題群模式",
+    "topicModeHint": "將 Telegram forum topics 路由為獨立 Codeg 對話。Bot 必須加入 forum supergroup，並擁有管理 topics 權限。",
     "loadFailed": "載入頻道失敗。",
     "saveFailed": "儲存失敗。",
     "connectSuccess": "頻道已連線。",
@@ -3230,7 +3234,8 @@
     "tabs": {
       "experts": "專家",
       "science": "科學研究",
-      "office": "辦公工具"
+      "office": "辦公工具",
+      "custom": "自訂"
     },
     "actions": {
       "openCentralDir": "開啟中央目錄",
@@ -3760,5 +3765,88 @@
     "branchRemote": "遠端",
     "branchSearchPlaceholder": "搜尋分支…",
     "branchNone": "無分支"
+  },
+  "CustomSkillsSettings": {
+    "loading": "正在載入自訂技能…",
+    "category": "自訂",
+    "searchPlaceholder": "依名稱、ID 或描述搜尋自訂技能",
+    "states": {
+      "not_linked": "未啟用",
+      "linked_to_codeg": "已啟用",
+      "linked_elsewhere": "連結到其他位置",
+      "blocked_by_real_directory": "被同名實體目錄佔用",
+      "broken": "連結已失效"
+    },
+    "actions": {
+      "new": "新增",
+      "import": "匯入",
+      "importFromAgent": "從 Agent 匯入",
+      "cancel": "取消",
+      "save": "儲存"
+    },
+    "rowMenu": {
+      "edit": "編輯",
+      "duplicate": "複製為新技能",
+      "delete": "刪除"
+    },
+    "bulk": {
+      "delete": "刪除所選"
+    },
+    "editor": {
+      "createTitle": "新增自訂技能",
+      "editTitle": "編輯自訂技能",
+      "description": "自訂技能存放於共用庫（~/.codeg/skills），可為任意智能體啟用。",
+      "idLabel": "技能 ID",
+      "idPlaceholder": "例如 my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "在此撰寫技能的 SKILL.md…",
+      "preview": "預覽",
+      "edit": "編輯",
+      "emptyBody": "尚無內容。"
+    },
+    "duplicate": {
+      "title": "複製技能",
+      "description": "以「{id}」為範本，以新 ID 建立一份副本。",
+      "newIdPlaceholder": "新技能 ID",
+      "confirm": "複製"
+    },
+    "import": {
+      "title": "選擇要匯入的技能資料夾"
+    },
+    "importFromAgent": {
+      "title": "從 Agent 匯入技能",
+      "description": "將某個 Agent 自己的技能複製到共享庫，即可為任意 Agent 啟用。",
+      "agentLabel": "Agent",
+      "agentPlaceholder": "選擇一個 Agent",
+      "selectAll": "全選（{count}）",
+      "loading": "正在載入該 Agent 的技能…",
+      "unsupported": "此 Agent 未提供技能目錄。",
+      "empty": "此 Agent 沒有可匯入的技能。",
+      "alreadyInLibrary": "已在庫中",
+      "confirm": "匯入所選（{count}）"
+    },
+    "delete": {
+      "title": "刪除自訂技能？",
+      "body": "將從中央庫移除 {count} 個自訂技能，並解除它們在所有智能體中的連結。此操作無法復原。",
+      "confirm": "刪除"
+    },
+    "toasts": {
+      "loadFailed": "載入技能失敗",
+      "idRequired": "請輸入技能 ID",
+      "created": "已建立自訂技能",
+      "updated": "已更新自訂技能",
+      "saveFailed": "儲存技能失敗",
+      "imported": "已匯入技能",
+      "importFailed": "匯入技能失敗",
+      "duplicated": "已複製技能",
+      "duplicateFailed": "複製技能失敗",
+      "deleted": "已刪除 {count} 個技能",
+      "deletedPartial": "已刪除 {ok} 個，{failed} 個失敗",
+      "deleteFailed": "刪除技能失敗",
+      "importedFromAgent": "已匯入 {count} 個技能",
+      "importedFromAgentPartial": "已匯入 {ok} 個，{failed} 個失敗",
+      "importFromAgentAllSkipped": "無需匯入——{count} 個已在庫中",
+      "importFromAgentFailed": "從 Agent 匯入失敗"
+    }
   }
 }

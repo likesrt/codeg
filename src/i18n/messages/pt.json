@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "Configure o Grok aqui. Os controles abaixo — modo de permissão, esforço de raciocínio, um modelo personalizado opcional (endpoint próprio) e a compactação — são mesclados em ~/.grok/config.toml, preservando suas outras chaves e comentários. O login usa seu XAI_API_KEY ou `grok login`. As demais chaves continuam editáveis em Avançado.",
       "permissionModeLabel": "Modo de permissão",
-      "permissionAsk": "Perguntar sempre",
+      "permissionDefault": "Perguntar sempre",
+      "permissionAcceptEdits": "Aprovar edições automaticamente",
+      "permissionAuto": "Aprovação automática inteligente",
       "permissionAlwaysApprove": "Sempre aprovar",
       "reasoningEffortLabel": "Esforço de raciocínio",
       "effortLow": "Baixo (mais rápido)",
@@ -623,7 +625,7 @@
       "customModelTitle": "Modelo personalizado (endpoint próprio)",
       "customModelHint": "Aponte o Grok para um endpoint personalizado ou auto-hospedado. O codeg grava um bloco `[model.*]` por modelo e o define como padrão. Deixe o ID do modelo vazio para removê-lo.",
       "customModelIdLabel": "ID do modelo",
-      "customModelIdPlaceholder": "ex.: grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "Registrado como um bloco `[model.*]` e enviado à API como nome do modelo; também definido como `[models].default`.",
       "customBaseUrlLabel": "URL base",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1 (padrão)",
@@ -2870,6 +2872,8 @@
     "nameRequired": "O nome do canal é obrigatório.",
     "tokenRequired": "O token é obrigatório.",
     "chatIdRequired": "O Chat ID é obrigatório.",
+    "topicMode": "Modo de grupo por tópicos",
+    "topicModeHint": "Roteia tópicos de fórum do Telegram como sessões Codeg separadas. O bot deve estar em um supergrupo de fórum e poder gerenciar tópicos.",
     "loadFailed": "Falha ao carregar os canais.",
     "saveFailed": "Falha ao salvar as alterações.",
     "connectSuccess": "Canal conectado.",
@@ -3230,7 +3234,8 @@
     "tabs": {
       "experts": "Especialistas",
       "science": "Ciência",
-      "office": "Ferramentas de escritório"
+      "office": "Ferramentas de escritório",
+      "custom": "Personalizadas"
     },
     "actions": {
       "openCentralDir": "Abrir pasta central",
@@ -3760,5 +3765,88 @@
     "branchRemote": "Remoto",
     "branchSearchPlaceholder": "Pesquisar branches…",
     "branchNone": "Sem branches"
+  },
+  "CustomSkillsSettings": {
+    "loading": "Carregando habilidades personalizadas…",
+    "category": "Personalizadas",
+    "searchPlaceholder": "Pesquisar habilidades personalizadas por nome, ID ou descrição",
+    "states": {
+      "not_linked": "Não ativada",
+      "linked_to_codeg": "Ativada",
+      "linked_elsewhere": "Vinculada em outro lugar",
+      "blocked_by_real_directory": "Bloqueada por uma pasta real",
+      "broken": "Link quebrado"
+    },
+    "actions": {
+      "new": "Nova",
+      "import": "Importar",
+      "importFromAgent": "Importar de um agente",
+      "cancel": "Cancelar",
+      "save": "Salvar"
+    },
+    "rowMenu": {
+      "edit": "Editar",
+      "duplicate": "Duplicar",
+      "delete": "Excluir"
+    },
+    "bulk": {
+      "delete": "Excluir selecionadas"
+    },
+    "editor": {
+      "createTitle": "Nova habilidade personalizada",
+      "editTitle": "Editar habilidade personalizada",
+      "description": "As habilidades personalizadas ficam no armazenamento compartilhado (~/.codeg/skills) e podem ser ativadas para qualquer agente.",
+      "idLabel": "ID da habilidade",
+      "idPlaceholder": "ex.: my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "Escreva aqui o SKILL.md da habilidade…",
+      "preview": "Pré-visualização",
+      "edit": "Editar",
+      "emptyBody": "Ainda sem conteúdo."
+    },
+    "duplicate": {
+      "title": "Duplicar habilidade",
+      "description": "Criar uma cópia de \"{id}\" com um novo ID.",
+      "newIdPlaceholder": "Novo ID da habilidade",
+      "confirm": "Duplicar"
+    },
+    "import": {
+      "title": "Escolha uma pasta de habilidade para importar"
+    },
+    "importFromAgent": {
+      "title": "Importar habilidades de um agente",
+      "description": "Copie as habilidades próprias de um agente para o repositório compartilhado e ative-as em qualquer agente.",
+      "agentLabel": "Agente",
+      "agentPlaceholder": "Selecione um agente",
+      "selectAll": "Selecionar tudo ({count})",
+      "loading": "Carregando as habilidades do agente…",
+      "unsupported": "Este agente não expõe um diretório de habilidades.",
+      "empty": "Este agente não tem habilidades para importar.",
+      "alreadyInLibrary": "Na biblioteca",
+      "confirm": "Importar selecionadas ({count})"
+    },
+    "delete": {
+      "title": "Excluir habilidades personalizadas?",
+      "body": "Isto remove {count} habilidade(s) personalizada(s) do armazenamento central e as desvincula de todos os agentes. Não pode ser desfeito.",
+      "confirm": "Excluir"
+    },
+    "toasts": {
+      "loadFailed": "Falha ao carregar a habilidade",
+      "idRequired": "Informe um ID de habilidade",
+      "created": "Habilidade personalizada criada",
+      "updated": "Habilidade personalizada atualizada",
+      "saveFailed": "Falha ao salvar a habilidade",
+      "imported": "Habilidade importada",
+      "importFailed": "Falha ao importar a habilidade",
+      "duplicated": "Habilidade duplicada",
+      "duplicateFailed": "Falha ao duplicar a habilidade",
+      "deleted": "{count} habilidade(s) excluída(s)",
+      "deletedPartial": "{ok} excluída(s), {failed} com falha",
+      "deleteFailed": "Falha ao excluir as habilidades",
+      "importedFromAgent": "{count} habilidade(s) importada(s)",
+      "importedFromAgentPartial": "{ok} importada(s), {failed} com falha",
+      "importFromAgentAllSkipped": "Nada a importar — {count} já na biblioteca",
+      "importFromAgentFailed": "Falha ao importar do agente"
+    }
   }
 }

@@ -42,6 +42,9 @@ import type {
   LinkOp,
   LinkOpResult,
   ScienceListItem,
+  CustomSkillItem,
+  CustomDeleteResult,
+  CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
   CreateChatConversationResult,
@@ -844,6 +847,93 @@ export async function scienceReadContent(skillId: string): Promise<string> {
 
 export async function scienceOpenCentralDir(): Promise<string> {
   return getTransport().call("science_open_central_dir")
+}
+
+// ─── Custom (user-authored) skills ──────────────────────────────────────
+// The fourth skill pack: user-created skills in the same central store, told
+// apart from the built-in packs by exclusion. Link statuses reuse the Expert*
+// DTOs (`expertId` carries the custom skill id).
+
+export async function customList(): Promise<CustomSkillItem[]> {
+  return getTransport().call("custom_list")
+}
+
+/** One round-trip snapshot of every (custom skill, agent) link state. */
+export async function customListAllInstallStatuses(): Promise<
+  ExpertInstallStatus[]
+> {
+  return getTransport().call("custom_list_all_install_statuses")
+}
+
+/** Apply a batch of enable/disable ops; returns one result per op. */
+export async function customApplyLinks(ops: LinkOp[]): Promise<LinkOpResult[]> {
+  return getTransport().call("custom_apply_links", { ops })
+}
+
+export async function customReadSkill(id: string): Promise<string> {
+  return getTransport().call("custom_read_skill", { id })
+}
+
+export async function customCreateSkill(params: {
+  id: string
+  content: string
+}): Promise<CustomSkillItem> {
+  return getTransport().call("custom_create_skill", {
+    id: params.id,
+    content: params.content,
+  })
+}
+
+export async function customSaveSkill(params: {
+  id: string
+  content: string
+}): Promise<CustomSkillItem> {
+  return getTransport().call("custom_save_skill", {
+    id: params.id,
+    content: params.content,
+  })
+}
+
+export async function customDuplicateSkill(params: {
+  sourceId: string
+  newId: string
+}): Promise<CustomSkillItem> {
+  return getTransport().call("custom_duplicate_skill", {
+    sourceId: params.sourceId,
+    newId: params.newId,
+  })
+}
+
+export async function customImportSkill(params: {
+  sourcePath: string
+  id?: string | null
+}): Promise<CustomSkillItem> {
+  return getTransport().call("custom_import_skill", {
+    sourcePath: params.sourcePath,
+    id: params.id ?? null,
+  })
+}
+
+/**
+ * Import an agent's own (global-scope) skills into the shared central store so
+ * they can be re-enabled for any agent. Returns one result per id; skills
+ * already in the store are reported as `skipped`, not errors.
+ */
+export async function customImportFromAgent(params: {
+  agentType: AgentType
+  ids: string[]
+}): Promise<CustomImportResult[]> {
+  return getTransport().call("custom_import_from_agent", {
+    agentType: params.agentType,
+    ids: params.ids,
+  })
+}
+
+/** Batch-delete custom skills (cleans up their agent links first). */
+export async function customDeleteSkills(
+  ids: string[]
+): Promise<CustomDeleteResult[]> {
+  return getTransport().call("custom_delete_skills", { ids })
 }
 
 // ─── Office tools ───

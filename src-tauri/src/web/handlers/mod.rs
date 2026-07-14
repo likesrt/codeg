@@ -4,6 +4,7 @@ pub mod automation;
 pub mod backup;
 pub mod chat_channel;
 pub mod conversations;
+pub mod custom_skills;
 pub mod delegation;
 mod error;
 pub mod event_metrics;

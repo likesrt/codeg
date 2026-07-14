@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "Configura Grok aquí. Los controles siguientes —modo de permisos, esfuerzo de razonamiento, un modelo personalizado opcional (endpoint propio) y la compactación— se combinan en ~/.grok/config.toml, conservando tus otras claves y comentarios. El inicio de sesión usa tu XAI_API_KEY o `grok login`. Las demás claves siguen siendo editables en Avanzado.",
       "permissionModeLabel": "Modo de permisos",
-      "permissionAsk": "Preguntar siempre",
+      "permissionDefault": "Preguntar siempre",
+      "permissionAcceptEdits": "Aprobar ediciones automáticamente",
+      "permissionAuto": "Aprobación automática inteligente",
       "permissionAlwaysApprove": "Aprobar siempre",
       "reasoningEffortLabel": "Esfuerzo de razonamiento",
       "effortLow": "Bajo (más rápido)",
@@ -623,7 +625,7 @@
       "customModelTitle": "Modelo personalizado (endpoint propio)",
       "customModelHint": "Apunta Grok a un endpoint personalizado o autoalojado. codeg escribe un bloque `[model.*]` por modelo y lo establece como predeterminado. Deja el ID de modelo vacío para eliminarlo.",
       "customModelIdLabel": "ID del modelo",
-      "customModelIdPlaceholder": "p. ej. grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "Se registra como un bloque `[model.*]` y se envía a la API como nombre del modelo; también se establece como `[models].default`.",
       "customBaseUrlLabel": "URL base",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1 (predeterminado)",
@@ -2870,6 +2872,8 @@
     "nameRequired": "El nombre del canal es obligatorio.",
     "tokenRequired": "El token es obligatorio.",
     "chatIdRequired": "El Chat ID es obligatorio.",
+    "topicMode": "Modo de grupo por temas",
+    "topicModeHint": "Enruta los temas de foros de Telegram como sesiones Codeg separadas. El bot debe estar en un supergrupo de foro y poder administrar temas.",
     "loadFailed": "Error al cargar los canales.",
     "saveFailed": "Error al guardar los cambios.",
     "connectSuccess": "Canal conectado.",
@@ -3230,7 +3234,8 @@
     "tabs": {
       "experts": "Expertos",
       "science": "Ciencia",
-      "office": "Herramientas de oficina"
+      "office": "Herramientas de oficina",
+      "custom": "Personalizadas"
     },
     "actions": {
       "openCentralDir": "Abrir carpeta central",
@@ -3760,5 +3765,88 @@
     "branchRemote": "Remota",
     "branchSearchPlaceholder": "Buscar ramas…",
     "branchNone": "Sin ramas"
+  },
+  "CustomSkillsSettings": {
+    "loading": "Cargando habilidades personalizadas…",
+    "category": "Personalizadas",
+    "searchPlaceholder": "Buscar habilidades personalizadas por nombre, ID o descripción",
+    "states": {
+      "not_linked": "No habilitada",
+      "linked_to_codeg": "Habilitada",
+      "linked_elsewhere": "Vinculada en otro lugar",
+      "blocked_by_real_directory": "Bloqueada por una carpeta real",
+      "broken": "Enlace roto"
+    },
+    "actions": {
+      "new": "Nueva",
+      "import": "Importar",
+      "importFromAgent": "Importar de un agente",
+      "cancel": "Cancelar",
+      "save": "Guardar"
+    },
+    "rowMenu": {
+      "edit": "Editar",
+      "duplicate": "Duplicar",
+      "delete": "Eliminar"
+    },
+    "bulk": {
+      "delete": "Eliminar seleccionadas"
+    },
+    "editor": {
+      "createTitle": "Nueva habilidad personalizada",
+      "editTitle": "Editar habilidad personalizada",
+      "description": "Las habilidades personalizadas se guardan en el almacén compartido (~/.codeg/skills) y pueden habilitarse para cualquier agente.",
+      "idLabel": "ID de habilidad",
+      "idPlaceholder": "p. ej. my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "Escribe aquí el SKILL.md de la habilidad…",
+      "preview": "Vista previa",
+      "edit": "Editar",
+      "emptyBody": "Aún no hay contenido."
+    },
+    "duplicate": {
+      "title": "Duplicar habilidad",
+      "description": "Crea una copia de «{id}» con un nuevo ID.",
+      "newIdPlaceholder": "Nuevo ID de habilidad",
+      "confirm": "Duplicar"
+    },
+    "import": {
+      "title": "Elige una carpeta de habilidad para importar"
+    },
+    "importFromAgent": {
+      "title": "Importar habilidades de un agente",
+      "description": "Copia las habilidades propias de un agente al almacén compartido para poder activarlas en cualquier agente.",
+      "agentLabel": "Agente",
+      "agentPlaceholder": "Selecciona un agente",
+      "selectAll": "Seleccionar todo ({count})",
+      "loading": "Cargando las habilidades del agente…",
+      "unsupported": "Este agente no expone un directorio de habilidades.",
+      "empty": "Este agente no tiene habilidades que importar.",
+      "alreadyInLibrary": "En la biblioteca",
+      "confirm": "Importar seleccionadas ({count})"
+    },
+    "delete": {
+      "title": "¿Eliminar habilidades personalizadas?",
+      "body": "Se eliminarán {count} habilidad(es) personalizada(s) del almacén central y se desvincularán de todos los agentes. Esta acción no se puede deshacer.",
+      "confirm": "Eliminar"
+    },
+    "toasts": {
+      "loadFailed": "No se pudo cargar la habilidad",
+      "idRequired": "Introduce un ID de habilidad",
+      "created": "Habilidad personalizada creada",
+      "updated": "Habilidad personalizada actualizada",
+      "saveFailed": "No se pudo guardar la habilidad",
+      "imported": "Habilidad importada",
+      "importFailed": "No se pudo importar la habilidad",
+      "duplicated": "Habilidad duplicada",
+      "duplicateFailed": "No se pudo duplicar la habilidad",
+      "deleted": "Se eliminaron {count} habilidad(es)",
+      "deletedPartial": "{ok} eliminadas, {failed} fallidas",
+      "deleteFailed": "No se pudieron eliminar las habilidades",
+      "importedFromAgent": "Se importaron {count} habilidad(es)",
+      "importedFromAgentPartial": "Importadas {ok}, {failed} con error",
+      "importFromAgentAllSkipped": "Nada que importar: {count} ya están en la biblioteca",
+      "importFromAgentFailed": "No se pudo importar del agente"
+    }
   }
 }

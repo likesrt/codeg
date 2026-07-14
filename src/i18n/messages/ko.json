@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "여기에서 Grok을 설정합니다. 아래 컨트롤(권한 모드, 추론 강도, 선택적 사용자 지정(자체 엔드포인트) 모델, 압축)은 ~/.grok/config.toml에 병합되며 다른 키와 주석은 유지됩니다. 로그인은 XAI_API_KEY 또는 `grok login`을 사용합니다. 기타 키는 '고급'에서 편집할 수 있습니다.",
       "permissionModeLabel": "권한 모드",
-      "permissionAsk": "매번 확인",
+      "permissionDefault": "매번 확인",
+      "permissionAcceptEdits": "편집 자동 승인",
+      "permissionAuto": "스마트 자동 승인",
       "permissionAlwaysApprove": "항상 허용",
       "reasoningEffortLabel": "추론 강도",
       "effortLow": "낮음(빠름)",
@@ -623,7 +625,7 @@
       "customModelTitle": "사용자 지정 모델(자체 엔드포인트)",
       "customModelHint": "Grok을 사용자 지정 또는 자체 호스팅 엔드포인트로 연결합니다. codeg는 모델별 `[model.*]` 블록을 작성하고 기본 모델로 설정합니다. 모델 ID를 비우면 제거됩니다.",
       "customModelIdLabel": "모델 ID",
-      "customModelIdPlaceholder": "예: grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "`[model.*]` 블록으로 등록되어 모델 이름으로 API에 전송되며 `[models].default`로도 설정됩니다.",
       "customBaseUrlLabel": "Base URL",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1(기본값)",
@@ -2870,6 +2872,8 @@
     "nameRequired": "채널 이름을 입력하세요.",
     "tokenRequired": "토큰을 입력하세요.",
     "chatIdRequired": "Chat ID를 입력하세요.",
+    "topicMode": "토픽 그룹 모드",
+    "topicModeHint": "Telegram forum topics를 별도 Codeg 세션으로 라우팅합니다. Bot은 forum supergroup에 있어야 하며 topics 관리 권한이 필요합니다.",
     "loadFailed": "채널 로딩에 실패했습니다.",
     "saveFailed": "저장에 실패했습니다.",
     "connectSuccess": "채널이 연결되었습니다.",
@@ -3230,7 +3234,8 @@
     "tabs": {
       "experts": "전문가",
       "science": "과학 연구",
-      "office": "오피스 도구"
+      "office": "오피스 도구",
+      "custom": "사용자 지정"
     },
     "actions": {
       "openCentralDir": "중앙 폴더 열기",
@@ -3760,5 +3765,88 @@
     "branchRemote": "원격",
     "branchSearchPlaceholder": "브랜치 검색…",
     "branchNone": "브랜치 없음"
+  },
+  "CustomSkillsSettings": {
+    "loading": "사용자 지정 스킬 불러오는 중…",
+    "category": "사용자 지정",
+    "searchPlaceholder": "이름, ID 또는 설명으로 사용자 지정 스킬 검색",
+    "states": {
+      "not_linked": "사용 안 함",
+      "linked_to_codeg": "사용 중",
+      "linked_elsewhere": "다른 위치에 연결됨",
+      "blocked_by_real_directory": "실제 폴더가 차지함",
+      "broken": "손상된 링크"
+    },
+    "actions": {
+      "new": "새로 만들기",
+      "import": "가져오기",
+      "importFromAgent": "에이전트에서 가져오기",
+      "cancel": "취소",
+      "save": "저장"
+    },
+    "rowMenu": {
+      "edit": "편집",
+      "duplicate": "복제",
+      "delete": "삭제"
+    },
+    "bulk": {
+      "delete": "선택 항목 삭제"
+    },
+    "editor": {
+      "createTitle": "새 사용자 지정 스킬",
+      "editTitle": "사용자 지정 스킬 편집",
+      "description": "사용자 지정 스킬은 공유 저장소(~/.codeg/skills)에 있으며 모든 에이전트에서 사용할 수 있습니다.",
+      "idLabel": "스킬 ID",
+      "idPlaceholder": "예: my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "여기에 스킬의 SKILL.md를 작성하세요…",
+      "preview": "미리보기",
+      "edit": "편집",
+      "emptyBody": "아직 내용이 없습니다."
+    },
+    "duplicate": {
+      "title": "스킬 복제",
+      "description": "\"{id}\"을(를) 기반으로 새 ID로 복사본을 만듭니다.",
+      "newIdPlaceholder": "새 스킬 ID",
+      "confirm": "복제"
+    },
+    "import": {
+      "title": "가져올 스킬 폴더 선택"
+    },
+    "importFromAgent": {
+      "title": "에이전트에서 스킬 가져오기",
+      "description": "에이전트의 자체 스킬을 공유 저장소로 복사하면 어떤 에이전트에서도 사용할 수 있습니다.",
+      "agentLabel": "에이전트",
+      "agentPlaceholder": "에이전트 선택",
+      "selectAll": "모두 선택 ({count})",
+      "loading": "에이전트의 스킬을 불러오는 중…",
+      "unsupported": "이 에이전트는 스킬 디렉터리를 제공하지 않습니다.",
+      "empty": "이 에이전트에는 가져올 스킬이 없습니다.",
+      "alreadyInLibrary": "라이브러리에 있음",
+      "confirm": "선택 항목 가져오기 ({count})"
+    },
+    "delete": {
+      "title": "사용자 지정 스킬을 삭제할까요?",
+      "body": "{count}개의 사용자 지정 스킬을 중앙 저장소에서 제거하고 모든 에이전트에서 링크를 해제합니다. 이 작업은 취소할 수 없습니다.",
+      "confirm": "삭제"
+    },
+    "toasts": {
+      "loadFailed": "스킬 불러오기 실패",
+      "idRequired": "스킬 ID를 입력하세요",
+      "created": "사용자 지정 스킬 생성됨",
+      "updated": "사용자 지정 스킬 업데이트됨",
+      "saveFailed": "스킬 저장 실패",
+      "imported": "스킬 가져옴",
+      "importFailed": "스킬 가져오기 실패",
+      "duplicated": "스킬 복제됨",
+      "duplicateFailed": "스킬 복제 실패",
+      "deleted": "{count}개 스킬 삭제됨",
+      "deletedPartial": "{ok}개 삭제, {failed}개 실패",
+      "deleteFailed": "스킬 삭제 실패",
+      "importedFromAgent": "{count}개의 스킬을 가져왔습니다",
+      "importedFromAgentPartial": "{ok}개 가져옴, {failed}개 실패",
+      "importFromAgentAllSkipped": "가져올 항목 없음 — {count}개가 이미 라이브러리에 있습니다",
+      "importFromAgentFailed": "에이전트에서 가져오기 실패"
+    }
   }
 }

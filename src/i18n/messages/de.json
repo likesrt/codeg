@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "Konfiguriere Grok hier. Die folgenden Steuerelemente – Berechtigungsmodus, Reasoning-Aufwand, ein optionales benutzerdefiniertes Modell (eigener Endpunkt) und die Verdichtung – werden in ~/.grok/config.toml zusammengeführt, wobei deine anderen Schlüssel und Kommentare erhalten bleiben. Die Anmeldung nutzt deinen XAI_API_KEY oder `grok login`. Weitere Schlüssel bleiben unter „Erweitert“ bearbeitbar.",
       "permissionModeLabel": "Berechtigungsmodus",
-      "permissionAsk": "Jedes Mal fragen",
+      "permissionDefault": "Jedes Mal fragen",
+      "permissionAcceptEdits": "Bearbeitungen automatisch genehmigen",
+      "permissionAuto": "Intelligente Auto-Genehmigung",
       "permissionAlwaysApprove": "Immer zulassen",
       "reasoningEffortLabel": "Denkaufwand",
       "effortLow": "Niedrig (schneller)",
@@ -623,7 +625,7 @@
       "customModelTitle": "Benutzerdefiniertes Modell (eigener Endpunkt)",
       "customModelHint": "Richte Grok auf einen benutzerdefinierten oder selbst gehosteten Endpunkt. codeg schreibt einen `[model.*]`-Block pro Modell und legt es als Standard fest. Lasse die Modell-ID leer, um es zu entfernen.",
       "customModelIdLabel": "Modell-ID",
-      "customModelIdPlaceholder": "z. B. grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "Wird als `[model.*]`-Block registriert und als Modellname an die API gesendet; außerdem als `[models].default` gesetzt.",
       "customBaseUrlLabel": "Basis-URL",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1 (Standard)",
@@ -2870,6 +2872,8 @@
     "nameRequired": "Kanalname ist erforderlich.",
     "tokenRequired": "Token ist erforderlich.",
     "chatIdRequired": "Chat-ID ist erforderlich.",
+    "topicMode": "Themengruppenmodus",
+    "topicModeHint": "Leitet Telegram-Forum-Themen als separate Codeg-Sitzungen weiter. Der Bot muss in einer Forum-Supergruppe sein und Themen verwalten dürfen.",
     "loadFailed": "Kanäle konnten nicht geladen werden.",
     "saveFailed": "Änderungen konnten nicht gespeichert werden.",
     "connectSuccess": "Kanal verbunden.",
@@ -3230,7 +3234,8 @@
     "tabs": {
       "experts": "Experten",
       "science": "Wissenschaft",
-      "office": "Office-Tools"
+      "office": "Office-Tools",
+      "custom": "Benutzerdefiniert"
     },
     "actions": {
       "openCentralDir": "Zentralen Ordner öffnen",
@@ -3760,5 +3765,88 @@
     "branchRemote": "Remote",
     "branchSearchPlaceholder": "Branches suchen…",
     "branchNone": "Keine Branches"
+  },
+  "CustomSkillsSettings": {
+    "loading": "Benutzerdefinierte Skills werden geladen…",
+    "category": "Benutzerdefiniert",
+    "searchPlaceholder": "Benutzerdefinierte Skills nach Name, ID oder Beschreibung suchen",
+    "states": {
+      "not_linked": "Nicht aktiviert",
+      "linked_to_codeg": "Aktiviert",
+      "linked_elsewhere": "Anderweitig verknüpft",
+      "blocked_by_real_directory": "Durch echten Ordner blockiert",
+      "broken": "Defekter Link"
+    },
+    "actions": {
+      "new": "Neu",
+      "import": "Importieren",
+      "importFromAgent": "Von Agent importieren",
+      "cancel": "Abbrechen",
+      "save": "Speichern"
+    },
+    "rowMenu": {
+      "edit": "Bearbeiten",
+      "duplicate": "Duplizieren",
+      "delete": "Löschen"
+    },
+    "bulk": {
+      "delete": "Auswahl löschen"
+    },
+    "editor": {
+      "createTitle": "Neuer benutzerdefinierter Skill",
+      "editTitle": "Benutzerdefinierten Skill bearbeiten",
+      "description": "Benutzerdefinierte Skills liegen im gemeinsamen Speicher (~/.codeg/skills) und können für jeden Agenten aktiviert werden.",
+      "idLabel": "Skill-ID",
+      "idPlaceholder": "z. B. my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "Hier die SKILL.md des Skills schreiben…",
+      "preview": "Vorschau",
+      "edit": "Bearbeiten",
+      "emptyBody": "Noch kein Inhalt."
+    },
+    "duplicate": {
+      "title": "Skill duplizieren",
+      "description": "Eine Kopie von „{id}“ mit einer neuen ID erstellen.",
+      "newIdPlaceholder": "Neue Skill-ID",
+      "confirm": "Duplizieren"
+    },
+    "import": {
+      "title": "Skill-Ordner zum Importieren wählen"
+    },
+    "importFromAgent": {
+      "title": "Skills von einem Agenten importieren",
+      "description": "Kopiere die eigenen Skills eines Agenten in den gemeinsamen Speicher, um sie für jeden Agenten zu aktivieren.",
+      "agentLabel": "Agent",
+      "agentPlaceholder": "Agent auswählen",
+      "selectAll": "Alle auswählen ({count})",
+      "loading": "Skills des Agenten werden geladen…",
+      "unsupported": "Dieser Agent stellt kein Skill-Verzeichnis bereit.",
+      "empty": "Dieser Agent hat keine importierbaren Skills.",
+      "alreadyInLibrary": "In Bibliothek",
+      "confirm": "Auswahl importieren ({count})"
+    },
+    "delete": {
+      "title": "Benutzerdefinierte Skills löschen?",
+      "body": "Dadurch werden {count} benutzerdefinierte Skill(s) aus dem zentralen Speicher entfernt und von allen Agenten getrennt. Dies kann nicht rückgängig gemacht werden.",
+      "confirm": "Löschen"
+    },
+    "toasts": {
+      "loadFailed": "Skill konnte nicht geladen werden",
+      "idRequired": "Bitte eine Skill-ID eingeben",
+      "created": "Benutzerdefinierter Skill erstellt",
+      "updated": "Benutzerdefinierter Skill aktualisiert",
+      "saveFailed": "Skill konnte nicht gespeichert werden",
+      "imported": "Skill importiert",
+      "importFailed": "Skill konnte nicht importiert werden",
+      "duplicated": "Skill dupliziert",
+      "duplicateFailed": "Skill konnte nicht dupliziert werden",
+      "deleted": "{count} Skill(s) gelöscht",
+      "deletedPartial": "{ok} gelöscht, {failed} fehlgeschlagen",
+      "deleteFailed": "Skills konnten nicht gelöscht werden",
+      "importedFromAgent": "{count} Skill(s) importiert",
+      "importedFromAgentPartial": "{ok} importiert, {failed} fehlgeschlagen",
+      "importFromAgentAllSkipped": "Nichts zu importieren – {count} bereits in der Bibliothek",
+      "importFromAgentFailed": "Import vom Agenten fehlgeschlagen"
+    }
   }
 }

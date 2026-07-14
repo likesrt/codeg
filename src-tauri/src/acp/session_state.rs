@@ -13,7 +13,8 @@ use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
-    PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo, ToolCallImageInfo,
+    GrokEffortSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo, SessionModeStateInfo,
+    ToolCallImageInfo,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -277,6 +278,14 @@ pub struct SessionState {
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
+    /// Grok only: per-model reasoning-effort specs, parsed from the top-level
+    /// `models` of the session-establishment response (guaranteed on
+    /// `session/new`; opportunistic on resume/fork). Grok never re-sends this on
+    /// `set_model`, so it is cached here to rebuild the composer's effort
+    /// selector for the target model on a mid-session model switch. `None` for
+    /// non-Grok agents and when the response carried no `models` (flat fallback).
+    /// Backend-internal — not serialized.
+    pub grok_effort_specs: Option<std::collections::HashMap<String, GrokEffortSpec>>,
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
     pub fork_supported: bool,
     pub available_commands: Vec<AvailableCommandInfo>,
@@ -287,15 +296,15 @@ pub struct SessionState {
     /// "init complete" without waiting for an event that already fired.
     pub selectors_ready: bool,
 
-    /// Most recent `AcpEvent::Error` payload, or `None` if no error has
-    /// landed since the connection started. The probe path reads this
-    /// after `wait_for_session_options` errors so it can fold the
-    /// agent's own error message into the returned `AcpError` instead
-    /// of surfacing a generic "connection not found" once the
-    /// connection task has cleaned up its map entry.
+    /// Most recent unresolved `AcpEvent::Error` payload. Cleared when a new
+    /// prompt starts, matching the frontend reducer's live-event behavior. The
+    /// probe path reads this after `wait_for_session_options` errors so it can
+    /// fold the agent's own error message into the returned `AcpError` instead
+    /// of surfacing a generic "connection not found" once the connection task
+    /// has cleaned up its map entry.
     ///
-    /// Not exposed on `to_snapshot()` today — chat-side error UX already
-    /// flows through the live `AcpEvent::Error` channel.
+    /// Exposed on `to_snapshot()` so clients that reconnect after missing the
+    /// live `AcpEvent::Error` can still surface the latest agent failure.
     pub last_error: Option<SessionLastError>,
 
     /// Single-fire signal that fires when `SessionStarted` applies (i.e.
@@ -421,6 +430,7 @@ impl SessionState {
             modes: None,
             current_mode: None,
             config_options: None,
+            grok_effort_specs: None,
             prompt_capabilities: None,
             fork_supported: false,
             available_commands: Vec::new(),
@@ -502,6 +512,12 @@ impl SessionState {
                 }
             }
             AcpEvent::StatusChanged { status } => {
+                if matches!(status, ConnectionStatus::Prompting) {
+                    // Match the live frontend reducer: a new prompt starts a
+                    // new error scope, so stale recoverable errors must not be
+                    // resurrected by a later snapshot attach.
+                    self.last_error = None;
+                }
                 self.status = status.clone();
             }
             AcpEvent::SessionModes { modes } => {
@@ -1145,6 +1161,7 @@ impl SessionState {
             selectors_ready: self.selectors_ready,
             config_stale: self.config_stale,
             config_stale_kind: self.config_stale_kind,
+            last_error: self.last_error.clone(),
             event_seq: self.event_seq,
         }
     }
@@ -1236,6 +1253,10 @@ pub struct LiveSessionSnapshot {
     /// byte-identical with the pre-feature wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_stale_kind: Option<ConfigStaleKind>,
+    /// Most recent agent/runtime error for this live connection. Omitted when
+    /// no error has occurred so older clients and common snapshots stay small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<SessionLastError>,
     pub event_seq: u64,
 }
 
@@ -1489,6 +1510,44 @@ mod tests {
         assert!(
             !empty_json.contains("pending_user_message"),
             "no-pending snapshot must omit the field"
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_last_error_and_clears_on_next_prompt() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Error {
+            message: "ACP protocol error: forbidden".into(),
+            agent_type: "claude_code".into(),
+            code: Some("forbidden".into()),
+            terminal: true,
+        });
+
+        let snap = s.to_snapshot();
+        assert_eq!(
+            snap.last_error,
+            Some(SessionLastError {
+                message: "ACP protocol error: forbidden".into(),
+                code: Some("forbidden".into()),
+            })
+        );
+
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.last_error, snap.last_error);
+
+        let empty_json = serde_json::to_string(&fresh_state().to_snapshot()).expect("serialize");
+        assert!(
+            !empty_json.contains("last_error"),
+            "no-error snapshot must omit last_error"
+        );
+
+        s.apply_event(&AcpEvent::StatusChanged {
+            status: ConnectionStatus::Prompting,
+        });
+        assert!(
+            s.to_snapshot().last_error.is_none(),
+            "new prompts clear stale snapshot-recoverable errors"
         );
     }
 

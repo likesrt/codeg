@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "Configure Grok here. The controls below — permission mode, reasoning effort, an optional custom (BYO endpoint) model, and compaction — merge into ~/.grok/config.toml, preserving your other keys and comments. Sign-in uses your XAI_API_KEY or `grok login`. Other keys stay editable under Advanced.",
       "permissionModeLabel": "Permission mode",
-      "permissionAsk": "Ask every time",
+      "permissionDefault": "Ask every time",
+      "permissionAcceptEdits": "Auto-approve edits",
+      "permissionAuto": "Smart auto-approve",
       "permissionAlwaysApprove": "Always approve",
       "reasoningEffortLabel": "Reasoning effort",
       "effortLow": "Low (faster)",
@@ -623,7 +625,7 @@
       "customModelTitle": "Custom model (BYO endpoint)",
       "customModelHint": "Point Grok at a custom or self-hosted endpoint. codeg writes a per-model `[model.*]` block and makes it the default. Leave the Model ID empty to remove it.",
       "customModelIdLabel": "Model ID",
-      "customModelIdPlaceholder": "e.g. grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "Registered as a `[model.*]` block and sent to the API as the model name; also set as `[models].default`.",
       "customBaseUrlLabel": "Base URL",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1 (default)",
@@ -2882,6 +2884,8 @@
     "nameRequired": "Channel name is required.",
     "tokenRequired": "Token is required.",
     "chatIdRequired": "Chat ID is required.",
+    "topicMode": "Topic group mode",
+    "topicModeHint": "Route Telegram forum topics as separate Codeg sessions. The bot must be in a forum supergroup and be allowed to manage topics.",
     "loadFailed": "Failed to load channels.",
     "saveFailed": "Failed to save changes.",
     "connectSuccess": "Channel connected.",
@@ -3242,7 +3246,8 @@
     "tabs": {
       "experts": "Experts",
       "science": "Science",
-      "office": "Office Tools"
+      "office": "Office Tools",
+      "custom": "Custom"
     },
     "actions": {
       "openCentralDir": "Open central folder",
@@ -3760,5 +3765,88 @@
     "branchRemote": "Remote",
     "branchSearchPlaceholder": "Search branches…",
     "branchNone": "No branches"
+  },
+  "CustomSkillsSettings": {
+    "loading": "Loading custom skills…",
+    "category": "Custom",
+    "searchPlaceholder": "Search custom skills by name, id, or description",
+    "states": {
+      "not_linked": "Not enabled",
+      "linked_to_codeg": "Enabled",
+      "linked_elsewhere": "Linked elsewhere",
+      "blocked_by_real_directory": "Blocked by a real folder",
+      "broken": "Broken link"
+    },
+    "actions": {
+      "new": "New",
+      "import": "Import",
+      "importFromAgent": "Import from agent",
+      "cancel": "Cancel",
+      "save": "Save"
+    },
+    "rowMenu": {
+      "edit": "Edit",
+      "duplicate": "Duplicate",
+      "delete": "Delete"
+    },
+    "bulk": {
+      "delete": "Delete selected"
+    },
+    "editor": {
+      "createTitle": "New custom skill",
+      "editTitle": "Edit custom skill",
+      "description": "Custom skills live in the shared store (~/.codeg/skills) and can be enabled for any agent.",
+      "idLabel": "Skill id",
+      "idPlaceholder": "e.g. my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "Write the skill's SKILL.md here…",
+      "preview": "Preview",
+      "edit": "Edit",
+      "emptyBody": "No content yet."
+    },
+    "duplicate": {
+      "title": "Duplicate skill",
+      "description": "Create a copy of \"{id}\" with a new id.",
+      "newIdPlaceholder": "New skill id",
+      "confirm": "Duplicate"
+    },
+    "import": {
+      "title": "Choose a skill folder to import"
+    },
+    "importFromAgent": {
+      "title": "Import skills from an agent",
+      "description": "Copy an agent's own skills into the shared store so you can enable them for any agent.",
+      "agentLabel": "Agent",
+      "agentPlaceholder": "Select an agent",
+      "selectAll": "Select all ({count})",
+      "loading": "Loading the agent's skills…",
+      "unsupported": "This agent doesn't expose a skills directory.",
+      "empty": "This agent has no importable skills.",
+      "alreadyInLibrary": "In library",
+      "confirm": "Import selected ({count})"
+    },
+    "delete": {
+      "title": "Delete custom skills?",
+      "body": "This removes {count} custom skill(s) from the central store and unlinks them from every agent. This can't be undone.",
+      "confirm": "Delete"
+    },
+    "toasts": {
+      "loadFailed": "Failed to load skill",
+      "idRequired": "Please enter a skill id",
+      "created": "Custom skill created",
+      "updated": "Custom skill updated",
+      "saveFailed": "Failed to save skill",
+      "imported": "Skill imported",
+      "importFailed": "Failed to import skill",
+      "duplicated": "Skill duplicated",
+      "duplicateFailed": "Failed to duplicate skill",
+      "deleted": "Deleted {count} skill(s)",
+      "deletedPartial": "Deleted {ok}, {failed} failed",
+      "deleteFailed": "Failed to delete skills",
+      "importedFromAgent": "Imported {count} skill(s)",
+      "importedFromAgentPartial": "Imported {ok}, {failed} failed",
+      "importFromAgentAllSkipped": "Nothing to import — {count} already in the library",
+      "importFromAgentFailed": "Failed to import from agent"
+    }
   }
 }

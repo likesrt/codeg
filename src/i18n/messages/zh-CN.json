@@ -604,7 +604,9 @@
     "grok": {
       "configDescription": "在此配置 Grok。下方控件——权限模式、推理强度、可选的自定义（自带端点）模型和压缩——会合并写入 ~/.grok/config.toml，并保留你的其他键与注释。登录使用你的 XAI_API_KEY 或 `grok login`。其他键可在“高级”中编辑。",
       "permissionModeLabel": "权限模式",
-      "permissionAsk": "每次询问",
+      "permissionDefault": "每次询问",
+      "permissionAcceptEdits": "自动批准编辑",
+      "permissionAuto": "智能自动批准",
       "permissionAlwaysApprove": "始终允许",
       "reasoningEffortLabel": "推理级别",
       "effortLow": "低（更快）",
@@ -623,7 +625,7 @@
       "customModelTitle": "自定义模型（自带端点）",
       "customModelHint": "让 Grok 指向自定义或自托管端点。codeg 会写入按模型的 `[model.*]` 块并将其设为默认模型。清空模型 ID 即可移除。",
       "customModelIdLabel": "模型 ID",
-      "customModelIdPlaceholder": "例如 grok-custom",
+      "customModelIdPlaceholder": "grok-4.5",
       "customModelIdHint": "注册为 `[model.*]` 块，并作为模型名发送给 API；同时设为 `[models].default`。",
       "customBaseUrlLabel": "Base URL",
       "customBaseUrlPlaceholder": "https://api.x.ai/v1（默认）",
@@ -2882,6 +2884,8 @@
     "nameRequired": "请输入渠道名称。",
     "tokenRequired": "请输入 Token。",
     "chatIdRequired": "请输入 Chat ID。",
+    "topicMode": "话题群模式",
+    "topicModeHint": "将 Telegram forum topics 路由为独立 Codeg 会话。Bot 必须加入 forum supergroup，并拥有管理 topics 权限。",
     "loadFailed": "加载渠道失败。",
     "saveFailed": "保存失败。",
     "connectSuccess": "渠道已连接。",
@@ -3242,7 +3246,8 @@
     "tabs": {
       "experts": "专家",
       "science": "科学研究",
-      "office": "办公工具"
+      "office": "办公工具",
+      "custom": "自定义"
     },
     "actions": {
       "openCentralDir": "打开中央目录",
@@ -3760,5 +3765,88 @@
     "branchRemote": "远程",
     "branchSearchPlaceholder": "搜索分支…",
     "branchNone": "无分支"
+  },
+  "CustomSkillsSettings": {
+    "loading": "正在加载自定义技能…",
+    "category": "自定义",
+    "searchPlaceholder": "按名称、ID 或描述搜索自定义技能",
+    "states": {
+      "not_linked": "未启用",
+      "linked_to_codeg": "已启用",
+      "linked_elsewhere": "链接到其他位置",
+      "blocked_by_real_directory": "被同名真实目录占用",
+      "broken": "链接已失效"
+    },
+    "actions": {
+      "new": "新建",
+      "import": "导入",
+      "importFromAgent": "从 Agent 导入",
+      "cancel": "取消",
+      "save": "保存"
+    },
+    "rowMenu": {
+      "edit": "编辑",
+      "duplicate": "复制为新技能",
+      "delete": "删除"
+    },
+    "bulk": {
+      "delete": "删除所选"
+    },
+    "editor": {
+      "createTitle": "新建自定义技能",
+      "editTitle": "编辑自定义技能",
+      "description": "自定义技能存放在共享库（~/.codeg/skills），可为任意智能体启用。",
+      "idLabel": "技能 ID",
+      "idPlaceholder": "例如 my-workflow",
+      "contentLabel": "SKILL.md",
+      "contentPlaceholder": "在此编写技能的 SKILL.md…",
+      "preview": "预览",
+      "edit": "编辑",
+      "emptyBody": "暂无内容。"
+    },
+    "duplicate": {
+      "title": "复制技能",
+      "description": "以「{id}」为模板，用新 ID 创建一份副本。",
+      "newIdPlaceholder": "新技能 ID",
+      "confirm": "复制"
+    },
+    "import": {
+      "title": "选择要导入的技能文件夹"
+    },
+    "importFromAgent": {
+      "title": "从 Agent 导入技能",
+      "description": "把某个 Agent 自己的技能复制到共享库，即可为任意 Agent 启用。",
+      "agentLabel": "Agent",
+      "agentPlaceholder": "选择一个 Agent",
+      "selectAll": "全选（{count}）",
+      "loading": "正在加载该 Agent 的技能…",
+      "unsupported": "该 Agent 未提供技能目录。",
+      "empty": "该 Agent 没有可导入的技能。",
+      "alreadyInLibrary": "已在库中",
+      "confirm": "导入所选（{count}）"
+    },
+    "delete": {
+      "title": "删除自定义技能？",
+      "body": "将从中央库移除 {count} 个自定义技能，并解除它们在所有智能体中的链接。此操作不可撤销。",
+      "confirm": "删除"
+    },
+    "toasts": {
+      "loadFailed": "加载技能失败",
+      "idRequired": "请输入技能 ID",
+      "created": "已创建自定义技能",
+      "updated": "已更新自定义技能",
+      "saveFailed": "保存技能失败",
+      "imported": "已导入技能",
+      "importFailed": "导入技能失败",
+      "duplicated": "已复制技能",
+      "duplicateFailed": "复制技能失败",
+      "deleted": "已删除 {count} 个技能",
+      "deletedPartial": "已删除 {ok} 个，{failed} 个失败",
+      "deleteFailed": "删除技能失败",
+      "importedFromAgent": "已导入 {count} 个技能",
+      "importedFromAgentPartial": "已导入 {ok} 个，{failed} 个失败",
+      "importFromAgentAllSkipped": "无需导入——{count} 个已在库中",
+      "importFromAgentFailed": "从 Agent 导入失败"
+    }
   }
 }

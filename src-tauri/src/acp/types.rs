@@ -474,6 +474,23 @@ pub struct SessionConfigOptionInfo {
     pub kind: SessionConfigKindInfo,
 }
 
+/// Grok's per-model reasoning-effort capability, parsed from a session
+/// response's top-level `models.availableModels[]._meta` (only reachable via the
+/// raw JSON, since the `unstable_session_model` feature that would surface the
+/// typed `models` field is intentionally off). Drives the model-reactive
+/// composer effort selector: `supports == false` ⇒ the model shows NO effort
+/// selector. Backend-internal — NOT serialized onto the wire.
+#[derive(Debug, Clone, Default)]
+pub struct GrokEffortSpec {
+    /// Switchable efforts the model advertises: `(id, label, description)`.
+    pub options: Vec<(String, String, Option<String>)>,
+    /// The model's default/current effort. MAY fall outside `options`
+    /// (e.g. grok-4.5 defaults to `xhigh` while only listing `high/medium/low`).
+    pub default: Option<String>,
+    /// Whether the model advertises `supportsReasoningEffort`.
+    pub supports: bool,
+}
+
 /// Read-only snapshot of the modes + config_options an agent advertises
 /// when it opens a new session. Used by `ConnectionManager::probe_agent_options`
 /// to give the delegation settings UI an authoritative view of what an
@@ -578,7 +595,10 @@ pub struct AcpAgentInfo {
 pub struct GrokSettings {
     /// `[models].default_reasoning_effort` — one of low/medium/high/xhigh.
     pub default_reasoning_effort: Option<String>,
-    /// `[ui].permission_mode` — one of ask/always-approve.
+    /// `[ui].permission_mode` — grok's real enum
+    /// (default/acceptEdits/auto/dontAsk/bypassPermissions/plan). Legacy codeg
+    /// markers (`ask`/`always-approve`) are migrated to `default`/`bypassPermissions`
+    /// on read (see `migrate_grok_permission_mode`).
     pub permission_mode: Option<String>,
     /// The codeg-managed custom model id: the `[model.<id>]` block whose id
     /// equals `[models].default`. `None` when there is no such managed block.

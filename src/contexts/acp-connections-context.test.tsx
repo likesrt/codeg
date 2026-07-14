@@ -136,6 +136,22 @@ beforeEach(() => {
   h.denormalizeSnapshot.mockReset()
   h.denormalizeSnapshot.mockReturnValue({
     connectionId: "owner-conn",
+    status: "connected",
+    sessionId: null,
+    modes: null,
+    configOptions: null,
+    availableCommands: null,
+    usage: null,
+    liveMessage: null,
+    pendingPermission: null,
+    pendingAskQuestion: null,
+    pendingUserMessage: null,
+    promptCapabilities: null,
+    selectorsReady: false,
+    supportsFork: false,
+    configStale: false,
+    configStaleKind: null,
+    lastError: null,
     eventSeq: 0,
     activeDelegations: [],
   })
@@ -498,6 +514,7 @@ describe("AcpConnectionsProvider permission request details", () => {
       supportsFork: false,
       configStale: false,
       configStaleKind: null,
+      lastError: null,
       eventSeq: 5,
       activeDelegations: [],
     })
@@ -996,5 +1013,100 @@ describe("AcpConnectionsProvider Grok cross-agent-type model switch", () => {
     // The attempted model stays the saved preference (no revert of the persisted
     // choice), so a fresh session lands on Composer where the switch succeeds.
     expect(saveConfigPreference).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
+  // Full SnapshotPatch fixture; per-test overrides set connectionId / eventSeq /
+  // lastError. `denormalizeSnapshot` is mocked, so onSnapshot dispatches exactly
+  // this object as `action.patch`.
+  function snapshotPatch(overrides: {
+    eventSeq: number
+    lastError: string | null
+    connectionId?: string
+  }) {
+    return {
+      connectionId: "spawned-conn",
+      status: "connected",
+      sessionId: null,
+      modes: null,
+      configOptions: null,
+      availableCommands: null,
+      usage: null,
+      liveMessage: null,
+      pendingPermission: null,
+      pendingAskQuestion: null,
+      pendingUserMessage: null,
+      promptCapabilities: null,
+      selectorsReady: false,
+      supportsFork: false,
+      configStale: false,
+      configStaleKind: null,
+      backgroundOutstanding: 0,
+      activeDelegations: [],
+      ...overrides,
+    }
+  }
+
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    h.acpGetAgentStatus.mockResolvedValue({
+      agent_type: "claude_code",
+      enabled: true,
+      available: true,
+      installed_version: "1.0.0",
+    })
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("recovers last_error from a FRESH snapshot (client missed the live error)", async () => {
+    const handlers = await connectOwner()
+    // A freshly reconnected client (lastAppliedSeq=0) receives a snapshot ahead
+    // of its cursor carrying an error whose live event it never saw. The fresh
+    // path recovers it.
+    h.denormalizeSnapshot.mockReturnValue(
+      snapshotPatch({ eventSeq: 5, lastError: "boom from snapshot" })
+    )
+    hydrateSnapshot(handlers, {
+      event_seq: 5,
+    } as unknown as LiveSessionSnapshot)
+    expect(h.store!.getConnection(TAB)!.error).toBe("boom from snapshot")
+  })
+
+  it("does NOT resurrect a cleared error from a STALE snapshot", async () => {
+    const handlers = await connectOwner()
+    // Live: an error lands, then a new prompt starts and clears it. This also
+    // advances lastAppliedSeq to 2.
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "boom",
+      agent_type: "claude_code",
+      code: "runtime_failure",
+    })
+    expect(h.store!.getConnection(TAB)!.error).toBe("boom")
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    expect(h.store!.getConnection(TAB)!.error).toBeNull()
+
+    // A snapshot generated BEFORE the prompt (eventSeq=1 <= lastAppliedSeq=2)
+    // still carries the old error. Folding it back in would resurrect an error
+    // the current turn already cleared — the stale path must leave error alone.
+    h.denormalizeSnapshot.mockReturnValue(
+      snapshotPatch({ eventSeq: 1, lastError: "boom" })
+    )
+    hydrateSnapshot(handlers, {
+      event_seq: 1,
+    } as unknown as LiveSessionSnapshot)
+    expect(h.store!.getConnection(TAB)!.error).toBeNull()
   })
 })

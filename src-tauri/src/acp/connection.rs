@@ -35,11 +35,11 @@ use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
 use crate::acp::terminal_runtime::{TerminalRuntime, TerminalRuntimeError};
 use crate::acp::types::{
-    AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, PermissionOptionInfo,
-    PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock, SessionConfigKindInfo,
-    SessionConfigOptionInfo, SessionConfigSelectGroupInfo, SessionConfigSelectInfo,
-    SessionConfigSelectOptionInfo, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
-    UserMessageBlock,
+    AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokEffortSpec,
+    PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
+    SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectGroupInfo,
+    SessionConfigSelectInfo, SessionConfigSelectOptionInfo, SessionModeInfo, SessionModeStateInfo,
+    ToolCallImageInfo, UserMessageBlock,
 };
 use crate::models::agent::AgentType;
 use crate::network::proxy;
@@ -361,13 +361,18 @@ async fn build_agent(
             //  - `--no-auto-update`: codeg owns the pinned version, so suppress the
             //    CLI's background self-update (it would drift off the pin and can
             //    break the ACP contract). Config twin: `[cli].auto_update = false`.
-            //  - `--always-approve`: auto-approve tool executions, but ONLY when the
-            //    user selected that permission mode in the Grok panel. "ask"/unset
-            //    leaves it off so ACP permission requests still reach codeg's UI.
+            //  - `--permission-mode <value>`: grok's real permission enum
+            //    (default/acceptEdits/auto/dontAsk/bypassPermissions/plan), read
+            //    from the Grok panel's `[ui].permission_mode`. Only passed for a
+            //    non-`default` mode; `default`/unset leaves it off so ACP
+            //    permission requests still reach codeg's UI. (Grok exposes no ACP
+            //    `modes` channel for permission — verified against 0.2.99 — so this
+            //    launch flag, not a live `session/set_mode`, is the control point.)
             if agent_type == AgentType::Grok {
                 parts.push("--no-auto-update".into());
-                if crate::commands::acp::grok_launch_always_approve() {
-                    parts.push("--always-approve".into());
+                if let Some(mode) = crate::commands::acp::grok_launch_permission_mode() {
+                    parts.push("--permission-mode".into());
+                    parts.push(mode);
                 }
             }
             for a in args {
@@ -1039,6 +1044,13 @@ async fn emit_selectors_ready(state: &Arc<RwLock<SessionState>>, emitter: &Event
 /// grouped model selector via the frontend's `isModelConfigOption`).
 const GROK_MODEL_OPTION_ID: &str = "model";
 
+/// Synthesized config-option id for Grok's per-session reasoning-effort selector.
+/// Grok ships effort choices in `x.ai/sessionConfig` under `category:"mode"`
+/// (ids `low`/`medium`/`high`), and applies a live override via the
+/// `session/set_model` request's `_meta.reasoningEffort` — so effort is a live
+/// composer control, not just a global config.toml default.
+const GROK_EFFORT_OPTION_ID: &str = "reasoning_effort";
+
 /// Stable `AcpEvent::Error` code the frontend localizes when a Grok model switch
 /// is rejected because the conversation is already bound to a different agent
 /// type (see `is_grok_incompatible_agent_switch`). Recoverable, not terminal.
@@ -1060,6 +1072,175 @@ fn is_grok_incompatible_agent_switch(e: &sacp::Error) -> bool {
         == Some("MODEL_SWITCH_INCOMPATIBLE_AGENT")
 }
 
+/// Canonical, composer-facing label for a Grok reasoning-effort tier id. Aligns
+/// the composer with the settings panel's `grok.effort*` wording
+/// (Low/Medium/High/Max); unknown ids fall back to the id itself. Grok's own
+/// richer per-tier text (e.g. "Highest implementation quality…") is kept as the
+/// option *description*, not the name.
+fn grok_effort_label(id: &str) -> &str {
+    match id {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Max",
+        other => other,
+    }
+}
+
+/// Canonical composer-facing *description* (sub-text) for a Grok reasoning-effort
+/// tier. Grok ships its own per-tier `description` only for the models switchable
+/// `reasoningEfforts`; the model default that lives OUTSIDE that list — grok-4.5's
+/// `xhigh`/Max — carries none, so the front-injected option would otherwise be the
+/// only tier with no sub-text. This supplies a fitting one (and doubles as a
+/// fallback if grok ever omits a switchable tier's description). Unknown ids get
+/// `None`. Grok's own, more specific text always takes precedence over this.
+fn grok_effort_description(id: &str) -> Option<&'static str> {
+    match id {
+        "low" => Some("Quick, fast responses"),
+        "medium" => Some("Balanced speed and quality"),
+        "high" => Some("Extensive reasoning for high quality"),
+        "xhigh" => Some("Maximum reasoning for the most complex tasks"),
+        _ => None,
+    }
+}
+
+/// Parse Grok's raw top-level `models` (from a session-establishment response)
+/// into a per-`modelId` reasoning-effort spec map. Absent `models` /
+/// `availableModels` → empty map (caller falls back to the flat
+/// `x.ai/sessionConfig` effort list). Missing `_meta` fields degrade gracefully
+/// (`supports=false` / `default=None` / `options=[]`).
+fn parse_grok_effort_specs(models: Option<&serde_json::Value>) -> HashMap<String, GrokEffortSpec> {
+    let mut out = HashMap::new();
+    let Some(list) = models
+        .and_then(|m| m.get("availableModels"))
+        .and_then(|v| v.as_array())
+    else {
+        return out;
+    };
+    for m in list {
+        let Some(model_id) = m.get("modelId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let meta = m.get("_meta");
+        let supports = meta
+            .and_then(|x| x.get("supportsReasoningEffort"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let default = meta
+            .and_then(|x| x.get("reasoningEffort"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let mut options = Vec::new();
+        if let Some(efforts) = meta
+            .and_then(|x| x.get("reasoningEfforts"))
+            .and_then(|v| v.as_array())
+        {
+            for e in efforts {
+                let Some(id) = e.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let label = e
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(id)
+                    .to_string();
+                let description = e
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                options.push((id.to_string(), label, description));
+            }
+        }
+        out.insert(
+            model_id.to_string(),
+            GrokEffortSpec {
+                options,
+                default,
+                supports,
+            },
+        );
+    }
+    out
+}
+
+/// Build the reasoning-effort selector for `model_id` from the per-model spec
+/// map, or `None` if the model is absent from the map or does not support
+/// effort. Options are the model's switchable `reasoningEfforts` (relabeled via
+/// [`grok_effort_label`], keeping grok's own copy as the description); the model
+/// default is injected at the FRONT when it isn't already listed, so a default
+/// that lives OUTSIDE the switchable set — grok-4.5's `xhigh` — stays selectable
+/// and the current value is always representable. `current_value` = the model
+/// default (or the first option).
+fn build_grok_effort_option(
+    model_id: &str,
+    specs: &HashMap<String, GrokEffortSpec>,
+) -> Option<SessionConfigOptionInfo> {
+    let spec = specs.get(model_id)?;
+    if !spec.supports {
+        return None;
+    }
+    let mut options: Vec<SessionConfigSelectOptionInfo> = spec
+        .options
+        .iter()
+        .map(|(id, _grok_label, desc)| SessionConfigSelectOptionInfo {
+            value: id.clone(),
+            name: grok_effort_label(id).to_string(),
+            // Grok's own per-tier text wins; canonical fallback fills any gap.
+            description: desc
+                .clone()
+                .or_else(|| grok_effort_description(id).map(str::to_string)),
+        })
+        .collect();
+    if let Some(def) = &spec.default {
+        if !options.iter().any(|o| &o.value == def) {
+            options.insert(
+                0,
+                SessionConfigSelectOptionInfo {
+                    value: def.clone(),
+                    name: grok_effort_label(def).to_string(),
+                    // The injected default (grok-4.5's `xhigh`) is absent from grok's
+                    // switchable list, so it has no grok description — supply ours.
+                    description: grok_effort_description(def).map(str::to_string),
+                },
+            );
+        }
+    }
+    if options.is_empty() {
+        return None;
+    }
+    let current_value = spec
+        .default
+        .clone()
+        .unwrap_or_else(|| options[0].value.clone());
+    Some(SessionConfigOptionInfo {
+        id: GROK_EFFORT_OPTION_ID.to_string(),
+        name: "Reasoning effort".to_string(),
+        description: None,
+        category: Some("mode".to_string()),
+        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+            current_value,
+            options,
+            groups: Vec::new(),
+        }),
+    })
+}
+
+/// Re-point the effort selector in `opts` at `model_id`: drop any existing
+/// effort selector, then append a freshly-built one iff the model supports
+/// effort. The model selector is untouched and effort stays LAST (matching
+/// `synthesize_grok_config_options`' ordering). Used on a mid-session model
+/// switch, where grok never re-sends per-model effort data.
+fn set_grok_effort_selector_for_model(
+    opts: &mut Vec<SessionConfigOptionInfo>,
+    model_id: &str,
+    specs: &HashMap<String, GrokEffortSpec>,
+) {
+    opts.retain(|o| o.id != GROK_EFFORT_OPTION_ID);
+    if let Some(effort) = build_grok_effort_option(model_id, specs) {
+        opts.push(effort);
+    }
+}
+
 /// Grok does not emit the standard ACP `config_options` / `modes` channels that
 /// codeg's generic composer-selector pipeline reads (which is why the composer
 /// showed no selectors for Grok). Instead it ships its selectors in a
@@ -1071,6 +1252,7 @@ fn is_grok_incompatible_agent_switch(e: &sacp::Error) -> bool {
 /// frontend code. Returns `None` when there is no usable sessionConfig.
 fn synthesize_grok_config_options(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    specs: &HashMap<String, GrokEffortSpec>,
 ) -> Option<Vec<SessionConfigOptionInfo>> {
     let options = meta?
         .get("x.ai/sessionConfig")?
@@ -1079,30 +1261,34 @@ fn synthesize_grok_config_options(
 
     let mut model_opts: Vec<SessionConfigSelectOptionInfo> = Vec::new();
     let mut model_current: Option<String> = None;
+    let mut effort_opts: Vec<SessionConfigSelectOptionInfo> = Vec::new();
+    let mut effort_current: Option<String> = None;
 
     for opt in options {
         let Some(id) = opt.get("id").and_then(|v| v.as_str()) else {
             continue;
         };
-        // Only the MODEL selector is surfaced in the composer. Grok exposes a
-        // live `session/set_model`, but has NO live reasoning-effort setter, and
-        // effort is a GLOBAL `~/.grok/config.toml` setting shared by every Grok
-        // session — so it belongs in the Grok settings panel (which routes
-        // through the manager's fingerprint staleness), not a per-session
-        // composer control. Grok's effort choices arrive here as category
-        // "mode"; we deliberately skip them.
-        if opt.get("category").and_then(|v| v.as_str()) != Some("model") {
-            continue;
-        }
+        // Grok ships two composer selectors here: the MODEL list
+        // (`category:"model"`) and the reasoning-EFFORT list (`category:"mode"`,
+        // ids low/medium/high). Both are live over ACP — model via
+        // `session/set_model`, effort via that request's `_meta.reasoningEffort`
+        // (see `set_grok_model` / `set_grok_config_option`). Effort options only
+        // appear when the current model advertises `supportsReasoningEffort`, so
+        // the selector self-gates. Anything else is ignored.
+        let (opts_vec, current) = match opt.get("category").and_then(|v| v.as_str()) {
+            Some("model") => (&mut model_opts, &mut model_current),
+            Some("mode") => (&mut effort_opts, &mut effort_current),
+            _ => continue,
+        };
         let label = opt.get("label").and_then(|v| v.as_str()).unwrap_or(id);
         if opt
             .get("selected")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
         {
-            model_current = Some(id.to_string());
+            *current = Some(id.to_string());
         }
-        model_opts.push(SessionConfigSelectOptionInfo {
+        opts_vec.push(SessionConfigSelectOptionInfo {
             value: id.to_string(),
             name: label.to_string(),
             description: opt
@@ -1112,21 +1298,60 @@ fn synthesize_grok_config_options(
         });
     }
 
-    if model_opts.is_empty() {
-        return None;
+    let mut result: Vec<SessionConfigOptionInfo> = Vec::new();
+    // Current model id (the `selected` one, else the first) — needed both for
+    // the model selector's `current_value` and to pick the per-model effort spec.
+    let current_model = model_current
+        .clone()
+        .or_else(|| model_opts.first().map(|o| o.value.clone()));
+    if !model_opts.is_empty() {
+        let current = current_model
+            .clone()
+            .unwrap_or_else(|| model_opts[0].value.clone());
+        result.push(SessionConfigOptionInfo {
+            id: GROK_MODEL_OPTION_ID.to_string(),
+            name: "Model".to_string(),
+            description: None,
+            category: Some("model".to_string()),
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: current,
+                options: model_opts,
+                groups: Vec::new(),
+            }),
+        });
     }
-    let current = model_current.unwrap_or_else(|| model_opts[0].value.clone());
-    Some(vec![SessionConfigOptionInfo {
-        id: GROK_MODEL_OPTION_ID.to_string(),
-        name: "Model".to_string(),
-        description: None,
-        category: Some("model".to_string()),
-        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
-            current_value: current,
-            options: model_opts,
-            groups: Vec::new(),
-        }),
-    }])
+    // Effort selector. With per-model `specs` (parsed from the response's
+    // top-level `models`), it follows the CURRENT model's advertised capability
+    // — present/absent, its option set, and an `xhigh`-style out-of-list default
+    // (see `build_grok_effort_option`). Without specs (no `models` in the
+    // response) fall back to today's flat `x.ai/sessionConfig` "mode" list so
+    // nothing regresses.
+    if !specs.is_empty() {
+        if let Some(effort) = current_model
+            .as_deref()
+            .and_then(|m| build_grok_effort_option(m, specs))
+        {
+            result.push(effort);
+        }
+    } else if !effort_opts.is_empty() {
+        let current = effort_current.unwrap_or_else(|| effort_opts[0].value.clone());
+        result.push(SessionConfigOptionInfo {
+            id: GROK_EFFORT_OPTION_ID.to_string(),
+            name: "Reasoning effort".to_string(),
+            description: None,
+            category: Some("mode".to_string()),
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: current,
+                options: effort_opts,
+                groups: Vec::new(),
+            }),
+        });
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Emit an already-mapped `SessionConfigOptionInfo` list (used by the Grok path,
@@ -1144,22 +1369,30 @@ async fn emit_session_config_options_info(
     .await;
 }
 
-/// Switch Grok's active model via the standard ACP `session/set_model`. Sent as
-/// an `UntypedMessage` for the same reason as `session/resume` /
-/// `session/set_config_option`: sacp 11.0.0's typed request is gated behind the
-/// `unstable_session_model` feature (not enabled), and the orphan rule blocks a
-/// local `JsonRpcRequest` impl. Grok has no ACP setter for reasoning effort
-/// (verified: `set_model` ignores it and `set_mode` is a no-op) — that is
-/// handled out-of-band by writing `~/.grok/config.toml`.
+/// Switch Grok's active model — and, optionally, its reasoning effort — via the
+/// standard ACP `session/set_model`. Sent as an `UntypedMessage` for the same
+/// reason as `session/resume` / `session/set_config_option`: sacp 11.0.0's typed
+/// request is gated behind the `unstable_session_model` feature (not enabled),
+/// and the orphan rule blocks a local `JsonRpcRequest` impl.
+///
+/// Reasoning effort IS live-settable (verified against grok 0.2.99): a
+/// `reasoning_effort` value carried in the request's `_meta.reasoningEffort`
+/// (string `low`/`medium`/`high`) is applied on top of the model — grok logs
+/// `applying reasoning_effort override from meta` and emits a `model_changed`
+/// session notification echoing the effort. Passing `None` leaves the current
+/// effort untouched (e.g. a pure model switch). The `~/.grok/config.toml`
+/// `default_reasoning_effort` remains the at-birth global default this overrides.
 async fn set_grok_model(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     model_id: String,
+    reasoning_effort: Option<String>,
 ) -> Result<(), sacp::Error> {
-    let params = serde_json::json!({
-        "sessionId": session_id.0.to_string(),
-        "modelId": model_id,
-    });
+    let params = build_grok_set_model_params(
+        session_id.0.as_ref(),
+        &model_id,
+        reasoning_effort.as_deref(),
+    );
     let untyped_req = UntypedMessage::new("session/set_model", params).map_err(|e| {
         sacp::util::internal_error(format!("Failed to build set_model request: {e}"))
     })?;
@@ -1167,40 +1400,110 @@ async fn set_grok_model(
     Ok(())
 }
 
-/// On reconnect, re-apply the user's last-picked Grok model (saved per agent by
-/// the frontend and shipped back as a preferred config value) via `set_model`,
-/// reflecting it in `current_value`. Effort preferences are omitted: Grok has no
-/// live effort setter, so effort follows `~/.grok/config.toml` at session birth.
-async fn apply_grok_preferred_model(
+/// Build the `session/set_model` params. A reasoning-effort override rides in
+/// `_meta.reasoningEffort` (the exact key grok's sampling layer reads — verified
+/// against 0.2.99); `None` omits `_meta` for a pure model switch.
+fn build_grok_set_model_params(
+    session_id: &str,
+    model_id: &str,
+    reasoning_effort: Option<&str>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({
+        "sessionId": session_id,
+        "modelId": model_id,
+    });
+    if let Some(effort) = reasoning_effort {
+        params["_meta"] = serde_json::json!({ "reasoningEffort": effort });
+    }
+    params
+}
+
+/// On reconnect, re-apply the user's last-picked Grok model AND reasoning effort
+/// (both saved per agent by the frontend and shipped back as preferred config
+/// values), reflecting each in its selector's `current_value`. Model is applied
+/// first (a pure switch, effort untouched); effort is then re-applied on top of
+/// the now-current model via `set_model`'s `_meta.reasoningEffort`.
+async fn apply_grok_preferred_options(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
-    opts: &mut [SessionConfigOptionInfo],
+    opts: &mut Vec<SessionConfigOptionInfo>,
     preferred_config_values: &BTreeMap<String, String>,
+    specs: &HashMap<String, GrokEffortSpec>,
 ) {
-    let Some(pref) = preferred_config_values.get(GROK_MODEL_OPTION_ID) else {
-        return;
-    };
-    let Some(model_opt) = opts.iter_mut().find(|o| o.id == GROK_MODEL_OPTION_ID) else {
-        return;
-    };
-    let SessionConfigKindInfo::Select(sel) = &mut model_opt.kind;
-    // Skip if already current, or the saved model is no longer offered (stale).
-    if &sel.current_value == pref || !sel.options.iter().any(|o| &o.value == pref) {
-        return;
+    // Model preference — a pure `set_model` (no effort override). On success we
+    // also re-point the effort selector at the newly-preferred model (grok ships
+    // per-model effort only at birth, never on set_model).
+    if let Some(pref) = preferred_config_values.get(GROK_MODEL_OPTION_ID).cloned() {
+        // Split the eligibility read (immutable) from the rebuild (mutable) so we
+        // never hold a `&mut opts` borrow across `set_grok_effort_selector_for_model`.
+        let eligible = opts
+            .iter()
+            .find(|o| o.id == GROK_MODEL_OPTION_ID)
+            .is_some_and(|o| {
+                let SessionConfigKindInfo::Select(sel) = &o.kind;
+                // Skip if already current, or the saved model is no longer offered.
+                sel.current_value != pref && sel.options.iter().any(|x| x.value == pref)
+            });
+        if eligible {
+            match set_grok_model(cx, session_id, pref.clone(), None).await {
+                Ok(()) => {
+                    if let Some(o) = opts.iter_mut().find(|o| o.id == GROK_MODEL_OPTION_ID) {
+                        let SessionConfigKindInfo::Select(sel) = &mut o.kind;
+                        sel.current_value = pref.clone();
+                    }
+                    if !specs.is_empty() {
+                        set_grok_effort_selector_for_model(opts, &pref, specs);
+                    }
+                }
+                Err(e) => tracing::error!(
+                    "[ACP] failed to apply preferred grok model '{pref}' on connect: {e}"
+                ),
+            }
+        }
     }
-    match set_grok_model(cx, session_id, pref.clone()).await {
-        Ok(()) => sel.current_value = pref.clone(),
-        Err(e) => {
-            tracing::error!("[ACP] failed to apply preferred grok model '{pref}' on connect: {e}")
+    // Effort preference — re-applied on top of the (possibly just-switched)
+    // current model. The effort selector was rebuilt above for that model, so an
+    // unsupported model (no selector) or an unoffered value is skipped here.
+    if let Some(pref) = preferred_config_values.get(GROK_EFFORT_OPTION_ID) {
+        let model_id = current_grok_model_id_from_opts(opts);
+        if let Some(effort_opt) = opts.iter_mut().find(|o| o.id == GROK_EFFORT_OPTION_ID) {
+            let SessionConfigKindInfo::Select(sel) = &mut effort_opt.kind;
+            if &sel.current_value != pref && sel.options.iter().any(|o| &o.value == pref) {
+                if let Some(model_id) = model_id {
+                    match set_grok_model(cx, session_id, model_id, Some(pref.clone())).await {
+                        Ok(()) => sel.current_value = pref.clone(),
+                        Err(e) => tracing::error!(
+                            "[ACP] failed to apply preferred grok effort '{pref}' on connect: {e}"
+                        ),
+                    }
+                }
+            }
         }
     }
 }
 
-/// Route a composer config-option change for Grok. Only the model selector is
-/// live: model → `session/set_model`. (Reasoning effort is not a composer
-/// control — it's a global `~/.grok/config.toml` setting owned by the Grok
-/// settings panel.) Re-emits the options with the new `current_value` so the
-/// backend snapshot stays authoritative.
+/// The Grok model selector's current value, read from an in-memory options list.
+fn current_grok_model_id_from_opts(opts: &[SessionConfigOptionInfo]) -> Option<String> {
+    opts.iter().find(|o| o.id == GROK_MODEL_OPTION_ID).map(|o| {
+        let SessionConfigKindInfo::Select(sel) = &o.kind;
+        sel.current_value.clone()
+    })
+}
+
+/// The Grok model selector's current value, read from the authoritative
+/// `SessionState.config_options` snapshot — needed to carry a reasoning-effort
+/// override on `session/set_model` (effort is applied relative to a model).
+async fn current_grok_model_id(state: &Arc<RwLock<SessionState>>) -> Option<String> {
+    let opts = state.read().await.config_options.clone()?;
+    current_grok_model_id_from_opts(&opts)
+}
+
+/// Route a composer config-option change for Grok. Both live selectors go
+/// through `session/set_model`: the model selector switches the model, and the
+/// reasoning-effort selector re-sends the current model with an
+/// `_meta.reasoningEffort` override (the `~/.grok/config.toml`
+/// `default_reasoning_effort` stays the at-birth global default). Re-emits the
+/// options with the new `current_value` so the backend snapshot stays authoritative.
 ///
 /// A cross-agent-type switch rejected on an established conversation
 /// (`is_grok_incompatible_agent_switch`) is handled in-band: re-emit the
@@ -1218,17 +1521,40 @@ async fn set_grok_config_option(
     config_id: String,
     value_id: String,
 ) -> Result<(), sacp::Error> {
-    if config_id != GROK_MODEL_OPTION_ID {
+    // Resolve the `set_model` args for whichever selector changed. A model pick
+    // is the model itself (no effort override); an effort pick re-sends the
+    // current model carrying the new `_meta.reasoningEffort`. Any other id is a
+    // no-op (defensive — the composer only offers these two).
+    let (model_id, effort) = if config_id == GROK_MODEL_OPTION_ID {
+        (value_id.clone(), None)
+    } else if config_id == GROK_EFFORT_OPTION_ID {
+        match current_grok_model_id(state).await {
+            Some(model_id) => (model_id, Some(value_id.clone())),
+            // No model known yet — nothing to carry the effort override on.
+            None => return Ok(()),
+        }
+    } else {
         return Ok(());
-    }
-    // Model switching is live over ACP.
-    match set_grok_model(cx, session_id, value_id.clone()).await {
+    };
+    match set_grok_model(cx, session_id, model_id, effort).await {
         Ok(()) => {
-            let current = state.read().await.config_options.clone();
+            let (current, specs) = {
+                let g = state.read().await;
+                (g.config_options.clone(), g.grok_effort_specs.clone())
+            };
             if let Some(mut opts) = current {
                 if let Some(o) = opts.iter_mut().find(|o| o.id == config_id) {
                     let SessionConfigKindInfo::Select(sel) = &mut o.kind;
-                    sel.current_value = value_id;
+                    sel.current_value = value_id.clone();
+                }
+                // A MODEL switch must re-point the effort selector at the new
+                // model — grok never re-sends per-model effort data on
+                // set_model. An EFFORT change leaves the list shape alone; no
+                // specs ⇒ leave as-is (flat-fallback session).
+                if config_id == GROK_MODEL_OPTION_ID {
+                    if let Some(specs) = &specs {
+                        set_grok_effort_selector_for_model(&mut opts, &value_id, specs);
+                    }
                 }
                 emit_session_config_options_info(state, emitter, opts).await;
             }
@@ -1287,14 +1613,28 @@ async fn apply_and_emit_session_config_options(
     emitter: &EventEmitter,
     agent_type: AgentType,
     grok_meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    grok_effort_specs: Option<&HashMap<String, GrokEffortSpec>>,
     preferred_mode_id: Option<&str>,
     preferred_config_values: &BTreeMap<String, String>,
     initial_config_options: Vec<SessionConfigOption>,
 ) {
     if agent_type == AgentType::Grok {
-        if let Some(mut opts) = synthesize_grok_config_options(grok_meta) {
+        let specs = grok_effort_specs.cloned().unwrap_or_default();
+        if let Some(mut opts) = synthesize_grok_config_options(grok_meta, &specs) {
+            // Cache the per-model effort map so a later model switch can rebuild
+            // the effort selector for the target model (grok ships it only at
+            // session birth). `None` when empty keeps the switch path on the
+            // flat-fallback branch.
+            state.write().await.grok_effort_specs = (!specs.is_empty()).then(|| specs.clone());
             let session_id = session.session_id().clone();
-            apply_grok_preferred_model(cx, &session_id, &mut opts, preferred_config_values).await;
+            apply_grok_preferred_options(
+                cx,
+                &session_id,
+                &mut opts,
+                preferred_config_values,
+                &specs,
+            )
+            .await;
             emit_session_config_options_info(state, emitter, opts).await;
             return;
         }
@@ -1434,15 +1774,47 @@ fn build_resume_session_request(
 async fn send_resume_session(
     cx: &ConnectionTo<Agent>,
     req: ResumeSessionRequest,
-) -> Result<ResumeSessionResponse, sacp::Error> {
+) -> Result<(ResumeSessionResponse, Option<serde_json::Value>), sacp::Error> {
     let untyped_req = UntypedMessage::new("session/resume", req).map_err(|e| {
         sacp::util::internal_error(format!("Failed to build resume request: {e}"))
     })?;
 
     let raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
-    serde_json::from_value(raw_response).map_err(|e| {
+    // Capture the raw top-level `models` (per-model reasoning-effort data) BEFORE
+    // deserializing into the typed response, which drops it (Grok only — the
+    // field survives serde as an ignored unknown for other agents).
+    let models = raw_response.get("models").cloned();
+    let resp = serde_json::from_value(raw_response).map_err(|e| {
         sacp::util::internal_error(format!("Failed to parse resume response: {e}"))
-    })
+    })?;
+    Ok((resp, models))
+}
+
+/// Send `session/new`. For Grok, send it UNTYPED so the raw top-level `models`
+/// (per-model reasoning-effort data — dropped by the typed `NewSessionResponse`
+/// because the `unstable_session_model` feature is off) can be captured before
+/// deserialization. Every other agent keeps the exact typed send, byte-for-byte,
+/// and gets `None`.
+async fn send_new_session_capturing_models(
+    cx: &ConnectionTo<Agent>,
+    agent_type: AgentType,
+    req: NewSessionRequest,
+) -> Result<(NewSessionResponse, Option<serde_json::Value>), sacp::Error> {
+    if agent_type != AgentType::Grok {
+        return Ok((cx.send_request_to(Agent, req).block_task().await?, None));
+    }
+    // Literal method string: the schema's `SESSION_NEW_METHOD_NAME` is
+    // `pub(crate)`, and sacp ships no `JsonRpcRequest` for a raw new-session, so
+    // this mirrors the `session/resume` / `session/fork` untyped sends.
+    let untyped_req = UntypedMessage::new("session/new", req).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to build new_session request: {e}"))
+    })?;
+    let raw_response = cx.send_request_to(Agent, untyped_req).block_task().await?;
+    let models = raw_response.get("models").cloned();
+    let resp = serde_json::from_value(raw_response).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to parse new_session response: {e}"))
+    })?;
+    Ok((resp, models))
 }
 
 /// Whether MCP servers forwarded over the ACP wire (`session/new.mcpServers`)
@@ -2189,7 +2561,7 @@ async fn run_connection(
                         mcp_servers.clone(),
                     );
                     match send_resume_session(&cx, resume_req).await {
-                        Ok(resume_resp) => {
+                        Ok((resume_resp, grok_models_raw)) => {
                             let initial_config_options = resume_resp.config_options.clone();
                             let new_resp = NewSessionResponse::new(SessionId::new(sid.clone()))
                                 .modes(resume_resp.modes)
@@ -2200,6 +2572,10 @@ async fn run_connection(
                             } else {
                                 None
                             };
+                            // Opportunistic: grok may include per-model effort data
+                            // on resume; absent ⇒ empty specs ⇒ flat fallback.
+                            let grok_effort_specs = (agent_type == AgentType::Grok)
+                                .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
                             let mut session = cx.attach_session(new_resp, Default::default())?;
 
                             // No drain: session/resume does not replay history,
@@ -2223,6 +2599,7 @@ async fn run_connection(
                                 &emitter_clone,
                                 agent_type,
                                 grok_meta.as_ref(),
+                                grok_effort_specs.as_ref(),
                                 preferred_mode_id.as_deref(),
                                 &preferred_config_values,
                                 initial_config_options.unwrap_or_default(),
@@ -2382,6 +2759,9 @@ async fn run_connection(
                             &emitter_clone,
                             agent_type,
                             grok_meta.as_ref(),
+                            // `session/load` is a typed send with no raw `models`
+                            // capture, so effort stays on the flat fallback.
+                            None,
                             preferred_mode_id.as_deref(),
                             &preferred_config_values,
                             initial_config_options.unwrap_or_default(),
@@ -2486,17 +2866,12 @@ async fn run_connection(
                             )
                             .await;
                         }
-                        let new_resp = cx
-                            .send_request_to(
-                                Agent,
-                                build_new_session_request(
-                                    agent_type,
-                                    &cwd,
-                                    mcp_servers.clone(),
-                                ),
-                            )
-                            .block_task()
-                            .await?;
+                        let (new_resp, grok_models_raw) = send_new_session_capturing_models(
+                            &cx,
+                            agent_type,
+                            build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
+                        )
+                        .await?;
                         let fallback_sid = new_resp.session_id.0.to_string();
                         let initial_config_options = new_resp.config_options.clone();
                         let grok_meta = if agent_type == AgentType::Grok {
@@ -2504,6 +2879,8 @@ async fn run_connection(
                         } else {
                             None
                         };
+                        let grok_effort_specs = (agent_type == AgentType::Grok)
+                            .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
                         let mut session = cx.attach_session(new_resp, Default::default())?;
                         emit_with_state(
                             &state,
@@ -2521,6 +2898,7 @@ async fn run_connection(
                             &emitter_clone,
                             agent_type,
                             grok_meta.as_ref(),
+                            grok_effort_specs.as_ref(),
                             preferred_mode_id.as_deref(),
                             &preferred_config_values,
                             initial_config_options.unwrap_or_default(),
@@ -2566,13 +2944,12 @@ async fn run_connection(
                 }
             } else {
                 // Create new session
-                let new_resp = cx
-                    .send_request_to(
-                        Agent,
-                        build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
-                    )
-                    .block_task()
-                    .await?;
+                let (new_resp, grok_models_raw) = send_new_session_capturing_models(
+                    &cx,
+                    agent_type,
+                    build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
+                )
+                .await?;
                 let sid = new_resp.session_id.0.to_string();
                 let initial_config_options = new_resp.config_options.clone();
                 let grok_meta = if agent_type == AgentType::Grok {
@@ -2580,6 +2957,8 @@ async fn run_connection(
                 } else {
                     None
                 };
+                let grok_effort_specs = (agent_type == AgentType::Grok)
+                    .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
                 let mut session = cx.attach_session(new_resp, Default::default())?;
                 emit_with_state(
                     &state,
@@ -2597,6 +2976,7 @@ async fn run_connection(
                     &emitter_clone,
                     agent_type,
                     grok_meta.as_ref(),
+                    grok_effort_specs.as_ref(),
                     preferred_mode_id.as_deref(),
                     &preferred_config_values,
                     initial_config_options.unwrap_or_default(),
@@ -3455,6 +3835,9 @@ fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
 /// Result when the conversation loop exits due to a fork request.
 struct ForkExitInfo {
     fork_response: sacp::schema::ForkSessionResponse,
+    /// Raw top-level `models` from the fork response (Grok per-model effort data),
+    /// captured before the typed deserialize drops it. `None` when absent.
+    fork_models_raw: Option<serde_json::Value>,
     original_session_id: String,
     reply: tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     connection: ConnectionTo<Agent>,
@@ -3495,6 +3878,7 @@ async fn handle_fork_or_exit(
 
     let cx = fork_info.connection;
     let fork_resp = fork_info.fork_response;
+    let fork_models_raw = fork_info.fork_models_raw;
     let new_sid = fork_resp.session_id.0.to_string();
 
     tracing::info!(
@@ -3523,6 +3907,9 @@ async fn handle_fork_or_exit(
     } else {
         None
     };
+    // Opportunistic: grok may carry per-model effort data on a fork response.
+    let grok_effort_specs =
+        (agent_type == AgentType::Grok).then(|| parse_grok_effort_specs(fork_models_raw.as_ref()));
     let mut session = cx.attach_session(new_resp, Default::default())?;
 
     emit_with_state(
@@ -3541,6 +3928,7 @@ async fn handle_fork_or_exit(
         emitter,
         agent_type,
         grok_meta.as_ref(),
+        grok_effort_specs.as_ref(),
         None,
         &BTreeMap::new(),
         initial_config_options.unwrap_or_default(),
@@ -4357,13 +4745,14 @@ async fn run_conversation_loop<'a>(
                 );
                 let result = crate::acp::fork::fork_session(&cx, &sid, cwd).await;
                 match result {
-                    Ok(fork_response) => {
+                    Ok((fork_response, fork_models_raw)) => {
                         tracing::info!(
                             "[ACP] Fork succeeded: new_session_id={}",
                             fork_response.session_id.0
                         );
                         return Ok(Some(ForkExitInfo {
                             fork_response,
+                            fork_models_raw,
                             original_session_id: sid.0.to_string(),
                             reply,
                             connection: cx,
@@ -6108,7 +6497,7 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_grok_config_options_yields_model_only_selector() {
+    fn synthesize_grok_config_options_yields_model_and_effort_selectors() {
         // `_meta["x.ai/sessionConfig"].options` as delivered by `session/new`
         // (captured live): both model choices and the "mode" effort choices.
         let meta: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
@@ -6125,26 +6514,224 @@ mod tests {
         )
         .unwrap();
 
-        let opts = synthesize_grok_config_options(Some(&meta)).expect("should synthesize");
-        assert_eq!(opts.len(), 1, "only the model selector is surfaced");
-        let opt = &opts[0];
-        assert_eq!(opt.id, GROK_MODEL_OPTION_ID);
-        assert_eq!(opt.category.as_deref(), Some("model"));
-        let SessionConfigKindInfo::Select(sel) = &opt.kind;
+        // Empty specs → the effort selector comes from the flat `x.ai/sessionConfig`
+        // "mode" list (the no-`models` fallback path).
+        let opts =
+            synthesize_grok_config_options(Some(&meta), &HashMap::new()).expect("should synthesize");
+        assert_eq!(opts.len(), 2, "model + effort selectors");
+
+        let model = &opts[0];
+        assert_eq!(model.id, GROK_MODEL_OPTION_ID);
+        assert_eq!(model.category.as_deref(), Some("model"));
+        let SessionConfigKindInfo::Select(model_sel) = &model.kind;
         // Both models appear (agent-type filtering is deliberately NOT applied —
         // cross-type switches are handled gracefully at set time instead).
-        assert_eq!(sel.options.len(), 2);
-        assert_eq!(sel.current_value, "grok-4.5", "the `selected` model is current");
-        assert!(sel.options.iter().any(|o| o.value == "grok-composer-2.5-fast"));
-        // The "mode" (effort) entries are excluded from the composer.
-        assert!(sel.options.iter().all(|o| o.value != "high" && o.value != "low"));
+        assert_eq!(model_sel.options.len(), 2);
+        assert_eq!(model_sel.current_value, "grok-4.5", "the `selected` model is current");
+        assert!(model_sel.options.iter().any(|o| o.value == "grok-composer-2.5-fast"));
+
+        let effort = &opts[1];
+        assert_eq!(effort.id, GROK_EFFORT_OPTION_ID);
+        assert_eq!(effort.category.as_deref(), Some("mode"));
+        let SessionConfigKindInfo::Select(effort_sel) = &effort.kind;
+        assert_eq!(effort_sel.options.len(), 2);
+        assert_eq!(effort_sel.current_value, "high", "the `selected` effort is current");
+        assert!(effort_sel.options.iter().any(|o| o.value == "low"));
+    }
+
+    #[test]
+    fn synthesize_grok_config_options_model_only_when_no_effort_offered() {
+        // A model that doesn't advertise `supportsReasoningEffort` yields no
+        // `category:"mode"` entries → only the model selector is surfaced.
+        let meta: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({
+                "x.ai/sessionConfig": {
+                    "options": [
+                        {"id": "grok-composer-2.5-fast", "category": "model", "label": "Composer 2.5", "selected": true}
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+        // Empty specs → the effort selector comes from the flat `x.ai/sessionConfig`
+        // "mode" list (the no-`models` fallback path).
+        let opts =
+            synthesize_grok_config_options(Some(&meta), &HashMap::new()).expect("should synthesize");
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].id, GROK_MODEL_OPTION_ID);
+    }
+
+    #[test]
+    fn grok_set_model_params_carry_effort_override() {
+        // Pure model switch → no `_meta`, so grok keeps the current effort.
+        let p = build_grok_set_model_params("s1", "grok-4.5", None);
+        assert_eq!(p["sessionId"], "s1");
+        assert_eq!(p["modelId"], "grok-4.5");
+        assert!(p.get("_meta").is_none());
+        // Effort override rides in `_meta.reasoningEffort` (the key grok parses).
+        let p = build_grok_set_model_params("s1", "grok-4.5", Some("high"));
+        assert_eq!(p["modelId"], "grok-4.5");
+        assert_eq!(p["_meta"]["reasoningEffort"], "high");
     }
 
     #[test]
     fn synthesize_grok_config_options_none_without_sessionconfig() {
         let empty: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-        assert!(synthesize_grok_config_options(Some(&empty)).is_none());
-        assert!(synthesize_grok_config_options(None).is_none());
+        assert!(synthesize_grok_config_options(Some(&empty), &HashMap::new()).is_none());
+        assert!(synthesize_grok_config_options(None, &HashMap::new()).is_none());
+    }
+
+    /// Raw top-level `models` mirroring grok 0.2.99's `session/new`: grok-4.5
+    /// supports effort (default `xhigh`, switchable high/medium/low),
+    /// grok-composer-2.5-fast supports none.
+    fn grok_models_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "currentModelId": "grok-4.5",
+            "availableModels": [
+                {
+                    "modelId": "grok-4.5",
+                    "name": "Grok 4.5",
+                    "_meta": {
+                        "supportsReasoningEffort": true,
+                        "reasoningEffort": "xhigh",
+                        "reasoningEfforts": [
+                            {"id": "high", "label": "High Effort", "description": "Highest quality", "default": true},
+                            {"id": "medium", "label": "Medium Effort", "description": "Balanced"},
+                            {"id": "low", "label": "Low Effort", "description": "Fast"}
+                        ]
+                    }
+                },
+                {
+                    "modelId": "grok-composer-2.5-fast",
+                    "name": "Composer 2.5",
+                    "_meta": {"supportsReasoningEffort": false}
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn parse_grok_effort_specs_reads_per_model_meta() {
+        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let g45 = specs.get("grok-4.5").expect("grok-4.5 present");
+        assert!(g45.supports);
+        assert_eq!(g45.default.as_deref(), Some("xhigh"));
+        assert_eq!(g45.options.len(), 3);
+        assert_eq!(g45.options[0].0, "high");
+        let fast = specs
+            .get("grok-composer-2.5-fast")
+            .expect("composer present");
+        assert!(!fast.supports);
+        assert!(fast.default.is_none());
+        assert!(fast.options.is_empty());
+    }
+
+    #[test]
+    fn parse_grok_effort_specs_absent_models_is_empty() {
+        assert!(parse_grok_effort_specs(None).is_empty());
+        assert!(parse_grok_effort_specs(Some(&serde_json::json!({}))).is_empty());
+        // Missing `_meta` degrades to supports=false / default=None / options=[].
+        let bare = serde_json::json!({ "availableModels": [{"modelId": "m1", "name": "M1"}] });
+        let specs = parse_grok_effort_specs(Some(&bare));
+        let m1 = specs.get("m1").expect("m1 present");
+        assert!(!m1.supports);
+        assert!(m1.default.is_none());
+        assert!(m1.options.is_empty());
+    }
+
+    #[test]
+    fn build_grok_effort_option_injects_default_and_gates_supports() {
+        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        // grok-4.5: `xhigh` default is injected at the FRONT (not in the
+        // switchable list), current = xhigh, with canonical labels.
+        let effort = build_grok_effort_option("grok-4.5", &specs).expect("has effort");
+        assert_eq!(effort.id, GROK_EFFORT_OPTION_ID);
+        let SessionConfigKindInfo::Select(sel) = &effort.kind;
+        assert_eq!(sel.current_value, "xhigh");
+        assert_eq!(sel.options.len(), 4, "high/medium/low + injected xhigh");
+        assert_eq!(sel.options[0].value, "xhigh");
+        assert_eq!(sel.options[0].name, "Max");
+        // The injected default has no grok description, so it gets our canonical
+        // one — every tier must have sub-text, not just high/medium/low.
+        assert_eq!(
+            sel.options[0].description.as_deref(),
+            Some("Maximum reasoning for the most complex tasks")
+        );
+        assert!(sel.options.iter().all(|o| o.description.is_some()));
+        // Grok's own per-tier text is preserved for the switchable tiers.
+        assert!(sel
+            .options
+            .iter()
+            .any(|o| o.value == "high" && o.name == "High" && o.description.as_deref() == Some("Highest quality")));
+        // Unsupported model → no selector; unknown model → None.
+        assert!(build_grok_effort_option("grok-composer-2.5-fast", &specs).is_none());
+        assert!(build_grok_effort_option("nope", &specs).is_none());
+    }
+
+    #[test]
+    fn synthesize_grok_config_options_model_reactive_effort_for_4_5() {
+        // Flat sessionConfig marks grok-4.5 current; per-model specs drive effort.
+        let meta: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({
+                "x.ai/sessionConfig": {
+                    "options": [
+                        {"id": "grok-4.5", "category": "model", "label": "Grok 4.5", "selected": true},
+                        {"id": "grok-composer-2.5-fast", "category": "model", "label": "Composer 2.5", "selected": false}
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let opts = synthesize_grok_config_options(Some(&meta), &specs).expect("synthesize");
+        assert_eq!(opts.len(), 2, "model + effort");
+        let effort = opts
+            .iter()
+            .find(|o| o.id == GROK_EFFORT_OPTION_ID)
+            .expect("effort selector");
+        let SessionConfigKindInfo::Select(sel) = &effort.kind;
+        assert_eq!(sel.current_value, "xhigh", "grok-4.5's real default");
+        assert!(sel.options.iter().any(|o| o.value == "xhigh" && o.name == "Max"));
+    }
+
+    #[test]
+    fn synthesize_grok_config_options_no_effort_for_composer_fast() {
+        // Current model is the no-effort composer model → only the model selector.
+        let meta: serde_json::Map<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({
+                "x.ai/sessionConfig": {
+                    "options": [
+                        {"id": "grok-4.5", "category": "model", "label": "Grok 4.5", "selected": false},
+                        {"id": "grok-composer-2.5-fast", "category": "model", "label": "Composer 2.5", "selected": true}
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        let opts = synthesize_grok_config_options(Some(&meta), &specs).expect("synthesize");
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].id, GROK_MODEL_OPTION_ID);
+    }
+
+    #[test]
+    fn set_grok_effort_selector_for_model_drops_and_adds() {
+        let specs = parse_grok_effort_specs(Some(&grok_models_fixture()));
+        // Model + grok-4.5 effort → switching to the no-effort model DROPS effort.
+        let mut opts = grok_model_options("grok-4.5");
+        opts.push(build_grok_effort_option("grok-4.5", &specs).unwrap());
+        assert_eq!(opts.len(), 2);
+        set_grok_effort_selector_for_model(&mut opts, "grok-composer-2.5-fast", &specs);
+        assert_eq!(opts.len(), 1);
+        assert!(opts.iter().all(|o| o.id != GROK_EFFORT_OPTION_ID));
+        // Switching back to grok-4.5 RE-ADDS it, current = xhigh.
+        set_grok_effort_selector_for_model(&mut opts, "grok-4.5", &specs);
+        let effort = opts
+            .iter()
+            .find(|o| o.id == GROK_EFFORT_OPTION_ID)
+            .expect("re-added");
+        let SessionConfigKindInfo::Select(sel) = &effort.kind;
+        assert_eq!(sel.current_value, "xhigh");
     }
 
     fn grok_model_options(current: &str) -> Vec<SessionConfigOptionInfo> {

@@ -9594,10 +9594,16 @@ supports_websockets = true`}
                             <SelectItem value={GROK_UNSET}>
                               {t("grok.optionDefault")}
                             </SelectItem>
-                            <SelectItem value="ask">
-                              {t("grok.permissionAsk")}
+                            <SelectItem value="default">
+                              {t("grok.permissionDefault")}
                             </SelectItem>
-                            <SelectItem value="always-approve">
+                            <SelectItem value="acceptEdits">
+                              {t("grok.permissionAcceptEdits")}
+                            </SelectItem>
+                            <SelectItem value="auto">
+                              {t("grok.permissionAuto")}
+                            </SelectItem>
+                            <SelectItem value="bypassPermissions">
                               {t("grok.permissionAlwaysApprove")}
                             </SelectItem>
                           </SelectContent>

@@ -1456,6 +1456,12 @@ export interface FeedbackItem {
   delivered_at?: string | null
 }
 
+/** Snapshot of the most recent ACP runtime error. */
+export interface SessionLastError {
+  message: string
+  code?: string | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -1502,6 +1508,8 @@ export interface LiveSessionSnapshot {
   config_stale?: boolean
   /** Which settings surface drifted; present only while `config_stale`. */
   config_stale_kind?: ConfigStaleKind | null
+  /** Latest agent/runtime error recoverable after reconnect. */
+  last_error?: SessionLastError | null
   event_seq: number
 }
 
@@ -1682,6 +1690,44 @@ export interface LinkOpResult {
   ok: boolean
   /** Present on a successful enable; null for disables and failures. */
   status: ExpertInstallStatus | null
+  error: string | null
+}
+
+/**
+ * A user-authored "custom" skill. The fourth skill pack: unlike the bundled
+ * experts/science/office packs, these are created/edited/imported/deleted by
+ * the user, but live in the SAME central store (`~/.codeg/skills/<id>/`) and
+ * reuse the experts link primitives. A skill is "custom" iff its central-store
+ * directory id is not claimed by any bundled pack. Link statuses reuse
+ * `ExpertInstallStatus`/`LinkOp`/`LinkOpResult` (the `expertId` field carries
+ * the custom skill id).
+ */
+export interface CustomSkillItem {
+  id: string
+  /** Frontmatter `name:` if present, else the id. */
+  name: string
+  /** Best-effort one-line description from the SKILL.md frontmatter. */
+  description: string | null
+  central_path: string
+}
+
+/** Per-skill outcome of a batch delete (delete is skill-scoped, not per-agent). */
+export interface CustomDeleteResult {
+  id: string
+  ok: boolean
+  error: string | null
+}
+
+/**
+ * Per-skill outcome of importing an agent's own skills into the central store.
+ * `skipped` means the skill is already in the shared store (a linked built-in
+ * skill or one imported earlier) — an idempotent no-op, not a failure.
+ */
+export interface CustomImportResult {
+  id: string
+  name: string
+  ok: boolean
+  skipped: boolean
   error: string | null
 }
 
