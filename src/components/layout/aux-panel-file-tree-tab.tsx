@@ -22,13 +22,24 @@ import {
   useWorkspaceFileTabs,
 } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
+import {
+  resolveFileTreePasteTarget,
+  useFileTreeClipboard,
+  type FileTreeClipboardItem,
+} from "@/hooks/use-file-tree-clipboard"
 import { findOwningFolder } from "@/lib/file-open-target"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
 import {
+  FileTreePasteConflictDialog,
+  type PasteConflictItem,
+} from "@/components/layout/file-tree-paste-conflict-dialog"
+import {
   createFileTreeEntry,
   deleteFileTreeEntry,
+  pasteFileTreeEntry,
+  previewPasteFileTreeEntry,
   downloadWorkspaceDir,
   downloadWorkspaceFile,
   gitAddFiles,
@@ -45,7 +56,14 @@ import {
 import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import type { FileTreeNode, GitBranchList, GitStatusEntry } from "@/lib/types"
+import type {
+  FileTreeNode,
+  PasteConflictEntry,
+  PasteConflictResolution,
+  PasteConflictStrategy,
+  GitBranchList,
+  GitStatusEntry,
+} from "@/lib/types"
 import {
   FileTree,
   FileTreeFolder,
@@ -130,6 +148,24 @@ interface FileActionTarget {
   kind: "file" | "dir"
   path: string
   name: string
+}
+
+interface PasteConflictPrompt {
+  clipboard: FileTreeClipboardItem
+  target: FileActionTarget
+  conflicts: PasteConflictEntry[]
+}
+
+function toPasteConflictItems(
+  entries: PasteConflictEntry[]
+): PasteConflictItem[] {
+  return entries.map((e) => ({
+    path: e.path,
+    sourcePath: e.sourcePath,
+    targetPath: e.targetPath,
+    name: e.path.split("/").pop() ?? e.path,
+    kind: e.kind === "dir" ? "dir" : "file",
+  }))
 }
 
 type GitFileState =
@@ -479,6 +515,10 @@ interface RenderNodeProps {
   onRequestUpload: (targetPath: string) => void
   onRequestDownloadFile: (target: FileActionTarget) => void
   onRequestDownloadDir: (target: FileActionTarget) => void
+  onRequestCopyEntry?: (target: FileActionTarget) => void
+  onRequestCutEntry?: (target: FileActionTarget) => void
+  onRequestPasteEntry?: (target: FileActionTarget) => void
+  canPasteEntry?: boolean
   onRefresh: () => void
 }
 
@@ -510,6 +550,10 @@ export function RenderNode({
   onRequestUpload,
   onRequestDownloadFile,
   onRequestDownloadDir,
+  onRequestCopyEntry,
+  onRequestCutEntry,
+  onRequestPasteEntry,
+  canPasteEntry = false,
   onRefresh,
 }: RenderNodeProps) {
   const t = useTranslations("Folder.fileTreeTab")
@@ -652,16 +696,43 @@ export function RenderNode({
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
-          <ContextMenuItem
-            onSelect={() =>
-              void copyPathToClipboard(absolutePath, {
-                success: t("toasts.pathCopied"),
-                failure: t("toasts.copyPathFailed"),
-              })
-            }
-          >
-            {t("copyPath")}
-          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onSelect={() => onRequestCopyEntry?.(node)}>
+                {t("copyEntry")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => onRequestCutEntry?.(node)}>
+                {t("cutEntry")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => onRequestPasteEntry?.(node)}
+                disabled={!canPasteEntry}
+              >
+                {t("pasteEntry")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  void copyPathToClipboard(node.path, {
+                    success: t("toasts.pathCopied"),
+                    failure: t("toasts.copyPathFailed"),
+                  })
+                }
+              >
+                {t("copyRelativePath")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  void copyPathToClipboard(absolutePath, {
+                    success: t("toasts.pathCopied"),
+                    failure: t("toasts.copyPathFailed"),
+                  })
+                }
+              >
+                {t("copyAbsolutePath")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           {webMode && (
             <>
               <ContextMenuItem
@@ -757,6 +828,10 @@ export function RenderNode({
                   onRequestUpload={onRequestUpload}
                   onRequestDownloadFile={onRequestDownloadFile}
                   onRequestDownloadDir={onRequestDownloadDir}
+                  onRequestCopyEntry={onRequestCopyEntry}
+                  onRequestCutEntry={onRequestCutEntry}
+                  onRequestPasteEntry={onRequestPasteEntry}
+                  canPasteEntry={canPasteEntry}
                   onRefresh={onRefresh}
                 />
               ))
@@ -839,16 +914,43 @@ export function RenderNode({
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
-        <ContextMenuItem
-          onSelect={() =>
-            void copyPathToClipboard(absolutePath, {
-              success: t("toasts.pathCopied"),
-              failure: t("toasts.copyPathFailed"),
-            })
-          }
-        >
-          {t("copyPath")}
-        </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <ContextMenuItem onSelect={() => onRequestCopyEntry?.(node)}>
+              {t("copyEntry")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => onRequestCutEntry?.(node)}>
+              {t("cutEntry")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => onRequestPasteEntry?.(node)}
+              disabled={!canPasteEntry}
+            >
+              {t("pasteEntry")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() =>
+                void copyPathToClipboard(node.path, {
+                  success: t("toasts.pathCopied"),
+                  failure: t("toasts.copyPathFailed"),
+                })
+              }
+            >
+              {t("copyRelativePath")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() =>
+                void copyPathToClipboard(absolutePath, {
+                  success: t("toasts.pathCopied"),
+                  failure: t("toasts.copyPathFailed"),
+                })
+              }
+            >
+              {t("copyAbsolutePath")}
+            </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         {webMode && (
           <>
             <ContextMenuItem onSelect={() => onRequestUpload(node.path)}>
@@ -974,14 +1076,6 @@ export function FileTreeTab() {
   const expandedPathsRef = useRef<Set<string>>(new Set([FILE_TREE_ROOT_PATH]))
   const workspaceTreeRef = useRef<FileTreeNode[]>([])
 
-  useEffect(() => {
-    setExpandedPaths(new Set([FILE_TREE_ROOT_PATH]))
-    previousExpandedPathsRef.current = new Set([FILE_TREE_ROOT_PATH])
-    setGitignoreIgnoredPaths(new Set())
-    lazyLoadedChildrenByPathRef.current.clear()
-    lazyLoadingDirPathsRef.current.clear()
-  }, [folder?.path])
-
   // Handle pending reveal path: expand all ancestor directories once tree is loaded
   const hasNodes = nodes.length > 0
   useEffect(() => {
@@ -1008,6 +1102,28 @@ export function FileTreeTab() {
     }
     return activeTab.id
   }, [tabs, activeTabId])
+
+  const [pasteConflictPrompt, setPasteConflictPrompt] =
+    useState<PasteConflictPrompt | null>(null)
+  const fileTreeClipboard = useFileTreeClipboard()
+  const {
+    clipboard: fileTreeClipboardItem,
+    copy: copyFileTreeEntry,
+    cut: cutFileTreeEntry,
+    clear: clearFileTreeClipboard,
+  } = fileTreeClipboard
+  const canPasteEntry = Boolean(fileTreeClipboardItem)
+  const pastingRef = useRef(false)
+
+  useEffect(() => {
+    setExpandedPaths(new Set([FILE_TREE_ROOT_PATH]))
+    previousExpandedPathsRef.current = new Set([FILE_TREE_ROOT_PATH])
+    setGitignoreIgnoredPaths(new Set())
+    setPasteConflictPrompt(null)
+    clearFileTreeClipboard()
+    lazyLoadedChildrenByPathRef.current.clear()
+    lazyLoadingDirPathsRef.current.clear()
+  }, [clearFileTreeClipboard, folder?.path])
 
   const fetchTree = useCallback(
     async (options?: {
@@ -1510,6 +1626,103 @@ export function FileTreeTab() {
       }
     },
     [folder?.path, t]
+  )
+
+  const pasteClipboardEntry = useCallback(
+    async (
+      clipboard: FileTreeClipboardItem,
+      target: FileActionTarget,
+      conflict: PasteConflictStrategy,
+      resolutions?: PasteConflictResolution[]
+    ) => {
+      const folderPath = folder?.path
+      if (!folderPath || pastingRef.current) return
+      pastingRef.current = true
+      try {
+        const resultPath = await pasteFileTreeEntry({
+          rootPath: folderPath,
+          sourcePath: clipboard.sourcePath,
+          targetDirPath: resolveFileTreePasteTarget(target),
+          mode: clipboard.mode,
+          conflict,
+          resolutions:
+            resolutions && resolutions.length > 0 ? resolutions : undefined,
+        })
+        toast.success(t("toasts.pasteSucceeded"), { description: resultPath })
+        setPasteConflictPrompt(null)
+        if (clipboard.mode === "cut") clearFileTreeClipboard()
+        await fetchTree()
+      } catch (error) {
+        const message = toErrorMessage(error)
+        toast.error(t("toasts.pasteFailed"), { description: message })
+      } finally {
+        pastingRef.current = false
+      }
+    },
+    [clearFileTreeClipboard, fetchTree, folder?.path, t]
+  )
+
+  const handleRequestPasteEntry = useCallback(
+    (target: FileActionTarget) => {
+      const clipboard = fileTreeClipboardItem
+      if (!clipboard || !folder?.path || pastingRef.current) return
+      pastingRef.current = true
+
+      void (async () => {
+        try {
+          const conflicts = await previewPasteFileTreeEntry({
+            rootPath: folder.path!,
+            sourcePath: clipboard.sourcePath,
+            targetDirPath: resolveFileTreePasteTarget(target),
+          })
+          if (conflicts.length === 0) {
+            pastingRef.current = false
+            void pasteClipboardEntry(clipboard, target, "abort")
+          } else {
+            pastingRef.current = false
+            setPasteConflictPrompt({ clipboard, target, conflicts })
+          }
+        } catch (error) {
+          pastingRef.current = false
+          const message = toErrorMessage(error)
+          toast.error(t("toasts.pasteFailed"), { description: message })
+        }
+      })()
+    },
+    [fileTreeClipboardItem, folder?.path, pasteClipboardEntry, t]
+  )
+
+  const handlePasteConflictConfirmAll = useCallback(
+    (strategy: "overwrite" | "duplicate") => {
+      if (!pasteConflictPrompt) return
+      void pasteClipboardEntry(
+        pasteConflictPrompt.clipboard,
+        pasteConflictPrompt.target,
+        strategy
+      )
+    },
+    [pasteClipboardEntry, pasteConflictPrompt]
+  )
+
+  const handlePasteConflictConfirmPerItem = useCallback(
+    (
+      perItemResolutions: {
+        path: string
+        strategy: "overwrite" | "duplicate"
+      }[]
+    ) => {
+      if (!pasteConflictPrompt) return
+      const resolutions: PasteConflictResolution[] = perItemResolutions.map(
+        ({ path, strategy }) => ({ path, strategy })
+      )
+      void pasteClipboardEntry(
+        pasteConflictPrompt.clipboard,
+        pasteConflictPrompt.target,
+        "abort",
+        resolutions
+      )
+    },
+    [pasteClipboardEntry, pasteConflictPrompt]
   )
 
   const resetDirectoryGitActionDialog = useCallback(() => {
@@ -2158,6 +2371,10 @@ export function FileTreeTab() {
                           onRequestDownloadDir={(target) =>
                             void handleRequestDownloadDir(target)
                           }
+                          onRequestCopyEntry={copyFileTreeEntry}
+                          onRequestCutEntry={cutFileTreeEntry}
+                          onRequestPasteEntry={handleRequestPasteEntry}
+                          canPasteEntry={canPasteEntry}
                           onRefresh={fetchTree}
                         />
                       ))}
@@ -2254,6 +2471,19 @@ export function FileTreeTab() {
                         </ContextMenuItem>
                       </ContextMenuSubContent>
                     </ContextMenuSub>
+                    <ContextMenuSub>
+                      <ContextMenuSubTrigger>
+                        {t("copyPaste")}
+                      </ContextMenuSubTrigger>
+                      <ContextMenuSubContent>
+                        <ContextMenuItem
+                          onSelect={() => handleRequestPasteEntry(rootTarget)}
+                          disabled={!canPasteEntry}
+                        >
+                          {t("pasteEntry")}
+                        </ContextMenuItem>
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
                     <ContextMenuItem
                       onSelect={() =>
                         void copyPathToClipboard(folder.path, {
@@ -2303,6 +2533,17 @@ export function FileTreeTab() {
               {t("upload")}
             </ContextMenuItem>
           )}
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("copyPaste")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                onSelect={() => handleRequestPasteEntry(rootTarget)}
+                disabled={!canPasteEntry}
+              >
+                {t("pasteEntry")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           <ContextMenuItem
             onSelect={() => {
               void fetchTree()
@@ -2779,6 +3020,40 @@ export function FileTreeTab() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <FileTreePasteConflictDialog
+        open={Boolean(pasteConflictPrompt)}
+        conflicts={
+          pasteConflictPrompt?.conflicts
+            ? toPasteConflictItems(pasteConflictPrompt.conflicts)
+            : []
+        }
+        title={t("pasteConflict.title")}
+        summaryDescription={
+          pasteConflictPrompt
+            ? t("pasteConflict.summary", {
+                count: pasteConflictPrompt.conflicts.length,
+                name: pasteConflictPrompt.clipboard.sourceName,
+              })
+            : ""
+        }
+        overwriteAllLabel={t("pasteConflict.overwriteAll")}
+        duplicateAllLabel={t("pasteConflict.duplicateAll")}
+        choosePerItemLabel={t("pasteConflict.choosePerItem")}
+        cancelLabel={t("pasteConflict.cancel")}
+        sourcePathLabel={t("pasteConflict.sourcePath")}
+        targetPathLabel={t("pasteConflict.targetPath")}
+        overwriteLabel={t("pasteConflict.overwrite")}
+        duplicateLabel={t("pasteConflict.duplicate")}
+        backLabel={t("pasteConflict.back")}
+        applyLabel={t("pasteConflict.apply")}
+        onConfirmAll={handlePasteConflictConfirmAll}
+        onConfirmPerItem={handlePasteConflictConfirmPerItem}
+        onOpenChange={(open) => {
+          if (open) return
+          setPasteConflictPrompt(null)
+        }}
+      />
 
       <AlertDialog
         open={Boolean(deleteTarget)}

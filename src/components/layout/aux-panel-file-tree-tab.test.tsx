@@ -20,6 +20,12 @@ vi.mock("next-intl", () => ({
     (namespace?: string) => (key: string, params?: Record<string, string>) => {
       // 组件中实际使用的翻译 key，映射到可读标签用于测试查询
       const fileTreeTabKeys: Record<string, string> = {
+        copyPaste: "copyPaste",
+        copyEntry: "copyEntry",
+        cutEntry: "cutEntry",
+        pasteEntry: "pasteEntry",
+        copyRelativePath: "copyRelativePath",
+        copyAbsolutePath: "copyAbsolutePath",
         copyPath: "Copy path",
         new: "new",
         openIn: "openIn",
@@ -254,7 +260,8 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy path" }))
+    fireEvent.click(screen.getByRole("button", { name: "copyPaste" }))
+    fireEvent.click(screen.getByRole("button", { name: "copyAbsolutePath" }))
 
     await waitFor(() => {
       expect(copyTextFromMenu).toHaveBeenCalledWith(
@@ -302,7 +309,8 @@ describe("RenderNode", () => {
       />
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy path" }))
+    fireEvent.click(screen.getByRole("button", { name: "copyPaste" }))
+    fireEvent.click(screen.getByRole("button", { name: "copyAbsolutePath" }))
 
     await waitFor(() => {
       expect(copyTextFromMenu).toHaveBeenCalledWith(
