@@ -1106,6 +1106,7 @@ mod tauri_app {
                 acp_commands::acp_delete_agent_skill,
                 acp_commands::opencode_list_plugins,
                 acp_commands::opencode_provider_catalog,
+                acp_commands::codex_bundled_catalog,
                 acp_commands::opencode_install_plugins,
                 acp_commands::opencode_uninstall_plugin,
                 acp_commands::codex_request_device_code,

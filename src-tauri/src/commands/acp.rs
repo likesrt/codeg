@@ -347,7 +347,7 @@ async fn resolve_npx_command_from_current_npm_prefix(cmd: &str) -> Option<PathBu
     resolve_npx_command_from_npm_prefix(cmd, &prefix)
 }
 
-async fn cached_npm_global_prefix() -> Option<PathBuf> {
+pub(crate) async fn cached_npm_global_prefix() -> Option<PathBuf> {
     cached_npm_global_prefix_with(&NPM_GLOBAL_PREFIX_CACHE, resolve_current_npm_global_prefix).await
 }
 
@@ -1346,6 +1346,73 @@ fn load_codex_auth_json_raw() -> Option<String> {
 
 fn load_codex_config_toml_raw() -> Option<String> {
     fs::read_to_string(codex_config_toml_path()).ok()
+}
+
+/// Read the compact codex model-catalog *source* sidecar (written next to the
+/// generated catalog) so the structured editor can round-trip the list in
+/// api-key mode, where no DB provider owns it.
+fn load_codex_model_catalog_source_raw() -> Option<String> {
+    let home = codex_home_dir();
+    // 1. codeg's own source sidecar → an exact, byte-stable round-trip.
+    if let Ok(raw) = fs::read_to_string(home.join(crate::acp::codex_model_catalog::SOURCE_REL)) {
+        return Some(raw);
+    }
+    // 2. No sidecar: adopt a pre-existing `model_catalog_json` the user (or an
+    //    older codeg) wrote by hand, so the editor shows those models instead of
+    //    appearing empty — and the next save reproduces them rather than dropping
+    //    the reference.
+    import_existing_codex_catalog_source(&home)
+}
+
+/// Resolve a `model_catalog_json` value into an absolute path the way codex does:
+/// `~/…` against the home dir, absolute paths verbatim, and everything else
+/// relative to `CODEX_HOME`.
+fn resolve_codex_home_relative(value: &str, codex_home: &Path) -> PathBuf {
+    if value == "~" {
+        return home_dir_or_default();
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return home_dir_or_default().join(rest);
+    }
+    let p = Path::new(value);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        codex_home.join(value)
+    }
+}
+
+/// Read a pre-existing `model_catalog_json` catalog referenced by
+/// `~/.codex/config.toml` and project it into codeg's compact source shape.
+/// Returns `None` when there is no reference, the file is missing/oversized/not
+/// valid JSON, or it yields no usable models.
+fn import_existing_codex_catalog_source(codex_home: &Path) -> Option<String> {
+    let toml_value = fs::read_to_string(codex_home.join("config.toml"))
+        .ok()?
+        .parse::<toml::Value>()
+        .ok()?;
+    let rel = toml_value
+        .get("model_catalog_json")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+
+    let catalog_path = resolve_codex_home_relative(rel, codex_home);
+    // Guard against pathological files (the shape is a small models array).
+    let meta = fs::metadata(&catalog_path).ok()?;
+    if meta.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let catalog: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&catalog_path).ok()?).ok()?;
+
+    let root_model = toml_value.get("model").and_then(toml::Value::as_str);
+    let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
+    let config = crate::acp::codex_model_catalog::import_catalog(&catalog, root_model, &snapshot);
+    if crate::acp::codex_model_catalog::is_empty(&config) {
+        return None;
+    }
+    serde_json::to_string(&config).ok()
 }
 
 /// Project codex `config.toml` text into the launch-relevant config map shared
@@ -5350,6 +5417,14 @@ pub(crate) fn parse_provider_model(
                 trimmed_raw.map(str::to_string),
             );
         }
+        AgentType::Codex => {
+            // The provider stores a structured model config (JSON) or a legacy
+            // plain slug; OPENAI_MODEL is the default slug either way.
+            let slug = crate::acp::codex_model_catalog::default_slug_for_env(
+                &crate::acp::codex_model_catalog::parse_model_config(trimmed_raw),
+            );
+            out.insert("OPENAI_MODEL".to_string(), slug);
+        }
         _ => {
             out.insert("OPENAI_MODEL".to_string(), trimmed_raw.map(str::to_string));
         }
@@ -5374,8 +5449,11 @@ pub(crate) fn provider_codex_model_action(
     if agent_type != AgentType::Codex {
         return CodexModelAction::NoOp;
     }
-    match raw.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(v) => CodexModelAction::Set(v.to_string()),
+    // Structured config (JSON) or legacy plain slug → root `model` = default slug.
+    match crate::acp::codex_model_catalog::default_slug_for_env(
+        &crate::acp::codex_model_catalog::parse_model_config(raw),
+    ) {
+        Some(slug) => CodexModelAction::Set(slug),
         None => CodexModelAction::Clear,
     }
 }
@@ -5392,6 +5470,7 @@ fn cascade_update_agent_config(
     api_key: &str,
     model_env: &BTreeMap<String, Option<String>>,
     codex_model: &CodexModelAction,
+    codex_model_raw: Option<&str>,
 ) -> Result<(), AcpError> {
     let (url_key, key_key, _) = agent_env_keys(agent_type);
     match agent_type {
@@ -5517,6 +5596,28 @@ fn cascade_update_agent_config(
                 }
                 CodexModelAction::NoOp => {}
             }
+            // Regenerate the model_catalog_json file from the provider's full
+            // structured model config and reference it (relative to CODEX_HOME).
+            // REPLACE semantics require rewriting the whole catalog every time.
+            let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
+            match crate::acp::codex_model_catalog::write_catalog_files(
+                codex_model_raw.unwrap_or_default(),
+                &codex_home_dir(),
+                &snapshot,
+            ) {
+                Ok(Some(inj)) => {
+                    table.insert(
+                        "model_catalog_json".to_string(),
+                        toml::Value::String(inj.catalog_rel.to_string()),
+                    );
+                }
+                Ok(None) => {
+                    table.remove("model_catalog_json");
+                }
+                Err(e) => {
+                    tracing::warn!("[ModelProvider] write codex catalog failed: {e}");
+                }
+            }
             let toml_str = toml::to_string_pretty(&toml_value)
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
 
@@ -5639,6 +5740,7 @@ pub(crate) async fn cascade_update_model_provider(
             new_api_key,
             &model_env,
             &codex_action,
+            new_model,
         ) {
             tracing::warn!(
                 "[ModelProvider] cascade_update_agent_config({agent_type}) failed: {e}, skipping config update"
@@ -6369,6 +6471,11 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             None
         };
+        let codex_model_catalog = if agent_type == AgentType::Codex {
+            load_codex_model_catalog_source_raw()
+        } else {
+            None
+        };
         let cline_secrets_json = if agent_type == AgentType::Cline {
             load_cline_secrets_json_raw()
         } else {
@@ -6415,6 +6522,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             opencode_auth_json,
             codex_auth_json,
             codex_config_toml,
+            codex_model_catalog,
             cline_secrets_json,
             hermes_config_yaml,
             grok_config_toml,
@@ -6609,6 +6717,11 @@ pub(crate) async fn acp_update_agent_env_core(
     // same way.
     let mut merged_env = env;
     let mut codex_action = CodexModelAction::NoOp;
+    // When a Codex provider is bound, capture its structured model list so we can
+    // regenerate the `model_catalog_json` catalog + root `model` after the DB
+    // write. `Some(_)` means "codex provider bound"; the inner option is the
+    // provider's stored model value.
+    let mut codex_bound_model: Option<Option<String>> = None;
     // When a Claude provider is bound, capture the inputs to also rewrite the
     // on-disk config.env below. Claude's model fields live in config.env, which
     // the runtime overlays OVER db env_json (see `build_runtime_env_from_setting`),
@@ -6653,9 +6766,13 @@ pub(crate) async fn acp_update_agent_env_core(
             }
         }
         codex_action = provider_codex_model_action(agent_type, provider.model.as_deref());
-        // Codex's on-disk config is handled by `apply_codex_root_model_action`
+        // Codex's on-disk config (catalog + root model) is regenerated from the
+        // provider's structured model list by `apply_codex_catalog_and_model`
         // below; Gemini's analogous config.env gap is pre-existing and out of
         // scope here. Only Claude needs the local-config cascade on bind.
+        if agent_type == AgentType::Codex {
+            codex_bound_model = Some(provider.model.clone());
+        }
         if agent_type == AgentType::ClaudeCode {
             claude_local_cascade = Some((provider.api_url.clone(), provider.api_key.clone(), model_env));
         }
@@ -6680,12 +6797,20 @@ pub(crate) async fn acp_update_agent_env_core(
             &api_key,
             &model_env,
             &CodexModelAction::NoOp,
+            None,
         ) {
             eprintln!("[acp_update_agent_env] cascade_update_agent_config({agent_type}) failed: {e}");
         }
     }
 
-    if let Err(e) = apply_codex_root_model_action(&codex_action) {
+    if let Some(model_raw) = codex_bound_model {
+        // Codex provider bound: regenerate the catalog + config.toml keys from
+        // the provider's full model list (REPLACE semantics require the whole
+        // list every time).
+        if let Err(e) = apply_codex_catalog_and_model(model_raw.as_deref()) {
+            tracing::error!("[acp_update_agent_env] apply_codex_catalog_and_model failed: {e}");
+        }
+    } else if let Err(e) = apply_codex_root_model_action(&codex_action) {
         tracing::error!("[acp_update_agent_env] apply_codex_root_model_action failed: {e}");
     }
 
@@ -6720,6 +6845,64 @@ fn apply_codex_root_model_action(action: &CodexModelAction) -> Result<(), AcpErr
             table.remove("model");
         }
         CodexModelAction::NoOp => unreachable!(),
+    }
+    let toml_str =
+        toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
+    persist_codex_native_config_files(None, Some(&toml_str))?;
+    Ok(())
+}
+
+/// Codex: generate the `model_catalog_json` catalog file from a structured
+/// model list and point `~/.codex/config.toml` at it (relative to `CODEX_HOME`),
+/// plus set the root `model` to the default slug. An empty/blank list removes
+/// both keys and the generated files (codex falls back to its default catalog).
+///
+/// This reflows config.toml through the `toml` crate — the same behavior the
+/// provider bind / cascade paths already have. The comment-preserving agent
+/// panel path instead patches the config.toml text on the frontend and only
+/// asks the backend to (re)write the catalog *files* (see
+/// `acp_update_agent_config_core`).
+fn apply_codex_catalog_and_model(raw: Option<&str>) -> Result<(), AcpError> {
+    let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
+    let injection = crate::acp::codex_model_catalog::write_catalog_files(
+        raw.unwrap_or_default(),
+        &codex_home_dir(),
+        &snapshot,
+    )
+    .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    let config_path = codex_config_toml_path();
+    let mut toml_value = if config_path.exists() {
+        fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|raw| raw.parse::<toml::Value>().ok())
+            .filter(|v| v.is_table())
+            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()))
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+    let table = toml_value
+        .as_table_mut()
+        .ok_or_else(|| AcpError::protocol("codex config root must be a TOML table"))?;
+    match &injection {
+        Some(inj) => {
+            table.insert(
+                "model_catalog_json".to_string(),
+                toml::Value::String(inj.catalog_rel.to_string()),
+            );
+            match &inj.default_model {
+                Some(model) => {
+                    table.insert("model".to_string(), toml::Value::String(model.clone()));
+                }
+                None => {
+                    table.remove("model");
+                }
+            }
+        }
+        None => {
+            table.remove("model_catalog_json");
+            table.remove("model");
+        }
     }
     let toml_str =
         toml::to_string_pretty(&toml_value).map_err(|e| AcpError::protocol(e.to_string()))?;
@@ -6796,6 +6979,7 @@ pub(crate) async fn acp_update_agent_config_core(
     opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
+    codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     emitter: &EventEmitter,
@@ -6824,6 +7008,19 @@ pub(crate) async fn acp_update_agent_config_core(
                 codex_auth_json.as_deref(),
                 codex_config_toml.as_deref(),
             )?;
+        }
+        // The frontend has already patched config.toml's `model_catalog_json` +
+        // root `model` into `codex_config_toml` (comment-preserving text patch);
+        // the backend only (re)writes the generated catalog *files* here.
+        if let Some(raw) = codex_model_catalog.as_deref() {
+            let snapshot = crate::acp::codex_catalog_source::cached_or_bundled_snapshot();
+            if let Err(e) = crate::acp::codex_model_catalog::write_catalog_files(
+                raw,
+                &codex_home_dir(),
+                &snapshot,
+            ) {
+                tracing::error!("[acp_update_agent_config] write codex catalog failed: {e}");
+            }
         }
         emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
         return Ok(());
@@ -6893,6 +7090,7 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
     opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
+    codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     db: &AppDatabase,
@@ -6906,6 +7104,7 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
         opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
+        codex_model_catalog,
         grok_config_toml,
         grok_structured,
         emitter,
@@ -6923,6 +7122,7 @@ pub async fn acp_update_agent_config(
     opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
+    codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     manager: State<'_, ConnectionManager>,
@@ -6941,6 +7141,7 @@ pub async fn acp_update_agent_config(
         opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
+        codex_model_catalog,
         grok_config_toml,
         grok_structured,
         &db,
@@ -8034,6 +8235,22 @@ pub async fn opencode_provider_catalog(
     Ok(opencode_provider_catalog_core(&data_dir, force_refresh.unwrap_or(false)).await)
 }
 
+/// The official codex model catalog (full `ModelInfo` entries), sourced at
+/// runtime from the codex codeg actually launches (cache + bundled fallback),
+/// used by the settings editor for the official list, "quick-add official", and
+/// as the clone template for custom entries' heavy required fields.
+pub(crate) async fn codex_bundled_catalog_core(force_refresh: bool) -> Vec<serde_json::Value> {
+    crate::acp::codex_catalog_source::runtime_catalog(force_refresh).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn codex_bundled_catalog(
+    force_refresh: Option<bool>,
+) -> Result<Vec<serde_json::Value>, AcpError> {
+    Ok(codex_bundled_catalog_core(force_refresh.unwrap_or(false)).await)
+}
+
 pub(crate) async fn opencode_install_plugins_core(
     names: Option<Vec<String>>,
     task_id: String,
@@ -9022,6 +9239,23 @@ wire_api = "chat"
             bare.get("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
             Some(&None)
         );
+    }
+
+    #[test]
+    fn parse_provider_model_codex_uses_default_slug() {
+        // A structured codex catalog resolves OPENAI_MODEL to its default slug,
+        // not the whole JSON blob.
+        let raw = r#"{"models":[{"slug":"gw/a","base":"gpt-5.4"},{"slug":"gw/b","base":"gpt-5.4"}],"default":"gw/b"}"#;
+        let out = parse_provider_model(AgentType::Codex, Some(raw));
+        assert_eq!(out.get("OPENAI_MODEL"), Some(&Some("gw/b".to_string())));
+
+        // A legacy plain slug passes through as the model.
+        let legacy = parse_provider_model(AgentType::Codex, Some("gpt-5.5"));
+        assert_eq!(legacy.get("OPENAI_MODEL"), Some(&Some("gpt-5.5".to_string())));
+
+        // No models → OPENAI_MODEL cleared (None).
+        let empty = parse_provider_model(AgentType::Codex, Some(r#"{"models":[]}"#));
+        assert_eq!(empty.get("OPENAI_MODEL"), Some(&None));
     }
 
     #[test]

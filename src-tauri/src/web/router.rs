@@ -716,6 +716,10 @@ pub fn build_router(
             post(handlers::acp::opencode_provider_catalog),
         )
         .route(
+            "/codex_bundled_catalog",
+            post(handlers::acp::codex_bundled_catalog),
+        )
+        .route(
             "/opencode_install_plugins",
             post(handlers::acp::opencode_install_plugins),
         )

@@ -600,6 +600,7 @@ pub struct AcpUpdateAgentConfigParams {
     pub opencode_auth_json: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
+    pub codex_model_catalog: Option<String>,
     pub grok_config_toml: Option<String>,
     pub grok_structured: Option<crate::acp::types::GrokStructuredConfig>,
 }
@@ -615,6 +616,7 @@ pub async fn acp_update_agent_config(
         params.opencode_auth_json,
         params.codex_auth_json,
         params.codex_config_toml,
+        params.codex_model_catalog,
         params.grok_config_toml,
         params.grok_structured,
         &state.db,
@@ -958,6 +960,22 @@ pub async fn opencode_provider_catalog(
     )
     .await;
     Ok(Json(catalog))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexBundledCatalogParams {
+    #[serde(default)]
+    pub force_refresh: Option<bool>,
+}
+
+pub async fn codex_bundled_catalog(
+    Extension(_state): Extension<Arc<AppState>>,
+    Json(params): Json<CodexBundledCatalogParams>,
+) -> Result<Json<Vec<serde_json::Value>>, AppCommandError> {
+    Ok(Json(
+        acp_commands::codex_bundled_catalog_core(params.force_refresh.unwrap_or(false)).await,
+    ))
 }
 
 #[derive(Deserialize)]
