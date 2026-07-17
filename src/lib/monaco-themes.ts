@@ -3,9 +3,46 @@
 import { useEffect, useState } from "react"
 import type { BeforeMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
+import {
+  THEME_COLORS,
+  DEFAULT_THEME_COLOR,
+  type ThemeColor,
+} from "./theme-presets"
 
-export const MONACO_LIGHT_THEME = "codeg-light"
-export const MONACO_DARK_THEME = "codeg-dark"
+// Editor canvas background per theme color = that theme's `--card` token (see the
+// [data-theme="…"] blocks in globals.css). The file editor is a card surface, so it
+// stays pure white for the neutral/gray presets in light mode and #171717
+// (= oklch(0.205 0 0)) for neutral dark — exactly today's values — while the accent
+// presets carry their hue. Keep in sync with the --card values in globals.css.
+export const EDITOR_CANVAS_BG: Record<
+  ThemeColor,
+  { light: string; dark: string }
+> = {
+  neutral: { light: "#ffffff", dark: "#171717" },
+  zinc: { light: "#ffffff", dark: "#18181b" },
+  slate: { light: "#ffffff", dark: "#0f172b" },
+  stone: { light: "#ffffff", dark: "#1c1917" },
+  gray: { light: "#ffffff", dark: "#101828" },
+  red: { light: "#fffcfc", dark: "#1d1514" },
+  rose: { light: "#fffcfc", dark: "#1d1515" },
+  orange: { light: "#fffcfb", dark: "#1d1512" },
+  green: { light: "#fbfefc", dark: "#131914" },
+  blue: { light: "#fcfdff", dark: "#14171e" },
+  yellow: { light: "#fefdfa", dark: "#1a1710" },
+  violet: { light: "#fdfdff", dark: "#17161d" },
+}
+
+// A Monaco theme name encodes both axes: light/dark mode and the active theme color.
+// `defineMonacoThemes` registers one per (color, mode); `useMonacoThemeSync` returns
+// the matching name so flipping either axis re-applies through the editor `theme` prop.
+export function monacoThemeName(color: ThemeColor, dark: boolean): string {
+  return `codeg-${dark ? "dark" : "light"}-${color}`
+}
+
+// Neutral-preset names, exported as the stable defaults (e.g. the initial value
+// before the DOM is read).
+export const MONACO_LIGHT_THEME = monacoThemeName(DEFAULT_THEME_COLOR, false)
+export const MONACO_DARK_THEME = monacoThemeName(DEFAULT_THEME_COLOR, true)
 
 // Monaco's "unicode highlight" feature boxes characters it deems ambiguous with
 // ASCII or non-basic-ASCII. Its default flags ordinary CJK full-width
@@ -442,24 +479,46 @@ export const configureLanguageValidation: BeforeMount = (monaco) => {
   }
 }
 
+// Overlay the theme color's canvas background onto the base surface colors so the
+// editor / gutter / peek surfaces read as the app's card instead of a fixed
+// white/black. Only the opaque canvas is themed; widgets, selection and the
+// line-highlight band stay on their neutral shadcn values.
+function withCanvasBackground(
+  base: (typeof monacoThemeColors)["light"],
+  color: ThemeColor,
+  dark: boolean
+): Record<string, string> {
+  const bg = EDITOR_CANVAS_BG[color][dark ? "dark" : "light"]
+  return {
+    ...base,
+    "editor.background": bg,
+    "editorGutter.background": bg,
+    "peekViewEditor.background": bg,
+    "peekViewEditorGutter.background": bg,
+  }
+}
+
 export const defineMonacoThemes: BeforeMount = (monaco) => {
   defineDiffLanguage(monaco)
   fixPythonTripleQuotes(monaco)
   configureLanguageValidation(monaco)
 
-  monaco.editor.defineTheme(MONACO_LIGHT_THEME, {
-    base: "vs",
-    inherit: true,
-    rules: monacoTokenRules.light,
-    colors: monacoThemeColors.light,
-  })
-
-  monaco.editor.defineTheme(MONACO_DARK_THEME, {
-    base: "vs-dark",
-    inherit: true,
-    rules: monacoTokenRules.dark,
-    colors: monacoThemeColors.dark,
-  })
+  // One theme per (color, mode). `defineTheme` just stores a config, so this is
+  // cheap and idempotent even re-run on every editor mount.
+  for (const color of THEME_COLORS) {
+    monaco.editor.defineTheme(monacoThemeName(color, false), {
+      base: "vs",
+      inherit: true,
+      rules: monacoTokenRules.light,
+      colors: withCanvasBackground(monacoThemeColors.light, color, false),
+    })
+    monaco.editor.defineTheme(monacoThemeName(color, true), {
+      base: "vs-dark",
+      inherit: true,
+      rules: monacoTokenRules.dark,
+      colors: withCanvasBackground(monacoThemeColors.dark, color, true),
+    })
+  }
 }
 
 export function useMonacoThemeSync() {
@@ -470,17 +529,22 @@ export function useMonacoThemeSync() {
     const root = document.documentElement
 
     const syncTheme = () => {
-      setTheme(
-        root.classList.contains("dark") ? MONACO_DARK_THEME : MONACO_LIGHT_THEME
-      )
+      const dark = root.classList.contains("dark")
+      const attr = root.getAttribute("data-theme")
+      const color = (THEME_COLORS as readonly string[]).includes(attr ?? "")
+        ? (attr as ThemeColor)
+        : DEFAULT_THEME_COLOR
+      setTheme(monacoThemeName(color, dark))
     }
 
     syncTheme()
 
+    // Watch both axes: `class` (light/dark via next-themes) and `data-theme`
+    // (theme color via AppearanceProvider). Either flip re-applies the matching theme.
     const observer = new MutationObserver(syncTheme)
     observer.observe(root, {
       attributes: true,
-      attributeFilter: ["class"],
+      attributeFilter: ["class", "data-theme"],
     })
     return () => {
       observer.disconnect()
