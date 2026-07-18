@@ -24,6 +24,11 @@ interface TabItemProps {
   /** Browser-style shrink: fill/shrink to share the row width instead of a
    *  fixed intrinsic size (title-bar embedded strips). Off = mobile scroll row. */
   embedded?: boolean
+  /** Whether this tab immediately precedes/follows the active tab. With a
+   *  workspace background image the active tab's transparent reverse-corner foot
+   *  flares 0.5rem over this neighbour; the strip drives this so the neighbour can
+   *  inset its baseline to meet the foot instead of poking a stub under it. */
+  adjacentActive?: "before" | "after"
   folderName: string | null
   folderBranch: string | null
   onSwitch: (tabId: string) => void
@@ -43,6 +48,7 @@ export const TabItem = memo(function TabItem({
   isActive,
   isTileMode,
   embedded = false,
+  adjacentActive,
   folderName,
   folderBranch,
   onSwitch,
@@ -119,6 +125,7 @@ export const TabItem = memo(function TabItem({
       onLayoutAnimationComplete={clearResidualStyles}
       data-tab-item
       data-active={embedded && isActive ? "true" : undefined}
+      data-adjacent-active={embedded ? adjacentActive : undefined}
       className={cn(
         "cursor-grab active:cursor-grabbing",
         // Embedded (browser-style): each tab sizes to its content (`basis-auto`)
@@ -159,19 +166,30 @@ export const TabItem = memo(function TabItem({
               "cursor-pointer select-none transition-colors",
               embedded
                 ? [
-                    // Browser-style tab: seats against the sidebar-shaded strip
-                    // with a white (bg-background) active fill and a rounded top,
-                    // reaching the strip's bottom so it merges into the white
-                    // detail header below. `overflow-hidden` clips the shrunken
+                    // Browser-style tab: seats against the shaded strip with a
+                    // white (bg-background) active fill and a rounded top, reaching
+                    // the strip's bottom so it merges into the detail header below.
+                    // With a workspace background image on, the whole strip + all
+                    // tabs go transparent (reveal the image); a hairline bottom
+                    // border (ws-strip-line) runs under every non-active region
+                    // while the active tab omits it and instead is outlined by a
+                    // top+side "archway" (the browser-tab-item `::after`, globals.css)
+                    // whose reverse-corner feet (browser-tab-seat) drop back onto
+                    // that line — so the active tab is a gap the border detours
+                    // around, not a filled box.
+                    // `overflow-hidden` clips the shrunken
                     // row so a tight tab can't paint/click over its neighbor.
                     // `pb-1.5` balances the group's `pt-1.5` gap so the content
                     // (dot/title/close) centers on the h-10 strip's midline, not
                     // 3px low in the shorter tab box (the fill still reaches the
                     // strip bottom — padding only insets the content).
-                    "w-full min-w-0 overflow-hidden rounded-t-lg px-2 pb-1.5",
+                    // `browser-tab-content` is the hover anchor for the label's
+                    // state-driven fade (globals.css `.browser-tab-content:hover`
+                    // widens the mask so the close button never covers the title).
+                    "browser-tab-content w-full min-w-0 overflow-hidden rounded-t-lg px-2 pb-1.5",
                     isActive
-                      ? "bg-background text-foreground"
-                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                      ? "bg-background ws-transparent-bg text-foreground"
+                      : "isolate browser-tab-hover text-muted-foreground hover:text-foreground ws-strip-line",
                   ]
                 : [
                     "shrink-0 rounded-full px-3 hover:bg-primary/8",
@@ -186,11 +204,13 @@ export const TabItem = memo(function TabItem({
             />
             <span
               className={cn(
-                // Embedded: grow + shrink and ellipsis-truncate as the tab
-                // tightens. The inline close button (below) reserves its own
-                // space in the row, so the label never runs under it.
-                // Standalone: ellipsis cap in the scroll row.
-                embedded ? "min-w-0 flex-1 truncate" : "truncate max-w-[140px]",
+                // Embedded: grow + shrink as the tab tightens, but instead of an
+                // ellipsis the overflowing title fades out on the right
+                // (browser-tab-label mask) — dissolving toward the close button so
+                // the whole width is used. Standalone: ellipsis cap in the scroll row.
+                embedded
+                  ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
+                  : "truncate max-w-[140px]",
                 !tab.isPinned && "[font-style:oblique]"
               )}
               title={tooltip}
@@ -201,16 +221,16 @@ export const TabItem = memo(function TabItem({
               type="button"
               className={cn(
                 "rounded-md hover:bg-foreground/10",
-                // Embedded: an in-flow (inline) icon box that reserves its own
-                // space in the flex row, so it centers with the title via the
-                // row's `items-center` (no transform → crisp on WebKit, unlike a
-                // translated absolute overlay) and the label truncates before it.
-                // It stays laid out even while hidden (opacity-0) so revealing it
-                // on hover never shifts the tab width; pointer events are gated
-                // off while hidden so it can't eat clicks. Standalone: an in-flow
-                // chip in the scroll row.
+                // Embedded: an absolute overlay pinned to the right edge, so it
+                // claims no row space — the label runs the full width and fades
+                // under it (browser-tab-label), instead of the label stopping
+                // short of an always-reserved in-flow button. Centered via
+                // `top-0 bottom-1.5 my-auto` (no transform → crisp on WebKit; the
+                // `bottom-1.5` mirrors the content's `pb-1.5` so it lines up with
+                // the title). Pointer events are gated off while hidden so it can't
+                // eat clicks. Standalone: an in-flow chip in the scroll row.
                 embedded
-                  ? "flex h-4 w-4 shrink-0 items-center justify-center"
+                  ? "absolute right-2 top-0 bottom-1.5 my-auto flex h-4 w-4 items-center justify-center"
                   : "shrink-0 p-0.5",
                 isActive
                   ? "opacity-100"

@@ -117,6 +117,29 @@
       "sectionTitle": "Área de seleção de modo",
       "sectionDescription": "Os cartões de atalho «Desenvolvimento / Escritório» exibidos acima do campo de entrada na página de nova conversa.",
       "showQuickActions": "Mostrar na página de nova conversa"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Plano de fundo da área de trabalho",
+      "sectionDescription": "Mostra uma imagem atrás de toda a área de trabalho. A barra lateral e os painéis ficam translúcidos e foscos para deixar a imagem transparecer, e uma máscara mantém o texto legível.",
+      "enable": "Ativar imagem de fundo",
+      "image": "Imagem",
+      "chooseImage": "Escolher imagem",
+      "replaceImage": "Substituir imagem",
+      "removeImage": "Remover",
+      "fillMode": "Modo de preenchimento",
+      "fillModes": {
+        "cover": "Preencher",
+        "contain": "Ajustar",
+        "center": "Centralizar",
+        "tile": "Lado a lado"
+      },
+      "maskOpacity": "Opacidade da máscara",
+      "maskOpacityHint": "Valores mais altos esmaecem a imagem em direção à cor de fundo do tema, melhorando o contraste do texto.",
+      "imageBlur": "Desfoque da imagem",
+      "panelOpacity": "Opacidade dos painéis",
+      "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
+      "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },
   "SystemSettings": {

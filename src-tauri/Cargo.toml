@@ -106,7 +106,7 @@ tokio-util = { version = "0.7", features = ["io", "rt"] }
 prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
 include_dir = "0.7"
 sha2 = "0.10"
 aes-gcm = { version = "0.10", features = ["stream"] }

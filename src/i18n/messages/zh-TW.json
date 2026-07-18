@@ -117,6 +117,29 @@
       "sectionTitle": "模式選擇區域",
       "sectionDescription": "新會話頁面輸入框上方顯示的「程式開發 / 日常辦公」快捷卡片區域。",
       "showQuickActions": "在新會話頁面顯示"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "工作區背景",
+      "sectionDescription": "在整個工作區背後顯示一張圖片。側邊欄與面板會變半透明並磨砂讓圖片透出，遮罩確保文字可讀。",
+      "enable": "啟用背景圖片",
+      "image": "圖片",
+      "chooseImage": "選擇圖片",
+      "replaceImage": "更換圖片",
+      "removeImage": "移除",
+      "fillMode": "填滿方式",
+      "fillModes": {
+        "cover": "覆蓋",
+        "contain": "適應",
+        "center": "置中",
+        "tile": "平鋪"
+      },
+      "maskOpacity": "遮罩不透明度",
+      "maskOpacityHint": "數值越高，圖片越向主題背景色淡化，文字對比越清晰。",
+      "imageBlur": "圖片模糊",
+      "panelOpacity": "面板不透明度",
+      "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
+      "errorTooLarge": "圖片太大（最大 16 MB）。",
+      "errorUploadFailed": "設定背景圖片失敗。"
     }
   },
   "SystemSettings": {

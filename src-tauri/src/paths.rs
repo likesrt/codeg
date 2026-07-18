@@ -11,6 +11,7 @@ const CODEG_DIR_NAME: &str = ".codeg";
 const PETS_DIR_NAME: &str = "pets";
 const UPLOADS_DIR_NAME: &str = "uploads";
 const LOGS_DIR_NAME: &str = "logs";
+const BACKGROUNDS_DIR_NAME: &str = "backgrounds";
 
 /// `$CODEG_HOME` if set (and non-empty), else `~/.codeg/`.
 ///
@@ -78,6 +79,24 @@ pub fn codeg_uploads_root() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(CODEG_DIR_NAME).join(UPLOADS_DIR_NAME))
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(UPLOADS_DIR_NAME))
+}
+
+/// Root directory for the user-selected workspace background image.
+///
+/// Resolution mirrors [`codeg_pets_root`] exactly:
+/// 1. `$CODEG_HOME/backgrounds` (explicit override)
+/// 2. `$CODEG_DATA_DIR/backgrounds` (server-mode data directory)
+/// 3. `~/.codeg/backgrounds` (desktop default)
+pub fn codeg_backgrounds_root() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(BACKGROUNDS_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(BACKGROUNDS_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(BACKGROUNDS_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(BACKGROUNDS_DIR_NAME))
 }
 
 /// Root directory for application diagnostic logs (rotating files written by

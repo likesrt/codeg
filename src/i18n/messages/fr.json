@@ -117,6 +117,29 @@
       "sectionTitle": "Zone de sélection du mode",
       "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",
       "showQuickActions": "Afficher sur la page de nouvelle conversation"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Arrière-plan de l'espace de travail",
+      "sectionDescription": "Affiche une image derrière tout l'espace de travail. La barre latérale et les panneaux deviennent translucides et dépolis pour laisser transparaître l'image, et un masque préserve la lisibilité du texte.",
+      "enable": "Activer l'image d'arrière-plan",
+      "image": "Image",
+      "chooseImage": "Choisir une image",
+      "replaceImage": "Remplacer l'image",
+      "removeImage": "Supprimer",
+      "fillMode": "Mode de remplissage",
+      "fillModes": {
+        "cover": "Remplir",
+        "contain": "Ajuster",
+        "center": "Centrer",
+        "tile": "Mosaïque"
+      },
+      "maskOpacity": "Opacité du masque",
+      "maskOpacityHint": "Des valeurs élevées fondent l'image vers la couleur d'arrière-plan du thème, améliorant le contraste du texte.",
+      "imageBlur": "Flou de l'image",
+      "panelOpacity": "Opacité des panneaux",
+      "panelOpacityHint": "Opacité de la barre latérale, des panneaux et des barres d'onglets. Plus c'est bas, plus l'image transparaît.",
+      "errorTooLarge": "L'image est trop volumineuse (16 Mo maximum).",
+      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan."
     }
   },
   "SystemSettings": {

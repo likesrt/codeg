@@ -117,6 +117,29 @@
       "sectionTitle": "Área de selección de modo",
       "sectionDescription": "Las tarjetas de acceso rápido «Desarrollo de código / Ofimática» que se muestran sobre el editor en la página de nueva conversación.",
       "showQuickActions": "Mostrar en la página de nueva conversación"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Fondo del espacio de trabajo",
+      "sectionDescription": "Muestra una imagen detrás de todo el espacio de trabajo. La barra lateral y los paneles se vuelven translúcidos y esmerilados para dejar ver la imagen, y una máscara mantiene el texto legible.",
+      "enable": "Activar imagen de fondo",
+      "image": "Imagen",
+      "chooseImage": "Elegir imagen",
+      "replaceImage": "Reemplazar imagen",
+      "removeImage": "Quitar",
+      "fillMode": "Modo de relleno",
+      "fillModes": {
+        "cover": "Cubrir",
+        "contain": "Ajustar",
+        "center": "Centrar",
+        "tile": "Mosaico"
+      },
+      "maskOpacity": "Opacidad de la máscara",
+      "maskOpacityHint": "Los valores más altos difuminan la imagen hacia el color de fondo del tema, mejorando el contraste del texto.",
+      "imageBlur": "Desenfoque de la imagen",
+      "panelOpacity": "Opacidad de los paneles",
+      "panelOpacityHint": "Cuán opacos son la barra lateral, los paneles y las barras de pestañas. Más bajo deja ver más la imagen.",
+      "errorTooLarge": "La imagen es demasiado grande (máx. 16 MB).",
+      "errorUploadFailed": "No se pudo establecer la imagen de fondo."
     }
   },
   "SystemSettings": {

@@ -1,13 +1,14 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import type { BeforeMount } from "@monaco-editor/react"
+import type { BeforeMount, Monaco } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import {
   THEME_COLORS,
   DEFAULT_THEME_COLOR,
   type ThemeColor,
 } from "./theme-presets"
+import { useWorkspaceBackground } from "@/hooks/use-appearance"
 
 // Editor canvas background per theme color = that theme's `--card` token (see the
 // [data-theme="…"] blocks in globals.css). The file editor is a card surface, so it
@@ -30,6 +31,30 @@ export const EDITOR_CANVAS_BG: Record<
   blue: { light: "#fcfdff", dark: "#14171e" },
   yellow: { light: "#fefdfa", dark: "#1a1710" },
   violet: { light: "#fdfdff", dark: "#17161d" },
+}
+
+// Current-line highlight per theme color = that theme's `--muted` token (see the
+// [data-theme="…"] blocks in globals.css). Follows the accent hue instead of a
+// fixed zinc gray, so the focused line reads as the app's muted surface — plain
+// gray for the neutral/zinc/slate/stone/gray presets, faintly tinted for the
+// accent presets. (Zinc reproduces today's #f4f4f5 / #27272a exactly.) Keep in
+// sync with the --muted values in globals.css.
+export const EDITOR_LINE_HIGHLIGHT: Record<
+  ThemeColor,
+  { light: string; dark: string }
+> = {
+  neutral: { light: "#f5f5f5", dark: "#262626" },
+  zinc: { light: "#f4f4f5", dark: "#27272a" },
+  slate: { light: "#f1f5f9", dark: "#1d293d" },
+  stone: { light: "#f5f5f4", dark: "#292524" },
+  gray: { light: "#f3f4f6", dark: "#1e2939" },
+  red: { light: "#fdf1f0", dark: "#2f2423" },
+  rose: { light: "#fdf1f1", dark: "#2f2425" },
+  orange: { light: "#fcf2ed", dark: "#2e2521" },
+  green: { light: "#eef7ef", dark: "#222a23" },
+  blue: { light: "#eff4fd", dark: "#23282f" },
+  yellow: { light: "#f8f4eb", dark: "#2b271f" },
+  violet: { light: "#f4f3fc", dark: "#27262f" },
 }
 
 // A Monaco theme name encodes both axes: light/dark mode and the active theme color.
@@ -481,20 +506,29 @@ export const configureLanguageValidation: BeforeMount = (monaco) => {
 
 // Overlay the theme color's canvas background onto the base surface colors so the
 // editor / gutter / peek surfaces read as the app's card instead of a fixed
-// white/black. Only the opaque canvas is themed; widgets, selection and the
-// line-highlight band stay on their neutral shadcn values.
+// white/black, and tint the current-line highlight to the theme's `--muted` so the
+// focused line follows the accent hue instead of a fixed zinc gray. Selection and
+// widgets keep their neutral shadcn values. The line highlight stays opaque even
+// when the canvas goes translucent (alphaHexSuffix), matching the pre-existing
+// behaviour, so the focused line stays legible over a background image.
 function withCanvasBackground(
   base: (typeof monacoThemeColors)["light"],
   color: ThemeColor,
-  dark: boolean
+  dark: boolean,
+  // When set (a 2-hex-digit alpha like "b8"), the canvas backgrounds become
+  // semi-transparent 8-digit hex so a workspace background image shows through
+  // the editor. Empty (default) keeps them fully opaque — unchanged behaviour.
+  alphaHexSuffix = ""
 ): Record<string, string> {
-  const bg = EDITOR_CANVAS_BG[color][dark ? "dark" : "light"]
+  const bg = EDITOR_CANVAS_BG[color][dark ? "dark" : "light"] + alphaHexSuffix
   return {
     ...base,
     "editor.background": bg,
     "editorGutter.background": bg,
     "peekViewEditor.background": bg,
     "peekViewEditorGutter.background": bg,
+    "editor.lineHighlightBackground":
+      EDITOR_LINE_HIGHLIGHT[color][dark ? "dark" : "light"],
   }
 }
 
@@ -552,4 +586,119 @@ export function useMonacoThemeSync() {
   }, [])
 
   return theme
+}
+
+// ———————————————————————————————————————————————————————————————————————————
+// Workspace 背景图片：编辑器画布全透明，与会话区 canvas 一致，透出背景图 + 遮罩
+// ———————————————————————————————————————————————————————————————————————————
+
+// 2-hex-digit alpha (00–ff) from a 0–1 opacity, for Monaco's 8-digit hex colors.
+function editorAlphaHex(alpha: number): string {
+  const a = Math.round(Math.min(1, Math.max(0, alpha)) * 255)
+  return a.toString(16).padStart(2, "0")
+}
+
+// A distinct theme name per (base, alpha bucket), bucketed to whole percents so
+// the name space — and the defineTheme churn — stays bounded even if the canvas
+// alpha ever varies. Today the canvas is a fixed fully-transparent 0 (matching
+// the conversation), so this resolves to a single `…-wsbg0` per (color, mode).
+export function monacoWsbgThemeName(baseTheme: string, alpha: number): string {
+  const pct = Math.round(Math.min(1, Math.max(0, alpha)) * 100)
+  return `${baseTheme}-wsbg${pct}`
+}
+
+// Recover (color, dark) from a base name produced by `monacoThemeName`
+// (`codeg-{light|dark}-{color}`).
+function parseMonacoThemeName(baseTheme: string): {
+  color: ThemeColor
+  dark: boolean
+} {
+  const dark = baseTheme.includes("-dark-")
+  const tail = baseTheme.slice(baseTheme.lastIndexOf("-") + 1)
+  const color = (THEME_COLORS as readonly string[]).includes(tail)
+    ? (tail as ThemeColor)
+    : DEFAULT_THEME_COLOR
+  return { color, dark }
+}
+
+// Per-instance record of already-defined wsbg theme names, so redefinition is a
+// genuine no-op: re-`defineTheme`ing the ACTIVE theme re-fires Monaco's theme
+// event (a synchronous CSS refresh), and this hook may run on every render. The
+// name encodes (base, alpha bucket), so once a name is defined its colors are
+// fixed — a plain "seen" set is sufficient. Keyed by the monaco instance (via
+// WeakMap) so a fresh instance (HMR / reload) re-defines rather than trusting a
+// stale flag.
+const wsbgDefinedThemes = new WeakMap<Monaco, Set<string>>()
+
+// Idempotently define a transparent-canvas variant of `baseTheme` whose
+// editor/gutter/peek backgrounds carry `alpha`, and return its name. MUST run
+// against the SAME monaco instance the editors use (the AMD loader in
+// monaco-local.ts means an ESM import would be a different instance whose themes
+// the live editor never sees) — callers pass the instance from the editor's
+// onMount (or useMonaco()).
+export function defineWorkspaceBgTheme(
+  monaco: Monaco,
+  baseTheme: string,
+  alpha: number
+): string {
+  const name = monacoWsbgThemeName(baseTheme, alpha)
+  let defined = wsbgDefinedThemes.get(monaco)
+  if (!defined) {
+    defined = new Set()
+    wsbgDefinedThemes.set(monaco, defined)
+  }
+  if (defined.has(name)) return name
+
+  const { color, dark } = parseMonacoThemeName(baseTheme)
+  monaco.editor.defineTheme(name, {
+    base: dark ? "vs-dark" : "vs",
+    inherit: true,
+    rules: dark ? monacoTokenRules.dark : monacoTokenRules.light,
+    // Only the canvas surfaces go translucent; selection, line-highlight and
+    // widgets keep their neutral opaque values so code stays readable.
+    colors: withCanvasBackground(
+      dark ? monacoThemeColors.dark : monacoThemeColors.light,
+      color,
+      dark,
+      editorAlphaHex(alpha)
+    ),
+  })
+  defined.add(name)
+  return name
+}
+
+// The editor canvas is a fully transparent (alpha 0) surface, so the code area
+// matches the conversation canvas exactly — both let the masked background image
+// show straight through. Readability comes from the shared background mask (and
+// the image-blur setting), not a per-editor tint, so the file side and the chat side
+// stay consistent as those sliders move. (The panel-opacity slider governs only
+// the frosted chrome — headers, toolbars, composer — not this canvas.)
+const WSBG_CANVAS_ALPHA = 0
+
+// Like `useMonacoThemeSync`, but when a workspace background image is enabled it
+// swaps in a fully transparent-canvas theme (see `WSBG_CANVAS_ALPHA`) so the code
+// area reads like the conversation canvas rather than a frosted panel. Disabled →
+// the opaque base theme, byte-for-byte unchanged (zero regression). Shared by the
+// file editor, diff viewer and merge editor.
+//
+// The caller supplies the loaded monaco instance (from the editor's onMount, or
+// `useMonaco()` for conditionally-mounted editors) rather than this hook calling
+// `useMonaco()` itself — so an always-mounted host (FileWorkspacePanel's empty
+// state) never eagerly loads Monaco just to read a theme name. `monaco` is null
+// until an editor mounts → we return the base theme; the editor's mount bumps
+// state and re-runs this with the instance.
+export function useMonacoWorkspaceTheme(monaco: Monaco | null): string {
+  const baseTheme = useMonacoThemeSync()
+  const { workspaceBgEnabled } = useWorkspaceBackground()
+
+  // Off, or monaco not available yet → the opaque base theme (zero regression).
+  if (!workspaceBgEnabled || !monaco) return baseTheme
+
+  // The resolved name is derived state, computed in render (not an effect) so a
+  // theme (color / dark) change re-applies via the `theme` prop with no setState
+  // churn. `defineWorkspaceBgTheme` is idempotent (per-instance cache) and
+  // registering the variant here guarantees it exists BEFORE @monaco-editor/react
+  // applies the name, so the editor never falls back to a built-in vs/vs-dark
+  // theme.
+  return defineWorkspaceBgTheme(monaco, baseTheme, WSBG_CANVAS_ALPHA)
 }

@@ -272,7 +272,9 @@ export function AuxPanel() {
       ref={asideRef}
       className={cn(
         "group/aux-panel flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none",
-        isMobile ? "bg-sidebar" : "bg-background"
+        // 桌面态背景交给 workspace 的 ws-surface wrapper，让背景图透出（未启用时
+        // wrapper 等价 bg-background，零回归）；移动态是抽屉，保持不透明。
+        isMobile ? "bg-sidebar" : ""
       )}
     >
       <Tabs
@@ -307,7 +309,7 @@ export function AuxPanel() {
           // TabsContent's aria-labelledby still resolves the panel's name from
           // the directly-referenced hidden trigger, so it stays labelled without
           // showing a pointless single-tab control.
-          <div className="flex h-10 shrink-0 items-center gap-2 bg-muted pl-3 pr-2">
+          <div className="flex h-10 shrink-0 items-center gap-2 ws-surface-muted pl-3 pr-2">
             {/* `bg-muted` matches the conversation/file strips + bottom
                 StatusBar. The segmented track then needs a recessed groove
                 (`bg-foreground/[0.06]`) instead of the old `bg-muted/60`, which

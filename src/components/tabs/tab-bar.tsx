@@ -137,6 +137,8 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
 
   if (tabs.length === 0) return null
 
+  const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId)
+
   const group = (
     <Reorder.Group
       as="div"
@@ -177,8 +179,19 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
             ]
       )}
     >
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const folderInfo = folderIndex.get(tab.folderId)
+        // Neighbours of the active tab inset their workspace-bg baseline so the
+        // active tab's transparent reverse-corner foot (which flares over them)
+        // doesn't leave a stray line under it (globals.css `data-adjacent-active`).
+        const adjacentActive =
+          activeIndex < 0
+            ? undefined
+            : index === activeIndex - 1
+              ? "before"
+              : index === activeIndex + 1
+                ? "after"
+                : undefined
         return (
           <TabItem
             key={tab.id}
@@ -186,6 +199,7 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
             isActive={tab.id === activeTabId}
             isTileMode={isTileMode}
             embedded={embedded}
+            adjacentActive={adjacentActive}
             folderName={folderInfo?.name ?? null}
             folderBranch={branches.get(tab.folderId) ?? null}
             onSwitch={switchTab}
@@ -213,22 +227,33 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
   return (
     <div className="flex h-full w-full min-w-0 items-stretch">
       {group}
-      <button
-        type="button"
-        onClick={handleNewConversation}
-        // Ghost-style icon button hugging the last (content-sized) tab: no left
-        // margin, so it sits just past the group's `px-2` — close to the final
-        // tab's trailing edge, its gap roughly matching its `self-center h-7`
-        // top/bottom inset. `self-center` centers it on the h-10 strip's midline
-        // (matching the tab content). Hover darkens past the `bg-muted` strip
-        // (ghost's own `bg-muted` hover would be invisible on it).
-        className="mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-        aria-label={t("newConversation")}
-        title={t("newConversation")}
-      >
-        <SquarePen className="h-3.5 w-3.5" />
-      </button>
-      <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+      {/* Trailing area after the last tab: the new-conversation button hugs the
+          tabs, then a drag spacer fills the leftover row (window-drag region).
+          Wrapped in one `flex-1` box so the workspace-bg bottom hairline
+          (ws-strip-line) runs unbroken under both — the short `self-center h-7`
+          button can't carry the line at the strip's bottom edge itself. NO
+          `min-w-0`: the wrapper's min-content (the shrink-0 button) is its floor,
+          so under many-tab overflow the group shrinks to reserve the button's
+          width instead of the wrapper collapsing to 0 and clipping it — matching
+          the old direct-child sizing. Off (no bg image): ws-strip-line is inert. */}
+      <div className="flex h-full flex-1 items-stretch ws-strip-line">
+        <button
+          type="button"
+          onClick={handleNewConversation}
+          // Ghost-style icon button hugging the last (content-sized) tab: no left
+          // margin, so it sits just past the group's `px-2` — close to the final
+          // tab's trailing edge, its gap roughly matching its `self-center h-7`
+          // top/bottom inset. `self-center` centers it on the h-10 strip's midline
+          // (matching the tab content). Hover darkens past the `bg-muted` strip
+          // (ghost's own `bg-muted` hover would be invisible on it).
+          className="mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+          aria-label={t("newConversation")}
+          title={t("newConversation")}
+        >
+          <SquarePen className="h-3.5 w-3.5" />
+        </button>
+        <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+      </div>
     </div>
   )
 }

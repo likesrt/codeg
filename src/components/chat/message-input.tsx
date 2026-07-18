@@ -2935,9 +2935,14 @@ export function MessageInput({
                 // interactive controls re-assert their own cursor (see globals.css).
                 "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-input bg-transparent transition-colors",
                 // Standard focus ring — always shown when the composer is
-                // focused (the plain default input style).
+                // focused (the plain default input style). `bg-background
+                // ws-transparent-bg`: opaque surface normally, but with a
+                // workspace-bg image the composer goes transparent to reveal the
+                // real image like the rest of the canvas (no frosted treatment) —
+                // the border stays. Off (no image) it's the plain background,
+                // unchanged.
                 folderBranchPickerAttached
-                  ? "bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
+                  ? "bg-background ws-transparent-bg focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
                   : "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
                 // Active session, tiled across multiple sessions: a gradient
                 // flows around the border to mark which tile is active — but ONLY

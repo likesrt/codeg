@@ -50,6 +50,11 @@ export function FileWorkspaceHeader() {
     "flex h-7 w-7 shrink-0 items-center justify-center rounded hover:bg-primary/8 transition-colors"
 
   return (
+    // Transparent like the conversation detail header
+    // (conversation-detail-header.tsx): the title header merges with the canvas
+    // below it (editor / preview) instead of being a frosted band. With a
+    // workspace background image on, the tab strip above it is transparent too,
+    // so the whole top of the column reveals the canvas.
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3">
       {/* No leading file-type icon — the folder name leads the breadcrumb, and
           the text matches the conversation detail header's `text-sm` title. */}

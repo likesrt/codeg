@@ -125,6 +125,9 @@ export function FileWorkspaceTabBar({
   )
 
   const activeTab = fileTabs.find((tab) => tab.id === activeFileTabId)
+  const activeFileIndex = fileTabs.findIndex(
+    (tab) => tab.id === activeFileTabId
+  )
   const canPreview =
     activeTab?.kind === "file" &&
     (activeTab.language === "markdown" || isHtmlPreviewable(activeTab.path))
@@ -202,11 +205,20 @@ export function FileWorkspaceTabBar({
               ]
         )}
       >
-        {fileTabs.map((tab) => (
+        {fileTabs.map((tab, index) => (
           <FileWorkspaceTabItem
             key={tab.id}
             tab={tab}
             active={tab.id === activeFileTabId}
+            adjacentActive={
+              activeFileIndex < 0
+                ? undefined
+                : index === activeFileIndex - 1
+                  ? "before"
+                  : index === activeFileIndex + 1
+                    ? "after"
+                    : undefined
+            }
             embedded={embedded}
             closeLabel={t("closeFileTab")}
             closeText={t("close")}
@@ -223,38 +235,44 @@ export function FileWorkspaceTabBar({
           />
         ))}
       </Reorder.Group>
-      {/* Title-bar strip: fill the leftover panel width with a window-drag
-          region so a lightly-tabbed file bar can still move the window. */}
+      {/* Title-bar trailing area (desktop title bar): a drag spacer fills the
+          leftover panel width (window-drag region) and, in fusion, a
+          maximize/restore button sits flush right (it used to live in the file
+          detail header). Wrapped in one `flex-1` box so the workspace-bg bottom
+          hairline (ws-strip-line) runs unbroken under both — the short
+          `self-center h-7` button can't carry the line itself. NO `min-w-0`: the
+          wrapper's min-content (the shrink-0 button) is its floor, so under
+          many-tab overflow the group shrinks to reserve the button width instead
+          of the wrapper collapsing to 0 and clipping it. Off (no bg image):
+          ws-strip-line is inert. */}
       {embedded && (
-        <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
-      )}
-      {/* Maximize/restore lives here — flush right of the file tabs — on the
-          desktop title bar (it used to sit in the file detail header). Only
-          meaningful in fusion, where the file column shares the row with the
-          conversation. */}
-      {embedded && mode === "fusion" && (
-        <button
-          type="button"
-          onClick={toggleFilesMaximized}
-          className={cn(
-            // Ghost-style icon button following the file tabs (mirrors the
-            // conversation new-tab button): `h-7 self-center` centers it on the
-            // h-10 strip midline (matching the tab content); hover darkens past
-            // the `bg-muted` strip (ghost's own `bg-muted` hover would be
-            // invisible on it).
-            "mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground",
-            filesMaximized && "text-primary"
+        <div className="flex h-full flex-1 items-stretch ws-strip-line">
+          <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+          {mode === "fusion" && (
+            <button
+              type="button"
+              onClick={toggleFilesMaximized}
+              className={cn(
+                // Ghost-style icon button following the file tabs (mirrors the
+                // conversation new-tab button): `h-7 self-center` centers it on
+                // the h-10 strip midline (matching the tab content); hover darkens
+                // past the `bg-muted` strip (ghost's own `bg-muted` hover would be
+                // invisible on it).
+                "mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground",
+                filesMaximized && "text-primary"
+              )}
+              aria-label={filesMaximized ? t("restore") : t("maximize")}
+              aria-pressed={filesMaximized}
+              title={filesMaximized ? t("restore") : t("maximize")}
+            >
+              {filesMaximized ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </button>
           )}
-          aria-label={filesMaximized ? t("restore") : t("maximize")}
-          aria-pressed={filesMaximized}
-          title={filesMaximized ? t("restore") : t("maximize")}
-        >
-          {filesMaximized ? (
-            <Minimize2 className="h-4 w-4" />
-          ) : (
-            <Maximize2 className="h-4 w-4" />
-          )}
-        </button>
+        </div>
       )}
       {/* Trailing file-action buttons render only in the standalone (mobile
           panel) row. In the desktop title bar (embedded) they live in the file
@@ -322,6 +340,10 @@ export function FileWorkspaceTabBar({
 interface FileWorkspaceTabItemProps {
   tab: FileWorkspaceTab
   active: boolean
+  /** Whether this tab immediately precedes/follows the active tab — lets the
+   *  neighbour inset its workspace-bg baseline so the active tab's transparent
+   *  reverse-corner foot (which flares over it) leaves no stray line. */
+  adjacentActive?: "before" | "after"
   embedded: boolean
   closeLabel: string
   closeText: string
@@ -340,6 +362,7 @@ interface FileWorkspaceTabItemProps {
 const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
   tab,
   active,
+  adjacentActive,
   embedded,
   closeLabel,
   closeText,
@@ -386,6 +409,7 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
       {...gestureHandlers}
       data-tab-item
       data-active={embedded && active ? "true" : undefined}
+      data-adjacent-active={embedded ? adjacentActive : undefined}
       className={cn(
         "cursor-grab active:cursor-grabbing",
         // Embedded (browser-style): each tab sizes to its content (`basis-auto`)
@@ -424,14 +448,25 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
                 ? [
                     // Browser-style tab: white (bg-background) active fill,
                     // rounded top, reaching the strip's bottom so it merges into
-                    // the file detail header below. `overflow-hidden` clips the
+                    // the file detail header below. With a workspace background
+                    // image on, the whole strip + all tabs go transparent (reveal
+                    // the image); a hairline bottom border (ws-strip-line) runs
+                    // under every non-active region while the active tab omits it
+                    // and instead is outlined by a top+side "archway" (the
+                    // browser-tab-item `::after`, globals.css) whose reverse-corner
+                    // feet (browser-tab-seat) drop back onto that line — a gap the
+                    // border detours around, not a filled
+                    // box. `overflow-hidden` clips the
                     // shrunken row. `pb-1.5` balances the group's `pt-1.5` gap so
                     // the content centers on the h-10 strip midline, not 3px low
                     // in the shorter tab box (fill still reaches the bottom).
-                    "w-full min-w-0 overflow-hidden rounded-t-lg px-2 pb-1.5",
+                    // `browser-tab-content` anchors the label's state-driven fade
+                    // (globals.css `.browser-tab-content:hover` widens the mask so
+                    // the close button never covers the title).
+                    "browser-tab-content w-full min-w-0 overflow-hidden rounded-t-lg px-2 pb-1.5",
                     active
-                      ? "bg-background text-foreground"
-                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                      ? "bg-background ws-transparent-bg text-foreground"
+                      : "isolate browser-tab-hover text-muted-foreground hover:text-foreground ws-strip-line",
                   ]
                 : [
                     "shrink-0 rounded-full px-3 hover:bg-primary/8",
@@ -449,11 +484,13 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
             )}
             <span
               className={cn(
-                // Embedded: grow + shrink and ellipsis-truncate as the tab
-                // tightens; the inline close button (below) reserves its own
-                // space, so the label never runs under it. Standalone: ellipsis
-                // cap in the scroll row.
-                embedded ? "min-w-0 flex-1 truncate" : "truncate max-w-[180px]"
+                // Embedded: grow + shrink as the tab tightens, but instead of an
+                // ellipsis the overflowing title fades out on the right
+                // (browser-tab-label mask), dissolving toward the close button so
+                // the full width is used. Standalone: ellipsis cap in the scroll row.
+                embedded
+                  ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
+                  : "truncate max-w-[180px]"
               )}
             >
               {tab.title}
@@ -463,16 +500,15 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
               type="button"
               className={cn(
                 "rounded-md hover:bg-foreground/10",
-                // Embedded: an in-flow (inline) icon box that reserves its own
-                // space in the flex row, so it centers with the title via the
-                // row's `items-center` (no transform → crisp on WebKit, unlike a
-                // translated absolute overlay) and the label truncates before it.
-                // It stays laid out even while hidden (opacity-0) so revealing it
-                // on hover never shifts the tab width; pointer events are gated
-                // off while hidden so it can't eat clicks. Standalone: an in-flow
-                // chip in the scroll row.
+                // Embedded: an absolute overlay pinned to the right edge, so it
+                // claims no row space — the label runs the full width and fades
+                // under it (browser-tab-label) instead of stopping short of an
+                // always-reserved in-flow button. Centered via `top-0 bottom-1.5
+                // my-auto` (no transform → crisp on WebKit; `bottom-1.5` mirrors
+                // the content's `pb-1.5`). Pointer events are gated off while
+                // hidden so it can't eat clicks. Standalone: an in-flow chip.
                 embedded
-                  ? "flex h-4 w-4 shrink-0 items-center justify-center"
+                  ? "absolute right-2 top-0 bottom-1.5 my-auto flex h-4 w-4 items-center justify-center"
                   : "shrink-0 p-0.5",
                 active
                   ? "opacity-100"

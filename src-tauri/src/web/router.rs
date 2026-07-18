@@ -1118,6 +1118,25 @@ pub fn build_router(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
         )
+        // ─── Workspace background ───
+        .route(
+            "/background_read",
+            post(handlers::background::background_read),
+        )
+        .route(
+            "/background_set",
+            // A 16MiB image becomes ~21.4MiB once base64-encoded and wrapped in
+            // the JSON envelope; axum's default 2MiB `DefaultBodyLimit` would
+            // 413 any real photo before the handler runs. Raise it to cover the
+            // advertised ceiling; `backgrounds::validate_background` stays the
+            // authoritative size boundary on the decoded bytes.
+            post(handlers::background::background_set)
+                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
+        .route(
+            "/background_clear",
+            post(handlers::background::background_clear),
+        )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
         .route("/pet_get", post(handlers::pet::pet_get))

@@ -247,6 +247,10 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   }, [conversationId, runtimeConversationId, runtimeId])
 
   return (
+    // Transparent (no surface class): the title header reads as part of the
+    // message canvas below it rather than as a frosted chrome band. With a
+    // workspace background image on, the tab strip above it is transparent too,
+    // so the whole top of the column reveals the canvas.
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3">
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
         {folderName && (

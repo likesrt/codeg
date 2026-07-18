@@ -47,7 +47,7 @@ import { useStreamdownPlugins } from "@/components/ai-elements/streamdown-plugin
 import {
   defineMonacoThemes,
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
-  useMonacoThemeSync,
+  useMonacoWorkspaceTheme,
 } from "@/lib/monaco-themes"
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { useImeSafeEditorValue } from "@/hooks/use-ime-safe-editor-value"
@@ -1026,7 +1026,12 @@ export function FileWorkspacePanel() {
   const blurListenerRef = useRef<IDisposable | null>(null)
   const tRef = useRef(t)
   const monacoRef = useRef<Monaco | null>(null)
-  const editorTheme = useMonacoThemeSync()
+  // The loaded monaco instance, captured at editor mount. Passing it to the
+  // theme hook (instead of the hook calling useMonaco()) keeps Monaco lazy: this
+  // panel is always mounted, incl. the file-less empty state, so an internal
+  // useMonaco() would eagerly load Monaco even with no editor shown.
+  const [editorMonaco, setEditorMonaco] = useState<Monaco | null>(null)
+  const editorTheme = useMonacoWorkspaceTheme(editorMonaco)
   const { zoomLevel } = useZoomLevel()
   const {
     editorFontStack,
@@ -1515,6 +1520,7 @@ export function FileWorkspacePanel() {
   const handleEditorMount: OnMount = useCallback(
     (editorInstance, monaco) => {
       editorRef.current = editorInstance
+      setEditorMonaco(monaco)
       bindImeEditor(editorInstance)
       cursorListenerRef.current?.dispose()
       cursorListenerRef.current = editorInstance.onDidChangeCursorPosition(

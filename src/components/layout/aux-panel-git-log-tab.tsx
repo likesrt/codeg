@@ -1262,6 +1262,10 @@ export function GitLogTab() {
                     <ContextMenuTrigger asChild>
                       <div>
                         <Commit
+                          // 开背景图时卡片改磨砂表面（与提问卡片等 frosted 卡一致，透出
+                          // 下方背景图），而非纯色 bg-background 黑白块。ws-surface-card 组合式
+                          // 无 base 规则，关图沿用 bg-background，零回归。
+                          className="ws-surface-card"
                           onOpenChange={(open) => {
                             setOpenByCommit((prev) => ({
                               ...prev,

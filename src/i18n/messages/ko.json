@@ -117,6 +117,29 @@
       "sectionTitle": "모드 선택 영역",
       "sectionDescription": "새 대화 페이지에서 입력창 위에 표시되는 '코드 개발 / 일상 업무' 바로가기 카드입니다.",
       "showQuickActions": "새 대화 페이지에 표시"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "작업 공간 배경",
+      "sectionDescription": "작업 공간 전체 뒤에 이미지를 표시합니다. 사이드바와 패널이 반투명 유리 효과로 바뀌어 이미지가 비쳐 보이며, 마스크가 텍스트 가독성을 유지합니다.",
+      "enable": "배경 이미지 사용",
+      "image": "이미지",
+      "chooseImage": "이미지 선택",
+      "replaceImage": "이미지 변경",
+      "removeImage": "제거",
+      "fillMode": "채우기 방식",
+      "fillModes": {
+        "cover": "채우기",
+        "contain": "맞춤",
+        "center": "가운데",
+        "tile": "바둑판식"
+      },
+      "maskOpacity": "마스크 불투명도",
+      "maskOpacityHint": "값이 높을수록 이미지가 테마 배경색으로 흐려져 텍스트 대비가 좋아집니다.",
+      "imageBlur": "이미지 흐림",
+      "panelOpacity": "패널 불투명도",
+      "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
+      "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
+      "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
     }
   },
   "SystemSettings": {

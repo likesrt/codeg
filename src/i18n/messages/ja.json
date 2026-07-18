@@ -117,6 +117,29 @@
       "sectionTitle": "モード選択エリア",
       "sectionDescription": "新しい会話ページで入力欄の上に表示される「コード開発 / 日常業務」のショートカットカードです。",
       "showQuickActions": "新しい会話ページに表示する"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "ワークスペースの背景",
+      "sectionDescription": "ワークスペース全体の背後に画像を表示します。サイドバーやパネルは半透明のすりガラスになり画像が透けて見えます。マスクで文字の可読性を保ちます。",
+      "enable": "背景画像を有効にする",
+      "image": "画像",
+      "chooseImage": "画像を選択",
+      "replaceImage": "画像を変更",
+      "removeImage": "削除",
+      "fillMode": "表示方法",
+      "fillModes": {
+        "cover": "全体を覆う",
+        "contain": "全体を表示",
+        "center": "中央",
+        "tile": "タイル"
+      },
+      "maskOpacity": "マスクの不透明度",
+      "maskOpacityHint": "値を大きくすると画像がテーマの背景色に近づき、文字のコントラストが上がります。",
+      "imageBlur": "画像のぼかし",
+      "panelOpacity": "パネルの不透明度",
+      "panelOpacityHint": "サイドバー・パネル・タブバーの不透明度です。低いほど画像が透けて見えます。",
+      "errorTooLarge": "画像が大きすぎます（最大 16 MB）。",
+      "errorUploadFailed": "背景画像の設定に失敗しました。"
     }
   },
   "SystemSettings": {

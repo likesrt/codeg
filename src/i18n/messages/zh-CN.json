@@ -117,6 +117,29 @@
       "sectionTitle": "模式选择区域",
       "sectionDescription": "新会话页面输入框上方显示的「代码开发 / 日常办公」快捷卡片区域。",
       "showQuickActions": "在新会话页面显示"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "工作区背景",
+      "sectionDescription": "在整个工作区背后显示一张图片。侧栏与面板会变半透明并磨砂让图片透出，遮罩保证文字可读。",
+      "enable": "启用背景图片",
+      "image": "图片",
+      "chooseImage": "选择图片",
+      "replaceImage": "更换图片",
+      "removeImage": "移除",
+      "fillMode": "填充方式",
+      "fillModes": {
+        "cover": "覆盖",
+        "contain": "适应",
+        "center": "居中",
+        "tile": "平铺"
+      },
+      "maskOpacity": "遮罩不透明度",
+      "maskOpacityHint": "数值越高，图片越向主题背景色淡化，文字对比越清晰。",
+      "imageBlur": "图片模糊",
+      "panelOpacity": "面板不透明度",
+      "panelOpacityHint": "侧栏、面板与标签栏的不透明程度。越低，透出的图片越多。",
+      "errorTooLarge": "图片太大（最大 16 MB）。",
+      "errorUploadFailed": "设置背景图片失败。"
     }
   },
   "SystemSettings": {

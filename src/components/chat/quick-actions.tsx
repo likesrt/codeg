@@ -440,7 +440,12 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
 
   return (
     <Tabs value={tab} onValueChange={handleTabChange}>
-      <TabsList className="mx-auto">
+      {/* Match the action cards below: a bordered, translucent `bg-card/50`
+          surface (tailwind-merge drops the list's default `bg-muted`). With a
+          workspace background image it reveals the real image at 50% just like
+          the cards; off (no image) it's a translucent card over the page. The
+          selected trigger keeps its own solid `bg-background` fill. */}
+      <TabsList className="mx-auto border bg-card/50">
         <TabsTrigger
           value="coding"
           className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"

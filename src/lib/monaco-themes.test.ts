@@ -4,6 +4,7 @@ import {
   configureLanguageValidation,
   defineMonacoThemes,
   EDITOR_CANVAS_BG,
+  EDITOR_LINE_HIGHLIGHT,
   monacoThemeName,
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
 } from "./monaco-themes"
@@ -134,6 +135,29 @@ describe("configureLanguageValidation", () => {
     expect(call?.[1].colors["editorGutter.background"]).toBe(
       EDITOR_CANVAS_BG.blue.dark
     )
+    // The current-line highlight follows the theme's tinted --muted, not a fixed
+    // gray, so the focused line carries the accent hue.
+    expect(call?.[1].colors["editor.lineHighlightBackground"]).toBe(
+      EDITOR_LINE_HIGHLIGHT.blue.dark
+    )
+  })
+})
+
+// The focused line's highlight tracks each theme's `--muted` token so it follows
+// the accent hue instead of a fixed zinc gray.
+describe("EDITOR_LINE_HIGHLIGHT", () => {
+  it("has a valid light + dark hex for every theme color", () => {
+    for (const color of THEME_COLORS) {
+      expect(EDITOR_LINE_HIGHLIGHT[color].light).toMatch(/^#[0-9a-f]{6}$/)
+      expect(EDITOR_LINE_HIGHLIGHT[color].dark).toMatch(/^#[0-9a-f]{6}$/)
+    }
+  })
+
+  it("keeps zinc identical to the previous fixed line highlight", () => {
+    // #f4f4f5 / #27272a — the zinc --muted, which was the hard-coded neutral
+    // highlight before theming, so the zinc preset is a zero-visual-diff baseline.
+    expect(EDITOR_LINE_HIGHLIGHT.zinc.light).toBe("#f4f4f5")
+    expect(EDITOR_LINE_HIGHLIGHT.zinc.dark).toBe("#27272a")
   })
 })
 

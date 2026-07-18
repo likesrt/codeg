@@ -117,6 +117,29 @@
       "sectionTitle": "Mode selection area",
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
       "showQuickActions": "Show on the new conversation page"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Workspace background",
+      "sectionDescription": "Show a picture behind the whole workspace. Sidebar and panels turn translucent and frosted so the image shows through, and a mask keeps text readable.",
+      "enable": "Enable background image",
+      "image": "Image",
+      "chooseImage": "Choose image",
+      "replaceImage": "Replace image",
+      "removeImage": "Remove",
+      "fillMode": "Fill mode",
+      "fillModes": {
+        "cover": "Cover",
+        "contain": "Contain",
+        "center": "Center",
+        "tile": "Tile"
+      },
+      "maskOpacity": "Mask opacity",
+      "maskOpacityHint": "Higher values fade the image toward the theme background, improving text contrast.",
+      "imageBlur": "Image blur",
+      "panelOpacity": "Panel opacity",
+      "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
+      "errorTooLarge": "Image is too large (max 16 MB).",
+      "errorUploadFailed": "Failed to set the background image."
     }
   },
   "SystemSettings": {
