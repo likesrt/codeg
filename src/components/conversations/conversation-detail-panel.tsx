@@ -1985,6 +1985,7 @@ export function ConversationDetailPanel() {
             folderId={activeTab.folderId}
             folderPath={activeTabFolder?.path}
             folderName={activeTabFolder?.name ?? null}
+            folderAlias={activeTabFolder?.alias ?? null}
             title={activeTab.title}
             status={activeTab.status as ConversationStatus | undefined}
           />

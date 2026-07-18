@@ -278,6 +278,13 @@ export interface FolderDetail {
    * sidebar "Chat" group and folder-bound chrome is hidden while one is active.
    */
   kind: FolderKind
+  /**
+   * User-supplied display alias, or null when unset. When present, the sidebar
+   * folder header and conversation header render `alias [name]`
+   * (see `formatFolderLabelWithAlias`). Display-only — never used for the
+   * folder's real `path`/`id`.
+   */
+  alias: string | null
 }
 
 /**

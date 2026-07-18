@@ -21,6 +21,8 @@ import {
   updateConversationTitle,
 } from "@/lib/api"
 import { formatConversationTitle } from "@/lib/conversation-title"
+import { formatFolderLabelWithAlias } from "@/lib/folder-display"
+import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useConversationLocate } from "@/contexts/conversation-locate-context"
@@ -73,8 +75,11 @@ interface ConversationDetailHeaderProps {
   runtimeConversationId: number | null
   folderId: number
   folderPath: string | undefined
-  /** Owning folder's display name, shown as a breadcrumb left of the title. */
+  /** Owning folder's raw name, shown as a breadcrumb left of the title. */
   folderName: string | null
+  /** Owning folder's user-set alias, or null. When set the breadcrumb renders
+   *  `alias [ name ]` via {@link FolderAliasLabel}. */
+  folderAlias: string | null
   title: string
   status: ConversationStatus | undefined
 }
@@ -100,6 +105,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   folderId,
   folderPath,
   folderName,
+  folderAlias,
   title,
   status,
 }: ConversationDetailHeaderProps) {
@@ -247,9 +253,16 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           <>
             <span
               className="max-w-[10rem] shrink-0 truncate text-sm text-muted-foreground"
-              title={folderName}
+              title={formatFolderLabelWithAlias({
+                name: folderName,
+                alias: folderAlias,
+              })}
             >
-              {folderName}
+              <FolderAliasLabel
+                name={folderName}
+                alias={folderAlias}
+                bracketClassName="text-foreground/80"
+              />
             </span>
             <ChevronRight
               className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50"

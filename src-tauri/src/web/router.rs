@@ -188,6 +188,10 @@ pub fn build_router(
             post(handlers::folders::update_folder_color),
         )
         .route(
+            "/update_folder_alias",
+            post(handlers::folders::update_folder_alias),
+        )
+        .route(
             "/update_folder_default_agent",
             post(handlers::folders::update_folder_default_agent),
         )

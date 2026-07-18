@@ -1382,6 +1382,13 @@ export async function updateFolderColor(
   return getTransport().call("update_folder_color", { folderId, color })
 }
 
+export async function updateFolderAlias(
+  folderId: number,
+  alias: string | null
+): Promise<FolderDetail> {
+  return getTransport().call("update_folder_alias", { folderId, alias })
+}
+
 export async function updateFolderDefaultAgent(
   folderId: number,
   defaultAgentType: AgentType | null

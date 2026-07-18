@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "移除文件夹失败：{message}",
         "reorderFoldersFailed": "重新排序文件夹失败：{message}",
         "changeFolderColorFailed": "修改颜色失败：{message}",
+        "setFolderAliasFailed": "设置别名失败：{message}",
         "changeFolderDefaultAgentFailed": "设置默认智能体失败：{message}"
       },
       "statsLabel": "{folders} 个文件夹 · {convos} 个会话",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "不设置（使用全局默认）",
         "agentUnavailableSuffix": "（不可用）",
         "loadingAgents": "正在加载代理…",
+        "setAlias": "设置别名…",
+        "setAliasTitle": "设置文件夹别名",
+        "setAliasPlaceholder": "输入别名（留空清除）",
+        "setAliasSave": "保存",
+        "setAliasCancel": "取消",
         "removeFromWorkspace": "从工作区移除"
       },
       "manageConversations": {

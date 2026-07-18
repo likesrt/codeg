@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { resolveAuxTabView } from "./aux-panel"
+import { resolveAuxTabView, shouldCollapseAuxTabs } from "./aux-panel"
 
 describe("resolveAuxTabView", () => {
   it("shows all tabs and keeps the selection in a folder workspace", () => {
@@ -35,5 +35,34 @@ describe("resolveAuxTabView", () => {
     expect(resolveAuxTabView("file_tree", null, false).effectiveTab).toBe(
       "session_details"
     )
+  })
+})
+
+describe("shouldCollapseAuxTabs", () => {
+  // rightReserve mirrors rightChromeReserve(): 116 on macOS/web (chrome only),
+  // 254 on desktop Windows/Linux (chrome 116 + native caption 138).
+  const MAC_WEB_RESERVE = 116
+  const WIN_LINUX_RESERVE = 254
+
+  it("keeps the segmented control when the panel has room", () => {
+    // 320 − 12 gutter − 116 = 192 available ≥ 130 control + 12 gap.
+    expect(shouldCollapseAuxTabs(320, MAC_WEB_RESERVE)).toBe(false)
+  })
+
+  it("collapses once the panel is too narrow for the control", () => {
+    // 220 − 12 − 116 = 92 available < 142.
+    expect(shouldCollapseAuxTabs(220, MAC_WEB_RESERVE)).toBe(true)
+  })
+
+  it("collapses at the default width when the win/linux caption is reserved", () => {
+    // 320 − 12 − 254 = 54 available < 142: the wider reservation forces a
+    // collapse the mac/web layout wouldn't at the same width.
+    expect(shouldCollapseAuxTabs(320, WIN_LINUX_RESERVE)).toBe(true)
+    expect(shouldCollapseAuxTabs(320, MAC_WEB_RESERVE)).toBe(false)
+  })
+
+  it("never collapses before the panel width is measured", () => {
+    // First paint reports 0 until the ResizeObserver fires; stay expanded.
+    expect(shouldCollapseAuxTabs(0, MAC_WEB_RESERVE)).toBe(false)
   })
 })

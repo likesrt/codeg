@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "Échec de la suppression du dossier : {message}",
         "reorderFoldersFailed": "Échec du réordonnancement des dossiers : {message}",
         "changeFolderColorFailed": "Échec du changement de couleur : {message}",
+        "setFolderAliasFailed": "Échec de la définition de l'alias : {message}",
         "changeFolderDefaultAgentFailed": "Échec de la définition de l'agent par défaut : {message}"
       },
       "statsLabel": "{folders} dossiers · {convos} conversations",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "Aucun (utiliser la valeur globale)",
         "agentUnavailableSuffix": "(indisponible)",
         "loadingAgents": "Chargement des agents…",
+        "setAlias": "Définir un alias…",
+        "setAliasTitle": "Définir l'alias du dossier",
+        "setAliasPlaceholder": "Saisir un alias (laisser vide pour effacer)",
+        "setAliasSave": "Enregistrer",
+        "setAliasCancel": "Annuler",
         "removeFromWorkspace": "Retirer de l'espace de travail"
       },
       "manageConversations": {

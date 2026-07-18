@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "Falha ao remover pasta: {message}",
         "reorderFoldersFailed": "Falha ao reordenar pastas: {message}",
         "changeFolderColorFailed": "Falha ao alterar a cor: {message}",
+        "setFolderAliasFailed": "Falha ao definir o alias: {message}",
         "changeFolderDefaultAgentFailed": "Falha ao definir agente padrão: {message}"
       },
       "statsLabel": "{folders} pastas · {convos} conversas",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "Sem padrão (usar global)",
         "agentUnavailableSuffix": "(indisponível)",
         "loadingAgents": "Carregando agentes…",
+        "setAlias": "Definir alias…",
+        "setAliasTitle": "Definir alias da pasta",
+        "setAliasPlaceholder": "Insira um alias (deixe vazio para limpar)",
+        "setAliasSave": "Salvar",
+        "setAliasCancel": "Cancelar",
         "removeFromWorkspace": "Remover do espaço de trabalho"
       },
       "manageConversations": {

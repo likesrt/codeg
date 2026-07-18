@@ -71,6 +71,7 @@ const A: Props = {
   folderId: 1,
   folderPath: "/a",
   folderName: "folder-a",
+  folderAlias: null,
   title: "conv-a",
   status: "in_progress",
 }

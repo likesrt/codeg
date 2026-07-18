@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "폴더 제거 실패: {message}",
         "reorderFoldersFailed": "폴더 순서 변경 실패: {message}",
         "changeFolderColorFailed": "색상 변경 실패: {message}",
+        "setFolderAliasFailed": "별칭 설정 실패: {message}",
         "changeFolderDefaultAgentFailed": "기본 에이전트 설정 실패: {message}"
       },
       "statsLabel": "{folders}개 폴더 · {convos}개 대화",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "설정 없음(전역 사용)",
         "agentUnavailableSuffix": "(사용 불가)",
         "loadingAgents": "에이전트 로드 중…",
+        "setAlias": "별칭 설정…",
+        "setAliasTitle": "폴더 별칭 설정",
+        "setAliasPlaceholder": "별칭 입력 (비우면 지움)",
+        "setAliasSave": "저장",
+        "setAliasCancel": "취소",
         "removeFromWorkspace": "워크스페이스에서 제거"
       },
       "manageConversations": {

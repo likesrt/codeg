@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "Error al eliminar carpeta: {message}",
         "reorderFoldersFailed": "Error al reordenar carpetas: {message}",
         "changeFolderColorFailed": "Error al cambiar el color: {message}",
+        "setFolderAliasFailed": "Error al establecer el alias: {message}",
         "changeFolderDefaultAgentFailed": "Error al establecer agente predeterminado: {message}"
       },
       "statsLabel": "{folders} carpetas · {convos} conversaciones",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "Sin valor (usar predeterminado global)",
         "agentUnavailableSuffix": "(no disponible)",
         "loadingAgents": "Cargando agentes…",
+        "setAlias": "Establecer alias…",
+        "setAliasTitle": "Establecer alias de la carpeta",
+        "setAliasPlaceholder": "Introduce un alias (déjalo vacío para borrarlo)",
+        "setAliasSave": "Guardar",
+        "setAliasCancel": "Cancelar",
         "removeFromWorkspace": "Quitar del espacio de trabajo"
       },
       "manageConversations": {

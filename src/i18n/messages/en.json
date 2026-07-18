@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "Failed to remove folder: {message}",
         "reorderFoldersFailed": "Failed to reorder folders: {message}",
         "changeFolderColorFailed": "Failed to change folder color: {message}",
+        "setFolderAliasFailed": "Failed to set alias: {message}",
         "changeFolderDefaultAgentFailed": "Failed to set default agent: {message}"
       },
       "statsLabel": "{folders} folders · {convos} conversations",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "No default (use global)",
         "agentUnavailableSuffix": "(unavailable)",
         "loadingAgents": "Loading agents…",
+        "setAlias": "Set alias…",
+        "setAliasTitle": "Set folder alias",
+        "setAliasPlaceholder": "Enter an alias (leave empty to clear)",
+        "setAliasSave": "Save",
+        "setAliasCancel": "Cancel",
         "removeFromWorkspace": "Remove from workspace"
       },
       "manageConversations": {

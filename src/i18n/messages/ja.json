@@ -1189,6 +1189,7 @@
         "removeFolderFailed": "フォルダの削除に失敗しました: {message}",
         "reorderFoldersFailed": "フォルダの並べ替えに失敗しました: {message}",
         "changeFolderColorFailed": "色の変更に失敗しました: {message}",
+        "setFolderAliasFailed": "エイリアスの設定に失敗しました: {message}",
         "changeFolderDefaultAgentFailed": "デフォルトエージェントの設定に失敗しました: {message}"
       },
       "statsLabel": "{folders} フォルダ · {convos} 会話",
@@ -1220,6 +1221,11 @@
         "defaultAgentNone": "設定なし（グローバルを使用）",
         "agentUnavailableSuffix": "（利用不可）",
         "loadingAgents": "エージェントを読み込み中…",
+        "setAlias": "エイリアスを設定…",
+        "setAliasTitle": "フォルダーのエイリアスを設定",
+        "setAliasPlaceholder": "エイリアスを入力（空欄でクリア）",
+        "setAliasSave": "保存",
+        "setAliasCancel": "キャンセル",
         "removeFromWorkspace": "ワークスペースから削除"
       },
       "manageConversations": {

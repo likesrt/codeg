@@ -672,6 +672,21 @@ pub async fn update_folder_color_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found"))
 }
 
+pub async fn update_folder_alias_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    // Empty / whitespace-only input clears the alias (stored as NULL).
+    let normalized = alias
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    folder_service::update_folder_alias(&db.conn, folder_id, normalized)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Folder not found"))
+}
+
 pub async fn update_folder_default_agent_core(
     db: &AppDatabase,
     folder_id: i32,
@@ -804,6 +819,16 @@ pub async fn update_folder_color(
     color: String,
 ) -> Result<FolderDetail, AppCommandError> {
     update_folder_color_core(&db, folder_id, color).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_folder_alias(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    update_folder_alias_core(&db, folder_id, alias).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -4458,6 +4483,7 @@ mod tests {
                 color: "inherit".to_string(),
                 parent_id: Some(1),
                 kind: FolderKind::Regular,
+                alias: None,
             },
         );
 
