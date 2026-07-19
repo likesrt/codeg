@@ -630,14 +630,6 @@ export function MessageInput({
     promptCapabilities.image || promptCapabilities.embedded_context
 
   useEffect(() => {
-    if (isActive && !disabled && !isPrompting) {
-      requestAnimationFrame(() => {
-        editorRef.current?.focus()
-      })
-    }
-  }, [isActive, disabled, isPrompting])
-
-  useEffect(() => {
     disabledRef.current = disabled
   }, [disabled])
 
@@ -821,6 +813,25 @@ export function MessageInput({
     effectiveDraftStorageKey,
     hydrateFromBlocks,
   ])
+
+  // Focus the composer the moment the editor exists and this tab is active, so
+  // the caret lands as soon as the chat opens — without waiting for the ACP
+  // connection to come up. The editor is always editable (RichComposer receives
+  // no `disabled`; sends are gated in `handleSend`, not editability), so the old
+  // `!disabled` gate only postponed the caret until "connected" for no real
+  // reason. Deliberately NOT keyed on `disabled`: once focus lands on open, a
+  // later connect (disabled → false) must never re-run this and yank focus back.
+  // Keyed on `composerReady` because `immediatelyRender: false` builds the
+  // editor a tick after mount (mirrors the hydration effect's gate). Ordered
+  // after that hydration effect so this rAF runs after its setContent, landing
+  // the caret at the end of a restored draft rather than before it.
+  useEffect(() => {
+    if (isActive && composerReady && !isPrompting) {
+      requestAnimationFrame(() => {
+        editorRef.current?.focus()
+      })
+    }
+  }, [isActive, composerReady, isPrompting])
 
   // Re-hydrate when the user (re)edits a *different* queue item after the
   // initial mount hydration above. Keyed on the item id (not display text) so
