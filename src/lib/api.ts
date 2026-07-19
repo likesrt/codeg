@@ -461,14 +461,23 @@ export async function acpUpdateAgentConfig(
   })
 }
 
-/** Probe `cursor-agent status --format json` for the Cursor auth card. */
-export async function acpCursorAuthStatus(): Promise<CursorAuthStatus> {
-  return getTransport().call("acp_cursor_auth_status", {})
+/**
+ * Probe `cursor-agent status --format json` for the Cursor auth card. The
+ * optional live API key lets the probe test what's on screen; subscription
+ * mode passes an empty string to force (and verify) the browser-login
+ * credential.
+ */
+export async function acpCursorAuthStatus(
+  apiKey?: string
+): Promise<CursorAuthStatus> {
+  return getTransport().call("acp_cursor_auth_status", { apiKey })
 }
 
 /** List models via `cursor-agent models` for the Cursor model picker. */
-export async function acpCursorListModels(): Promise<CursorModelsResult> {
-  return getTransport().call("acp_cursor_list_models", {})
+export async function acpCursorListModels(
+  apiKey?: string
+): Promise<CursorModelsResult> {
+  return getTransport().call("acp_cursor_list_models", { apiKey })
 }
 
 /**

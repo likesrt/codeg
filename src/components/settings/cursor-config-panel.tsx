@@ -19,6 +19,14 @@ import {
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -42,17 +50,41 @@ const CURSOR_MODEL_ENV = "CURSOR_MODEL"
 /** codeg-side launch knob: "1" inserts the CLI's root `--force` flag (Run
  * Everything) before the `acp` subcommand. The CLI reads no such env var. */
 const CURSOR_FORCE_ENV = "CURSOR_FORCE"
+/** codeg-side knob recording the chosen authentication method. Read by the
+ * launch path (`apply_cursor_env_policy`): in `subscription` mode it clears any
+ * inherited CURSOR_API_KEY/BASE_URL so the CLI uses the browser-login
+ * credential. The CLI itself ignores this var. */
+const CURSOR_AUTH_MODE_ENV = "CURSOR_AUTH_MODE"
 
 const UNSET = "__unset__"
-const CUSTOM = "__custom__"
 
-/** Build the env map to persist for Cursor: set-or-delete the API key,
- * endpoint override, default-model launch knob, and the Run Everything
- * (`--force`) launch knob; unrelated keys are preserved untouched. */
+/** The Cursor CLI's two real authentication methods. `custom` = a Cursor
+ * account API key (headless/servers); it is NOT a third-party/OpenAI endpoint —
+ * cursor-agent has no custom-endpoint support. The wire token stays `"custom"`
+ * for backward-compatibility with rows saved before the rename. */
+export type CursorAuthMethod = "subscription" | "custom"
+
+/** One entry in the model picker. `value` is the `--model` id, `label` the
+ * human name from `cursor-agent models`. base-ui's Combobox uses the `{ value,
+ * label }` shape automatically (label for display + filtering, value for the
+ * value); `isDefault` only drives our own badge. */
+type CursorModelItem = { value: string; label: string; isDefault: boolean }
+
+/**
+ * Build the env map to persist for Cursor. The authentication method decides
+ * which credential is written:
+ *  - `subscription` — browser login only; the API key is deleted so a launch
+ *    (and the probes) fall back to the Cursor account.
+ *  - `custom` — the Cursor API key is written from the form.
+ * The default model and the Run Everything (`--force`) knob apply to both.
+ * `CURSOR_API_BASE_URL` is always removed (the CLI has no custom endpoint, so
+ * a stale value is dead weight). `CURSOR_AUTH_MODE` is always recorded, and
+ * unrelated keys are preserved untouched.
+ */
 export function buildCursorEnv(
   prevEnv: Record<string, string>,
+  mode: CursorAuthMethod,
   apiKey: string,
-  baseUrl: string,
   model: string,
   force: boolean
 ): Record<string, string> {
@@ -65,11 +97,38 @@ export function buildCursorEnv(
       delete env[key]
     }
   }
-  setOrDelete(CURSOR_API_KEY_ENV, apiKey)
-  setOrDelete(CURSOR_API_BASE_URL_ENV, baseUrl.replace(/\/+$/, ""))
+  env[CURSOR_AUTH_MODE_ENV] = mode
+  // cursor-agent has no custom-endpoint support: the base URL is always removed,
+  // scrubbing any value a legacy row or an old build may have written.
+  delete env[CURSOR_API_BASE_URL_ENV]
+  if (mode === "custom") {
+    setOrDelete(CURSOR_API_KEY_ENV, apiKey)
+  } else {
+    // Subscription: never ship a saved key — the launch policy additionally
+    // strips any inherited one so browser login is used.
+    delete env[CURSOR_API_KEY_ENV]
+  }
   setOrDelete(CURSOR_MODEL_ENV, model)
   setOrDelete(CURSOR_FORCE_ENV, force ? "1" : "")
   return env
+}
+
+/** Resolve the persisted authentication method, tolerant of legacy rows: an
+ * explicit `CURSOR_AUTH_MODE` wins; otherwise a saved API key implies custom. */
+export function inferCursorMode(env: Record<string, string>): CursorAuthMethod {
+  const explicit = (env[CURSOR_AUTH_MODE_ENV] ?? "").trim()
+  if (explicit === "subscription" || explicit === "custom") return explicit
+  return (env[CURSOR_API_KEY_ENV] ?? "").trim() ? "custom" : "subscription"
+}
+
+/** The copy-pasteable login command. The managed cursor-agent binary lives in
+ * codeg's cache (not on PATH), so a bare `cursor-agent login` fails — use the
+ * resolved absolute path, quoted when it contains whitespace. */
+export function cursorLoginCommand(binaryPath?: string | null): string {
+  const path = (binaryPath ?? "").trim()
+  if (!path) return "cursor-agent login"
+  const program = /\s/.test(path) ? `"${path}"` : path
+  return `${program} login`
 }
 
 /** The saved env's Run Everything knob, tolerant of hand-edited values. */
@@ -140,24 +199,21 @@ function RuleListEditor({
 }
 
 /**
- * Dedicated settings panel for Cursor (cursor-agent CLI), four cards saved by
- * ONE button (the raw-JSON card keeps its own):
+ * Dedicated settings panel for Cursor (cursor-agent CLI). The user first picks
+ * an **authentication method** (a Select, matching the Codex panel's idiom).
+ * Both methods authenticate against Cursor's own backend — the CLI has no
+ * bring-your-own-endpoint support, so there is no API-URL field:
  *
- * 1. **Auth** — live probe of `cursor-agent status --format json` with a
- *    `cursor-agent login` walkthrough, plus the CURSOR_API_KEY /
- *    CURSOR_API_BASE_URL env alternative (generic per-agent env path).
- * 2. **Default model** — `cursor-agent models` populates a picker
- *    (auto-loaded once authenticated); the choice is stored as the
- *    CURSOR_MODEL env knob, which the launch path passes as the CLI's root
- *    `--model` flag.
- * 3. **Permissions & sandbox** — the permission mode (default prompts vs Run
- *    Everything via the root `--force` flag), `sandbox.mode`, and a visual
- *    editor for `~/.cursor/cli-config.json`'s `permissions.allow/deny` rules
- *    (merged server-side so the CLI's own keys are preserved). There is no
- *    approval-mode key here on purpose: the CLI keeps approval mode in each
- *    chat's store.db metadata, seeded by launch flags — a cli-config.json
- *    `approvalMode` key is never read.
- * 4. **Advanced** — the raw cli-config.json for whole-file edits.
+ * 1. **Official subscription** — sign in with a Cursor account
+ *    (`"<path>" login`). No credential is stored; the launch clears any
+ *    inherited CURSOR_API_KEY so browser login is used.
+ * 2. **Cursor API key** — a Cursor Dashboard account key for headless/server
+ *    machines (CURSOR_API_KEY), an alternative to browser login.
+ *
+ * The model picker (a searchable Combobox of `cursor-agent models`) is shared
+ * and only shown once real models were fetched; the chosen id is stored as
+ * CURSOR_MODEL and passed to the CLI as its root `--model` flag at launch.
+ * The permission/sandbox editor and the raw-JSON advanced card are unchanged.
  */
 export function CursorConfigPanel({
   agent,
@@ -176,30 +232,37 @@ export function CursorConfigPanel({
 }) {
   const t = useTranslations("AcpAgentSettings")
 
+  // --- authentication method ---
+  const [mode, setMode] = useState<CursorAuthMethod>(() =>
+    inferCursorMode(agent.env)
+  )
+
   // --- auth card state ---
   const [auth, setAuth] = useState<CursorAuthStatus | null>(null)
   const [authLoading, setAuthLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+
+  // --- credential state (custom / API key mode) ---
   const [apiKey, setApiKey] = useState(
     () => agent.env[CURSOR_API_KEY_ENV] ?? ""
   )
-  const [baseUrl, setBaseUrl] = useState(
-    () => agent.env[CURSOR_API_BASE_URL_ENV] ?? ""
-  )
   const [showKey, setShowKey] = useState(false)
 
-  // --- model card state ---
-  const initialModel = agent.env[CURSOR_MODEL_ENV] ?? ""
-  const [model, setModel] = useState(initialModel)
-  const [models, setModels] = useState<string[]>([])
+  // --- model state (searchable picker over cursor-agent models) ---
+  const [model, setModel] = useState(() => agent.env[CURSOR_MODEL_ENV] ?? "")
+  const [models, setModels] = useState<CursorModelItem[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsLoaded, setModelsLoaded] = useState(false)
-  const [customModel, setCustomModel] = useState(false)
 
   // --- permissions card state ---
   const settings = agent.cursor_settings
-  const [force, setForce] = useState(() => isCursorForceEnabled(agent.env))
+  // Default a fresh Cursor agent to Run Everything (--force): only when the
+  // CURSOR_FORCE knob was never set does it default on; an explicit "0" (the
+  // user chose "Ask before running") is respected.
+  const [force, setForce] = useState(() =>
+    CURSOR_FORCE_ENV in agent.env ? isCursorForceEnabled(agent.env) : true
+  )
   const [sandboxMode, setSandboxMode] = useState(
     () => settings?.sandbox_mode ?? ""
   )
@@ -210,7 +273,7 @@ export function CursorConfigPanel({
     () => settings?.permissions_deny ?? []
   )
 
-  // --- unified save state (auth + model + permissions) ---
+  // --- unified save state (auth method + model + permissions) ---
   const [savingAll, setSavingAll] = useState(false)
 
   // --- advanced card state ---
@@ -228,10 +291,19 @@ export function CursorConfigPanel({
     }
   }, [])
 
+  // The effective API key the probes should test: the typed key in API-key
+  // mode, or an empty string in subscription mode (which forces the
+  // browser-login credential and strips any inherited CURSOR_API_KEY). Kept in
+  // a ref so the probe callbacks stay stable and don't re-fire on keystroke.
+  const probeKeyRef = useRef("")
+  useEffect(() => {
+    probeKeyRef.current = mode === "custom" ? apiKey : ""
+  }, [mode, apiKey])
+
   const refreshAuth = useCallback(async () => {
     setAuthLoading(true)
     try {
-      const status = await acpCursorAuthStatus()
+      const status = await acpCursorAuthStatus(probeKeyRef.current)
       if (mountedRef.current) setAuth(status)
     } catch {
       // Probe failures already surface through `auth.error`; a transport-level
@@ -241,17 +313,25 @@ export function CursorConfigPanel({
     }
   }, [])
 
+  // Probe on mount and whenever the method changes (the ref above is updated
+  // first, so the probe sees the right credential for the new mode).
   useEffect(() => {
     void refreshAuth()
-  }, [refreshAuth])
+  }, [refreshAuth, mode])
 
   const loadModels = useCallback(async () => {
     setModelsLoading(true)
     setModelsError(null)
     try {
-      const result = await acpCursorListModels()
+      const result = await acpCursorListModels(probeKeyRef.current)
       if (!mountedRef.current) return
-      setModels(result.models)
+      setModels(
+        result.models.map((m) => ({
+          value: m.id,
+          label: m.label || m.id,
+          isDefault: m.is_default,
+        }))
+      )
       setModelsError(result.error)
       setModelsLoaded(true)
     } catch (e) {
@@ -273,31 +353,60 @@ export function CursorConfigPanel({
           ? "ok"
           : "unauthenticated"
 
-  // The picker is only useful populated — fetch the model list once as soon
-  // as the CLI reports an authenticated account instead of waiting for a
-  // manual "load" click.
+  // Once the account reports authenticated (either mode), fetch the model list
+  // instead of waiting for a manual "load" click. Re-fetch when the method
+  // changes so an API key and a browser login can list different catalogs.
   useEffect(() => {
-    if (authState !== "ok" || modelsLoaded || modelsLoading) return
+    if (authState !== "ok") return
+    if (modelsLoaded || modelsLoading) return
     void loadModels()
   }, [authState, loadModels, modelsLoaded, modelsLoading])
 
+  // Reset the "loaded" latch when the method changes so the effect above
+  // re-probes the model list for the newly-selected credential.
+  useEffect(() => {
+    setModelsLoaded(false)
+    setModels([])
+    setModelsError(null)
+  }, [mode])
+
+  const loginCommand = cursorLoginCommand(auth?.binary_path)
+
   const copyLoginCommand = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText("cursor-agent login")
+      await navigator.clipboard.writeText(loginCommand)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
       // Clipboard may be unavailable (permissions); the command stays visible.
     }
+  }, [loginCommand])
+
+  // Model picker items: the fetched catalog, plus a saved-but-unlisted model
+  // kept as its own entry so a hand-set value still displays and isn't lost.
+  const modelItems = useMemo<CursorModelItem[]>(() => {
+    if (model && !models.some((m) => m.value === model)) {
+      return [{ value: model, label: model, isDefault: false }, ...models]
+    }
+    return models
+  }, [models, model])
+  const selectedModelItem = modelItems.find((m) => m.value === model) ?? null
+
+  const handleSelectModel = useCallback((item: CursorModelItem | null) => {
+    setModel(item?.value ?? "")
   }, [])
 
-  /** One save for auth + model (env) and permissions (cli-config.json). */
+  /** One save for auth method + model (env) and permissions (cli-config.json). */
   const saveAll = useCallback(async () => {
+    if (mode === "custom" && !apiKey.trim()) {
+      toast.error(t("cursor.customApiKeyRequired"))
+      return
+    }
     setSavingAll(true)
     const prevEnv = agent.env
     try {
       await onSaveEnv(
-        buildCursorEnv(prevEnv, apiKey, baseUrl, model, force),
+        buildCursorEnv(prevEnv, mode, apiKey, model, force),
         agent.enabled
       )
       try {
@@ -334,9 +443,9 @@ export function CursorConfigPanel({
     agent.env,
     allowRules,
     apiKey,
-    baseUrl,
     denyRules,
     force,
+    mode,
     model,
     onAffectedSessions,
     onSaveEnv,
@@ -365,12 +474,6 @@ export function CursorConfigPanel({
     }
   }, [agent.agent_type, onAffectedSessions, onSaved, rawConfig, t])
 
-  const modelSelectValue = useMemo(() => {
-    if (customModel) return CUSTOM
-    if (!model) return UNSET
-    return models.includes(model) ? model : CUSTOM
-  }, [customModel, model, models])
-
   const busy = saving || savingAll
 
   return (
@@ -382,7 +485,33 @@ export function CursorConfigPanel({
         </p>
       </div>
 
-      {/* ---- Auth card ---- */}
+      {/* ---- Authentication method ---- */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] text-muted-foreground">
+          {t("cursor.authMode")}
+        </label>
+        <Select
+          value={mode}
+          onValueChange={(value) => setMode(value as CursorAuthMethod)}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="subscription">
+              {t("authModeOfficialSubscription")}
+            </SelectItem>
+            <SelectItem value="custom">{t("cursor.authModeApiKey")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-[11px] text-muted-foreground">
+          {mode === "subscription"
+            ? t("cursor.subscriptionHint")
+            : t("cursor.authModeApiKeyHint")}
+        </p>
+      </div>
+
+      {/* ---- Credential card: shared auth status + method-specific body ---- */}
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] font-medium">
@@ -428,17 +557,18 @@ export function CursorConfigPanel({
           </div>
         </div>
 
-        {authState !== "ok" ? (
+        {/* Subscription: runnable login command when not signed in. */}
+        {mode === "subscription" && authState === "unauthenticated" ? (
           <div className="space-y-1.5">
             <p className="text-[11px] text-muted-foreground">
               {t("cursor.loginHint")}
             </p>
             <div className="flex items-center gap-1.5">
-              <code className="flex-1 rounded bg-muted px-2 py-1 font-mono text-[11px]">
-                cursor-agent login
+              <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-[11px]">
+                {loginCommand}
               </code>
               <Button
-                className="h-6 w-6"
+                className="h-6 w-6 shrink-0"
                 onClick={() => void copyLoginCommand()}
                 size="icon"
                 type="button"
@@ -453,11 +583,9 @@ export function CursorConfigPanel({
             </div>
           </div>
         ) : null}
-        {auth?.error ? (
-          <p className="text-[11px] text-destructive">{auth.error}</p>
-        ) : null}
 
-        <div className="grid gap-2 md:grid-cols-2">
+        {/* API key mode: the Cursor Dashboard account key. */}
+        {mode === "custom" ? (
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
               {t("cursor.apiKeyLabel")}
@@ -488,98 +616,96 @@ export function CursorConfigPanel({
               {t("cursor.apiKeyHint")}
             </p>
           </div>
-          <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
-              {t("cursor.baseUrlLabel")}
-            </label>
-            <Input
-              className="h-7 text-xs"
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api2.cursor.sh"
-              value={baseUrl}
-            />
-            <p className="text-[10px] text-muted-foreground">
-              {t("cursor.baseUrlHint")}
-            </p>
-          </div>
-        </div>
-      </div>
+        ) : null}
 
-      {/* ---- Default model card ---- */}
-      <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium">
-            {t("cursor.modelTitle")}
-          </span>
-          <Button
-            className="h-6 gap-1 px-2 text-[11px]"
-            disabled={modelsLoading}
-            onClick={() => void loadModels()}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            {modelsLoading ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3 w-3" />
-            )}
-            {t("cursor.loadModels")}
-          </Button>
-        </div>
-        <div className="grid gap-2 md:grid-cols-2">
-          <Select
-            onValueChange={(value) => {
-              if (value === CUSTOM) {
-                setCustomModel(true)
-                return
-              }
-              setCustomModel(false)
-              setModel(value === UNSET ? "" : value)
-            }}
-            value={modelSelectValue}
-          >
-            <SelectTrigger className="h-7 w-full text-xs" size="sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem className="text-xs" value={UNSET}>
-                {t("cursor.modelDefault")}
-              </SelectItem>
-              {models.map((m) => (
-                <SelectItem className="text-xs" key={m} value={m}>
-                  {m}
-                </SelectItem>
-              ))}
-              <SelectItem className="text-xs" value={CUSTOM}>
-                {t("cursor.modelCustom")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          {modelSelectValue === CUSTOM ? (
-            <Input
-              className="h-7 font-mono text-xs"
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={t("cursor.modelCustomPlaceholder")}
-              value={model}
-            />
-          ) : null}
-        </div>
-        {modelsError ? (
+        {auth?.error ? (
+          <p className="text-[11px] text-destructive">{auth.error}</p>
+        ) : null}
+
+        {/* No model list yet (not signed in / empty): tell the user why the
+            picker is hidden, instead of showing an empty default control. */}
+        {authState !== "missing" &&
+        authState !== "loading" &&
+        models.length === 0 ? (
           <p className="text-[10px] text-muted-foreground">
-            {t("cursor.modelsUnavailable")}: {modelsError}
-          </p>
-        ) : modelsLoaded && models.length === 0 ? (
-          <p className="text-[10px] text-muted-foreground">
-            {t("cursor.modelsEmpty")}
+            {t("cursor.modelsNeedAuth")}
           </p>
         ) : null}
-        <p className="text-[10px] text-muted-foreground">
-          {t("cursor.modelHint")}
-        </p>
       </div>
 
-      {/* ---- Permissions & sandbox card ---- */}
+      {/* ---- Model picker (only when real models were fetched) ---- */}
+      {models.length > 0 ? (
+        <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium">
+              {t("cursor.modelTitle")}
+            </span>
+            <Button
+              className="h-6 gap-1 px-2 text-[11px]"
+              disabled={modelsLoading}
+              onClick={() => void loadModels()}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              {modelsLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              {t("cursor.loadModels")}
+            </Button>
+          </div>
+          <Combobox
+            key={model || UNSET}
+            items={modelItems}
+            value={selectedModelItem}
+            onValueChange={handleSelectModel}
+            isItemEqualToValue={(
+              a: CursorModelItem | null,
+              b: CursorModelItem | null
+            ) => (a?.value ?? null) === (b?.value ?? null)}
+          >
+            <ComboboxInput
+              className="h-8 text-xs"
+              placeholder={t("cursor.modelPickerPlaceholder")}
+              showClear
+            />
+            <ComboboxContent>
+              <ComboboxList>
+                {(item: CursorModelItem) => (
+                  <ComboboxItem
+                    className="text-xs"
+                    key={item.value}
+                    value={item}
+                  >
+                    <span className="truncate">{item.label}</span>
+                    <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 font-mono text-[10px] text-muted-foreground">
+                      {item.isDefault ? (
+                        <span className="rounded bg-muted px-1 py-0.5 font-sans text-[9px] text-foreground/70">
+                          {t("cursor.modelDefaultBadge")}
+                        </span>
+                      ) : null}
+                      {item.value}
+                    </span>
+                  </ComboboxItem>
+                )}
+              </ComboboxList>
+              <ComboboxEmpty>{t("cursor.modelNoMatch")}</ComboboxEmpty>
+            </ComboboxContent>
+          </Combobox>
+          {modelsError ? (
+            <p className="text-[10px] text-muted-foreground">
+              {t("cursor.modelsUnavailable")}: {modelsError}
+            </p>
+          ) : null}
+          <p className="text-[10px] text-muted-foreground">
+            {t("cursor.modelHint")}
+          </p>
+        </div>
+      ) : null}
+
+      {/* ---- Permissions & sandbox card (both methods) ---- */}
       <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
         <div className="flex items-center gap-1.5">
           <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
@@ -677,7 +803,7 @@ export function CursorConfigPanel({
         </p>
       </div>
 
-      {/* ---- One save for auth + model + permissions ---- */}
+      {/* ---- One save for auth method + model + permissions ---- */}
       <div className="flex justify-end">
         <Button
           className="h-7 gap-1.5 px-2.5 text-xs"

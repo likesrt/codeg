@@ -5480,17 +5480,35 @@ fn resolve_cursor_binary() -> Option<PathBuf> {
     resolve_system_agent_binary("cursor-agent")
 }
 
-/// The Cursor agent's saved env (env_json) — applied to CLI probes so an
-/// API-key-only setup (CURSOR_API_KEY, no browser login) authenticates the
-/// `status` / `models` subprocesses the same way the ACP launch does.
-async fn cursor_probe_env(db: &AppDatabase) -> BTreeMap<String, String> {
-    agent_setting_service::get_by_agent_type(&db.conn, AgentType::Cursor)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|m| m.env_json)
-        .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
-        .unwrap_or_default()
+/// The Cursor agent's effective probe env: the saved env (env_json) with the
+/// settings form's live API key applied on top, so `status` / `models` test
+/// exactly the credential on screen rather than a stale saved value.
+///
+/// `api_key` is the form value — `Some(key)` in API-key mode, `Some("")` in
+/// subscription mode to force (and verify) the browser-login credential.
+/// `CURSOR_API_KEY` is always materialized (empty when unset) so
+/// `run_cursor_probe` makes an explicit set-or-remove decision and a stale
+/// inherited key can never leak in and produce a bogus "invalid API key".
+/// `CURSOR_API_BASE_URL` is always cleared — the CLI has no custom-endpoint
+/// support, so a base URL is never a valid probe input.
+async fn cursor_probe_env(db: &AppDatabase, api_key: Option<&str>) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> =
+        agent_setting_service::get_by_agent_type(&db.conn, AgentType::Cursor)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.env_json)
+            .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
+            .unwrap_or_default();
+    if let Some(key) = api_key {
+        env.insert("CURSOR_API_KEY".to_string(), key.trim().to_string());
+    }
+    // Materialize the key so an unset one becomes an explicit empty ⇒ removed.
+    env.entry("CURSOR_API_KEY".to_string()).or_default();
+    // Scrub any stale base URL (legacy env_json row or inherited dev-shell
+    // export): empty ⇒ removed by run_cursor_probe.
+    env.insert("CURSOR_API_BASE_URL".to_string(), String::new());
+    env
 }
 
 /// Run a cursor-agent subcommand with a timeout, capturing stdout.
@@ -5503,7 +5521,11 @@ async fn run_cursor_probe(
     let mut cmd = crate::process::tokio_command(&bin);
     cmd.args(args);
     for (key, value) in extra_env {
-        if !value.trim().is_empty() {
+        if value.trim().is_empty() {
+            // This process's env is inherited by the child; an empty value means
+            // "ensure absent" so a stale inherited CURSOR_API_KEY can't leak in.
+            cmd.env_remove(key);
+        } else {
             cmd.env(key, value);
         }
     }
@@ -5528,9 +5550,10 @@ async fn run_cursor_probe(
 
 pub(crate) async fn acp_cursor_auth_status_core(
     db: &AppDatabase,
+    api_key: Option<String>,
 ) -> crate::acp::types::CursorAuthStatus {
-    let installed = resolve_cursor_binary().is_some();
-    if !installed {
+    let binary_path = resolve_cursor_binary().map(|p| p.to_string_lossy().to_string());
+    if binary_path.is_none() {
         return crate::acp::types::CursorAuthStatus {
             installed: false,
             is_authenticated: false,
@@ -5538,9 +5561,10 @@ pub(crate) async fn acp_cursor_auth_status_core(
             email: None,
             membership: None,
             error: None,
+            binary_path: None,
         };
     }
-    let extra_env = cursor_probe_env(db).await;
+    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
     match run_cursor_probe(&["status", "--format", "json"], 20, &extra_env).await {
         Ok(stdout) => {
             // The CLI prints one JSON object; scan to the first `{` so a
@@ -5556,6 +5580,15 @@ pub(crate) async fn acp_cursor_auth_status_core(
                                 .map(str::to_string)
                         })
                     };
+                    // Email is nested under `userInfo` in current CLI output;
+                    // fall back to a top-level field for forward-compatibility.
+                    let email = v
+                        .get("userInfo")
+                        .and_then(|u| u.get("email"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| get_str(&["email", "userEmail", "user_email"]));
                     crate::acp::types::CursorAuthStatus {
                         installed: true,
                         is_authenticated: v
@@ -5563,9 +5596,10 @@ pub(crate) async fn acp_cursor_auth_status_core(
                             .and_then(serde_json::Value::as_bool)
                             .unwrap_or(false),
                         raw_status: get_str(&["status", "message"]),
-                        email: get_str(&["email", "userEmail", "user_email"]),
+                        email,
                         membership: get_str(&["membershipType", "membership", "plan"]),
                         error: None,
+                        binary_path: binary_path.clone(),
                     }
                 }
                 Err(e) => crate::acp::types::CursorAuthStatus {
@@ -5575,6 +5609,7 @@ pub(crate) async fn acp_cursor_auth_status_core(
                     email: None,
                     membership: None,
                     error: Some(format!("unexpected status output: {e}")),
+                    binary_path: binary_path.clone(),
                 },
             }
         }
@@ -5585,45 +5620,19 @@ pub(crate) async fn acp_cursor_auth_status_core(
             email: None,
             membership: None,
             error: Some(err),
+            binary_path,
         },
     }
 }
 
 pub(crate) async fn acp_cursor_list_models_core(
     db: &AppDatabase,
+    api_key: Option<String>,
 ) -> crate::acp::types::CursorModelsResult {
-    let extra_env = cursor_probe_env(db).await;
+    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
     match run_cursor_probe(&["models"], 30, &extra_env).await {
         Ok(stdout) => {
-            let mut models = Vec::new();
-            let mut default_model = None;
-            for line in stdout.lines() {
-                // Strip ANSI escapes, list markers, and a "(default)" suffix;
-                // skip headers/notes (lines with spaces beyond one token are
-                // treated as prose unless they carry the default marker).
-                let cleaned = strip_ansi(line);
-                let trimmed = cleaned.trim().trim_start_matches(['-', '*', '\u{2022}']).trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let is_default = trimmed.contains("(default)") || trimmed.contains("(current)");
-                let candidate = trimmed
-                    .replace("(default)", "")
-                    .replace("(current)", "")
-                    .trim()
-                    .to_string();
-                // Model ids are single tokens (no spaces); anything else is
-                // prose from the CLI (e.g. "Available models:").
-                if candidate.is_empty() || candidate.contains(char::is_whitespace) {
-                    continue;
-                }
-                if is_default {
-                    default_model = Some(candidate.clone());
-                }
-                if !models.contains(&candidate) {
-                    models.push(candidate);
-                }
-            }
+            let (models, default_model) = parse_cursor_models(&stdout);
             crate::acp::types::CursorModelsResult {
                 models,
                 default_model,
@@ -5636,6 +5645,50 @@ pub(crate) async fn acp_cursor_list_models_core(
             error: Some(err),
         },
     }
+}
+
+/// Parse `cursor-agent models` output. Each model line is
+/// `<id> - <label> [(default)]` (e.g. `claude-opus-4-8-high - Opus 4.8 1M`,
+/// `auto - Auto (default)`); a leading `Available models` header and blank
+/// lines are skipped. Returns the entries in CLI order plus the default id.
+fn parse_cursor_models(stdout: &str) -> (Vec<crate::acp::types::CursorModelInfo>, Option<String>) {
+    let mut models: Vec<crate::acp::types::CursorModelInfo> = Vec::new();
+    let mut default_model = None;
+    for line in stdout.lines() {
+        let cleaned = strip_ansi(line);
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Split id from label on the first " - ". A line with no " - " is only
+        // a model if it's a bare single-token id — otherwise it's prose (the
+        // "Available models" header has a space, so it's skipped below).
+        let (id_raw, label_raw) = trimmed.split_once(" - ").unwrap_or((trimmed, ""));
+        let id = id_raw
+            .trim()
+            .trim_start_matches(['-', '*', '\u{2022}'])
+            .trim();
+        if id.is_empty() || id.contains(char::is_whitespace) {
+            continue;
+        }
+        let is_default = label_raw.contains("(default)") || label_raw.contains("(current)");
+        let label = label_raw
+            .replace("(default)", "")
+            .replace("(current)", "")
+            .trim()
+            .to_string();
+        if is_default {
+            default_model = Some(id.to_string());
+        }
+        if !models.iter().any(|m| m.id == id) {
+            models.push(crate::acp::types::CursorModelInfo {
+                id: id.to_string(),
+                label,
+                is_default,
+            });
+        }
+    }
+    (models, default_model)
 }
 
 /// Strip ANSI SGR escape sequences from CLI output.
@@ -5672,16 +5725,18 @@ fn truncate_probe_output(s: &str) -> String {
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_cursor_auth_status(
     db: State<'_, AppDatabase>,
+    api_key: Option<String>,
 ) -> Result<crate::acp::types::CursorAuthStatus, AcpError> {
-    Ok(acp_cursor_auth_status_core(&db).await)
+    Ok(acp_cursor_auth_status_core(&db, api_key).await)
 }
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_cursor_list_models(
     db: State<'_, AppDatabase>,
+    api_key: Option<String>,
 ) -> Result<crate::acp::types::CursorModelsResult, AcpError> {
-    Ok(acp_cursor_list_models_core(&db).await)
+    Ok(acp_cursor_list_models_core(&db, api_key).await)
 }
 
 /// Primary env var keys for each agent type: (api_base_url, api_key, model).
@@ -9949,6 +10004,78 @@ wire_api = "chat"
             Some(&serde_json::json!(["Shell(npm run build)"]))
         );
         assert_eq!(v.pointer("/permissions/deny"), Some(&serde_json::json!([])));
+    }
+
+    #[tokio::test]
+    async fn cursor_probe_env_materializes_key_and_scrubs_base_url() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+
+        // API-key mode: the form value wins over saved env and is trimmed; the
+        // base URL is always scrubbed to empty (⇒ removed by run_cursor_probe).
+        let env = cursor_probe_env(&db, Some("  my-key  ")).await;
+        assert_eq!(env.get("CURSOR_API_KEY").map(String::as_str), Some("my-key"));
+        assert_eq!(
+            env.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+
+        // Subscription passes an empty key → present but empty, so the probe
+        // strips any inherited value instead of leaking it.
+        let cleared = cursor_probe_env(&db, Some("")).await;
+        assert_eq!(cleared.get("CURSOR_API_KEY").map(String::as_str), Some(""));
+        assert_eq!(
+            cleared.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+
+        // No override + empty DB → key still materialized empty.
+        let none = cursor_probe_env(&db, None).await;
+        assert_eq!(none.get("CURSOR_API_KEY").map(String::as_str), Some(""));
+        assert_eq!(
+            none.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn parse_cursor_models_reads_id_label_and_default() {
+        // Verbatim shape of `cursor-agent models` (id - label [(default)]).
+        let stdout = "Available models\n\n\
+             auto - Auto (default)\n\
+             claude-opus-4-8-high - Opus 4.8 1M\n\
+             gpt-5.3-codex - Codex 5.3\n\
+             claude-fable-5-thinking-high - Fable 5 1M Thinking (NO ZDR)\n";
+        let (models, default_model) = parse_cursor_models(stdout);
+
+        // The "Available models" header (has whitespace, no " - ") is skipped.
+        assert_eq!(models.len(), 4);
+        assert_eq!(default_model.as_deref(), Some("auto"));
+
+        assert_eq!(models[0].id, "auto");
+        assert_eq!(models[0].label, "Auto");
+        assert!(models[0].is_default);
+
+        assert_eq!(models[1].id, "claude-opus-4-8-high");
+        assert_eq!(models[1].label, "Opus 4.8 1M");
+        assert!(!models[1].is_default);
+
+        // A parenthetical that isn't the default marker stays in the label.
+        assert_eq!(models[3].label, "Fable 5 1M Thinking (NO ZDR)");
+    }
+
+    #[test]
+    fn parse_cursor_models_tolerates_ansi_markers_and_bare_ids() {
+        // ANSI SGR + a leading list marker + a bare-id line with no label.
+        let stdout =
+            "\u{1b}[1mAvailable models\u{1b}[0m\n- gpt-5.2 - GPT-5.2\ncomposer-2.5\n";
+        let (models, default_model) = parse_cursor_models(stdout);
+        assert_eq!(default_model, None);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5.2");
+        assert_eq!(models[0].label, "GPT-5.2");
+        // Bare id (no " - <label>") → id kept, label empty.
+        assert_eq!(models[1].id, "composer-2.5");
+        assert_eq!(models[1].label, "");
     }
 
     #[tokio::test]

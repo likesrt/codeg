@@ -1678,11 +1678,23 @@ export interface CursorAuthStatus {
   email: string | null
   membership: string | null
   error: string | null
+  /** Absolute path to the cursor-agent binary codeg would launch; the panel
+   * builds a copy-pasteable `"<binary_path>" login` command from it (the
+   * managed binary isn't on PATH). Null when not installed. */
+  binary_path?: string | null
+}
+
+/** One `cursor-agent models` entry: `<id> - <label> [(default)]`. The picker
+ * shows `label` (falling back to `id`) and passes `id` to the CLI as --model. */
+export interface CursorModelInfo {
+  id: string
+  label: string
+  is_default: boolean
 }
 
 /** Result of `cursor-agent models` (model picker). */
 export interface CursorModelsResult {
-  models: string[]
+  models: CursorModelInfo[]
   default_model: string | null
   error: string | null
 }

@@ -79,6 +79,32 @@ fn merge_agent_env(
     merged.into_iter().collect()
 }
 
+/// Cursor subscription-mode launch policy. When the user picked the official
+/// subscription (browser login), guarantee the launched CLI sees NONE of the
+/// custom-endpoint credentials — not even a stale `CURSOR_API_KEY` /
+/// `CURSOR_API_BASE_URL` inherited from this process's environment (e.g. a dev
+/// shell export). cursor-agent would otherwise validate that leaked key and
+/// refuse to fall back to the login credential. An empty value tells the spawn
+/// layer (vendored sacp-tokio) to `env_remove` the inherited var.
+///
+/// Gated on the explicit `CURSOR_AUTH_MODE` knob (written by the Cursor panel),
+/// so legacy rows and operator-provided container env are left untouched. In
+/// custom mode the credentials are present and non-empty, so nothing is cleared.
+fn apply_cursor_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTreeMap<String, String>) {
+    if runtime_env.get("CURSOR_AUTH_MODE").map(String::as_str) != Some("subscription") {
+        return;
+    }
+    for key in ["CURSOR_API_KEY", "CURSOR_API_BASE_URL"] {
+        let already_set = merged
+            .iter()
+            .any(|(k, v)| k == key && !v.trim().is_empty());
+        if !already_set {
+            merged.retain(|(k, _)| k != key);
+            merged.push((key.to_string(), String::new()));
+        }
+    }
+}
+
 /// Prepend `dir` to the PATH entry of `env`, seeding from `fallback_path` when
 /// `env` has no PATH key of its own. Removes any pre-existing PATH key first
 /// (case-insensitively when `windows`, since Windows env keys are
@@ -524,7 +550,10 @@ async fn build_agent(
             if !cmd_args.is_empty() {
                 server = server.args(cmd_args);
             }
-            let merged_env = merge_agent_env(env, runtime_env);
+            let mut merged_env = merge_agent_env(env, runtime_env);
+            if agent_type == AgentType::Cursor {
+                apply_cursor_env_policy(&mut merged_env, runtime_env);
+            }
             let env_key_list: Vec<&str> = merged_env.iter().map(|(k, _)| k.as_str()).collect();
             if !merged_env.is_empty() {
                 let env_vars: Vec<sacp::schema::EnvVariable> = merged_env
@@ -6525,6 +6554,39 @@ mod tests {
             ),
             None,
         );
+    }
+
+    #[test]
+    fn cursor_env_policy_clears_inherited_creds_only_in_subscription() {
+        let sub: BTreeMap<String, String> =
+            [("CURSOR_AUTH_MODE".to_string(), "subscription".to_string())].into();
+
+        // No configured creds → both injected empty (⇒ spawn strips inherited).
+        let mut merged = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_cursor_env_policy(&mut merged, &sub);
+        assert!(merged.iter().any(|(k, v)| k == "CURSOR_API_KEY" && v.is_empty()));
+        assert!(merged
+            .iter()
+            .any(|(k, v)| k == "CURSOR_API_BASE_URL" && v.is_empty()));
+
+        // A configured key is preserved; only the absent base URL is cleared.
+        let mut with_key = vec![("CURSOR_API_KEY".to_string(), "sk-x".to_string())];
+        apply_cursor_env_policy(&mut with_key, &sub);
+        assert!(with_key.iter().any(|(k, v)| k == "CURSOR_API_KEY" && v == "sk-x"));
+        assert!(with_key
+            .iter()
+            .any(|(k, v)| k == "CURSOR_API_BASE_URL" && v.is_empty()));
+
+        // Custom mode and legacy/no-mode rows are left untouched.
+        for mode in [Some("custom"), None] {
+            let rt: BTreeMap<String, String> = mode
+                .map(|m| [("CURSOR_AUTH_MODE".to_string(), m.to_string())].into())
+                .unwrap_or_default();
+            let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_cursor_env_policy(&mut env, &rt);
+            assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_KEY"));
+            assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_BASE_URL"));
+        }
     }
 
     #[test]

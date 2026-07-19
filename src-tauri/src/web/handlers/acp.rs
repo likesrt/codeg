@@ -633,19 +633,29 @@ pub async fn acp_update_agent_config(
     Ok(Json(affected))
 }
 
+/// Optional live API key from the Cursor settings form, forwarded so the
+/// `status` / `models` probes test what's on screen (empty ⇒ browser-login).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CursorProbeParams {
+    pub api_key: Option<String>,
+}
+
 pub async fn acp_cursor_auth_status(
     Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CursorProbeParams>,
 ) -> Result<Json<crate::acp::types::CursorAuthStatus>, AppCommandError> {
     Ok(Json(
-        acp_commands::acp_cursor_auth_status_core(&state.db).await,
+        acp_commands::acp_cursor_auth_status_core(&state.db, params.api_key).await,
     ))
 }
 
 pub async fn acp_cursor_list_models(
     Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CursorProbeParams>,
 ) -> Result<Json<crate::acp::types::CursorModelsResult>, AppCommandError> {
     Ok(Json(
-        acp_commands::acp_cursor_list_models_core(&state.db).await,
+        acp_commands::acp_cursor_list_models_core(&state.db, params.api_key).await,
     ))
 }
 

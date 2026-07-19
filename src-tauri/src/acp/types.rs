@@ -754,12 +754,34 @@ pub struct CursorAuthStatus {
     pub is_authenticated: bool,
     /// The CLI's own `status` string (e.g. "unauthenticated").
     pub raw_status: Option<String>,
-    /// Account email when logged in (field name per the CLI's JSON output).
+    /// Account email when logged in. The CLI nests it under `userInfo.email`
+    /// (a top-level `email` is also accepted as a fallback).
     pub email: Option<String>,
-    /// Membership/plan label when the CLI reports one.
+    /// Membership/plan label when the CLI reports one. Current `status --format
+    /// json` output carries no such field, so this is usually `None`.
     pub membership: Option<String>,
     /// Probe failure detail (spawn error / timeout / non-JSON output).
     pub error: Option<String>,
+    /// Absolute path to the cursor-agent binary codeg would launch (managed
+    /// cache or system install). The settings panel builds a copy-pasteable
+    /// `"<binary_path>" login` command from it — the managed binary lives in
+    /// codeg's cache and is NOT on the user's PATH, so a bare `cursor-agent
+    /// login` fails. `None` when no binary is installed.
+    pub binary_path: Option<String>,
+}
+
+/// One entry from `cursor-agent models`, whose lines are `<id> - <label>
+/// [(default)]` (e.g. `claude-opus-4-8-high - Opus 4.8 1M`). The panel shows
+/// `label` (falling back to `id`) and passes `id` to the CLI as `--model`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CursorModelInfo {
+    /// The model id (`--model` value), e.g. `claude-opus-4-8-high`.
+    pub id: String,
+    /// Human-readable label from the CLI, e.g. `Opus 4.8 1M`. Empty when the
+    /// CLI emitted a bare id with no ` - <label>` suffix.
+    pub label: String,
+    /// The account default (the CLI marks it `(default)`, e.g. `auto`).
+    pub is_default: bool,
 }
 
 /// Result of `cursor-agent models` for the Cursor settings panel's model
@@ -767,7 +789,7 @@ pub struct CursorAuthStatus {
 /// failure reason when the probe could not run (e.g. not logged in).
 #[derive(Debug, Clone, Serialize)]
 pub struct CursorModelsResult {
-    pub models: Vec<String>,
+    pub models: Vec<CursorModelInfo>,
     pub default_model: Option<String>,
     pub error: Option<String>,
 }
