@@ -1780,6 +1780,7 @@
       "resetDisabledReasonNotCurrentBranchView": "현재 브랜치 보기에서만 사용할 수 있습니다",
       "viewCommitDiffAria": "커밋 {hash}의 diff 보기",
       "copyFullCommitHashAria": "전체 커밋 해시 {hash} 복사",
+      "changedFilesTitle": "파일 {count}개 변경",
       "pushStatus": {
         "pushed": "원격에 푸시됨",
         "notPushed": "원격에 푸시되지 않음",
@@ -1802,6 +1803,8 @@
         "resetFailed": "리셋 실패"
       },
       "branchSelector": {
+        "searchBranch": "브랜치 검색...",
+        "noBranches": "브랜치 없음",
         "selectBranchPlaceholder": "브랜치 선택...",
         "localBranches": "로컬 브랜치",
         "current": "현재",

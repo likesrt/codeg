@@ -3035,13 +3035,15 @@ export async function gitLog(
   path: string,
   limit?: number,
   branch?: string,
-  remote?: string
+  remote?: string,
+  skip?: number
 ): Promise<GitLogResult> {
   return getTransport().call("git_log", {
     path,
     limit: limit ?? null,
     branch: branch ?? null,
     remote: remote ?? null,
+    skip: skip ?? null,
   })
 }
 

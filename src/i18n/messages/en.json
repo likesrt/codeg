@@ -1780,6 +1780,7 @@
       "resetDisabledReasonNotCurrentBranchView": "Available only when viewing current branch",
       "viewCommitDiffAria": "View diff for commit {hash}",
       "copyFullCommitHashAria": "Copy full commit hash {hash}",
+      "changedFilesTitle": "{count, plural, one {# file changed} other {# files changed}}",
       "pushStatus": {
         "pushed": "Pushed to remote",
         "notPushed": "Not pushed to remote",
@@ -1802,6 +1803,8 @@
         "resetFailed": "Reset failed"
       },
       "branchSelector": {
+        "searchBranch": "Search branch...",
+        "noBranches": "No branches",
         "selectBranchPlaceholder": "Select branch...",
         "localBranches": "Local branches",
         "current": "Current",

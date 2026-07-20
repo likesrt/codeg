@@ -4023,12 +4023,16 @@ pub async fn git_log(
     limit: Option<u32>,
     branch: Option<String>,
     remote: Option<String>,
+    skip: Option<u32>,
 ) -> Result<GitLogResult, AppCommandError> {
     ensure_git_repo(&path)?;
 
     const COMMIT_META_PREFIX: &str = "__COMMIT__\0";
     const MESSAGE_END_MARKER: &str = "__COMMIT_MESSAGE_END__";
 
+    // Offset for paginated (infinite-scroll) loading: the frontend requests
+    // successive pages by their running commit count.
+    let skip = skip.unwrap_or(0);
     let limit_str = format!("-{}", limit.unwrap_or(100));
     let mut args = vec![
         "log".to_string(),
@@ -4038,6 +4042,9 @@ pub async fn git_log(
         "--numstat".to_string(),
         "--no-renames".to_string(),
     ];
+    if skip > 0 {
+        args.push(format!("--skip={}", skip));
+    }
     if let Some(ref b) = branch {
         args.push(b.clone());
     }
@@ -4120,7 +4127,9 @@ pub async fn git_log(
         entries.push(entry.finish());
     }
 
-    let log_limit = limit.unwrap_or(100);
+    // Cover the full fetched range (skip + limit) so pushed status stays correct
+    // on deeper pages — get_unpushed_hashes caps its rev-list to this count.
+    let log_limit = skip.saturating_add(limit.unwrap_or(100));
     let (unpushed_hashes, has_upstream) =
         get_unpushed_hashes(&path, log_limit, remote.as_deref(), branch.as_deref())
             .await

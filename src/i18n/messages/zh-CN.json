@@ -1780,6 +1780,7 @@
       "resetDisabledReasonNotCurrentBranchView": "仅在查看当前分支时可用",
       "viewCommitDiffAria": "查看提交 {hash} 的差异",
       "copyFullCommitHashAria": "复制完整提交哈希 {hash}",
+      "changedFilesTitle": "{count} 个文件更改",
       "pushStatus": {
         "pushed": "已推送到远程",
         "notPushed": "未推送到远程",
@@ -1802,6 +1803,8 @@
         "resetFailed": "重置失败"
       },
       "branchSelector": {
+        "searchBranch": "搜索分支...",
+        "noBranches": "无分支",
         "selectBranchPlaceholder": "选择分支...",
         "localBranches": "本地分支",
         "current": "当前",

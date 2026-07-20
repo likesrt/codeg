@@ -1780,6 +1780,7 @@
       "resetDisabledReasonNotCurrentBranchView": "Disponible solo al ver la rama actual",
       "viewCommitDiffAria": "Ver diff del commit {hash}",
       "copyFullCommitHashAria": "Copiar hash completo del commit {hash}",
+      "changedFilesTitle": "{count, plural, one {# archivo modificado} other {# archivos modificados}}",
       "pushStatus": {
         "pushed": "Enviado al remoto",
         "notPushed": "No enviado al remoto",
@@ -1802,6 +1803,8 @@
         "resetFailed": "Falló el reset"
       },
       "branchSelector": {
+        "searchBranch": "Buscar rama...",
+        "noBranches": "Sin ramas",
         "selectBranchPlaceholder": "Seleccionar rama...",
         "localBranches": "Ramas locales",
         "current": "Actual",

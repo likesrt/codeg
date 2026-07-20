@@ -1780,6 +1780,7 @@
       "resetDisabledReasonNotCurrentBranchView": "متاح فقط عند عرض الفرع الحالي",
       "viewCommitDiffAria": "عرض diff للالتزام {hash}",
       "copyFullCommitHashAria": "نسخ hash الكامل للالتزام {hash}",
+      "changedFilesTitle": "تم تغيير {count} ملف",
       "pushStatus": {
         "pushed": "تم الدفع إلى البعيد",
         "notPushed": "لم يتم الدفع إلى البعيد",
@@ -1802,6 +1803,8 @@
         "resetFailed": "فشلت إعادة الضبط"
       },
       "branchSelector": {
+        "searchBranch": "بحث عن فرع...",
+        "noBranches": "لا توجد فروع",
         "selectBranchPlaceholder": "اختر فرعًا...",
         "localBranches": "الفروع المحلية",
         "current": "الحالي",
