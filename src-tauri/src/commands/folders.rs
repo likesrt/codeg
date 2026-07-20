@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 use std::time::UNIX_EPOCH;
 
 use base64::Engine as _;
+use ignore::WalkBuilder;
 use serde::Serialize;
 
 use tokio::sync::Semaphore;
@@ -248,6 +249,23 @@ pub enum FileTreeNode {
         path: String,
         children: Vec<FileTreeNode>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceEntryKind {
+    File,
+    Dir,
+}
+
+/// A flat workspace entry produced by `list_workspace_files`. Unlike the nested
+/// `FileTreeNode`, this is a single flat record suited to fuzzy file search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkspaceFileEntry {
+    pub name: String,
+    /// Path relative to the workspace root, always forward-slashed.
+    pub path: String,
+    pub kind: WorkspaceEntryKind,
 }
 
 #[derive(Debug, Serialize)]
@@ -3369,6 +3387,77 @@ pub async fn get_file_tree(
     Ok(dir_children.remove(&root).unwrap_or_default())
 }
 
+/// Flat, gitignore-aware listing of every file and directory under `path`, for
+/// fuzzy file search. Unlike [`get_file_tree`], ignored directories
+/// (`node_modules`, `target`, `dist`, …) are pruned *during* the walk, so no
+/// depth cap is needed: deep files stay reachable while the heavy trees are
+/// never descended and the payload stays small. Gitignore handling that used to
+/// run client-side now happens here at native speed in a single pass.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn list_workspace_files(
+    path: String,
+) -> Result<Vec<WorkspaceFileEntry>, AppCommandError> {
+    let root = PathBuf::from(&path);
+
+    // Conservative gitignore parity with the previous client-side pass: respect
+    // in-tree `.gitignore`/`.ignore`/`.git/info/exclude`, but not the global
+    // gitignore or parent-directory ignores (the workspace root is the
+    // boundary). `require_git(false)` keeps `.gitignore` effective even outside
+    // a git repo. `hidden(false)` keeps dotfiles visible. The `filter_entry`
+    // mirrors `get_file_tree`'s hardcoded ignores exactly.
+    let walker = WalkBuilder::new(&root)
+        .hidden(false)
+        .parents(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(false)
+        .require_git(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                !FILE_TREE_IGNORED_DIRS.contains(&name.as_ref())
+            } else {
+                name != ".DS_Store"
+            }
+        })
+        .build();
+
+    let mut entries: Vec<WorkspaceFileEntry> = Vec::new();
+    for result in walker {
+        // Skip unreadable entries (permission errors, transient races) rather
+        // than failing the whole search.
+        let Ok(entry) = result else { continue };
+        let entry_path = entry.path();
+
+        // Skip the root directory itself.
+        if entry_path == root {
+            continue;
+        }
+
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel_path = entry_path
+            .strip_prefix(&root)
+            .unwrap_or(entry_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        entries.push(WorkspaceFileEntry {
+            name,
+            path: rel_path,
+            kind: if is_dir {
+                WorkspaceEntryKind::Dir
+            } else {
+                WorkspaceEntryKind::File
+            },
+        });
+    }
+
+    Ok(entries)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn read_file_base64(
     path: String,
@@ -4493,6 +4582,83 @@ mod tests {
         assert_eq!(p["kind"], "upsert");
         assert_eq!(p["folder"]["id"], 7);
         assert_eq!(p["folder"]["parent_id"], 1);
+    }
+
+    /// Create `rel` (relative to `root`) as a file, making parent dirs.
+    fn write_file(root: &std::path::Path, rel: &str, contents: &str) {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(full, contents).expect("write file");
+    }
+
+    #[tokio::test]
+    async fn list_workspace_files_includes_deep_and_prunes_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // A file nested 12 levels deep — beyond the old hardcoded depth-10 cap
+        // this command replaces. It must still be discovered (the core fix).
+        let deep_rel = "a/b/c/d/e/f/g/h/i/j/k/deep.txt";
+        write_file(root, deep_rel, "deep");
+
+        // Gitignore rules must be honored even without a real git repo
+        // (`require_git(false)`), pruning ignored trees during the walk.
+        write_file(root, ".gitignore", "node_modules/\nignored.txt\n");
+        write_file(root, "node_modules/pkg/index.js", "junk");
+        write_file(root, "ignored.txt", "junk");
+
+        // The hardcoded ignores (mirroring FILE_TREE_IGNORED_DIRS) must be pruned.
+        write_file(root, ".git/config", "[core]");
+        write_file(root, "src/.DS_Store", "junk");
+
+        // A normal file that must survive.
+        write_file(root, "src/main.rs", "fn main() {}");
+
+        let entries = list_workspace_files(root.to_string_lossy().to_string())
+            .await
+            .expect("list_workspace_files");
+        let paths: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.path.as_str()).collect();
+
+        // Deep and normal files are reachable.
+        assert!(
+            paths.contains(deep_rel),
+            "deep file must be listed, got {paths:?}"
+        );
+        assert!(paths.contains("src/main.rs"), "normal file must be listed");
+
+        // Gitignored entries are pruned during traversal.
+        assert!(
+            !paths.iter().any(|p| p.starts_with("node_modules")),
+            "gitignored node_modules must be pruned, got {paths:?}"
+        );
+        assert!(
+            !paths.contains("ignored.txt"),
+            "gitignored file must be pruned"
+        );
+
+        // Hardcoded ignores are pruned.
+        // Precisely the `.git` dir / its contents — not `.gitignore`, which is
+        // intentionally listed.
+        assert!(
+            !paths.iter().any(|p| *p == ".git" || p.starts_with(".git/")),
+            ".git dir must be pruned, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".DS_Store")),
+            ".DS_Store must be pruned"
+        );
+
+        // Intermediate directory entries are emitted alongside files — the
+        // `@`-mention picker relies on directories being present.
+        assert!(
+            entries.iter().any(
+                |e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)
+            ),
+            "directory entries must be present"
+        );
     }
 
     /// Run a git command in `dir`, supplying identity via env so the test does
