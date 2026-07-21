@@ -812,7 +812,7 @@ export function BranchDropdown({
                   </>
                 )}
                 <span className={branchAccentClassName}>
-                  {branch ?? head?.short_sha ?? t("noBranch")}
+                  {branch ?? head?.branch ?? head?.short_sha ?? t("noBranch")}
                 </span>
               </span>
             </button>
