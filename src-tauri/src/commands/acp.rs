@@ -677,7 +677,7 @@ async fn run_npm_streaming(
     task_id: &str,
     emitter: &EventEmitter,
 ) -> Result<(bool, String), AcpError> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::BufReader;
 
     let mut cmd = crate::process::tokio_command("npm");
     for arg in args {
@@ -695,16 +695,20 @@ async fn run_npm_streaming(
     let emitter_clone = emitter.clone();
     let task_id_owned = task_id.to_string();
 
+    // `collect_lines_lossy` (not `Lines`/`next_line()`) matters here: npm can
+    // emit OEM-codepage bytes (e.g. GBK on a zh-CN Windows) for localized
+    // OS-level error text, which `next_line()` chokes on and silently drops —
+    // truncating both the live install log and the stderr this function
+    // returns for the caller's error message.
     let stdout_handle = tokio::spawn({
         let emitter = emitter_clone.clone();
         let task_id = task_id_owned.clone();
         async move {
             if let Some(out) = stdout {
-                let reader = BufReader::new(out);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    emit_agent_install_event(&emitter, &task_id, AgentInstallEventKind::Log, &line);
-                }
+                crate::process::collect_lines_lossy(BufReader::new(out), |line| {
+                    emit_agent_install_event(&emitter, &task_id, AgentInstallEventKind::Log, line);
+                })
+                .await;
             }
         }
     });
@@ -713,19 +717,20 @@ async fn run_npm_streaming(
         let emitter = emitter_clone;
         let task_id = task_id_owned;
         async move {
-            let mut collected = String::new();
-            if let Some(err) = stderr {
-                let reader = BufReader::new(err);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    emit_agent_install_event(&emitter, &task_id, AgentInstallEventKind::Log, &line);
-                    if !collected.is_empty() {
-                        collected.push('\n');
-                    }
-                    collected.push_str(&line);
+            match stderr {
+                Some(err) => {
+                    crate::process::collect_lines_lossy(BufReader::new(err), |line| {
+                        emit_agent_install_event(
+                            &emitter,
+                            &task_id,
+                            AgentInstallEventKind::Log,
+                            line,
+                        );
+                    })
+                    .await
                 }
+                None => String::new(),
             }
-            collected
         }
     });
 

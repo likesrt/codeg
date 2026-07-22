@@ -515,3 +515,107 @@ pub fn ensure_user_npm_prefix_in_path() {
         }
     }
 }
+
+/// Read `reader` line-by-line as UTF-8-*lossy* text, invoking `on_line` for each
+/// line (trailing newline trimmed) and returning the accumulated text.
+///
+/// Unlike a `Lines`/`next_line()` loop — which returns `Err(InvalidData)` and so
+/// aborts the whole stream on the first non-UTF-8 byte — this preserves a
+/// non-UTF-8 line lossily. PowerShell/npm emit OEM-codepage bytes (e.g. GBK on a
+/// zh-CN Windows) for non-ASCII installer/error text, so without this a single
+/// localized line would truncate both the live log and the failure-diagnostic
+/// tail. A genuine read error records a short note and stops — `break`, never
+/// `continue`, so a persistent error can't spin.
+pub(crate) async fn collect_lines_lossy<R, F>(mut reader: R, mut on_line: F) -> String
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    F: FnMut(&str),
+{
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf = Vec::new();
+    let mut collected = String::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                // Match `Lines` semantics: strip a trailing '\n' then one '\r'.
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                let line = String::from_utf8_lossy(&buf);
+                on_line(line.as_ref());
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(line.as_ref());
+            }
+            Err(e) => {
+                let note = format!("<install reader error: {e}>");
+                on_line(&note);
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                collected.push_str(&note);
+                break;
+            }
+        }
+    }
+    collected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_lines_lossy;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn collect_lines_lossy_preserves_lines_around_invalid_utf8() {
+        // A non-UTF-8 segment (0xFF 0xFE — invalid start bytes, like GBK output
+        // on a non-English Windows) sits between two valid lines. The old
+        // `next_line()` loop would abort here and drop "third"; this must not.
+        let data = b"first\n\xff\xfe garbage\nthird\n".to_vec();
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(data), |l| seen.push(l.to_string())).await;
+
+        assert_eq!(seen.len(), 3, "all three lines emitted: {seen:?}");
+        assert_eq!(seen[0], "first");
+        assert_eq!(seen[2], "third");
+        assert!(
+            seen[1].contains('\u{fffd}'),
+            "invalid bytes preserved lossily, not dropped: {:?}",
+            seen[1]
+        );
+        assert!(collected.contains("first") && collected.contains("third"));
+        assert!(collected.contains('\u{fffd}'));
+    }
+
+    #[tokio::test]
+    async fn collect_lines_lossy_handles_crlf_and_partial_last_line() {
+        // CRLF endings trimmed like `Lines`; a final line with no trailing
+        // newline is still emitted (then EOF stops the loop).
+        let data = b"a\r\nb\r\nno-newline".to_vec();
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(data), |l| seen.push(l.to_string())).await;
+
+        assert_eq!(seen, vec!["a", "b", "no-newline"]);
+        assert_eq!(collected, "a\nb\nno-newline");
+    }
+
+    #[tokio::test]
+    async fn collect_lines_lossy_empty_input_yields_nothing() {
+        let mut seen: Vec<String> = Vec::new();
+        let collected =
+            collect_lines_lossy(Cursor::new(Vec::<u8>::new()), |l| seen.push(l.to_string()))
+                .await;
+
+        assert!(seen.is_empty());
+        assert!(collected.is_empty());
+    }
+}
