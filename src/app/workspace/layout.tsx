@@ -28,7 +28,6 @@ import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-con
 import { TabProvider, useTabStore, useTabActions } from "@/contexts/tab-context"
 import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
-import { ConversationLocateProvider } from "@/contexts/conversation-locate-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import { AutomationsViewProvider } from "@/contexts/automations-view-context"
 import {
@@ -1161,11 +1160,9 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                                           listener calls openConversations() to
                                           surface a launcher-opened folder. */}
                                     <WorkspaceOpenFolderListener />
-                                    <ConversationLocateProvider>
-                                      <FolderLayoutShell>
-                                        {children}
-                                      </FolderLayoutShell>
-                                    </ConversationLocateProvider>
+                                    <FolderLayoutShell>
+                                      {children}
+                                    </FolderLayoutShell>
                                   </WorkbenchRouteProvider>
                                 </AutomationsViewProvider>
                               </SearchDialogProvider>
