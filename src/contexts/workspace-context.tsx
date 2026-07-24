@@ -2161,6 +2161,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             return null
           }
           const nextIdx = Math.min(idx, next.length - 1)
+          // Closing the active file tab (via its X) keeps the user in the file
+          // column, so focus the files pane — mirroring the conversation
+          // closeTab. The section pointer-capture used to do this; the tab strip
+          // now sits outside the pane-activation wrapper, so do it explicitly.
+          activateFilePane()
           return next[nextIdx].id
         })
 
@@ -2178,7 +2183,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return next
       })
     },
-    [activateConversationPane, t]
+    [activateConversationPane, activateFilePane, t]
   )
 
   const closeOtherFileTabs = useCallback(

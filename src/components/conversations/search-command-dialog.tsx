@@ -27,6 +27,7 @@ import {
   type ContentSearchSettings,
 } from "@/lib/content-search-settings"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
+import { rankFileMatches } from "@/lib/file-search-match"
 import { AGENT_LABELS, compareAgentType } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
@@ -298,53 +299,14 @@ function useFileSearch(
     folderPath: folderPath || undefined,
     enabled: activeTab === "files",
   })
+  // 上游 fuzzy/rank 匹配更优：全量扫描后按相关度截断，避免深路径被浅层结果挤掉
   const filteredFiles = useMemo(
-    () => filterFiles(allFiles, query),
+    () => rankFileMatches(query, allFiles, 100),
     [allFiles, query]
   )
   return { allFiles, filesLoading, resetFileTree, filteredFiles }
 }
 
-/**
- * Filters flat file entries against the current query.
- * @param allFiles Flat file entries from the active workspace.
- * @param query Filename or path query.
- * @returns Up to 100 matching entries.
- * @remarks Empty query returns the first 100 entries for browse-like behavior.
- */
-function filterFiles(
-  allFiles: FlatFileEntry[],
-  query: string
-): FlatFileEntry[] {
-  const trimmed = query.trim().toLowerCase()
-  const results: FlatFileEntry[] = []
-  for (const file of allFiles) {
-    if (results.length >= 100) break
-    if (!trimmed || fileMatchesQuery(file, trimmed)) results.push(file)
-  }
-  return results
-}
-
-/**
- * Checks whether one flat file entry matches a lowercase filename query.
- * @param file Flat file entry from the workspace tree.
- * @param lowerQuery Trimmed lowercase query text.
- * @returns True when the file name or relative path contains the query.
- * @remarks The caller handles empty queries so this only checks real filters.
- */
-function fileMatchesQuery(file: FlatFileEntry, lowerQuery: string): boolean {
-  return (
-    file.lowerName.includes(lowerQuery) || file.lowerPath.includes(lowerQuery)
-  )
-}
-
-/**
- * Manages manual content-search settings and results.
- * @param folderPath Active workspace root path.
- * @param query Current search query.
- * @returns Content settings, results, flags, and search callbacks.
- * @remarks Backend search is only triggered by Enter or the search button.
- */
 function useContentSearch(folderPath: string, query: string) {
   const store = useContentSearchStore()
   const runContentSearch = useContentSearchRunner(
