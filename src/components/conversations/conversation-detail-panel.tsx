@@ -36,6 +36,10 @@ import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
+import {
+  GoalControlProvider,
+  type GoalControlValue,
+} from "@/components/message/goal-control-context"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
@@ -84,6 +88,7 @@ import {
   type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
+  type PlanApprovalAnswer,
   type PromptDraft,
   type QuestionAnswer,
   type UserMessageBlock,
@@ -1336,6 +1341,69 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpActions, tabId]
   )
 
+  // Grok `exit_plan_mode` approval: resolve the blocked ext request. The backend
+  // broadcasts `plan_approval_resolved` to clear the card on every client.
+  //
+  // "Request changes" is special. Grok discards the reply `feedback` on the
+  // keep-planning path (confirmed against 0.2.111 — only `approved`/`abandoned`
+  // consume it), and its own TUI instead delivers the revision notes as a
+  // follow-up user turn (`s` moves focus to the prompt). Mirror that: after
+  // resolving keep-planning, send the notes as a normal prompt so Grok — still
+  // in plan mode — revises and re-presents the plan. The send path queues the
+  // prompt if the keep-planning turn is still winding down, then flushes when
+  // idle (same optimistic-turn + re-queue dance as `handleAnswerQuestion`).
+  const handleAnswerPlanApproval = useCallback(
+    (approvalId: string, answer: PlanApprovalAnswer) => {
+      const result = acpActions.answerPlanApproval(tabId, approvalId, answer)
+      const notes = answer.feedback?.trim()
+      if (
+        answer.decision === "request_changes" &&
+        notes &&
+        connStatus === "connected"
+      ) {
+        const optimisticTurn: MessageTurn = {
+          id: `optimistic-${randomUUID()}`,
+          role: "user",
+          blocks: [{ type: "text", text: notes }],
+          timestamp: new Date().toISOString(),
+        }
+        const draft: PromptDraft = {
+          blocks: [{ type: "text", text: notes }],
+          displayText: notes,
+        }
+        appendOptimisticTurn(
+          effectiveConversationId,
+          optimisticTurn,
+          optimisticTurn.id
+        )
+        setSendSignal((prev) => prev + 1)
+        setSyncState(effectiveConversationId, "awaiting_persist")
+        lifecycleSend(draft, null, {
+          clientMessageId: optimisticTurn.id,
+          // Rejected because the keep-planning turn was still in flight — roll
+          // back the optimistic turn and re-queue at the tail so it isn't lost.
+          onTurnInProgress: () => {
+            lastFlushBounceAtRef.current = Date.now()
+            removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+            mqEnqueue(draft, null)
+          },
+        })
+      }
+      return result
+    },
+    [
+      acpActions,
+      tabId,
+      connStatus,
+      appendOptimisticTurn,
+      removeOptimisticTurn,
+      mqEnqueue,
+      effectiveConversationId,
+      lifecycleSend,
+      setSyncState,
+    ]
+  )
+
   // Queue edit flow: derive editing draft text from queue state
   const editingQueueDraftText = useMemo(() => {
     if (!mqEditingItemId) return null
@@ -1412,22 +1480,44 @@ const ConversationTabView = memo(function ConversationTabView({
     closeTab(tabId)
   }, [closeTab, folder, openNewConversationTab, tabId, workingDirForConnection])
 
+  // Goal pause/clear is a live, owner-only action, so decide availability once
+  // here (where the connection is owned) rather than in the deep goal card.
+  // `null` when the session isn't live or the user is a viewer → the card hides
+  // its buttons. Codex is the only agent that produces goal cards, so no
+  // agent-type gate is needed. Provided only around the main panel's list; the
+  // read-only sub-agent dialog renders its own MessageListView with no provider.
+  const goalControlValue = useMemo<GoalControlValue>(() => {
+    const live =
+      conn.connectionId !== null &&
+      (connStatus === "connected" || connStatus === "prompting") &&
+      !conn.isViewer
+    return {
+      onGoalControl: live
+        ? (action) => {
+            void acpActions.goalControl(tabId, action)
+          }
+        : null,
+    }
+  }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
+
   const messageListNode = (
-    <MessageListView
-      conversationId={effectiveConversationId}
-      agentType={selectedAgent}
-      connStatus={connStatus}
-      isActive={isActive}
-      sendSignal={sendSignal}
-      detailLoading={detailLoading}
-      detailError={detailError}
-      acpLoadError={acpLoadError}
-      hideEmptyState={!hasPersistedConversation || hasSentMessage}
-      onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
-      onNewSession={
-        canShowDetailErrorActions ? handleOpenNewSession : undefined
-      }
-    />
+    <GoalControlProvider value={goalControlValue}>
+      <MessageListView
+        conversationId={effectiveConversationId}
+        agentType={selectedAgent}
+        connStatus={connStatus}
+        isActive={isActive}
+        sendSignal={sendSignal}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        acpLoadError={acpLoadError}
+        hideEmptyState={!hasPersistedConversation || hasSentMessage}
+        onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
+        onNewSession={
+          canShowDetailErrorActions ? handleOpenNewSession : undefined
+        }
+      />
+    </GoalControlProvider>
   )
 
   // Live-feedback bar gating + the "agent never read your note" resend fallback.
@@ -1471,12 +1561,14 @@ const ConversationTabView = memo(function ConversationTabView({
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
+      pendingPlanApproval={conn.pendingPlanApproval}
       onFocus={handleFocus}
       onSend={handleSend}
       onCancel={handleCancel}
       onRespondPermission={handleRespondPermission}
       onAnswerQuestion={handleAnswerQuestion}
       onAnswerAskQuestion={handleAnswerAskQuestion}
+      onAnswerPlanApproval={handleAnswerPlanApproval}
       modes={connectionModes}
       configOptions={connectionConfigOptions}
       modeLoading={modeLoading}
@@ -2019,7 +2111,7 @@ export function ConversationDetailPanel() {
               )
             : active
               ? "h-full"
-              : "absolute inset-0 invisible pointer-events-none"
+              : "conversation-tab-hidden absolute inset-0 invisible pointer-events-none"
         )}
         onPointerDownCapture={
           canTile && !active ? () => switchTab(tab.id) : undefined

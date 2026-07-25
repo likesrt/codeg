@@ -950,7 +950,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "API に帰属/課金識別子を送信",
+      "sendAttributionHeaderAria": "API に Claude Code の帰属/課金識別子を送信",
+      "disableNonessentialTraffic": "テレメトリや不要なネットワークリクエストを無効化",
+      "disableNonessentialTrafficAria": "Claude Code のテレメトリや不要なネットワークリクエストを無効化"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId} を削除しますか？",
@@ -2650,6 +2654,8 @@
           "remaining": "残り",
           "elapsed": "経過時間",
           "tokens": "tokens",
+          "pause": "一時停止",
+          "clear": "クリア",
           "status": {
             "active": "実行中",
             "paused": "一時停止",
@@ -2778,6 +2784,17 @@
         "submit": "送信",
         "submitError": "送信できませんでした。もう一度お試しください。"
       },
+      "planApproval": {
+        "title": "エージェントが計画を提示しました — 確認してください",
+        "emptyPlan": "エージェントは計画を作成しませんでした。承認して実装を開始するか、変更を依頼してください。",
+        "approve": "承認して開始",
+        "requestChanges": "変更を依頼",
+        "abandon": "破棄",
+        "feedbackPlaceholder": "何を変更しますか？",
+        "sendChanges": "送信",
+        "cancel": "キャンセル",
+        "submitError": "送信できませんでした。もう一度お試しください。"
+      },
       "feedbackCheckResult": {
         "count": "フィードバック {count} 件",
         "expand": "すべてのフィードバックを表示",
@@ -2818,6 +2835,11 @@
         "opClose": "サブエージェントを終了中",
         "opResume": "サブエージェントを再開中"
       },
+      "contextCompaction": {
+        "compacting": "コンテキストを圧縮しています…",
+        "compacted": "コンテキストを圧縮しました",
+        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン"
+      },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
         "settling": "バックグラウンド結果を同期中…",
@@ -2827,6 +2849,10 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "proposedPlan": {
+        "title": "提案された計画",
+        "planning": "計画中…"
       }
     },
     "diffPreview": {

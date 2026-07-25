@@ -29,6 +29,7 @@ import type {
   LiveSessionSnapshot,
   FeedbackItem,
   QuestionAnswer,
+  PlanApprovalAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
   AgentDiagnosticsReport,
@@ -222,6 +223,16 @@ export async function acpSetConfigOption(
   })
 }
 
+/** Pause or clear the session's active Codex goal (codex-acp #293). The backend
+ *  sources the sessionId from the live session, so only the connection + action
+ *  are needed here. */
+export async function acpGoalControl(
+  connectionId: string,
+  action: "pause" | "clear"
+): Promise<void> {
+  return getTransport().call("acp_goal_control", { connectionId, action })
+}
+
 export async function acpCancel(connectionId: string): Promise<void> {
   return getTransport().call("acp_cancel", { connectionId })
 }
@@ -284,6 +295,25 @@ export async function acpAnswerQuestion(
   return getTransport().call("acp_answer_question", {
     connectionId,
     questionId,
+    answer,
+  })
+}
+
+/**
+ * Submit the user's decision on a blocking Grok `exit_plan_mode` approval
+ * (approve / request-changes / abandon). Resolves the parked ext request on the
+ * backend (and clears the card on every client via the `plan_approval_resolved`
+ * event). Idempotent: answering an already-resolved / unknown `approvalId` is a
+ * no-op success.
+ */
+export async function acpAnswerPlanApproval(
+  connectionId: string,
+  approvalId: string,
+  answer: PlanApprovalAnswer
+): Promise<void> {
+  return getTransport().call("acp_answer_plan_approval", {
+    connectionId,
+    approvalId,
     answer,
   })
 }

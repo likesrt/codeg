@@ -1,3 +1,12 @@
+// The ACP connection driver (`acp::connection`) wraps the enormous
+// `run_connection` future in a `block_on(async move { … })` frame whose type
+// layout nests deep enough to blow rustc's default query depth of 128 (it
+// overflowed by ~130 when computing the async block's layout). This is a
+// compile-time type-recursion knob, unrelated to any runtime limit — bump it
+// so the giant future's layout resolves. See the big-stack thread in
+// `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
+#![recursion_limit = "256"]
+
 pub mod acp;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
@@ -1036,6 +1045,7 @@ mod tauri_app {
                 pet_commands::pet_save_window_state,
                 pet_commands::pet_marketplace_list,
                 pet_commands::pet_marketplace_install,
+                pet_commands::pet_marketplace_asset,
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
                 pet_commands::pet_list_active_sessions,
@@ -1091,11 +1101,13 @@ mod tauri_app {
                 acp_commands::acp_prompt,
                 acp_commands::acp_set_mode,
                 acp_commands::acp_set_config_option,
+                acp_commands::acp_goal_control,
                 acp_commands::acp_describe_agent_options,
                 acp_commands::acp_cancel,
                 acp_commands::acp_fork,
                 acp_commands::acp_respond_permission,
                 acp_commands::acp_answer_question,
+                acp_commands::acp_answer_plan_approval,
                 acp_commands::acp_disconnect,
                 acp_commands::acp_touch_connection,
                 acp_commands::acp_list_connections,

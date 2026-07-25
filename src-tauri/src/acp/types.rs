@@ -200,6 +200,21 @@ pub enum AcpEvent {
         #[serde(skip, default)]
         terminal: bool,
     },
+    /// A retryable turn error that keeps the turn alive (codex-acp #289,
+    /// v1.1.3+). Codex reports a transient, auto-retried error as
+    /// `session_info_update._meta.codex.error` (only when `willRetry == true`)
+    /// and continues the turn rather than terminating it. Surfaced as a
+    /// transient "retrying" indicator on the active turn — it is NOT a turn
+    /// failure and must not be rendered as one. The frontend reuses the Claude
+    /// API-retry banner and clears it at the next turn boundary.
+    TurnRetrying {
+        /// Human-readable transient error (`_meta.codex.error.message`).
+        message: String,
+        /// HTTP status pulled from a `codexErrorInfo` object variant
+        /// (e.g. `responseStreamDisconnected.httpStatusCode`), when present.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_status: Option<i64>,
+    },
     /// `session/load` failed in a non-recoverable way (e.g. the agent has no
     /// record of this `session_id`). Emitted instead of silently falling back
     /// to `session/new`, so the frontend can surface the failure with reload
@@ -331,6 +346,23 @@ pub enum AcpEvent {
     /// (the tool call was aborted / the connection drained). Carries only the
     /// `question_id`; clients clear the matching card. Idempotent on apply.
     QuestionResolved { question_id: String },
+    /// A Grok `exit_plan_mode` call: the agent finished planning and is BLOCKED
+    /// on the user's approval of the plan before it leaves plan mode and starts
+    /// implementing (Grok's native `_x.ai/exit_plan_mode` ext request). Broadcast
+    /// so every client viewing this conversation renders the interactive
+    /// plan-approval card above the input box, and captured into
+    /// `SessionState.pending_plan_approval` so a client attaching mid-turn (cold
+    /// attach, reconnect, another window) recovers it from the snapshot. The
+    /// backend parks the blocked ext-request responder keyed by `approval_id`.
+    PlanApprovalRequest {
+        approval_id: String,
+        tool_call_id: String,
+        plan_markdown: String,
+    },
+    /// A previously-pending plan approval was answered (from any client) or
+    /// canceled (the connection drained). Carries only the `approval_id`; clients
+    /// clear the matching card. Idempotent on apply.
+    PlanApprovalResolved { approval_id: String },
     /// The agent's effective settings (env vars / model provider / native config
     /// files) changed AFTER this connection was spawned, so the running process
     /// is still using its launch-time config. Emitted by

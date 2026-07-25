@@ -950,7 +950,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "向介面傳送歸屬/計費識別碼",
+      "sendAttributionHeaderAria": "向介面傳送 Claude Code 歸屬/計費識別碼",
+      "disableNonessentialTraffic": "停用遙測或多餘的網路請求",
+      "disableNonessentialTrafficAria": "停用 Claude Code 遙測或多餘的網路請求"
     },
     "dialogs": {
       "confirmDeleteProvider": "確認刪除 Provider {providerId}？",
@@ -2650,6 +2654,8 @@
           "remaining": "剩餘",
           "elapsed": "耗時",
           "tokens": "tokens",
+          "pause": "暫停",
+          "clear": "清除",
           "status": {
             "active": "進行中",
             "paused": "已暫停",
@@ -2778,6 +2784,17 @@
         "submit": "提交",
         "submitError": "提交失敗，請重試。"
       },
+      "planApproval": {
+        "title": "智慧代理已提出計畫——請審閱",
+        "emptyPlan": "智慧代理未寫入計畫。可核准開始實作，或要求修改。",
+        "approve": "核准並開始",
+        "requestChanges": "要求修改",
+        "abandon": "放棄",
+        "feedbackPlaceholder": "需要修改什麼？",
+        "sendChanges": "傳送",
+        "cancel": "取消",
+        "submitError": "提交失敗，請重試。"
+      },
       "feedbackCheckResult": {
         "count": "{count} 則回饋",
         "expand": "展開全部回饋",
@@ -2818,6 +2835,11 @@
         "opClose": "結束子智能體",
         "opResume": "恢復子智能體"
       },
+      "contextCompaction": {
+        "compacting": "正在壓縮上下文…",
+        "compacted": "上下文已壓縮",
+        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count} 個背景任務執行中",
         "settling": "正在同步背景結果…",
@@ -2827,6 +2849,10 @@
         "cardCompleted": "背景任務已完成",
         "cardFinishedWithStatus": "背景任務已結束（{status}）",
         "cardResultPending": "結果尚未返回"
+      },
+      "proposedPlan": {
+        "title": "計劃提案",
+        "planning": "規劃中…"
       }
     },
     "diffPreview": {

@@ -972,13 +972,17 @@ export interface QuestionOption {
 }
 
 /** A single multiple-choice question (mirror of Rust `QuestionSpec`). `id` is
- *  the backend-minted correlation key the answer is submitted against. */
+ *  the backend-minted correlation key the answer is submitted against. Empty
+ *  `options` means free-text: the card renders only its "Other" input (codex
+ *  elicitation / MCP-server forms ask open questions this way). `is_secret`
+ *  masks that input (absent on the wire for non-secret sources). */
 export interface QuestionSpec {
   id: string
   question: string
   header: string
   multi_select: boolean
   options: QuestionOption[]
+  is_secret?: boolean
 }
 
 /** Awaiting-answer question set on the session (mirror of `PendingQuestionState`). */
@@ -1000,6 +1004,29 @@ export interface QuestionAnswerItem {
 export interface QuestionAnswer {
   answers: QuestionAnswerItem[]
   declined: boolean
+}
+
+// --- plan approval (mirror of Rust `crate::acp::plan_approval`) ---
+
+/** Awaiting-decision Grok `exit_plan_mode` approval on the session (mirror of
+ *  Rust `PendingPlanApprovalState`). The agent is blocked until the user acts. */
+export interface PendingPlanApprovalState {
+  approval_id: string
+  tool_call_id: string
+  plan_markdown: string
+  created_at: string
+}
+
+/** Which action the user took on the plan-approval card (mirror of Rust
+ *  `PlanApprovalDecision`). */
+export type PlanApprovalDecision = "approve" | "request_changes" | "abandon"
+
+/** The user's decision submitted to `acp_answer_plan_approval` (mirror of Rust
+ *  `PlanApprovalAnswer`). `feedback` carries the freeform revision notes for a
+ *  `request_changes` decision. */
+export interface PlanApprovalAnswer {
+  decision: PlanApprovalDecision
+  feedback?: string | null
 }
 
 export interface SessionModeInfo {
@@ -1319,6 +1346,16 @@ export type AcpEvent =
       code: string | null
     }
   | {
+      // codex-acp #289: a retryable turn error that keeps the turn alive (codex
+      // auto-retries). NOT a turn failure — rendered as a transient retry
+      // indicator that reuses the Claude API-retry banner and clears at the
+      // next turn boundary. `error_status` is the HTTP status when codex's
+      // `codexErrorInfo` carried one.
+      type: "turn_retrying"
+      message: string
+      error_status?: number
+    }
+  | {
       type: "session_load_failed"
       session_id: string
       message: string
@@ -1437,6 +1474,25 @@ export type AcpEvent =
   | {
       type: "question_resolved"
       question_id: string
+    }
+  /**
+   * A Grok `exit_plan_mode` call: the agent finished planning and is blocked on
+   * the user's approval of the plan. Broadcast so every client renders the
+   * interactive plan-approval card; also captured in the snapshot for attach.
+   */
+  | {
+      type: "plan_approval_request"
+      approval_id: string
+      tool_call_id: string
+      plan_markdown: string
+    }
+  /**
+   * A pending plan approval was answered (from any client) or canceled
+   * (connection drained). Clients clear the matching card.
+   */
+  | {
+      type: "plan_approval_resolved"
+      approval_id: string
     }
   /**
    * The agent's effective settings (env vars / model provider / native config)
@@ -1618,6 +1674,9 @@ export interface LiveSessionSnapshot {
   /** Awaiting-answer `ask_user_question`, recoverable on mid-turn attach.
    *  Absent (omitted) when no question is pending. */
   pending_question?: PendingQuestionState | null
+  /** Awaiting-decision Grok `exit_plan_mode` approval, recoverable on mid-turn
+   *  attach. Absent (omitted) when no approval is pending. */
+  pending_plan_approval?: PendingPlanApprovalState | null
   /** In-flight user prompt for the current turn — lets a client attaching
    *  mid-turn render the user turn. Absent (omitted) when no turn is in flight. */
   pending_user_message?: {

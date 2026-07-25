@@ -950,7 +950,11 @@
       "effortLevel_low": "Bajo",
       "effortLevel_medium": "Medio",
       "effortLevel_high": "Alto",
-      "effortLevel_xhigh": "Extra Alto"
+      "effortLevel_xhigh": "Extra Alto",
+      "sendAttributionHeader": "Enviar identificador de atribución/facturación a la API",
+      "sendAttributionHeaderAria": "Enviar el identificador de atribución/facturación de Claude Code a la API",
+      "disableNonessentialTraffic": "Desactivar la telemetría o las solicitudes de red innecesarias",
+      "disableNonessentialTrafficAria": "Desactivar la telemetría o las solicitudes de red innecesarias de Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "¿Eliminar proveedor {providerId}?",
@@ -2650,6 +2654,8 @@
           "remaining": "Restante",
           "elapsed": "Transcurrido",
           "tokens": "tokens",
+          "pause": "Pausar",
+          "clear": "Borrar",
           "status": {
             "active": "activo",
             "paused": "pausado",
@@ -2778,6 +2784,17 @@
         "submit": "Enviar",
         "submitError": "No se pudo enviar. Inténtalo de nuevo."
       },
+      "planApproval": {
+        "title": "El agente tiene un plan: revísalo",
+        "emptyPlan": "El agente no escribió un plan. Aprueba para empezar a construir o solicita cambios.",
+        "approve": "Aprobar y construir",
+        "requestChanges": "Solicitar cambios",
+        "abandon": "Descartar",
+        "feedbackPlaceholder": "¿Qué debería cambiar?",
+        "sendChanges": "Enviar",
+        "cancel": "Cancelar",
+        "submitError": "No se pudo enviar. Inténtalo de nuevo."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 comentario} other {# comentarios}}",
         "expand": "Mostrar todos los comentarios",
@@ -2818,6 +2835,11 @@
         "opClose": "Cerrando subagente",
         "opResume": "Reanudando subagente"
       },
+      "contextCompaction": {
+        "compacting": "Compactando el contexto…",
+        "compacted": "Contexto compactado",
+        "compactedTokens": "Contexto compactado · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# tarea en segundo plano en ejecución} other {# tareas en segundo plano en ejecución}}",
         "settling": "Sincronizando resultados en segundo plano…",
@@ -2827,6 +2849,10 @@
         "cardCompleted": "Tarea en segundo plano completada",
         "cardFinishedWithStatus": "Tarea en segundo plano finalizada ({status})",
         "cardResultPending": "El resultado aún no ha llegado"
+      },
+      "proposedPlan": {
+        "title": "Plan propuesto",
+        "planning": "Planificando…"
       }
     },
     "diffPreview": {

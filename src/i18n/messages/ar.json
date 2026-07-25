@@ -950,7 +950,11 @@
       "effortLevel_low": "منخفض",
       "effortLevel_medium": "متوسط",
       "effortLevel_high": "مرتفع",
-      "effortLevel_xhigh": "مرتفع جداً"
+      "effortLevel_xhigh": "مرتفع جداً",
+      "sendAttributionHeader": "إرسال معرّف الإسناد/الفوترة إلى الواجهة",
+      "sendAttributionHeaderAria": "إرسال معرّف الإسناد/الفوترة الخاص بـ Claude Code إلى الواجهة",
+      "disableNonessentialTraffic": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية",
+      "disableNonessentialTrafficAria": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية في Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "حذف المزود {providerId}؟",
@@ -2650,6 +2654,8 @@
           "remaining": "المتبقي",
           "elapsed": "المدة",
           "tokens": "tokens",
+          "pause": "إيقاف مؤقت",
+          "clear": "مسح",
           "status": {
             "active": "نشط",
             "paused": "متوقف مؤقتًا",
@@ -2778,6 +2784,17 @@
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
       },
+      "planApproval": {
+        "title": "لدى الوكيل خطة — راجعها",
+        "emptyPlan": "لم يكتب الوكيل خطة. وافق للبدء في التنفيذ أو اطلب تعديلات.",
+        "approve": "الموافقة والبدء",
+        "requestChanges": "طلب تعديلات",
+        "abandon": "تجاهل",
+        "feedbackPlaceholder": "ما الذي ينبغي تغييره؟",
+        "sendChanges": "إرسال",
+        "cancel": "إلغاء",
+        "submitError": "تعذّر الإرسال. حاول مرة أخرى."
+      },
       "feedbackCheckResult": {
         "count": "{count} ملاحظة",
         "expand": "عرض كل الملاحظات",
@@ -2818,6 +2835,11 @@
         "opClose": "إغلاق الوكيل الفرعي",
         "opResume": "استئناف الوكيل الفرعي"
       },
+      "contextCompaction": {
+        "compacting": "جارٍ ضغط السياق…",
+        "compacted": "تم ضغط السياق",
+        "compactedTokens": "تم ضغط السياق · {before} → {after} رمز"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
         "settling": "جارٍ مزامنة نتائج الخلفية…",
@@ -2827,6 +2849,10 @@
         "cardCompleted": "اكتملت مهمة الخلفية",
         "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
         "cardResultPending": "لم تصل النتيجة بعد"
+      },
+      "proposedPlan": {
+        "title": "الخطة المقترحة",
+        "planning": "جارٍ التخطيط…"
       }
     },
     "diffPreview": {

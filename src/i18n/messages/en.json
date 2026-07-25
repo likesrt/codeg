@@ -950,7 +950,11 @@
       "effortLevel_low": "Low",
       "effortLevel_medium": "Medium",
       "effortLevel_high": "High",
-      "effortLevel_xhigh": "Extra High"
+      "effortLevel_xhigh": "Extra High",
+      "sendAttributionHeader": "Send attribution/billing identifier to the API",
+      "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
+      "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
+      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests"
     },
     "dialogs": {
       "confirmDeleteProvider": "Delete Provider {providerId}?",
@@ -2650,6 +2654,8 @@
           "remaining": "Remaining",
           "elapsed": "Elapsed",
           "tokens": "tokens",
+          "pause": "Pause",
+          "clear": "Clear",
           "status": {
             "active": "active",
             "paused": "paused",
@@ -2778,6 +2784,17 @@
         "submit": "Submit",
         "submitError": "Couldn't submit. Please try again."
       },
+      "planApproval": {
+        "title": "The agent has a plan — review it",
+        "emptyPlan": "The agent didn't write a plan. Approve to start building, or request changes.",
+        "approve": "Approve & build",
+        "requestChanges": "Request changes",
+        "abandon": "Abandon",
+        "feedbackPlaceholder": "What should change?",
+        "sendChanges": "Send",
+        "cancel": "Cancel",
+        "submitError": "Couldn't submit. Please try again."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 feedback note} other {# feedback notes}}",
         "expand": "Show all feedback",
@@ -2818,6 +2835,11 @@
         "opClose": "Closing sub-agent",
         "opResume": "Resuming sub-agent"
       },
+      "contextCompaction": {
+        "compacting": "Compacting context…",
+        "compacted": "Context compacted",
+        "compactedTokens": "Context compacted · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
         "settling": "Syncing background results…",
@@ -2827,6 +2849,10 @@
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "proposedPlan": {
+        "title": "Proposed plan",
+        "planning": "Planning…"
       }
     },
     "diffPreview": {

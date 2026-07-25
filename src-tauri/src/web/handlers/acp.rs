@@ -367,6 +367,25 @@ pub async fn acp_set_config_option(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpGoalControlParams {
+    pub connection_id: String,
+    pub action: crate::acp::connection::GoalControlAction,
+}
+
+pub async fn acp_goal_control(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpGoalControlParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let manager = &state.connection_manager;
+    manager
+        .goal_control(&params.connection_id, params.action)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpDescribeAgentOptionsParams {
     pub agent_type: crate::models::AgentType,
     #[serde(default)]
@@ -464,6 +483,26 @@ pub async fn acp_answer_question(
     let manager = &state.connection_manager;
     manager
         .answer_question(&params.connection_id, &params.question_id, params.answer)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAnswerPlanApprovalParams {
+    pub connection_id: String,
+    pub approval_id: String,
+    pub answer: crate::acp::plan_approval::PlanApprovalAnswer,
+}
+
+pub async fn acp_answer_plan_approval(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpAnswerPlanApprovalParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let manager = &state.connection_manager;
+    manager
+        .answer_plan_approval(&params.connection_id, &params.approval_id, params.answer)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
