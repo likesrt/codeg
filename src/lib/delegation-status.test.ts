@@ -24,6 +24,20 @@ function envelope(report: Record<string, unknown>, isError = false): string {
   })
 }
 
+/**
+ * codex's LIVE wire shape. codex-acp forwards every MCP call's outcome as
+ * `rawOutput = { result: <CallToolResult>, error: <string|null> }`
+ * (`createMcpRawOutput`), so the card sees the CallToolResult one level down —
+ * unlike codex's persisted rollout, which carries the bare
+ * `Wall time:…\nOutput:\n<json>` text.
+ */
+function codexLiveEnvelope(callToolResult: string): string {
+  return JSON.stringify({
+    error: null,
+    result: { meta: null, ...JSON.parse(callToolResult) },
+  })
+}
+
 describe("parseTaskId", () => {
   it("reads a plain task_id", () => {
     expect(parseTaskId(JSON.stringify({ task_id: "abc12345" }))).toBe(
@@ -170,6 +184,49 @@ describe("parseStatusReports", () => {
     })
   })
 
+  it("peels codex's live {result, error} wrapper around a batch", () => {
+    // Codex as the MAIN agent: the whole envelope used to fall through as
+    // opaque text, so one anonymous row rendered the raw JSON instead of one
+    // row per task.
+    const reports = parseStatusReports(
+      codexLiveEnvelope(
+        batchEnvelope([
+          {
+            task_id: "8cb72a7c",
+            status: "running",
+            message: "Running.\nLatest sub-agent reply: thinking",
+          },
+          {
+            task_id: "9c232105",
+            status: "completed",
+            text: "done",
+            duration_ms: 42,
+          },
+        ])
+      ),
+      null
+    )
+    expect(reports).toHaveLength(2)
+    expect(reports[0]).toMatchObject({ status: "running", taskId: "8cb72a7c" })
+    expect(reports[1]).toMatchObject({
+      status: "completed",
+      taskId: "9c232105",
+      text: "done",
+      durationMs: 42,
+    })
+  })
+
+  it("peels codex's rollout {Ok} serde variant around a batch", () => {
+    const output = JSON.stringify({
+      Ok: JSON.parse(
+        batchEnvelope([{ task_id: "t1", status: "completed", text: "ok" }])
+      ),
+    })
+    const reports = parseStatusReports(output, null)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatchObject({ status: "completed", taskId: "t1" })
+  })
+
   it("does NOT treat a tasks array of non-reports as a batch", () => {
     // A child whose own output is {tasks:[...]} of non-report objects must not
     // be misread — it falls back to the single-report path.
@@ -219,6 +276,66 @@ describe("parseStatusReport", () => {
     expect(report.status).toBe("completed")
     expect(report.taskId).toBe("abc12345")
     expect(report.durationMs).toBe(1234)
+  })
+
+  it("peels codex's live {result, error} wrapper around a single report", () => {
+    const report = parseStatusReport(
+      codexLiveEnvelope(
+        envelope({
+          task_id: "abc12345",
+          status: "completed",
+          text: "All done.",
+          duration_ms: 1234,
+        })
+      ),
+      null
+    )
+    expect(report.status).toBe("completed")
+    expect(report.taskId).toBe("abc12345")
+    expect(report.durationMs).toBe(1234)
+    expect(report.text).toBe("All done.")
+  })
+
+  it("shows a failed host envelope's error string, not the envelope JSON", () => {
+    // codex-acp sets `error` and leaves `result` null when the MCP call itself
+    // failed — there is no result to peel to, so the error text is all there is.
+    const report = parseStatusReport(
+      JSON.stringify({ error: "mcp server disconnected", result: null }),
+      null
+    )
+    expect(report.text).toBe("mcp server disconnected")
+  })
+
+  it("renders a child's own `result`-shaped payload verbatim", () => {
+    // The peel finds no CallToolResult under `result`, so nothing is recovered
+    // and the child's output still displays as-is.
+    const childOutput = JSON.stringify({ result: { rows: 3 }, error: null })
+    const report = parseStatusReport(childOutput, null)
+    expect(report.status).toBeNull()
+    expect(report.taskId).toBeNull()
+    expect(report.text).toBe(childOutput)
+  })
+
+  it("does NOT read a child's nested {status, task_id} as a report", () => {
+    // The nastiest shape: peeling on the `result` KEY alone would surface a
+    // report-looking object and repaint opaque child output as a failed task.
+    // Only a real CallToolResult (content / structuredContent) may be peeled to.
+    const childOutput = JSON.stringify({
+      result: { status: "failed", task_id: "child-job", message: "domain" },
+    })
+    const report = parseStatusReport(childOutput, null)
+    expect(report.status).toBeNull()
+    expect(report.taskId).toBeNull()
+    expect(report.text).toBe(childOutput)
+  })
+
+  it("does NOT treat a child's own `error` field as a host failure", () => {
+    // No `result` key ⇒ not codex-acp's failure envelope, so the payload stays
+    // whole instead of collapsing to the error string.
+    const childOutput = JSON.stringify({ error: "domain validation", rows: [] })
+    const report = parseStatusReport(childOutput, null)
+    expect(report.status).toBeNull()
+    expect(report.text).toBe(childOutput)
   })
 
   it("does NOT treat a child's own JSON-with-status as a report (no task_id)", () => {
@@ -451,6 +568,39 @@ describe("buildDelegationTaskRows", () => {
     ])
     expect(rows).toHaveLength(1)
     expect(rows[0].taskId).toBe("t1")
+  })
+
+  it("builds one row per task from a codex live-wire batch poll", () => {
+    // End-to-end shape of the reported bug: with codex as the main agent the
+    // `{result, error}` wrapper hid the batch, collapsing both tasks into one
+    // anonymous row whose body was the raw envelope JSON and whose badge fell
+    // back to "ok" (output-available) even for the still-running task.
+    const rows = buildDelegationTaskRows([
+      statusPoll({
+        toolCallId: "p1",
+        input: JSON.stringify({ task_ids: ["t1", "t2"], wait_ms: 60000 }),
+        output: codexLiveEnvelope(
+          batchEnvelope([
+            { task_id: "t1", status: "running", message: "Running." },
+            {
+              task_id: "t2",
+              status: "completed",
+              text: "review done",
+              duration_ms: 3000,
+            },
+          ])
+        ),
+      }),
+    ])
+    expect(rows).toHaveLength(2)
+    expect(rows[0].taskId).toBe("t1")
+    // A poll that RETURNED while the task ran is a settled snapshot, not a
+    // spinner — and definitely not "ok".
+    expect(rows[0].badge.status).toBe("checked")
+    expect(rows[1].taskId).toBe("t2")
+    expect(rows[1].badge.status).toBe("ok")
+    expect(rows[1].results).toEqual(["review done"])
+    expect(rows[1].report.durationMs).toBe(3000)
   })
 
   it("drops a live arg-less in-flight orphan poll (no id, nothing to show)", () => {

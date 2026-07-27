@@ -84,6 +84,7 @@ import {
 } from "@/components/ui/command"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
+import { GitLogCommitMessage } from "@/components/layout/git-log-commit-message"
 import { subscribe } from "@/lib/platform"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
@@ -2296,16 +2297,12 @@ export function GitLogTab() {
                                         </time>
                                       </span>
                                     </div>
-                                    <div className="group/msg relative rounded-lg border border-border/60 bg-muted/20 p-2.5">
-                                      <p className="text-xs whitespace-pre-wrap break-words pr-6">
-                                        {entry.message}
-                                      </p>
-                                      <CommitCopyButton
-                                        className="absolute top-1.5 right-1.5 size-5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100"
-                                        hash={entry.message}
-                                        title={t("copyMessage")}
-                                      />
-                                    </div>
+                                    {/* Long release messages are capped with a
+                                        Show more / Show less toggle so the file
+                                        tree below stays reachable. */}
+                                    <GitLogCommitMessage
+                                      message={entry.message}
+                                    />
                                     {/* File changes load lazily on expand (the
                                         list query runs with withFiles=false).
                                         CommitFilesTree renders its own "Files"

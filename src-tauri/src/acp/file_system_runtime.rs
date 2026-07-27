@@ -226,8 +226,11 @@ fn extra_write_roots(runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
 /// — hence `canonical_root` on every entry).
 fn temp_roots() -> Vec<PathBuf> {
     let mut roots = vec![std::env::temp_dir()];
-    #[cfg(unix)]
-    {
+    // The shared unix temp dirs are extra roots on top of the per-user one;
+    // Windows has none to add. Gated with a runtime `cfg!` rather than
+    // `#[cfg(unix)]` so the binding is still mutated on Windows — a `#[cfg]`
+    // block leaves `mut` unused there, which `-D warnings` rejects.
+    if cfg!(unix) {
         roots.push(PathBuf::from("/tmp"));
         roots.push(PathBuf::from("/var/tmp"));
     }
@@ -946,6 +949,24 @@ mod tests {
         path
     }
 
+    /// Drive prefix that makes a rooted path ABSOLUTE on this platform. On
+    /// Windows `\tmp\x` is rooted but not absolute (it is relative to the
+    /// current drive), so a literal unix path would be dropped by the very
+    /// relative-path guards these tests exercise.
+    #[cfg(windows)]
+    const ABS_PREFIX: &str = "C:";
+    #[cfg(not(windows))]
+    const ABS_PREFIX: &str = "";
+
+    /// An absolute path for the HOST platform, built from unix-style segments.
+    /// `absolute_path("")` is the filesystem root itself (`/`, or `C:/`).
+    ///
+    /// None of these paths are ever opened — they only have to be absolute, so
+    /// the synthetic drive letter needs no counterpart on disk.
+    fn absolute_path(segments: &str) -> PathBuf {
+        PathBuf::from(format!("{ABS_PREFIX}/{segments}"))
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn read_honors_line_and_limit() {
         let workspace = temp_workspace();
@@ -1297,7 +1318,7 @@ mod tests {
     /// fallback) are covered by `relocation_suffixes_match_the_agents_own_resolvers`.
     #[test]
     fn agent_data_roots_honor_runtime_env_relocation() {
-        let relocated = PathBuf::from("/tmp/codeg-relocated-agent-home");
+        let relocated = absolute_path("tmp/codeg-relocated-agent-home");
         let cases = [
             (AgentType::Grok, "GROK_HOME"),
             (AgentType::ClaudeCode, "CLAUDE_CONFIG_DIR"),
@@ -1327,7 +1348,7 @@ mod tests {
     /// writable, which for `GEMINI_CLI_HOME=$HOME` is the whole home directory.
     #[test]
     fn relocation_suffixes_match_the_agents_own_resolvers() {
-        let base = PathBuf::from("/tmp/codeg-relocation-base");
+        let base = absolute_path("tmp/codeg-relocation-base");
         let cases = [
             (AgentType::Gemini, "GEMINI_CLI_HOME", ".gemini"),
             (AgentType::OpenCode, "XDG_DATA_HOME", "opencode"),
@@ -1407,7 +1428,7 @@ mod tests {
     /// inactive tree holds config and credentials, so it must not stay writable.
     #[test]
     fn relocation_excludes_the_inactive_default_root() {
-        let relocated = PathBuf::from("/tmp/codeg-isolated-profile");
+        let relocated = absolute_path("tmp/codeg-isolated-profile");
         let cases = [
             (AgentType::Codex, "CODEX_HOME"),
             (AgentType::Grok, "GROK_HOME"),
@@ -1504,14 +1525,18 @@ mod tests {
     /// not to the masked key's inherited value.
     #[test]
     fn blank_runtime_value_falls_through_to_the_next_candidate() {
+        let xdg = absolute_path("tmp/codeg-xdg");
         let roots = agent_data_roots(
             AgentType::Cursor,
             &BTreeMap::from([
                 ("CURSOR_CONFIG_DIR".to_string(), String::new()),
-                ("XDG_CONFIG_HOME".to_string(), "/tmp/codeg-xdg".to_string()),
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    xdg.to_string_lossy().to_string(),
+                ),
             ]),
         );
-        assert_eq!(roots, vec![PathBuf::from("/tmp/codeg-xdg/cursor")]);
+        assert_eq!(roots, vec![xdg.join("cursor")]);
     }
 
     /// `child_env_value` must distinguish the ways a var reaches (or fails to
@@ -1723,16 +1748,17 @@ mod tests {
     /// Same hazard through the user-facing knob.
     #[test]
     fn relative_extra_roots_are_dropped() {
+        let absolute = absolute_path("tmp/codeg-abs-extra");
         let runtime_env = BTreeMap::from([(
             FS_EXTRA_ROOTS_ENV.to_string(),
-            std::env::join_paths([Path::new("."), Path::new("/tmp/codeg-abs-extra")])
+            std::env::join_paths([Path::new("."), absolute.as_path()])
                 .expect("join paths")
                 .to_string_lossy()
                 .to_string(),
         )]);
 
         let roots = extra_write_roots(&runtime_env);
-        assert_eq!(roots, vec![PathBuf::from("/tmp/codeg-abs-extra")]);
+        assert_eq!(roots, vec![absolute]);
     }
 
     /// The extra-roots list must be read VERBATIM. `split_paths` does not trim
@@ -1740,20 +1766,22 @@ mod tests {
     /// `" / "` into `/` and hand out the entire filesystem.
     #[test]
     fn whitespace_padded_extra_root_is_not_trimmed_into_filesystem_root() {
-        for padded in [" / ", "\t/", "/ "] {
-            let runtime_env =
-                BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), padded.to_string())]);
+        let root = absolute_path("");
+        let raw = root.to_string_lossy().to_string();
+
+        for padded in [format!(" {raw} "), format!("\t{raw}"), format!("{raw} ")] {
+            let runtime_env = BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), padded.clone())]);
             let roots = extra_write_roots(&runtime_env);
             assert!(
-                !roots.contains(&PathBuf::from("/")),
+                !roots.contains(&root),
                 "{padded:?} must not become the filesystem root, got {roots:?}"
             );
         }
 
-        // An entry that IS exactly `/` stays honored — widening is this knob's
-        // declared purpose, so that is the user's explicit choice.
-        let runtime_env = BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), "/".to_string())]);
-        assert_eq!(extra_write_roots(&runtime_env), vec![PathBuf::from("/")]);
+        // An entry that IS exactly the filesystem root stays honored — widening
+        // is this knob's declared purpose, so that is the user's explicit choice.
+        let runtime_env = BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), raw)]);
+        assert_eq!(extra_write_roots(&runtime_env), vec![root]);
     }
 
     /// Trimming a relocation value can WIDEN the policy, not just fail to match:
@@ -1761,27 +1789,34 @@ mod tests {
     /// filesystem root and would make everything writable.
     #[test]
     fn whitespace_padded_root_never_becomes_the_filesystem_root() {
+        let root = absolute_path("");
+        let padded = format!(" {} ", root.to_string_lossy());
+
         for (agent_type, key) in [
             (AgentType::Codex, "CODEX_HOME"),
             (AgentType::Grok, "GROK_HOME"),
             (AgentType::Pi, "PI_CODING_AGENT_DIR"),
         ] {
-            let runtime_env = BTreeMap::from([(key.to_string(), " / ".to_string())]);
+            let runtime_env = BTreeMap::from([(key.to_string(), padded.clone())]);
             let roots = agent_data_roots(agent_type, &runtime_env);
             assert!(
-                !roots.contains(&PathBuf::from("/")),
-                "{agent_type:?}: {key}=\" / \" must not resolve to the filesystem root, \
-                 got {roots:?}"
+                !roots.contains(&root),
+                "{agent_type:?}: {key}={padded:?} must not resolve to the filesystem \
+                 root, got {roots:?}"
             );
         }
 
-        // And the same value must not slip through the write gate either.
+        // And the same value must not slip through the write gate either. Compared
+        // against the CANONICAL root because that is the form `permissive` stores —
+        // on Windows `canonicalize("C:/")` is the verbatim `\\?\C:\`, so comparing
+        // the raw spelling would make this assertion unfalsifiable there.
         let workspace = temp_workspace();
-        let runtime_env = BTreeMap::from([("CODEX_HOME".to_string(), " / ".to_string())]);
+        let runtime_env = BTreeMap::from([("CODEX_HOME".to_string(), padded)]);
         let policy = FsAccessPolicy::permissive(&workspace, AgentType::Codex, &runtime_env);
         assert!(
-            !policy.write_roots.contains(&PathBuf::from("/")),
-            "write roots must not include /: {:?}",
+            !policy.write_roots.contains(&canonical_root(&root)),
+            "write roots must not include {}: {:?}",
+            root.display(),
             policy.write_roots
         );
 
@@ -1853,16 +1888,20 @@ mod tests {
     /// first match must win rather than both being admitted.
     #[test]
     fn cursor_relocation_respects_resolver_precedence() {
+        let config_dir = absolute_path("tmp/codeg-cursor");
         let runtime_env = BTreeMap::from([
             (
                 "CURSOR_CONFIG_DIR".to_string(),
-                "/tmp/codeg-cursor".to_string(),
+                config_dir.to_string_lossy().to_string(),
             ),
-            ("XDG_CONFIG_HOME".to_string(), "/tmp/codeg-xdg".to_string()),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                absolute_path("tmp/codeg-xdg").to_string_lossy().to_string(),
+            ),
         ]);
 
         let roots = agent_data_roots(AgentType::Cursor, &runtime_env);
-        assert_eq!(roots, vec![PathBuf::from("/tmp/codeg-cursor")]);
+        assert_eq!(roots, vec![config_dir]);
     }
 
     /// pi relocates its session store independently of its agent home, so a
@@ -1870,7 +1909,7 @@ mod tests {
     /// roots on its own — the process-env-only resolver cannot see it.
     #[test]
     fn pi_session_dir_relocation_is_honored() {
-        let sessions = PathBuf::from("/tmp/codeg-pi-sessions-elsewhere");
+        let sessions = absolute_path("tmp/codeg-pi-sessions-elsewhere");
         let runtime_env = BTreeMap::from([(
             "PI_CODING_AGENT_SESSION_DIR".to_string(),
             sessions.to_string_lossy().to_string(),

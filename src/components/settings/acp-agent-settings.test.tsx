@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   applyClaudeProviderToConfigText,
+  buildCodexSandboxConfig,
+  codexSandboxBaselineOf,
+  codexSandboxSaveConfig,
   buildGrokSaveOptions,
   buildGrokStructuredConfig,
   buildMergeConfigPayload,
@@ -35,6 +38,7 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     cline_secrets_json: null,
     codex_config_toml: null,
     codex_model_catalog: null,
+    codex_sandbox_settings: null,
     grok_config_toml: null,
     grok_settings: null,
     hermes_config_yaml: null,
@@ -84,6 +88,225 @@ const emptyCustoms = {
   customContextWindow: null,
   autoCompactThresholdPercent: null,
 }
+
+type CodexSandboxDraft = Parameters<typeof buildCodexSandboxConfig>[0]
+
+const CODEX_GRANULAR_SEED = {
+  sandbox_approval: true,
+  rules: true,
+  skill_approval: false,
+  request_permissions: false,
+  mcp_elicitations: true,
+}
+
+/** A draft whose baseline equals its current values — i.e. "nothing touched
+ * yet", exactly what `buildAgentDraft` produces from a freshly-read config. */
+function codexSandboxDraft(
+  disk: Partial<CodexSandboxDraft> = {},
+  edits: Partial<CodexSandboxDraft> = {}
+): CodexSandboxDraft {
+  const seeded = {
+    codexApprovalPolicy: "" as CodexSandboxDraft["codexApprovalPolicy"],
+    codexGranular: CODEX_GRANULAR_SEED,
+    codexSandboxMode: "" as CodexSandboxDraft["codexSandboxMode"],
+    codexWritableRootsText: "",
+    codexNetworkAccess: false,
+    codexExcludeTmpdirEnvVar: false,
+    codexExcludeSlashTmp: false,
+    ...disk,
+  }
+  return {
+    ...seeded,
+    ...edits,
+    codexSandboxBaseline: codexSandboxBaselineOf(seeded),
+  }
+}
+
+describe("buildCodexSandboxConfig — Codex sandbox/approval save patch", () => {
+  // The core contract. The panel also sends the raw config.toml text and the
+  // backend applies this patch last, so a field the user did not move must not
+  // appear at all — otherwise a hand-edit in the raw editor gets reverted by
+  // the panel's stale value for that key.
+  it("sends nothing when no control moved", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft({
+          codexApprovalPolicy: "never",
+          codexSandboxMode: "workspace-write",
+          codexWritableRootsText: "/srv/one",
+          codexNetworkAccess: true,
+        })
+      )
+    ).toEqual({})
+  })
+
+  it("sends only the field that moved", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexApprovalPolicy: "never", codexSandboxMode: "read-only" },
+          { codexSandboxMode: "danger-full-access" }
+        )
+      )
+    ).toEqual({ sandboxMode: "danger-full-access" })
+  })
+
+  // Clearing a control back to "not set" must reach the backend as an explicit
+  // null (remove the key), not as an absent field (leave it alone).
+  it("clears a control with an explicit null", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexSandboxMode: "never" as never },
+          {
+            codexSandboxMode: "",
+          }
+        )
+      )
+    ).toEqual({ sandboxMode: null })
+  })
+
+  // Approval is one externally tagged key upstream, so both representations
+  // travel together whenever either side changes.
+  it("moves the approval preset and granular table as a pair", () => {
+    const toGranular = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "never" },
+        { codexApprovalPolicy: "granular" }
+      )
+    )
+    expect(toGranular).toEqual({
+      approvalPolicy: null,
+      granular: CODEX_GRANULAR_SEED,
+    })
+
+    const toPreset = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "granular" },
+        { codexApprovalPolicy: "on-request" }
+      )
+    )
+    expect(toPreset).toEqual({ approvalPolicy: "on-request", granular: null })
+  })
+
+  it("detects a flipped granular switch while staying on granular", () => {
+    const patch = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "granular" },
+        {
+          codexApprovalPolicy: "granular",
+          codexGranular: { ...CODEX_GRANULAR_SEED, rules: false },
+        }
+      )
+    )
+    expect(patch.granular).toEqual({ ...CODEX_GRANULAR_SEED, rules: false })
+    expect(patch.approvalPolicy).toBeNull()
+  })
+
+  // codex only reads the workspace-write group under `workspace-write`, so
+  // dormant values are inert — clearing them would destroy the user's roots on
+  // a round-trip through read-only or full-access.
+  it("does not touch dormant workspace-write values when the mode changes", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {
+            codexSandboxMode: "workspace-write",
+            codexWritableRootsText: "/srv/one",
+            codexNetworkAccess: true,
+          },
+          { codexSandboxMode: "danger-full-access" }
+        )
+      )
+    ).toEqual({ sandboxMode: "danger-full-access" })
+  })
+
+  it("sends a flag toggle without disturbing its siblings", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "/srv/one", codexNetworkAccess: true },
+          { codexExcludeSlashTmp: true }
+        )
+      )
+    ).toEqual({ excludeSlashTmp: true })
+  })
+
+  it("normalizes the roots box and ignores cosmetic whitespace", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "/srv/one" },
+          { codexWritableRootsText: "  /srv/one  \n\n" }
+        )
+      )
+    ).toEqual({})
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {},
+          { codexWritableRootsText: " /srv/one \n\n/srv/two\n" }
+        )
+      )
+    ).toEqual({ writableRoots: ["/srv/one", "/srv/two"] })
+  })
+
+  // codex does NOT reject a relative writable_roots entry — it resolves it
+  // against CODEX_HOME, so "docs" would silently grant write access to
+  // ~/.codex/docs. The save must fail loudly instead.
+  it("refuses relative writable roots the user just typed", () => {
+    expect(() =>
+      buildCodexSandboxConfig(
+        codexSandboxDraft({}, { codexWritableRootsText: "/srv/ok\ndocs/rel" })
+      )
+    ).toThrow(/docs\/rel/)
+  })
+
+  // A relative root already on disk is not this save's problem: the field is
+  // untouched, so it is not in the patch and must not block the save.
+  it("tolerates a pre-existing relative root while it stays untouched", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "rel/dir" },
+          { codexNetworkAccess: true }
+        )
+      )
+    ).toEqual({ networkAccess: true })
+  })
+
+  it("accepts POSIX and Windows absolute roots", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {},
+          {
+            codexWritableRootsText:
+              "/srv/one\nC:\\work\\repo\n\\\\server\\share",
+          }
+        )
+      ).writableRoots
+    ).toHaveLength(3)
+  })
+})
+
+describe("codexSandboxSaveConfig — omit the field when nothing moved", () => {
+  it("returns undefined for an untouched group", () => {
+    expect(
+      codexSandboxSaveConfig(
+        codexSandboxDraft({ codexApprovalPolicy: "never" })
+      )
+    ).toBeUndefined()
+  })
+
+  it("returns the patch once a control moves", () => {
+    expect(
+      codexSandboxSaveConfig(
+        codexSandboxDraft({}, { codexSandboxMode: "read-only" })
+      )
+    ).toEqual({ sandboxMode: "read-only" })
+  })
+})
 
 describe("buildGrokStructuredConfig — Grok panel save payload", () => {
   // A chosen dropdown value passes through. These become [ui].permission_mode /

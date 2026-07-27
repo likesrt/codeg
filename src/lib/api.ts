@@ -34,6 +34,7 @@ import type {
   AcpAgentStatus,
   AgentDiagnosticsReport,
   GrokStructuredConfig,
+  CodexSandboxStructuredConfig,
   CursorStructuredConfig,
   CursorAuthStatus,
   CursorModelsResult,
@@ -484,6 +485,10 @@ export async function acpUpdateAgentConfig(
      * `model_catalog_json` catalog files from it (config.toml keys are patched
      * into `codex_config_toml` text by the caller). */
     codex_model_catalog?: string | null
+    /** Codex sandbox / approval controls; merged onto the on-disk config.toml
+     * server-side. Governs the turns codex starts itself (/goal, /review,
+     * /compact) — ordinary turns carry the composer preset's policy instead. */
+    codex_sandbox?: CodexSandboxStructuredConfig | null
     grok_config_toml?: string | null
     /** Grok structured controls (mode / reasoning effort); merged onto the
      * on-disk config.toml server-side. */
@@ -502,6 +507,7 @@ export async function acpUpdateAgentConfig(
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
     codexModelCatalog: params.codex_model_catalog ?? null,
+    codexSandbox: params.codex_sandbox ?? null,
     grokConfigToml: params.grok_config_toml ?? null,
     grokStructured: params.grok_structured ?? null,
     cursorCliConfigJson: params.cursor_cli_config_json ?? null,

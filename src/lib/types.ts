@@ -1754,6 +1754,9 @@ export interface AcpAgentInfo {
   /** Compact structured codex model-catalog source (the custom-model list),
    *  round-tripped into the settings editor. Codex + api-key mode only. */
   codex_model_catalog: string | null
+  /** Parsed sandbox / approval keys backing the Codex panel's structured
+   * controls. Codex agent only; derived from codex_config_toml. */
+  codex_sandbox_settings: CodexSandboxSettings | null
   cline_secrets_json: string | null
   /** Raw ~/.hermes/config.yaml text, for the Hermes panel's advanced editor. */
   hermes_config_yaml: string | null
@@ -1769,6 +1772,84 @@ export interface AcpAgentInfo {
    * launch flag, not a config key). Cursor agent only. */
   cursor_settings: CursorSettings | null
   model_provider_id: number | null
+}
+
+/** Parsed sandbox / approval keys from ~/.codex/config.toml. Serialized
+ * snake_case to match AcpAgentInfo.
+ *
+ * These only matter for turns codex starts SERVER-side — `/goal`, `/review`,
+ * `/compact` — because codex-acp attaches its own policy to every ordinary
+ * turn from the composer's mode preset. Without them a user on
+ * "Agent (full access)" still gets a workspace-write sandbox inside /goal. */
+export interface CodexSandboxSettings {
+  /** untrusted | on-request | never. The legacy `on-failure` spelling is a
+   * serde alias of on-request upstream and is normalized on read. Null when
+   * absent or when the granular table form is in use. */
+  approval_policy: string | null
+  /** approval_policy = { granular = { … } } — mutually exclusive with the
+   * string form (the upstream enum is externally tagged). */
+  granular: CodexGranularApproval | null
+  /** read-only | workspace-write | danger-full-access. Null = absent, in which
+   * case codex falls back to workspace-write for any directory with a
+   * [projects] trust decision (read-only otherwise). */
+  sandbox_mode: string | null
+  /** [sandbox_workspace_write] — only consulted when the effective mode is
+   * workspace-write. */
+  workspace_write: CodexWorkspaceWrite
+  /** default_permissions is set, so codex resolves permissions through the
+   * profile pipeline and IGNORES sandbox_mode entirely. */
+  shadowed_by_default_permissions: boolean
+  /** A [permissions] profile table exists (a hard startup error upstream when
+   * default_permissions is absent). */
+  has_permissions_table: boolean
+}
+
+/** GranularApprovalConfig upstream. snake_case in BOTH directions (unlike the
+ * camelCase parent payload) so one shape serves read and write. All five keys
+ * are always written together: sandbox_approval / rules / mcp_elicitations have
+ * no upstream default, so a partial table makes codex refuse to load. */
+export interface CodexGranularApproval {
+  sandbox_approval: boolean
+  rules: boolean
+  skill_approval: boolean
+  request_permissions: boolean
+  mcp_elicitations: boolean
+}
+
+/** [sandbox_workspace_write]. Every field defaults to false/empty upstream, so
+ * codeg writes only the non-default ones. */
+export interface CodexWorkspaceWrite {
+  /** Extra writable folders. MUST be absolute: codex does not reject a
+   * relative entry, it resolves it against CODEX_HOME (so "rel/dir" silently
+   * becomes ~/.codex/rel/dir). */
+  writable_roots: string[]
+  network_access: boolean
+  exclude_tmpdir_env_var: boolean
+  exclude_slash_tmp: boolean
+}
+
+/** Structured-control values the Codex settings panel sends on save, merged
+ * format-preservingly onto ~/.codex/config.toml server-side. camelCase on the
+ * wire except the nested `granular` object.
+ *
+ * This is a per-field PATCH, not a snapshot: an ABSENT field leaves its key
+ * exactly as the merge base has it. The panel sends the raw config.toml text
+ * alongside this patch and the patch is applied last, so carrying the whole
+ * group would silently revert any of these keys the user had hand-edited in the
+ * raw editor — a surface the panel never parses back into its controls.
+ *
+ * `approvalPolicy` and `granular` move as a pair (upstream they are one
+ * externally tagged key): both absent leaves it, both `null` removes it,
+ * exactly one non-null writes that form. For the workspace-write fields, absent
+ * leaves the key and `false`/`[]` removes it (identical to codex's defaults). */
+export interface CodexSandboxStructuredConfig {
+  approvalPolicy?: string | null
+  granular?: CodexGranularApproval | null
+  sandboxMode?: string | null
+  writableRoots?: string[]
+  networkAccess?: boolean
+  excludeTmpdirEnvVar?: boolean
+  excludeSlashTmp?: boolean
 }
 
 /** Parsed keys from ~/.grok/config.toml. `null` means the key is absent.
