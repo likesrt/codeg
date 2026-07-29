@@ -4,6 +4,7 @@ import type {
   MessageRole,
   TurnUsage,
   AgentExecutionStats,
+  AgentTranscriptEntry,
   ToolCallStatus,
   PlanEntryInfo,
   ImageData,
@@ -64,6 +65,12 @@ export type AdaptedToolCallPart = {
    * live DelegationContext entry is missing (page refresh, late mount).
    */
   meta?: Record<string, unknown> | null
+  /**
+   * Live subagent transcript (claude-agent-acp ≥0.63), forwarded from
+   * `ContentBlock.tool_result.agent_transcript`. Present only on a RUNNING
+   * Agent card during streaming — promotion and history never carry it.
+   */
+  agentTranscript?: AgentTranscriptEntry[] | null
 }
 
 /**
@@ -1833,6 +1840,7 @@ export function adaptMessageTurn(
             : undefined,
           agentStats: matchedResult.agent_stats ?? undefined,
           meta: block.meta ?? null,
+          agentTranscript: matchedResult.agent_transcript ?? undefined,
         })
       } else {
         // Position-based matching: if this tool_use has no ID, check next block
@@ -1867,6 +1875,7 @@ export function adaptMessageTurn(
               : undefined,
             agentStats: positionalResult.agent_stats ?? undefined,
             meta: block.meta ?? null,
+            agentTranscript: positionalResult.agent_transcript ?? undefined,
           })
         } else {
           // For live streaming, unmatched tools are still running.

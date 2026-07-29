@@ -30,6 +30,7 @@ import {
 } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
+import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 import { useStreamdownPlugins } from "./streamdown-plugins"
 
@@ -368,6 +369,7 @@ export function normalizeMathDelimiters(text: string): string {
 const remarkPlugins = [
   ...Object.values(defaultRemarkPlugins),
   remarkRewriteFileUriLinks,
+  remarkTrimCjkAutolinkTail,
 ]
 
 // Streamdown's default rehype pipeline strips `codeg://` reference hrefs in

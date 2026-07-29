@@ -807,7 +807,7 @@ impl ConnectionManager {
         &self,
         db: &AppDatabase,
         conn_id: &str,
-        blocks: Vec<PromptInputBlock>,
+        mut blocks: Vec<PromptInputBlock>,
         folder_id: Option<i32>,
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
@@ -883,6 +883,23 @@ impl ConnectionManager {
         if turn_in_flight {
             return Err(AcpError::TurnInProgress);
         }
+
+        // Re-hydrate uploaded image attachments (web / remote-workspace mode
+        // sends empty-payload marker blocks with a `file://` uri into the
+        // uploads root; see `prompt_hydration`). Deliberately placed AFTER
+        // admission — the connection-exists check (`clone_prompt_lock` above)
+        // and the busy reject — so garbage or concurrent prompts never
+        // trigger file reads, and the prompt lock we hold serializes
+        // hydration per connection (a natural concurrency bound). Still
+        // BEFORE any side effect (linking / row creation / status flip) and
+        // before the `user_blocks_from_prompt` projection below, so a failure
+        // aborts cleanly and the viewer broadcast, the sender echo, and the
+        // agent all see the full bytes.
+        crate::acp::prompt_hydration::hydrate_prompt_blocks(
+            &mut blocks,
+            &crate::paths::codeg_uploads_root(),
+        )
+        .await?;
 
         if !already_linked {
             match (conversation_id, folder_id) {

@@ -19,7 +19,7 @@
 
 Codeg (Code Generation) ist ein Multi-Agent-Coding-Workspace: Führe jeden KI-Coding-Agenten an einem Ort aus — und lass sie zusammenarbeiten.
 
-Codeg bündelt die Sitzungen aller unterstützten Agenten-CLIs in einem durchsuchbaren Workspace, lässt einen Haupt-Agenten innerhalb einer Aufgabe an Sub-Agenten anderer Typen delegieren und läuft als Desktop-App, eigenständiger Server oder Docker-Container.
+Codeg bündelt die Sitzungen aller unterstützten Agenten-CLIs in einem durchsuchbaren Workspace, lässt einen Haupt-Agenten innerhalb einer Aufgabe an Sub-Agenten anderer Typen delegieren und läuft als Desktop-App, eigenständiger Server oder Docker-Container — dazu native iOS- und Android-Clients für die Zeit fernab vom Schreibtisch.
 
 ![Workspace](../images/workspace-light.png#gh-light-mode-only)
 ![Workspace](../images/workspace-dark.png#gh-dark-mode-only)
@@ -93,6 +93,14 @@ Ein Workspace, alle Agenten. Egal welcher gerade arbeitet — Claude Code, Codex
 
 **Git.** Ein vollwertiger Client, keine Statusanzeige: committen und pushen, die Historie mit dem Push-Status jedes Commits durchgehen, Branches anlegen, mergen, rebasen, stashen, zurücksetzen oder gegen einen anderen Branch diffen. Konflikte öffnen einen dreispaltigen Merge-Editor, in dem du Hunk für Hunk übernimmst oder die Lösung selbst tippst. Und Worktrees machen paralleles Arbeiten zu einer einzigen Aktion — ein neuer Branch, ein eigenes Verzeichnis und eine frische Unterhaltung darin, sodass eine ganze Flotte von Agenten gleichzeitig an verschiedenen Features baut, ohne einander in die Quere zu kommen.
 
+## 📱 iPhone, iPad & Android
+
+Geh vom Schreibtisch weg, nicht von der Arbeit. Die nativen iOS- und Android-Clients verbinden sich mit dem Codeg, das du ohnehin betreibst — dem **Web Service** deiner Desktop-App oder deinem eigenen `codeg-server`. Von dort startest du Sitzungen, verfolgst Antworten und Tool-Aufrufe im Stream, beantwortest Berechtigungsanfragen und siehst dir Projekte und Branches an. Aufs Telefon wandert nichts: Dateien, Agenten-CLIs und Unterhaltungen bleiben auf der Maschine, die Codeg ausführt, und das Zugriffstoken liegt im iOS-Keychain oder im Android Keystore. Beide Clients sind Open Source ([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)) und derzeit im Testbetrieb; das Koppeln dauert drei Schritte und steht in [Mobile Apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
+
+| iPhone & iPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="Eine Sitzung wird im Codeg-iOS-Client gestartet" width="248" /> | <img src="../images/mobile-android.jpg" alt="Eine Agenten-Antwort, die live in den Codeg-Android-Client läuft" width="248" /> |
+
 ## ✨ Highlights
 
 - **[Sitzungs-Aggregation](https://docs.codeg.app/guide/aggregation)** — importiert Sitzungen aller unterstützten Agenten in einen einheitlichen, durchsuchbaren Workspace — und du machst dort weiter, wo du aufgehört hast
@@ -106,16 +114,24 @@ Ein Workspace, alle Agenten. Egal welcher gerade arbeitet — Claude Code, Codex
 - **[Project Boot](https://docs.codeg.app/guide/project-boot)** — neue Projekte visuell aufsetzen, mit Live-Vorschau, und direkt im Workspace öffnen
 - **[MCP](https://docs.codeg.app/guide/mcp) & [Skills](https://docs.codeg.app/guide/skills)** — lokaler Server-Scan plus Suche/Installation aus der Registry, Skills global oder pro Projekt verwaltet
 - **[Desktop, Server & Docker](https://docs.codeg.app/getting-started/deployment)** — eine native Desktop-App, ein eigenständiger `codeg-server` für den Browser oder `docker compose up`
+- **[iPhone, iPad & Android](https://docs.codeg.app/getting-started/installation#mobile-apps)** — native Mobile-Clients, die sich mit deinem Desktop oder Server verbinden: Sitzungen starten, Antworten streamen, Berechtigungen freigeben und Projekte von überall durchsehen
 
 ## 📦 Installation & Betrieb
 
 **Desktop** — Lade den Installer für macOS, Windows oder Linux aus den [Releases](https://github.com/xintaofei/codeg/releases) und folge der [Installation](https://docs.codeg.app/getting-started/installation).
 
-**Server** — Codeg headless betreiben und aus jedem Browser erreichen:
+**Server** — Codeg headless betreiben und aus jedem Browser erreichen. Unter Linux oder macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
-codeg-server
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
+```
+
+Unter Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
 **Docker** — derselbe Server, in einem Container:
@@ -123,6 +139,8 @@ codeg-server
 ```bash
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 ```
+
+**Mobil** — installiere die [iOS-App](https://apps.apple.com/app/codeg-client/id6785199071) oder das [Android-APK](https://github.com/xintaofei/codeg-android/releases/latest) und richte sie auf den **Web Service** deiner Desktop-App oder deinen eigenen `codeg-server`: URL, Token, fertig. Die Kopplungsschritte stehen in [Mobile Apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
 Compose, vorgebaute Binaries, Builds aus dem Quellcode und In-place-Updates stehen unter [Deployment](https://docs.codeg.app/getting-started/deployment); Umgebungsvariablen unter [Konfiguration](https://docs.codeg.app/getting-started/configuration). Codeg selbst bauen: [Entwicklung](https://docs.codeg.app/reference/development) und [Architektur](https://docs.codeg.app/reference/architecture).
 

@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）はマルチエージェント・コーディングワークスペースです。あらゆる AI コーディングエージェントをひとつの場所で動かし、そして協働させます。
 
-対応するすべてのエージェント CLI のセッションを検索可能なワークスペースへ集約し、ひとつのタスクの中でメインエージェントが別種類のサブエージェントへ委譲でき、デスクトップアプリ・スタンドアロンサーバー・Docker コンテナのいずれとしても動作します。
+対応するすべてのエージェント CLI のセッションを検索可能なワークスペースへ集約し、ひとつのタスクの中でメインエージェントが別種類のサブエージェントへ委譲でき、デスクトップアプリ・スタンドアロンサーバー・Docker コンテナのいずれとしても動作します。さらに、ネイティブの iOS / Android クライアントがあるので、デスクを離れても作業を続けられます。
 
 ![ワークスペース](../images/workspace-light.png#gh-light-mode-only)
 ![ワークスペース](../images/workspace-dark.png#gh-dark-mode-only)
@@ -93,6 +93,14 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 **Git**：状態表示ではなく、完全なクライアントです。コミットとプッシュ、コミットごとのプッシュ状態が分かる履歴、ブランチ、マージ、リベース、スタッシュ、リセット、別ブランチとの差分。コンフリクトは三ペインのマージエディタで開き、ハンク単位で採用するか自分で書きます。そして worktree は並行作業をワンアクションに変えます — 新しいブランチ、専用のディレクトリ、そこに根を張った新しい会話。エージェントの一隊が互いのファイルに触れることなく、別々の機能を同時に作れます。
 
+## 📱 iPhone・iPad・Android
+
+デスクを離れても、作業は止まりません。ネイティブの iOS / Android クライアントは、あなたがすでに動かしている Codeg —— デスクトップアプリの **Web サービス**、あるいは自分で立てた `codeg-server` —— に接続します。そこからセッションを開始し、返信やツール呼び出しが流れ込むのを追い、権限の確認に答え、プロジェクトやブランチを見て回れます。端末側には何も移りません。ファイルもエージェント CLI も会話も Codeg を実行しているマシンに残り、アクセストークンは iOS Keychain または Android Keystore が預かります。どちらのクライアントもオープンソース（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)）で、現在はテスト版です。接続はわずか 3 ステップ、詳しくは [モバイルアプリ](https://docs.codeg.app/getting-started/installation#mobile-apps)。
+
+| iPhone・iPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="Codeg iOS クライアントでセッションを開始する画面" width="248" /> | <img src="../images/mobile-android.jpg" alt="Codeg Android クライアントに流れ込むエージェントの返信" width="248" /> |
+
 ## ✨ ハイライト
 
 - **[会話の集約](https://docs.codeg.app/guide/aggregation)** — 対応するすべてのエージェントのセッションを統一された検索可能なワークスペースへ取り込み、中断した続きから再開できます
@@ -106,16 +114,24 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 - **[プロジェクトブート](https://docs.codeg.app/guide/project-boot)** — ライブプレビュー付きで新規プロジェクトを視覚的に構築し、そのままワークスペースで開きます
 - **[MCP](https://docs.codeg.app/guide/mcp) & [スキル](https://docs.codeg.app/guide/skills)** — ローカルスキャンとレジストリ検索/インストール、スキルはグローバル／プロジェクト単位で管理
 - **[デスクトップ・サーバー・Docker](https://docs.codeg.app/getting-started/deployment)** — ネイティブなデスクトップアプリ、ブラウザから使えるスタンドアロンの `codeg-server`、あるいは `docker compose up`
+- **[iPhone・iPad・Android](https://docs.codeg.app/getting-started/installation#mobile-apps)** — デスクトップやサーバーに接続するネイティブモバイルクライアント：どこからでもセッションを開始し、返信をストリーミングで受け取り、権限を承認し、プロジェクトを閲覧
 
 ## 📦 インストールと実行
 
 **デスクトップ** — macOS・Windows・Linux 向けインストーラーを [Releases](https://github.com/xintaofei/codeg/releases) から入手し、[インストール](https://docs.codeg.app/getting-started/installation) の手順に従ってください。
 
-**サーバー** — Codeg をヘッドレスで動かし、任意のブラウザから利用します：
+**サーバー** — Codeg をヘッドレスで動かし、任意のブラウザから利用します。Linux / macOS の場合：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
-codeg-server
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
+```
+
+Windows（PowerShell）の場合：
+
+```powershell
+irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
 **Docker** — 同じサーバーを、ひとつのコンテナで：
@@ -123,6 +139,8 @@ codeg-server
 ```bash
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 ```
+
+**モバイル** — [iOS アプリ](https://apps.apple.com/app/codeg-client/id6785199071) または [Android APK](https://github.com/xintaofei/codeg-android/releases/latest) をインストールし、デスクトップアプリの **Web サービス**か自分の `codeg-server` を指定するだけ：アドレスとトークンを入れれば完了です。接続手順は [モバイルアプリ](https://docs.codeg.app/getting-started/installation#mobile-apps)。
 
 Compose、ビルド済みバイナリ、ソースからのビルド、その場での更新は [デプロイ](https://docs.codeg.app/getting-started/deployment) に、環境変数は [設定](https://docs.codeg.app/getting-started/configuration) にあります。Codeg 自体のビルドは [開発](https://docs.codeg.app/reference/development) と [アーキテクチャ](https://docs.codeg.app/reference/architecture) を参照。
 

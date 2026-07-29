@@ -37,12 +37,14 @@ import { resetAcpAgentsStore, useAcpAgents } from "./use-acp-agents"
 function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
   return {
     agent_type: agentType,
+    skills_capable: true,
     registry_id: agentType,
     registry_version: null,
     name: agentType,
     description: "",
     available: true,
     distribution_type: "npm",
+    custom_source: null,
     enabled: true,
     sort_order: sortOrder,
     installed_version: null,
@@ -61,6 +63,7 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     cursor_cli_config_json: null,
     cursor_settings: null,
     model_provider_id: null,
+    icon_url: null,
   }
 }
 

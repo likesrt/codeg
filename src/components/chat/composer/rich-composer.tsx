@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils"
 
 import { buildComposerExtensions } from "./editor-config"
 import {
-  decidePastedPlainText,
+  decidePastedContent,
   textToDoc,
   textToInlineContent,
 } from "./plain-text-content"
@@ -364,16 +364,16 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           // out-of-band, in which case the editor must not also insert text.
           if (onPasteFilesRef.current?.(event) === true) return true
           // Plain-text composer: prefer the clipboard's text/plain over an
-          // external text/html fragment. Copying a URL from a browser address
-          // bar puts `<a href="URL">Page Title</a>` on the clipboard; the
-          // default HTML parse drops the href (no Link mark) and keeps the
-          // title, so the URL would paste as the page title. See
-          // decidePastedPlainText for what still defers to ProseMirror (pure
-          // plain text, and our own reference badges).
+          // external text/html fragment (a URL copied from an address bar
+          // would otherwise paste as the page title), and hydrate serialized
+          // references in the pasted text back into inline badges so the
+          // composer previews them the way the sent message renders. See
+          // decidePastedContent for what still defers to ProseMirror
+          // (reference-free plain text, and our own copied badges/structure).
           const editor = editorInstanceRef.current
           const clipboard = event.clipboardData
           if (!editor || !clipboard) return false
-          const inline = decidePastedPlainText({
+          const inline = decidePastedContent({
             html: clipboard.getData("text/html"),
             text: clipboard.getData("text/plain"),
           })

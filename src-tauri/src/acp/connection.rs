@@ -386,11 +386,117 @@ fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String>
     })
 }
 
+/// Transcript directory for an agent that codeg must record itself, or `None`
+/// for agents with their own store parser.
+///
+/// Only custom ACP agents are recorded: every built-in has a dedicated parser
+/// reading the agent's native transcript, and recording those too would double
+/// the storage while risking two disagreeing histories.
+fn transcript_dir_for(agent_type: AgentType) -> Option<&'static str> {
+    agent_type
+        .custom_id()
+        .map(|_| registry::registry_id_for(agent_type))
+}
+
+/// Ensure a custom agent's transcript file exists with its header. No-op for
+/// built-ins, and idempotent per session (a reconnect keeps the original
+/// header, so the session's original cwd/start time survive).
+fn record_transcript_header(agent_type: AgentType, session_id: &str, cwd: &str) {
+    record_transcript_header_continuing(agent_type, session_id, cwd, None);
+}
+
+/// [`record_transcript_header`] for a session that carries an existing
+/// conversation forward.
+///
+/// `continues_from` is set when `session/load` failed and codeg opened a fresh
+/// agent session for the same conversation: the earlier turns stay where they
+/// are and this header links back to them, so the reader still sees one
+/// history. See [`crate::acp_transcript::TranscriptHeader::continues_from`].
+fn record_transcript_header_continuing(
+    agent_type: AgentType,
+    session_id: &str,
+    cwd: &str,
+    continues_from: Option<&str>,
+) {
+    let Some(dir) = transcript_dir_for(agent_type) else {
+        return;
+    };
+    let mut header = crate::acp_transcript::TranscriptHeader::new(
+        &agent_type.as_wire(),
+        session_id,
+        cwd,
+        crate::acp_transcript::now_epoch_ms(),
+    );
+    if let Some(previous) = continues_from.filter(|p| !p.is_empty() && *p != session_id) {
+        header = header.continuing(previous);
+    }
+    drop(crate::acp_transcript::record_header(dir, &header));
+}
+
+/// Record a turn's completion for a custom agent, and wait (briefly) for it to
+/// land. No-op for agents with their own store.
+///
+/// The bounded wait exists because the frontend refetches conversation detail
+/// right after `TurnComplete`; without it, a reopened conversation could be
+/// read before the final lines were flushed. The bound means a stalled writer
+/// delays nothing more than this.
+async fn record_turn_end(
+    agent_type: AgentType,
+    session_id: &str,
+    stop_reason: &str,
+    started_at_ms: u64,
+) {
+    let Some(dir) = transcript_dir_for(agent_type) else {
+        return;
+    };
+    let now = crate::acp_transcript::now_epoch_ms();
+    let ack = crate::acp_transcript::record_entry(
+        dir,
+        session_id,
+        crate::acp_transcript::EntryKind::TurnEnd,
+        serde_json::json!({
+            "stopReason": stop_reason,
+            "durationMs": now.saturating_sub(started_at_ms),
+        }),
+    );
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
+}
+
+/// Record one raw `session/update` for a custom agent. No-op otherwise.
+fn record_transcript_update(agent_type: AgentType, session_id: &str, update: &SessionUpdate) {
+    let Some(dir) = transcript_dir_for(agent_type) else {
+        return;
+    };
+    let Ok(payload) = serde_json::to_value(update) else {
+        return;
+    };
+    // The ack receiver is dropped: streamed chunks must never make the read
+    // loop wait. Turn boundaries are the only place codeg bound-waits.
+    drop(crate::acp_transcript::record_entry(
+        dir,
+        session_id,
+        crate::acp_transcript::EntryKind::Update,
+        payload,
+    ));
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
     cwd: &Path,
 ) -> Result<AcpAgent, AcpError> {
+    // A conversation can outlive the custom-agent definition it was started
+    // with (the user deleted it in settings). `get_agent_meta` cannot report
+    // that — it is infallible — so it hands back a placeholder with an empty
+    // command. Catch it here, before we try to spawn nothing and surface an
+    // opaque ENOENT.
+    if let Some(id) = agent_type.custom_id() {
+        if !crate::acp::custom_registry::is_registered(id) {
+            return Err(AcpError::SdkNotInstalled(format!(
+                "The custom agent \"{id}\" is no longer registered. Re-add it in Settings → Agents to use this conversation."
+            )));
+        }
+    }
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
 
@@ -506,7 +612,7 @@ async fn build_agent(
             args,
             env,
             platforms,
-            dir_entry,
+            ..
         } => {
             let platform = registry::current_platform();
             let _ = platforms
@@ -525,10 +631,11 @@ async fn build_agent(
             // only when nothing is cached, so the frontend can prompt
             // the user to install it from the Agent Settings page.
             //
-            // Dir-tree agents (Cursor) additionally fall back to a
+            // With nothing cached, every binary agent falls back to a
             // user-installed CLI on PATH (e.g. `cursor-agent` from the
-            // official install script) before giving up — mirroring the
-            // Uvx `system_cmd` fallback.
+            // official install script, a brew `opencode`, or the user's
+            // own install of a custom tool) before giving up — mirroring
+            // the Uvx `system_cmd` fallback.
             //
             // INVARIANT: the substring "is not installed" is matched
             // verbatim by the frontend catch block in
@@ -552,8 +659,7 @@ async fn build_agent(
                     path
                 }
                 None => {
-                    let system = dir_entry
-                        .and_then(|_| crate::commands::acp::resolve_system_agent_binary(cmd))
+                    let system = crate::commands::acp::resolve_system_agent_binary(cmd)
                         .ok_or_else(|| {
                             AcpError::SdkNotInstalled(format!(
                                 "{} is not installed. Please install it in Agent Settings.",
@@ -1961,6 +2067,48 @@ fn claude_raw_sdk_session_meta(
     Some(meta)
 }
 
+/// The client capabilities codeg advertises on Initialize, with per-agent
+/// gates. Extracted for testability — each gate is a documented product
+/// decision:
+///
+/// - Everyone: filesystem read/write + terminal, for ACP tool execution.
+/// - Codex only: form elicitation, so codex's native Plan-mode
+///   `request_user_input` is delivered as `elicitation/create` (handled by
+///   `handle_elicitation_request`) instead of being silently answered `{}`.
+///   NOTE this reroutes codex's WHOLE form-elicitation surface — MCP
+///   tool-call approvals and MCP-server forms included — so the handler must
+///   cover every shape (`classify_elicitation`). URL elicitation is
+///   deliberately NOT advertised: codex-acp then falls back to
+///   `session/request_permission`, which codeg already handles. Scoped to
+///   Codex to keep the blast radius off other agents (e.g. Claude's native
+///   AskUserQuestion, which would otherwise un-gate and duplicate the
+///   codeg-mcp ask tool).
+/// - Claude Code only: `_meta["subagent-transcript"] = true` — opt into
+///   claude-agent-acp ≥0.63's subagent transcript forwarding (#881, SDK
+///   `forwardSubagentText`). Subagent text/thought chunks then stream with
+///   update-level `_meta.claudeCode.parentToolUseId` instead of being
+///   filtered; codeg routes them into the live Agent capsule (see
+///   `claude_chunk_parent_tool_use_id`). The adapter checks strictly
+///   `=== true`, and a pre-0.63 binary ignores the unknown key, so this is
+///   inert everywhere it isn't understood.
+fn build_client_capabilities(agent_type: AgentType) -> ClientCapabilities {
+    let mut client_capabilities = ClientCapabilities::new().terminal(true).fs(
+        FileSystemCapabilities::new()
+            .read_text_file(true)
+            .write_text_file(true),
+    );
+    if agent_type == AgentType::Codex {
+        client_capabilities = client_capabilities
+            .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
+    }
+    if agent_type == AgentType::ClaudeCode {
+        let mut meta = serde_json::Map::new();
+        meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
+        client_capabilities = client_capabilities.meta(meta);
+    }
+    client_capabilities
+}
+
 fn build_new_session_request(
     agent_type: AgentType,
     cwd: &Path,
@@ -2134,11 +2282,58 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
 ///
 /// Optional because some test paths spin up `run_connection` without a
 /// full delegation stack — those just skip injection.
+/// Injection-time lookup of which agents the user has disabled in settings.
+///
+/// `delegate_to_agent`'s advertised targets must track the live toggle: a
+/// disabled agent cannot spawn anyway (`build_session_runtime_env` rejects it
+/// inside the delegation spawner), so listing it would only invite doomed
+/// calls. Read fresh on every injection — sessions launched before a toggle
+/// flip keep their launch-time list, and the spawn-time check stays the hard
+/// gate for those.
+#[async_trait::async_trait]
+pub trait AgentAvailabilityLookup: Send + Sync {
+    /// Wire slugs (`AgentType::as_wire`) of the agents disabled in settings.
+    async fn disabled_agent_wire_slugs(&self) -> Vec<String>;
+}
+
+/// [`AgentAvailabilityLookup`] over the live `AppDatabase`: `agent_setting`
+/// rows with `enabled = false`. An absent row means enabled (the settings
+/// default). A read error fails OPEN — the enum then lists everything rather
+/// than taking the whole companion injection down, and the spawn-time
+/// disabled check still enforces.
+pub struct DbAgentAvailabilityLookup {
+    pub db: Arc<crate::db::AppDatabase>,
+}
+
+#[async_trait::async_trait]
+impl AgentAvailabilityLookup for DbAgentAvailabilityLookup {
+    async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
+        match crate::db::service::agent_setting_service::list(&self.db.conn).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter(|row| !row.enabled)
+                .filter_map(|row| serde_json::from_str::<AgentType>(&row.agent_type).ok())
+                .map(|agent_type| agent_type.as_wire().into_owned())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    "[delegation] reading agent settings failed ({e}); \
+                     delegate targets will not be filtered this launch"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DelegationInjection {
     pub broker: Arc<crate::acp::delegation::broker::DelegationBroker>,
     pub tokens: Arc<crate::acp::delegation::listener::TokenRegistry>,
     pub socket_path: PathBuf,
+    /// Which agents are currently disabled in settings, read at injection
+    /// time so `delegate_to_agent` only advertises launchable targets.
+    pub agent_availability: Arc<dyn AgentAvailabilityLookup>,
     /// Hot-swappable "is live-feedback enabled?" flag. Read at injection time
     /// alongside the broker's delegation flag so `codeg-mcp` is injected when
     /// EITHER feature is on, and the companion is told which tool groups to
@@ -2329,7 +2524,7 @@ async fn inject_codeg_mcp(
         )
         .await;
     let mut server = McpServerStdio::new("codeg-mcp", binary_path);
-    server = server.args(vec![
+    let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
         "--socket-path".to_string(),
@@ -2345,12 +2540,58 @@ async fn inject_codeg_mcp(
         // Tool groups to expose this launch (delegation / feedback / ask / sessions).
         "--features".to_string(),
         features_arg,
-    ]);
+    ];
+    // Advertised delegate targets track the user's enable toggles, read
+    // fresh at injection time. Registered-and-enabled custom agents become
+    // extra `delegate_to_agent` targets; disabled BUILT-INS are subtracted
+    // companion-side (`--disabled-agents`) so the embedded schema stays the
+    // single source of truth for the builtin list and its order. Either flag
+    // is omitted when empty: the companion then serves its embedded
+    // builtin-only schema unchanged, and an older codeg-mcp binary (which
+    // rejects unknown flags at startup) keeps working for every installation
+    // that needs neither.
+    let disabled = injection
+        .agent_availability
+        .disabled_agent_wire_slugs()
+        .await;
+    let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
+    if !custom_slugs.is_empty() {
+        args.push("--custom-agents".to_string());
+        args.push(custom_slugs.join(","));
+    }
+    if !disabled_builtins.is_empty() {
+        args.push("--disabled-agents".to_string());
+        args.push(disabled_builtins.join(","));
+    }
+    server = server.args(args);
     servers.push(McpServer::Stdio(server));
     Some(CompanionInjection {
         token,
         feedback_available: feedback_enabled,
     })
+}
+
+/// Split the delegate-target adjustments into the two companion flags:
+/// custom agents to APPEND to `delegate_to_agent`'s enum (the registered set
+/// minus the disabled ones), and disabled built-ins for the companion to
+/// SUBTRACT from its embedded list. Disabled customs need no subtraction
+/// entry — they are simply never appended. The subtraction list is sorted so
+/// the arg string is deterministic regardless of settings-row order.
+fn delegate_target_args(disabled_wire_slugs: &[String]) -> (Vec<String>, Vec<String>) {
+    let disabled: HashSet<&str> = disabled_wire_slugs.iter().map(String::as_str).collect();
+    let custom_slugs: Vec<String> = crate::acp::custom_registry::all()
+        .iter()
+        .map(|a| a.as_wire().into_owned())
+        .filter(|slug| !disabled.contains(slug.as_str()))
+        .collect();
+    let mut disabled_builtins: Vec<String> = disabled_wire_slugs
+        .iter()
+        .filter(|slug| !slug.starts_with(crate::models::agent::CUSTOM_AGENT_WIRE_PREFIX))
+        .cloned()
+        .collect();
+    disabled_builtins.sort();
+    disabled_builtins.dedup();
+    (custom_slugs, disabled_builtins)
 }
 
 /// Resolve an MCP server `command` to an absolute path.
@@ -2726,29 +2967,8 @@ async fn run_connection(
             let state = state_outer;
             let agent_name_for_log = registry::get_agent_meta(agent_type).name;
 
-            // Advertise filesystem + terminal capabilities for ACP tool execution.
-            let mut client_capabilities = ClientCapabilities::new()
-                .terminal(true)
-                .fs(FileSystemCapabilities::new()
-                    .read_text_file(true)
-                    .write_text_file(true));
-            // Codex only: advertise form elicitation so codex's native Plan-mode
-            // `request_user_input` tool is delivered as an `elicitation/create`
-            // request (handled below) instead of being silently answered `{}`.
-            // NOTE this reroutes codex's WHOLE form-elicitation surface — MCP
-            // tool-call approvals and MCP-server forms included — so the
-            // handler must cover every shape (`classify_elicitation`). URL
-            // elicitation is deliberately NOT advertised: codex-acp then falls
-            // back to `session/request_permission`, which codeg already
-            // handles. Scoped to Codex to keep the blast radius off other
-            // agents (e.g. Claude's native AskUserQuestion, which would
-            // otherwise un-gate and duplicate the codeg-mcp ask tool).
-            if agent_type == AgentType::Codex {
-                client_capabilities = client_capabilities
-                    .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
-            }
             let init_request = InitializeRequest::new(ProtocolVersion::LATEST)
-                .client_capabilities(client_capabilities);
+                .client_capabilities(build_client_capabilities(agent_type));
             // Bound the Initialize handshake so an outdated / incompatible
             // cached binary that never responds can't leave the frontend
             // stuck on "Connecting...". A healthy agent answers in <1s; we
@@ -2954,6 +3174,7 @@ async fn run_connection(
                             // notification (e.g. an early AvailableCommandsUpdate)
                             // is consumed and forwarded by run_conversation_loop.
 
+                            record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                             emit_with_state(
                                 &state,
                                 &emitter_clone,
@@ -3061,7 +3282,27 @@ async fn run_connection(
                         let mut session = cx.attach_session(new_resp, Default::default())?;
 
                         // Drain historical replay notifications from session/load,
-                        // but forward AvailableCommandsUpdate to the frontend
+                        // but forward AvailableCommandsUpdate to the frontend.
+                        //
+                        // For a custom agent with no transcript yet — a session
+                        // created outside codeg, or one whose recording was
+                        // lost — this replay is the ONLY source of its history,
+                        // so capture it instead of discarding it. When codeg
+                        // already recorded the session live, the replay is a
+                        // duplicate and stays drained.
+                        let hydrate_from_replay = transcript_dir_for(agent_type)
+                            .is_some_and(|dir| !crate::acp_transcript::has_entries(dir, &sid));
+                        if hydrate_from_replay {
+                            tracing::info!(
+                                "[ACP] hydrating custom agent transcript for {sid} from session/load replay"
+                            );
+                        }
+                        // The header must land BEFORE any replayed entry:
+                        // `record_header` is a no-op once the file is non-empty,
+                        // so writing it after the drain would leave a hydrated
+                        // transcript permanently headerless (no cwd, no start
+                        // time, hence no folder in the conversation list).
+                        record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                         let mut drained = 0u32;
                         while let Ok(Ok(msg)) = tokio::time::timeout(
                             std::time::Duration::from_millis(100),
@@ -3076,6 +3317,13 @@ async fn run_connection(
                                 let dispatch = fix_usage_update_nulls(dispatch);
                                 let _ = MatchDispatch::new(dispatch)
                                     .if_notification(async |notif: SessionNotification| {
+                                        if hydrate_from_replay {
+                                            record_transcript_update(
+                                                agent_type,
+                                                &sid,
+                                                &notif.update,
+                                            );
+                                        }
                                         if matches!(
                                             notif.update,
                                             SessionUpdate::AvailableCommandsUpdate(_)
@@ -3185,8 +3433,21 @@ async fn run_connection(
                         // historical context (and, on a dead process, fail anyway
                         // and leak a raw protocol error). Every other failure
                         // keeps the session/new fallback below.
+                        //
+                        // Custom agents are the exception: their history is
+                        // codeg's own transcript, not the agent's store, so
+                        // "the agent forgot this session" costs nothing the
+                        // user can see. Many custom agents keep sessions in
+                        // memory only, which would make the banner appear on
+                        // every restart of every conversation. They fall
+                        // through to session/new instead, and the new
+                        // transcript links back to the old one so the history
+                        // reads as one conversation.
                         let err_str = e.to_string();
-                        if let Some(code) = classify_session_load_failure(e.code, &err_str) {
+                        let forgotten_session = classify_session_load_failure(e.code, &err_str);
+                        let recovers_locally =
+                            recovers_load_failure_locally(agent_type, forgotten_session);
+                        if let Some(code) = forgotten_session.filter(|_| !recovers_locally) {
                             tracing::warn!(
                                 "[ACP] session/load failed ({err_str}); surfacing as session_load_failed={code}"
                             );
@@ -3222,7 +3483,11 @@ async fn run_connection(
                         if err_str.contains("Authentication required") {
                             return Ok(());
                         }
-                        if !err_str.contains("Method not found") {
+                        // An agent that simply forgot a session codeg recorded
+                        // itself is the expected steady state after a restart,
+                        // not an incident — an error toast on every reopen
+                        // would be pure noise.
+                        if !err_str.contains("Method not found") && !recovers_locally {
                             emit_with_state(
                                 &state,
                                 &emitter_clone,
@@ -3253,6 +3518,15 @@ async fn run_connection(
                         let grok_effort_specs = (agent_type == AgentType::Grok)
                             .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
                         let mut session = cx.attach_session(new_resp, Default::default())?;
+                        // Same conversation, new agent session: link the fresh
+                        // transcript to the one the failed load was for, so the
+                        // turns codeg already recorded keep rendering.
+                        record_transcript_header_continuing(
+                            agent_type,
+                            &fallback_sid,
+                            &cwd.to_string_lossy(),
+                            Some(sid.as_str()),
+                        );
                         emit_with_state(
                             &state,
                             &emitter_clone,
@@ -3331,6 +3605,7 @@ async fn run_connection(
                 let grok_effort_specs = (agent_type == AgentType::Grok)
                     .then(|| parse_grok_effort_specs(grok_models_raw.as_ref()));
                 let mut session = cx.attach_session(new_resp, Default::default())?;
+                record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                 emit_with_state(
                     &state,
                     &emitter_clone,
@@ -4795,6 +5070,10 @@ async fn handle_fork_or_exit(
         (agent_type == AgentType::Grok).then(|| parse_grok_effort_specs(fork_models_raw.as_ref()));
     let mut session = cx.attach_session(new_resp, Default::default())?;
 
+    // A fork is a new session id, hence a new transcript file. Its history
+    // starts empty and accumulates from the fork point — the pre-fork turns
+    // stay in the parent's transcript, which is what forking means.
+    record_transcript_header(agent_type, &new_sid, cwd_string);
     emit_with_state(
         state,
         emitter,
@@ -4906,6 +5185,24 @@ fn classify_session_load_failure(
         return Some("session_unavailable");
     }
     None
+}
+
+/// Whether codeg can absorb a "the agent forgot this session" load failure by
+/// itself, rather than stopping and asking the user to Reload or start over.
+///
+/// It can exactly when codeg — not the agent — owns the conversation's history:
+/// custom ACP agents, whose turns are recorded to
+/// [`crate::acp_transcript`]. There the failure costs nothing visible — the
+/// history still renders, and a fresh agent session (linked by
+/// `continues_from`) continues the same conversation. Agents whose history is
+/// read back out of their own store keep the banner: for them the session
+/// really is gone, and silently starting a new one would orphan it.
+///
+/// `classified` is [`classify_session_load_failure`]'s verdict; `None` (an
+/// unexpected failure) is never recovered here — it keeps the existing
+/// emit-then-fall-back-to-`session/new` behaviour.
+fn recovers_load_failure_locally(agent_type: AgentType, classified: Option<&'static str>) -> bool {
+    classified.is_some() && transcript_dir_for(agent_type).is_some()
 }
 
 /// True when a `SessionUpdate` represents actual agent-produced output for
@@ -5147,6 +5444,20 @@ async fn run_conversation_loop<'a>(
                 // conflicting with session.read_update()'s mutable borrow.
                 let cx = session.connection();
                 let sid = session.session_id().clone();
+                // Record the prompt BEFORE sending, so the transcript's line
+                // order matches the wire order even if the agent replies
+                // instantly.
+                if let Some(dir) = transcript_dir_for(agent_type) {
+                    if let Ok(payload) = serde_json::to_value(&prompt_blocks) {
+                        drop(crate::acp_transcript::record_entry(
+                            dir,
+                            &sid.0,
+                            crate::acp_transcript::EntryKind::Prompt,
+                            payload,
+                        ));
+                    }
+                }
+                let turn_started_at_ms = crate::acp_transcript::now_epoch_ms();
                 let prompt_request = PromptRequest::new(sid.clone(), prompt_blocks);
                 // Use Box::pin (heap) instead of tokio::pin! (stack) so the
                 // future can be moved into a background task on cancel.
@@ -5220,6 +5531,13 @@ async fn run_conversation_loop<'a>(
                                                 if is_agent_output_update(&notif.update) {
                                                     turn_had_agent_output = true;
                                                 }
+                                                // Custom agents have no store
+                                                // of their own to parse later.
+                                                record_transcript_update(
+                                                    agent_type,
+                                                    &session_id.0,
+                                                    &notif.update,
+                                                );
                                                 emit_conversation_update(&st, &h, agent_type, notif.update, cwd_opt, &mut raw_output_cache, &mut cb_state).await;
                                                 if should_poll_now {
                                                     poll_tracked_terminal_tool_calls(
@@ -5349,6 +5667,14 @@ async fn run_conversation_loop<'a>(
                             if reason_str == "end_turn" {
                                 journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
                             }
+                            // ACP has no turn-end notification — the stop
+                            // reason arrives here, in the prompt RESPONSE — so
+                            // codeg records it for the history parser. Unlike
+                            // streamed chunks this one is bound-awaited: a
+                            // conversation reopened right after a turn must not
+                            // miss its tail.
+                            record_turn_end(agent_type, &sid.0, reason_str, turn_started_at_ms)
+                                .await;
                             emit_with_state(
                                 state,
                                 emitter,
@@ -5764,7 +6090,7 @@ async fn run_conversation_loop<'a>(
 /// (doubling the event) and the hunkless full-file `--- /+++` blob stays in the
 /// tool `output`, where `extractEditLineChangeStats` mis-counts it as full-file
 /// +/- totals in the card header even though the body shows the compact diff.
-fn serialize_tool_call_content(
+pub(crate) fn serialize_tool_call_content(
     content: &[ToolCallContent],
     include_diffs: bool,
 ) -> Option<String> {
@@ -5824,7 +6150,7 @@ fn serialize_tool_call_content(
 /// pipeline (a real hunk diff, minimal even for full-file old/new). Returns
 /// `None` when `content` carries no `Diff`, so callers only fall back to it when
 /// the agent supplied no `raw_input` of its own.
-fn synthesize_edit_input_from_diffs(content: &[ToolCallContent]) -> Option<String> {
+pub(crate) fn synthesize_edit_input_from_diffs(content: &[ToolCallContent]) -> Option<String> {
     // Keep `old_text` as `Option`: ACP reports `None` for a newly created file
     // (`Diff.old_text` semantics). That distinction is the whole point of this
     // function's fix — collapsing `None` to `""` and emitting an edit shape
@@ -5912,7 +6238,7 @@ fn build_new_file_diff(path: &str, new_text: &str) -> String {
 /// on `AcpEvent::ToolCall(Update)` stays absent for non-image tool calls
 /// (preserves replace-on-update semantics: an absent field means "keep
 /// prior", a `Some(vec)` replaces).
-fn extract_tool_call_images(content: &[ToolCallContent]) -> Option<Vec<ToolCallImageInfo>> {
+pub(crate) fn extract_tool_call_images(content: &[ToolCallContent]) -> Option<Vec<ToolCallImageInfo>> {
     let mut imgs: Vec<ToolCallImageInfo> = Vec::new();
     for item in content {
         if let ToolCallContent::Content(c) = item {
@@ -5997,7 +6323,7 @@ fn find_string_start_line(path: &str, needle: &str, cwd: Option<&str>) -> Option
     Some(file_content[..byte_offset].matches('\n').count() as u64 + 1)
 }
 
-fn json_value_to_text(val: &Option<serde_json::Value>) -> Option<String> {
+pub(crate) fn json_value_to_text(val: &Option<serde_json::Value>) -> Option<String> {
     match val {
         Some(serde_json::Value::String(text)) => Some(text.clone()),
         Some(v) if !v.is_null() => Some(v.to_string()),
@@ -6395,8 +6721,12 @@ fn codebuddy_chunk_marks_subagent(
 
 /// Whether a live thought/message chunk should be dropped from the top-level
 /// stream because it belongs to a CodeBuddy sub-agent (whose work is already
-/// represented by the Agent pill + its nested tool calls). Matches Claude Code,
-/// which never streams a sub-agent's internal reasoning onto the main session.
+/// represented by the Agent pill + its nested tool calls).
+///
+/// Claude Code is NOT handled here: its sub-agent chunks (claude-agent-acp
+/// ≥0.63 with the `subagent-transcript` capability) arrive with a precise
+/// per-chunk `_meta.claudeCode.parentToolUseId` and are forwarded WITH that
+/// attribution instead of suppressed — see `claude_chunk_parent_tool_use_id`.
 ///
 /// Suppress while we're inside an open sub-agent window OR when the chunk's own
 /// meta marks it. The window safety rests on a structural invariant: the window
@@ -6417,6 +6747,29 @@ fn should_suppress_subagent_chunk(
         return false;
     }
     window_open || codebuddy_chunk_marks_subagent(agent_type, chunk_meta)
+}
+
+/// Extract the update-level `_meta.claudeCode.parentToolUseId` of a live
+/// text/thought chunk — set by claude-agent-acp ≥0.63 on a subagent's
+/// forwarded chunks once the client advertises the `subagent-transcript`
+/// capability (see `build_client_capabilities`). The chunk is emitted WITH
+/// this attribution (never suppressed): the frontend routes parented chunks
+/// into the live Agent capsule instead of the main thread. Gated on
+/// ClaudeCode so no other agent's namespaced meta can alias into parented
+/// routing; empty strings are treated as absent.
+fn claude_chunk_parent_tool_use_id(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    if agent_type != AgentType::ClaudeCode {
+        return None;
+    }
+    meta?
+        .get("claudeCode")?
+        .get("parentToolUseId")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Maintain the set of OPEN CodeBuddy sub-agent tool calls (`open`). `is_agent`
@@ -6824,7 +7177,20 @@ async fn emit_conversation_update(
                 !cb_state.open_subagents.is_empty(),
                 meta.as_ref(),
             ) {
-                emit_with_state(state, emitter, AcpEvent::ContentDelta { text: text.text }).await;
+                // Claude subagent chunks (claude-agent-acp ≥0.63 with the
+                // `subagent-transcript` capability) are NOT suppressed: they
+                // emit with their parent id so the frontend can route them
+                // into the live Agent capsule.
+                let parent_tool_use_id = claude_chunk_parent_tool_use_id(agent_type, meta.as_ref());
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::ContentDelta {
+                        text: text.text,
+                        parent_tool_use_id,
+                    },
+                )
+                .await;
             }
         }
         SessionUpdate::AgentMessageChunk(_) => {
@@ -6841,7 +7207,16 @@ async fn emit_conversation_update(
                 !cb_state.open_subagents.is_empty(),
                 meta.as_ref(),
             ) {
-                emit_with_state(state, emitter, AcpEvent::Thinking { text: text.text }).await;
+                let parent_tool_use_id = claude_chunk_parent_tool_use_id(agent_type, meta.as_ref());
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::Thinking {
+                        text: text.text,
+                        parent_tool_use_id,
+                    },
+                )
+                .await;
             }
         }
         SessionUpdate::AgentThoughtChunk(_) => {
@@ -7559,6 +7934,40 @@ mod tests {
     }
 
     #[test]
+    fn agents_codeg_records_itself_absorb_a_forgotten_session() {
+        // The reported case: a custom agent keeps sessions in memory, so every
+        // restart makes session/load fail with "Session not found". codeg has
+        // the turns in its own transcript, so it must recover silently instead
+        // of blanking the conversation behind a load-failed banner.
+        let custom = AgentType::custom("glm-acp-agent").expect("valid id");
+        assert!(recovers_load_failure_locally(
+            custom,
+            Some("session_unavailable")
+        ));
+        assert!(recovers_load_failure_locally(
+            custom,
+            Some("resource_not_found")
+        ));
+        // An unexpected failure is not a "forgotten session" — keep the
+        // existing emit-then-fall-back behaviour even for custom agents.
+        assert!(!recovers_load_failure_locally(custom, None));
+
+        // Built-ins read history back out of the agent's own store, so a
+        // forgotten session really is gone and must still stop with the banner.
+        for builtin in [
+            AgentType::ClaudeCode,
+            AgentType::Codex,
+            AgentType::Gemini,
+            AgentType::Cursor,
+        ] {
+            assert!(
+                !recovers_load_failure_locally(builtin, Some("session_unavailable")),
+                "{builtin:?} has no codeg-side transcript to fall back on"
+            );
+        }
+    }
+
+    #[test]
     fn cursor_env_policy_clears_inherited_creds_only_in_subscription() {
         let sub: BTreeMap<String, String> =
             [("CURSOR_AUTH_MODE".to_string(), "subscription".to_string())].into();
@@ -7828,6 +8237,36 @@ mod tests {
             env.keys().filter(|k| k.eq_ignore_ascii_case("PATH")).collect();
         assert_eq!(path_keys.len(), 1, "exactly one PATH-ish key must remain: {env:?}");
         assert_eq!(env.get("Path").unwrap(), r"C:\OfficeCLI;C:\b");
+    }
+
+    #[test]
+    fn client_capabilities_gate_per_agent() {
+        // Serialize to inspect the wire shape — `_meta` is the serde rename
+        // and the exact key path the adapters read.
+        let caps_of = |agent: AgentType| {
+            serde_json::to_value(build_client_capabilities(agent)).expect("caps serialize")
+        };
+
+        // Claude Code: subagent-transcript opt-in (strict boolean true), and
+        // no elicitation (which would un-gate AskUserQuestion duplication).
+        let claude = caps_of(AgentType::ClaudeCode);
+        assert_eq!(
+            claude["_meta"]["subagent-transcript"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(claude.get("elicitation").is_none());
+
+        // Codex: form elicitation, no subagent-transcript meta.
+        let codex = caps_of(AgentType::Codex);
+        assert!(codex.get("elicitation").is_some());
+        assert!(codex.get("_meta").is_none());
+
+        // Everyone else: neither gate; fs + terminal always advertised.
+        let other = caps_of(AgentType::Gemini);
+        assert!(other.get("_meta").is_none());
+        assert!(other.get("elicitation").is_none());
+        assert_eq!(other["terminal"], serde_json::Value::Bool(true));
+        assert_eq!(other["fs"]["readTextFile"], serde_json::Value::Bool(true));
     }
 
     #[test]
@@ -9775,6 +10214,41 @@ mod tests {
     }
 
     #[test]
+    fn claude_chunk_parent_reads_only_wellformed_claude_meta() {
+        let valid = serde_json::json!({ "claudeCode": { "parentToolUseId": "toolu_01A" } });
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::ClaudeCode, valid.as_object()),
+            Some("toolu_01A".to_string())
+        );
+        // Gated on ClaudeCode — the same meta on another agent must not alias
+        // into parented routing.
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::CodeBuddy, valid.as_object()),
+            None
+        );
+        // Absent meta / absent key / wrong type / empty string → None.
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::ClaudeCode, None),
+            None
+        );
+        let no_key = serde_json::json!({ "claudeCode": { "toolName": "Agent" } });
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::ClaudeCode, no_key.as_object()),
+            None
+        );
+        let wrong_type = serde_json::json!({ "claudeCode": { "parentToolUseId": 42 } });
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::ClaudeCode, wrong_type.as_object()),
+            None
+        );
+        let empty = serde_json::json!({ "claudeCode": { "parentToolUseId": "" } });
+        assert_eq!(
+            claude_chunk_parent_tool_use_id(AgentType::ClaudeCode, empty.as_object()),
+            None
+        );
+    }
+
+    #[test]
     fn meta_marks_background_reads_codebuddy_flag() {
         let bg = serde_json::json!({ "codebuddy.ai/isBackground": true });
         let fg = serde_json::json!({ "codebuddy.ai/isBackground": false });
@@ -9853,10 +10327,18 @@ mod tests {
             }
             async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
         }
+        struct AllEnabled;
+        #[async_trait::async_trait]
+        impl AgentAvailabilityLookup for AllEnabled {
+            async fn disabled_agent_wire_slugs(&self) -> Vec<String> {
+                Vec::new()
+            }
+        }
         let injection = DelegationInjection {
             broker,
             tokens: Arc::new(TokenRegistry::default()),
             socket_path: std::path::PathBuf::from("/tmp/codeg-mcp.sock"),
+            agent_availability: Arc::new(AllEnabled) as Arc<dyn AgentAvailabilityLookup>,
             feedback: crate::acp::feedback::FeedbackRuntimeConfig::new(),
             ask: crate::acp::question::QuestionRuntimeConfig::new(),
             sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
@@ -9886,6 +10368,67 @@ mod tests {
             injection.tokens.lookup("any-token").await.is_none(),
             "disabled broker must not register a delegate token"
         );
+    }
+
+    // ─── delegate_target_args: enable-toggle filtering ──────────
+    //
+    // The companion's delegate enum must only advertise launchable targets:
+    // enabled customs are appended, disabled customs are never appended (no
+    // subtraction entry either), and disabled builtins ride the sorted
+    // `--disabled-agents` list for companion-side subtraction.
+    #[test]
+    fn delegate_target_args_filter_disabled_agents() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _guard = hydrate_test_guard();
+        let def = |id: &str| CustomAgentDef {
+            registry_id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: format!("{id}@1.0.0"),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+        };
+        assert!(hydrate(&[def("delegate-on"), def("delegate-off")]).is_empty());
+
+        let disabled = vec![
+            "grok".to_string(),
+            "codex".to_string(),
+            "custom:delegate-off".to_string(),
+        ];
+        let (custom_slugs, disabled_builtins) = delegate_target_args(&disabled);
+        assert_eq!(custom_slugs, vec!["custom:delegate-on".to_string()]);
+        assert_eq!(
+            disabled_builtins,
+            vec!["codex".to_string(), "grok".to_string()],
+            "builtins only, sorted for a deterministic arg string"
+        );
+
+        // Nothing disabled → both flags stay omitted (customs all advertised).
+        let (custom_slugs, disabled_builtins) = delegate_target_args(&[]);
+        assert_eq!(
+            custom_slugs,
+            vec![
+                "custom:delegate-off".to_string(),
+                "custom:delegate-on".to_string()
+            ]
+        );
+        assert!(disabled_builtins.is_empty());
+
+        hydrate(&[]);
     }
 
     // ─── companion_features_arg: inject/skip decision + --features value ──

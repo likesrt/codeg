@@ -1,7 +1,15 @@
-import { memo, useId } from "react"
+import { memo, useId, useState, useSyncExternalStore } from "react"
 
 import type { AgentType } from "@/lib/types"
-import { AGENT_COLORS } from "@/lib/types"
+import {
+  getAgentColor,
+  getAgentIconUrl,
+  getAgentInitial,
+  getCustomAgentDisplayVersion,
+  isCustomAgentType,
+  isMonochromeSvgDataUrl,
+  subscribeCustomAgentDisplay,
+} from "@/lib/custom-agents"
 import { cn } from "@/lib/utils"
 
 interface AgentIconProps {
@@ -437,13 +445,113 @@ export function AgentIcon({ agentType, className }: AgentIconProps) {
     )
   }
 
+  // Custom ACP agents have no compiled-in mark, but most carry one of their
+  // own: the registry's `icon`, downloaded and inlined as a `data:` URL when
+  // the agent was added, or a file the user uploaded in the manual form. Agents
+  // with neither fall back to a deterministic colored initial.
+  if (isCustomAgentType(agentType)) {
+    return <CustomAgentIcon agentType={agentType} className={className} />
+  }
+
   return (
     <span
       className={cn(
         "rounded-full shrink-0",
-        AGENT_COLORS[agentType],
+        getAgentColor(agentType),
         className
       )}
     />
+  )
+}
+
+/**
+ * A monochrome custom-agent mark, drawn as a CSS mask filled with
+ * `currentColor` so it follows the theme — registry marks are `currentColor`
+ * SVGs, which an `<img>` renders black and therefore invisible in dark mode.
+ * Pinned to `text-foreground` like the compiled-in mono marks; an explicit
+ * `text-*` in `className` still wins.
+ */
+export function MaskedMonoIcon({
+  iconUrl,
+  className,
+}: {
+  iconUrl: string
+  className?: string
+}) {
+  // Only base64 `data:` URLs reach here (see `isMonochromeSvgDataUrl`), whose
+  // alphabet is safe inside a CSS `url("…")` verbatim.
+  const mask = `url("${iconUrl}")`
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-block shrink-0 bg-current text-foreground",
+        className
+      )}
+      style={{
+        WebkitMaskImage: mask,
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        WebkitMaskSize: "contain",
+        maskImage: mask,
+        maskRepeat: "no-repeat",
+        maskPosition: "center",
+        maskSize: "contain",
+      }}
+    />
+  )
+}
+
+function CustomAgentIcon({ agentType, className }: AgentIconProps) {
+  // The icon map is hydrated asynchronously from the agent list; re-render when
+  // it lands so the mark replaces the placeholder initial on its own.
+  useSyncExternalStore(
+    subscribeCustomAgentDisplay,
+    getCustomAgentDisplayVersion,
+    getCustomAgentDisplayVersion
+  )
+  const iconUrl = getAgentIconUrl(agentType)
+  // An icon that fails to decode (a corrupt upload, or a stored URL the webview
+  // cannot reach) must degrade to the initial rather than leave a broken image.
+  // Tracked by URL rather than as a flag so replacing the icon retries it
+  // without needing an effect to clear the flag.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  const failed = iconUrl !== null && failedUrl === iconUrl
+
+  if (iconUrl && isMonochromeSvgDataUrl(iconUrl)) {
+    return <MaskedMonoIcon iconUrl={iconUrl} className={className} />
+  }
+
+  if (iconUrl && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={iconUrl}
+        alt=""
+        aria-hidden
+        onError={() => setFailedUrl(iconUrl)}
+        // `<img>` never executes script in an SVG, so an untrusted mark is
+        // safe here in a way an inline `<svg>` would not be.
+        className={cn(
+          "inline-block shrink-0 rounded-[0.2em] object-contain",
+          className
+        )}
+      />
+    )
+  }
+
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-full text-white",
+        getAgentColor(agentType),
+        className
+      )}
+      aria-hidden
+    >
+      <span className="text-[0.6em] font-semibold leading-none">
+        {getAgentInitial(agentType)}
+      </span>
+    </span>
   )
 }

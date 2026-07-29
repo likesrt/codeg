@@ -14,7 +14,7 @@ import { isHomeRelativePath } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import { cn } from "@/lib/utils"
 
-interface LocalFileTarget {
+export interface LocalFileTarget {
   path: string
   line: number | null
 }
@@ -107,7 +107,14 @@ function isLocalPathLike(path: string): boolean {
   )
 }
 
-function parseLocalFileTarget(rawUrl: string): LocalFileTarget | null {
+/**
+ * Parse a link target into a local file path + optional line, or null when it
+ * isn't a local file (a web url, an unsupported scheme, a bare-relative path).
+ * Exported so the transcript's file-badge action menu (message/
+ * file-reference-actions.tsx) resolves a badge's path exactly the way a click
+ * on that badge resolves it.
+ */
+export function parseLocalFileTarget(rawUrl: string): LocalFileTarget | null {
   const trimmed = rawUrl.trim()
   if (!trimmed) return null
 

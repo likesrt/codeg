@@ -61,7 +61,7 @@ import type {
   ConversationStatus,
   DbConversationSummary,
 } from "@/lib/types"
-import { AGENT_LABELS } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import {
   loadFolderExpanded,
   saveFolderExpanded,
@@ -545,7 +545,7 @@ const FolderHeader = memo(function FolderHeader({
                         className="gap-2"
                       >
                         <span className="min-w-0 flex-1 truncate">
-                          {AGENT_LABELS[agent]}
+                          {getAgentLabel(agent)}
                         </span>
                         {active ? (
                           <Check className="h-3.5 w-3.5 shrink-0" />
@@ -560,7 +560,7 @@ const FolderHeader = memo(function FolderHeader({
                       className="gap-2 opacity-60"
                     >
                       <span className="min-w-0 flex-1 truncate">
-                        {`${AGENT_LABELS[currentDefaultAgent]} ${t("folderHeaderMenu.agentUnavailableSuffix")}`}
+                        {`${getAgentLabel(currentDefaultAgent)} ${t("folderHeaderMenu.agentUnavailableSuffix")}`}
                       </span>
                       <Check className="h-3.5 w-3.5 shrink-0" />
                     </ContextMenuItem>

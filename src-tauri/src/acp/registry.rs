@@ -57,6 +57,12 @@ pub enum AgentDistribution {
 pub struct PlatformBinary {
     pub platform: &'static str,
     pub url: &'static str,
+    /// Expected hex SHA-256 of the downloaded archive, verified before the
+    /// archive is unpacked. `None` for built-ins: their URLs are repository
+    /// constants reviewed with the code. Custom agents download from
+    /// user-supplied URLs, so the ACP registry's `sha256` is carried through
+    /// and enforced whenever it is published.
+    pub sha256: Option<&'static str>,
 }
 
 /// Launch entry inside an extracted directory-tree archive (see
@@ -130,7 +136,9 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-pub fn all_acp_agents() -> Vec<AgentType> {
+/// The twelve built-in agents. Excludes user-registered custom agents — use
+/// [`all_acp_agents`] for the live set.
+pub fn builtin_acp_agents() -> Vec<AgentType> {
     vec![
         AgentType::ClaudeCode,
         AgentType::Codex,
@@ -147,6 +155,14 @@ pub fn all_acp_agents() -> Vec<AgentType> {
     ]
 }
 
+/// Every agent codeg can currently drive: the twelve built-ins followed by the
+/// user's registered custom ACP agents (sorted by id).
+pub fn all_acp_agents() -> Vec<AgentType> {
+    let mut agents = builtin_acp_agents();
+    agents.extend(crate::acp::custom_registry::all());
+    agents
+}
+
 pub fn registry_id_for(agent_type: AgentType) -> &'static str {
     match agent_type {
         AgentType::ClaudeCode => "claude-acp",
@@ -161,6 +177,8 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::Pi => "pi-acp",
         AgentType::Grok => "grok-build",
         AgentType::Cursor => "cursor",
+        // A custom agent's registry id IS its identity.
+        AgentType::Custom(id) => id,
     }
 }
 
@@ -178,11 +196,21 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "pi-acp" => Some(AgentType::Pi),
         "grok-build" => Some(AgentType::Grok),
         "cursor" => Some(AgentType::Cursor),
-        _ => None,
+        // Only ids the user has actually registered resolve. An unregistered
+        // id must stay `None` so the ACP-registry picker still offers it as
+        // "addable" rather than treating it as already supported.
+        other => crate::acp::custom_registry::is_registered(other)
+            .then(|| AgentType::custom(other))
+            .flatten(),
     }
 }
 
 pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
+    if let AgentType::Custom(id) = agent_type {
+        return crate::acp::custom_registry::get(id)
+            .cloned()
+            .unwrap_or_else(|| crate::acp::custom_registry::unregistered_meta(id));
+    }
     debug_assert_eq!(
         from_registry_id(registry_id_for(agent_type)),
         Some(agent_type)
@@ -193,9 +221,24 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
+            // 0.63.0 (claude-agent-sdk 0.3.220) adds the opt-in
+            // `clientCapabilities._meta["subagent-transcript"]` capability
+            // (#881): when advertised (see `build_client_capabilities`),
+            // subagent text/thought chunks stream with update-level
+            // `_meta.claudeCode.parentToolUseId` instead of being filtered;
+            // codeg routes them into the live Agent capsule. Independent of
+            // the capability, every tool_call now carries
+            // `_meta.claudeCode.subagent: true` on Agent/Task launches and
+            // `_meta.claudeCode.title` (the Bash `description` input) on
+            // normal AND eager-permission tool calls. 0.63.0 also fixes
+            // phantom `tool_progress` heartbeat entries under never-announced
+            // ids (#916), Bash terminal metas keyed off an empty id (#917),
+            // and `permission_denied` resolving unannounced tool calls
+            // (#923). Fast mode's config option now folds the SDK's
+            // `fast_mode_disabled_reason` into its description (#921).
             distribution: AgentDistribution::Npx {
-                version: "0.62.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.62.0",
+                version: "0.63.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.63.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -300,34 +343,40 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.5",
+                version: "1.18.8",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-darwin-arm64.zip",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-darwin-x64.zip",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-linux-arm64.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-linux-x64.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-windows-arm64.zip",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.5/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.8/opencode-windows-x64.zip",
+                        sha256: None,
                     },
                 ],
                 dir_entry: None,
@@ -361,8 +410,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.127.0",
-                package: "@tencent-ai/codebuddy-code@2.127.0",
+                version: "2.128.0",
+                package: "@tencent-ai/codebuddy-code@2.128.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -375,8 +424,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.29.1",
-                package: "@moonshot-ai/kimi-code@0.29.1",
+                version: "0.29.2",
+                package: "@moonshot-ai/kimi-code@0.29.2",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -474,26 +523,32 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                     PlatformBinary {
                         platform: "darwin-aarch64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/darwin/arm64/agent-cli-package.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/darwin/x64/agent-cli-package.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/linux/arm64/agent-cli-package.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/linux/x64/agent-cli-package.tar.gz",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/windows/arm64/agent-cli-package.zip",
+                        sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
                         url: "https://downloads.cursor.com/lab/2026.07.23-e383d2b/windows/x64/agent-cli-package.zip",
+                        sha256: None,
                     },
                 ],
                 dir_entry: Some(BinaryDirEntry {
@@ -502,6 +557,9 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 }),
             },
         },
+        // Handled by the early return above; kept so the match stays
+        // exhaustive without a catch-all that could swallow a new built-in.
+        AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
     }
 }
 
@@ -628,8 +686,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.62.0",
-            "@agentclientprotocol/claude-agent-acp@0.62.0",
+            "0.63.0",
+            "@agentclientprotocol/claude-agent-acp@0.63.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -652,14 +710,14 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.127.0",
-            "@tencent-ai/codebuddy-code@2.127.0",
+            "2.128.0",
+            "@tencent-ai/codebuddy-code@2.128.0",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.29.1",
-            "@moonshot-ai/kimi-code@0.29.1",
+            "0.29.2",
+            "@moonshot-ai/kimi-code@0.29.2",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -675,7 +733,7 @@ mod tests {
             "@xai-official/grok@0.2.112",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.5", "/releases/download/v1.18.5/");
+        assert_binary_version(AgentType::OpenCode, "1.18.8", "/releases/download/v1.18.8/");
         assert_uvx_version(
             AgentType::Hermes,
             "0.19.0",

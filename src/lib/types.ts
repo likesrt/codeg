@@ -1,4 +1,5 @@
-export type AgentType =
+/** The twelve agents codeg ships hand-written support for. */
+export type BuiltinAgentType =
   | "claude_code"
   | "codex"
   | "open_code"
@@ -11,6 +12,34 @@ export type AgentType =
   | "pi"
   | "grok"
   | "cursor"
+
+/**
+ * Which agent backs a conversation.
+ *
+ * Open-ended on purpose: besides the built-ins, a user can register any ACP
+ * agent, which arrives as `custom:<registry-id>` (mirrors Rust's
+ * `AgentType::Custom`). The `(string & {})` arm keeps editor autocomplete for
+ * the built-ins while accepting those ids.
+ *
+ * Never index a `Record` with this directly — use `getAgentLabel` /
+ * `getAgentColor`, which fall back for custom agents.
+ */
+export type AgentType = BuiltinAgentType | (string & {})
+
+/** Wire prefix marking a custom (user-registered) ACP agent. */
+export const CUSTOM_AGENT_PREFIX = "custom:"
+
+/** True for a user-registered ACP agent. */
+export function isCustomAgentType(agentType: AgentType): boolean {
+  return agentType.startsWith(CUSTOM_AGENT_PREFIX)
+}
+
+/** The registry id behind `custom:<id>`, or `null` for a built-in. */
+export function customAgentId(agentType: AgentType): string | null {
+  return isCustomAgentType(agentType)
+    ? agentType.slice(CUSTOM_AGENT_PREFIX.length)
+    : null
+}
 
 export type AppErrorCode =
   | "invalid_input"
@@ -95,6 +124,17 @@ export interface AgentExecutionStats {
 }
 
 /**
+ * One entry of a live subagent transcript (LIVE-only — never persisted, never
+ * emitted by the Rust parsers). Entries arrive pre-merged: the reducer/backend
+ * split blocks only at kind/attribution boundaries, so consecutive same-kind
+ * chunks of one subagent are a single growing entry.
+ */
+export interface AgentTranscriptEntry {
+  type: "text" | "thinking"
+  text: string
+}
+
+/**
  * Image payload shared across `ContentBlock::Image` /
  * `ContentBlock::ImageGeneration` / ACP wire `ToolCallImageInfo`. Mirror of
  * Rust `models::message::ImageData`.
@@ -174,6 +214,16 @@ export type ContentBlock =
        * Absent/empty for the common text-only tool result.
        */
       images?: ImageData[] | null
+      /**
+       * Frontend-only, LIVE-stream data (same doctrine as the `plan` block:
+       * never persisted, never emitted by the Rust JSONL parsers). The
+       * in-flight transcript of a Claude native subagent — text/thinking
+       * chunks attributed to this Agent tool call via
+       * `_meta.claudeCode.parentToolUseId` (claude-agent-acp ≥0.63) —
+       * rendered inside the live Agent capsule. Detached at settle:
+       * history shows the parsed `agent_stats` shape only.
+       */
+      agent_transcript?: AgentTranscriptEntry[] | null
     }
   | { type: "thinking"; text: string }
   /**
@@ -567,7 +617,7 @@ export const STATUS_COLORS: Record<ConversationStatus, string> = {
   cancelled: "bg-red-500",
 }
 
-export const AGENT_DISPLAY_ORDER: AgentType[] = [
+export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "codex",
   "claude_code",
   "open_code",
@@ -582,17 +632,23 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "cursor",
 ]
 
-const AGENT_DISPLAY_ORDER_INDEX = new Map(
+const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
   AGENT_DISPLAY_ORDER.map((agent, index) => [agent, index])
 )
 
+/**
+ * Sort built-ins into their curated order. Custom agents have no pinned
+ * position, so they fall to the end and tie-break alphabetically among
+ * themselves — a stable order that does not shuffle as agents are added.
+ */
 export function compareAgentType(a: AgentType, b: AgentType): number {
   const aIndex = AGENT_DISPLAY_ORDER_INDEX.get(a) ?? Number.MAX_SAFE_INTEGER
   const bIndex = AGENT_DISPLAY_ORDER_INDEX.get(b) ?? Number.MAX_SAFE_INTEGER
-  return aIndex - bIndex
+  if (aIndex !== bIndex) return aIndex - bIndex
+  return a.localeCompare(b)
 }
 
-export const ALL_AGENT_TYPES: AgentType[] = [
+export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "open_code",
@@ -607,7 +663,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "cursor",
 ]
 
-export const MODEL_PROVIDER_AGENT_TYPES: AgentType[] = [
+export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "gemini",
@@ -884,7 +940,7 @@ export interface HermesLocalConfig {
   modelCommand?: string
 }
 
-export const AGENT_LABELS: Record<AgentType, string> = {
+export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
   open_code: "OpenCode",
@@ -899,7 +955,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   cursor: "Cursor",
 }
 
-export const AGENT_COLORS: Record<AgentType, string> = {
+export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   claude_code: "bg-[#D97757]",
   codex: "bg-[#7A9DFF]",
   open_code: "bg-black",
@@ -1233,8 +1289,15 @@ export interface BackgroundSettledInfo {
 }
 
 export type AcpEvent =
-  | { type: "content_delta"; text: string }
-  | { type: "thinking"; text: string }
+  /**
+   * `parent_tool_use_id` = subagent attribution (claude-agent-acp ≥0.63 with
+   * the `subagent-transcript` capability): chunks of a live subagent carry the
+   * launching Agent tool call's id and route into its capsule, never the main
+   * thread. Absent/null = main-thread content (every other agent, and Claude
+   * main-thread chunks).
+   */
+  | { type: "content_delta"; text: string; parent_tool_use_id?: string | null }
+  | { type: "thinking"; text: string; parent_tool_use_id?: string | null }
   | {
       type: "claude_sdk_message"
       session_id: string
@@ -1591,8 +1654,9 @@ export interface ToolCallState {
 }
 
 export type LiveContentBlock =
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
+  /** `parent_tool_use_id`: see `AcpEvent.content_delta` — subagent attribution. */
+  | { kind: "text"; text: string; parent_tool_use_id?: string | null }
+  | { kind: "thinking"; text: string; parent_tool_use_id?: string | null }
   | { kind: "tool_call_ref"; tool_call_id: string }
   | { kind: "plan"; entries: unknown }
 
@@ -1736,12 +1800,24 @@ export interface ConversationConnectionInfo {
 // ACP agent info returned by acp_list_agents
 export interface AcpAgentInfo {
   agent_type: AgentType
+  /**
+   * Whether this agent has a codeg-known skill store — every built-in, and
+   * custom agents that declared the shared `.agents/skills` store. Gates the
+   * skills matrices.
+   */
+  skills_capable: boolean
   registry_id: string
   registry_version: string | null
   name: string
   description: string
   available: boolean
   distribution_type: string
+  /**
+   * For custom agents, where the definition came from ("registry" | "manual");
+   * null for built-ins. A manual definition's registry_version is user-typed,
+   * so the version-status check shows only the local version for those.
+   */
+  custom_source: string | null
   enabled: boolean
   sort_order: number
   installed_version: string | null
@@ -1772,6 +1848,10 @@ export interface AcpAgentInfo {
    * launch flag, not a config key). Cursor agent only. */
   cursor_settings: CursorSettings | null
   model_provider_id: number | null
+  /** Display icon for a custom ACP agent — normally an inlined
+   *  `data:image/…;base64,…` URL. Always null for built-ins, which ship
+   *  hand-drawn marks in `agent-icon.tsx`. */
+  icon_url: string | null
 }
 
 /** Parsed sandbox / approval keys from ~/.codex/config.toml. Serialized

@@ -525,6 +525,7 @@ mod tests {
             &emitter,
             AcpEvent::ContentDelta {
                 text: "hello".to_string(),
+                parent_tool_use_id: None,
             },
         )
         .await;

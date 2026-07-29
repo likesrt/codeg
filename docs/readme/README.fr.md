@@ -19,7 +19,7 @@
 
 Codeg (Code Generation) est un espace de travail de programmation multi-agents : faites tourner tous vos agents de codage IA au même endroit — et laissez-les travailler ensemble.
 
-Il regroupe les sessions de toutes les CLI d'agents supportées dans un espace de travail unique et consultable, permet à un agent principal de déléguer à des sous-agents d'autres types au sein d'une même tâche, et fonctionne en application de bureau, en serveur autonome ou en conteneur Docker.
+Il regroupe les sessions de toutes les CLI d'agents supportées dans un espace de travail unique et consultable, permet à un agent principal de déléguer à des sous-agents d'autres types au sein d'une même tâche, et fonctionne en application de bureau, en serveur autonome ou en conteneur Docker — avec des clients natifs iOS et Android pour les moments où vous n'êtes pas à votre bureau.
 
 ![Espace de travail](../images/workspace-light.png#gh-light-mode-only)
 ![Espace de travail](../images/workspace-dark.png#gh-dark-mode-only)
@@ -93,6 +93,14 @@ Un seul espace de travail, tous les agents. Quel que soit celui qui travaille �
 
 **Git.** Un client complet, pas un simple indicateur d'état : committez et poussez, parcourez l'historique avec l'état d'envoi de chaque commit, créez des branches, fusionnez, rebasez, remisez, réinitialisez ou comparez avec une autre branche. Les conflits ouvrent un éditeur de fusion à trois volets où vous acceptez bloc par bloc ou tapez vous-même la résolution. Et les worktrees réduisent le travail en parallèle à une seule action — une nouvelle branche, son propre répertoire et une conversation toute neuve enracinée dedans, pour qu'une flotte d'agents construise des fonctionnalités différentes en même temps sans se marcher sur les fichiers.
 
+## 📱 iPhone, iPad et Android
+
+Quittez votre bureau, pas votre travail. Les clients natifs iOS et Android se connectent au Codeg que vous faites déjà tourner — le **Service web** de votre application de bureau, ou votre propre `codeg-server` — et de là vous lancez des sessions, suivez en direct les réponses et les appels d'outils, répondez aux demandes d'autorisation et parcourez projets et branches. Rien ne migre sur le téléphone : vos fichiers, les CLI des agents et les conversations restent sur la machine qui exécute Codeg, et le jeton d'accès est gardé dans le Trousseau iOS ou protégé par Android Keystore. Les deux clients sont open source ([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)) et actuellement en test ; l'appairage tient en trois étapes, détaillées dans [Applications mobiles](https://docs.codeg.app/getting-started/installation#mobile-apps).
+
+| iPhone et iPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="Démarrage d'une session depuis le client Codeg pour iOS" width="248" /> | <img src="../images/mobile-android.jpg" alt="La réponse d'un agent qui arrive en direct dans le client Codeg pour Android" width="248" /> |
+
 ## ✨ Points forts
 
 - **[Agrégation des conversations](https://docs.codeg.app/guide/aggregation)** — importez les sessions de tous les agents supportés dans un espace de travail unifié et consultable, et reprenez-les là où vous vous étiez arrêté
@@ -106,16 +114,24 @@ Un seul espace de travail, tous les agents. Quel que soit celui qui travaille �
 - **[Project Boot](https://docs.codeg.app/guide/project-boot)** — créez visuellement de nouveaux projets, avec aperçu en direct, puis ouvrez-les directement dans l'espace de travail
 - **[MCP](https://docs.codeg.app/guide/mcp) & [Skills](https://docs.codeg.app/guide/skills)** — scan des serveurs locaux, recherche et installation depuis le registre, et compétences gérées au niveau global ou projet
 - **[Bureau, serveur et Docker](https://docs.codeg.app/getting-started/deployment)** — une application de bureau native, un `codeg-server` autonome accessible depuis n'importe quel navigateur, ou `docker compose up`
+- **[iPhone, iPad et Android](https://docs.codeg.app/getting-started/installation#mobile-apps)** — des clients mobiles natifs reliés à votre poste ou à votre serveur : lancez des sessions, recevez les réponses en flux, approuvez les permissions et parcourez vos projets où que vous soyez
 
 ## 📦 Installation et exécution
 
 **Bureau** — téléchargez l'installateur macOS, Windows ou Linux depuis les [Releases](https://github.com/xintaofei/codeg/releases), puis suivez l'[Installation](https://docs.codeg.app/getting-started/installation).
 
-**Serveur** — faites tourner Codeg sans interface et accédez-y depuis n'importe quel navigateur :
+**Serveur** — faites tourner Codeg sans interface et accédez-y depuis n'importe quel navigateur. Sous Linux ou macOS :
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
-codeg-server
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
+```
+
+Sous Windows, dans PowerShell :
+
+```powershell
+irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
 **Docker** — le même serveur, dans un conteneur :
@@ -123,6 +139,8 @@ codeg-server
 ```bash
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 ```
+
+**Mobile** — installez l'[app iOS](https://apps.apple.com/app/codeg-client/id6785199071) ou l'[APK Android](https://github.com/xintaofei/codeg-android/releases/latest), puis pointez-la vers le **Service web** de votre application de bureau ou vers votre propre `codeg-server` : URL, jeton, c'est prêt. Les étapes d'appairage sont dans [Applications mobiles](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
 Compose, binaires précompilés, compilation depuis les sources et mises à jour sur place sont traités dans [Déploiement](https://docs.codeg.app/getting-started/deployment) ; les variables d'environnement dans [Configuration](https://docs.codeg.app/getting-started/configuration). Pour compiler Codeg lui-même : [Développement](https://docs.codeg.app/reference/development) et [Architecture](https://docs.codeg.app/reference/architecture).
 

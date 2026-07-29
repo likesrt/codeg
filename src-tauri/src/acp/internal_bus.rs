@@ -161,7 +161,7 @@ mod tests {
         Arc::new(EventEnvelope {
             seq,
             connection_id: "c1".into(),
-            payload: AcpEvent::ContentDelta { text: "x".into() },
+            payload: AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None },
         })
     }
 

@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI 编码智能体收进同一个地方 —— 并让它们协同工作。
 
-它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体，并可作为桌面应用、独立服务器或 Docker 容器运行。
+它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体，并可作为桌面应用、独立服务器或 Docker 容器运行；此外还有原生 iOS 与 Android 客户端，让你离开电脑后也能接手正在跑的任务。
 
 ![工作区](../images/workspace-light.png#gh-light-mode-only)
 ![工作区](../images/workspace-dark.png#gh-dark-mode-only)
@@ -93,6 +93,14 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 **Git**：一个完整的客户端，而不只是状态展示 —— 提交与推送、带每条提交推送状态的历史、新建分支、合并、变基、贮藏、重置，以及与另一个分支比较。遇到冲突会打开三栏合并编辑器，逐块采纳或自己动手写。而工作树把并行开发压缩成一个动作 —— 新分支、独立目录，外加一个扎根其中的新会话，于是一队智能体可以同时开发不同功能，谁也不碰谁的文件。
 
+## 📱 iPhone、iPad 与 Android
+
+离开电脑，任务也不必停下。原生 iOS 与 Android 客户端连接的就是你自己在跑的那个 Codeg —— 桌面应用的 **Web 服务**，或者你自己的 `codeg-server` —— 在手机上发起会话、看着回复与工具调用实时流回、处理权限审批、浏览项目与分支。手机上不会多出任何东西：文件、智能体 CLI 与会话仍留在运行 Codeg 的那台机器上，访问令牌则交由 iOS Keychain 或 Android Keystore 保管。两个客户端均已开源（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)），目前处于测试阶段；三步即可完成配对，见 [移动应用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
+
+| iPhone 与 iPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="在 Codeg iOS 客户端中发起会话" width="248" /> | <img src="../images/mobile-android.jpg" alt="智能体回复实时流入 Codeg Android 客户端" width="248" /> |
+
 ## ✨ 核心亮点
 
 - **[会话聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有受支持智能体的会话导入统一、可搜索的工作区，并从上次中断处继续
@@ -106,16 +114,24 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 - **[项目启动器](https://docs.codeg.app/zh/guide/project-boot)** — 可视化创建新项目并实时预览，创建完直接在工作区打开
 - **[MCP](https://docs.codeg.app/zh/guide/mcp) & [技能](https://docs.codeg.app/zh/guide/skills)** — 本地服务器扫描 + 市场搜索/安装，技能支持全局与项目级管理
 - **[桌面端、服务器与 Docker](https://docs.codeg.app/zh/getting-started/deployment)** — 原生桌面应用、可用浏览器访问的独立 `codeg-server`，或者 `docker compose up`
+- **[iPhone、iPad 与 Android](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)** — 原生移动客户端连接你的桌面端或服务器：随时随地发起会话、接收流式回复、批准权限、浏览项目
 
 ## 📦 安装与运行
 
 **桌面端** — 从 [Releases](https://github.com/xintaofei/codeg/releases) 下载 macOS、Windows 或 Linux 的安装包，再按 [安装](https://docs.codeg.app/zh/getting-started/installation) 操作。
 
-**服务器** — 无界面运行 Codeg，用任意浏览器访问：
+**服务器** — 无界面运行 Codeg，用任意浏览器访问。Linux 或 macOS：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
-codeg-server
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
 **Docker** — 同一个服务器，装进一个容器：
@@ -123,6 +139,8 @@ codeg-server
 ```bash
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 ```
+
+**移动端** — 安装 [iOS 应用](https://apps.apple.com/app/codeg-client/id6785199071) 或 [Android APK](https://github.com/xintaofei/codeg-android/releases/latest)，再把它指向桌面应用的 **Web 服务**或你自己的 `codeg-server`：填地址、填令牌，完成。配对步骤见 [移动应用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
 
 Compose、预编译二进制、源码构建与就地升级见 [部署](https://docs.codeg.app/zh/getting-started/deployment)；环境变量见 [配置](https://docs.codeg.app/zh/getting-started/configuration)。想构建 Codeg 本身：[开发](https://docs.codeg.app/zh/reference/development) 与 [架构](https://docs.codeg.app/zh/reference/architecture)。
 

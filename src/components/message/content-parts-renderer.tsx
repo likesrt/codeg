@@ -6,7 +6,10 @@ import {
   type ToolKindLabel,
 } from "@/lib/adapters/tool-kind-classifier"
 import type { MessageRole, PlanEntryInfo } from "@/lib/types"
-import { normalizeToolName } from "@/lib/tool-call-normalization"
+import {
+  extractClaudeCodeMetaTitle,
+  normalizeToolName,
+} from "@/lib/tool-call-normalization"
 import { parseBackgroundLaunch } from "@/lib/background-task"
 import { normalizePriority, normalizeStatus } from "@/lib/plan-parse"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
@@ -2131,7 +2134,16 @@ const ToolCallPart = memo(function ToolCallPart({
     [isCommandTool, part.output, part.errorText]
   )
   const title = useMemo(() => {
+    // claude-agent-acp ≥0.63 supplies the human-readable description as
+    // `_meta.claudeCode.title` (ACP `title` stays the raw command). It wins
+    // over input-derived titles because it is available from frame 1 —
+    // before `rawInput` streams — and is the same string `deriveToolTitle`
+    // would later extract from `input.description`, so the title never
+    // jitters when the input lands. Same 80-char ellipsis as the derived
+    // path for identical truncation behavior.
+    const metaTitle = extractClaudeCodeMetaTitle(part.meta)
     const rawTitle =
+      (metaTitle ? ellipsis(metaTitle, 80) : null) ??
       deriveToolTitle(
         normalizedToolName,
         part.input,
@@ -2146,6 +2158,7 @@ const ToolCallPart = memo(function ToolCallPart({
     ) => string)
   }, [
     normalizedToolName,
+    part.meta,
     part.input,
     part.output,
     part.errorText,
@@ -2322,8 +2335,11 @@ const ToolCallPart = memo(function ToolCallPart({
       <AgentToolCallPart
         part={part}
         renderToolCall={(p, key) => (
-          // Strip agentStats to prevent recursive Agent nesting
-          <ToolCallPart key={key} part={{ ...p, agentStats: undefined }} />
+          // Strip agentStats/agentTranscript to prevent recursive Agent nesting
+          <ToolCallPart
+            key={key}
+            part={{ ...p, agentStats: undefined, agentTranscript: undefined }}
+          />
         )}
       />
     )

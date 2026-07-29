@@ -33,8 +33,22 @@ pub struct LiveMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveContentBlock {
-    Text { text: String },
-    Thinking { text: String },
+    Text {
+        text: String,
+        /// Subagent attribution (`_meta.claudeCode.parentToolUseId`,
+        /// claude-agent-acp ≥0.63 with `subagent-transcript` advertised).
+        /// `None` = main-thread content. `default` keeps snapshots written
+        /// by older backends parseable; skip-none keeps every other agent's
+        /// snapshot byte-identical.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+    },
+    Thinking {
+        text: String,
+        /// Same contract as `Text::parent_tool_use_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+    },
     ToolCallRef { tool_call_id: String },
     Plan { entries: serde_json::Value },
 }
@@ -609,11 +623,28 @@ impl SessionState {
                     size: *size,
                 });
             }
-            AcpEvent::ContentDelta { text } => {
-                self.append_text_delta(text);
+            AcpEvent::ContentDelta {
+                text,
+                parent_tool_use_id,
+            } => {
+                // Subagent-attributed chunks accumulate only while the turn
+                // is live. Out-of-turn parented chunks (an async subagent
+                // still streaming after its parent turn settled) must not
+                // resurrect a stale `live_message` via `ensure_live_message`
+                // — a snapshot would then hand that ghost to every client
+                // (the same disease the #870 held-turn work fenced off).
+                // Main-thread chunks keep today's unconditional append.
+                if parent_tool_use_id.is_none() || self.status == ConnectionStatus::Prompting {
+                    self.append_text_delta(text, parent_tool_use_id.as_deref());
+                }
             }
-            AcpEvent::Thinking { text } => {
-                self.append_thinking_delta(text);
+            AcpEvent::Thinking {
+                text,
+                parent_tool_use_id,
+            } => {
+                if parent_tool_use_id.is_none() || self.status == ConnectionStatus::Prompting {
+                    self.append_thinking_delta(text, parent_tool_use_id.as_deref());
+                }
             }
             AcpEvent::ToolCall {
                 tool_call_id,
@@ -787,7 +818,15 @@ impl SessionState {
                     let assembled: String = live.content[after_last_tool_call..]
                         .iter()
                         .filter_map(|b| match b {
-                            LiveContentBlock::Text { text } => Some(text.as_str()),
+                            // Main-thread text only: a subagent's trailing
+                            // prose (parented blocks, claude-agent-acp ≥0.63
+                            // subagent transcripts) is the CHILD's voice and
+                            // must never read as the parent's delegation
+                            // result.
+                            LiveContentBlock::Text {
+                                text,
+                                parent_tool_use_id: None,
+                            } => Some(text.as_str()),
                             _ => None,
                         })
                         .collect::<Vec<&str>>()
@@ -1049,10 +1088,16 @@ impl SessionState {
             .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
             .map(|i| i + 1)
             .unwrap_or(0);
+        // Main-thread blocks only (`parent_tool_use_id: None`): a Claude
+        // subagent's parented transcript chunks describe the CHILD's work and
+        // must not surface as the parent's live reply.
         let mut texts = live.content[after_last_tool_call..]
             .iter()
             .filter_map(|b| match b {
-                LiveContentBlock::Text { text } => Some(text.as_str()),
+                LiveContentBlock::Text {
+                    text,
+                    parent_tool_use_id: None,
+                } => Some(text.as_str()),
                 _ => None,
             });
         match (texts.next(), texts.next()) {
@@ -1075,13 +1120,18 @@ impl SessionState {
             }
         }
 
-        // (2) Latest thinking block — the agent is reasoning, not silent.
+        // (2) Latest main-thread thinking block — the agent is reasoning, not
+        // silent. Parented (subagent) thinking is excluded for the same
+        // reason as (1).
         if let Some(line) = live
             .content
             .iter()
             .rev()
             .find_map(|b| match b {
-                LiveContentBlock::Thinking { text } => Some(text.as_str()),
+                LiveContentBlock::Thinking {
+                    text,
+                    parent_tool_use_id: None,
+                } => Some(text.as_str()),
                 _ => None,
             })
             .and_then(last_nonempty_line)
@@ -1129,25 +1179,37 @@ impl SessionState {
             .expect("live_message just initialized")
     }
 
-    fn append_text_delta(&mut self, text: &str) {
+    fn append_text_delta(&mut self, text: &str, parent_tool_use_id: Option<&str>) {
         let live = self.ensure_live_message();
-        if let Some(LiveContentBlock::Text { text: existing }) = live.content.last_mut() {
-            existing.push_str(text);
-        } else {
-            live.content.push(LiveContentBlock::Text {
+        // Merge only into a trailing block of the same kind AND the same
+        // subagent attribution — main text → subagent text → main text must
+        // produce three blocks, never one. The frontend reducer applies the
+        // identical predicate over the same seq-ordered stream, so a client
+        // hydrated from a snapshot converges on the same block boundaries as
+        // one that streamed live.
+        match live.content.last_mut() {
+            Some(LiveContentBlock::Text {
+                text: existing,
+                parent_tool_use_id: p,
+            }) if p.as_deref() == parent_tool_use_id => existing.push_str(text),
+            _ => live.content.push(LiveContentBlock::Text {
                 text: text.to_string(),
-            });
+                parent_tool_use_id: parent_tool_use_id.map(str::to_owned),
+            }),
         }
     }
 
-    fn append_thinking_delta(&mut self, text: &str) {
+    fn append_thinking_delta(&mut self, text: &str, parent_tool_use_id: Option<&str>) {
         let live = self.ensure_live_message();
-        if let Some(LiveContentBlock::Thinking { text: existing }) = live.content.last_mut() {
-            existing.push_str(text);
-        } else {
-            live.content.push(LiveContentBlock::Thinking {
+        match live.content.last_mut() {
+            Some(LiveContentBlock::Thinking {
+                text: existing,
+                parent_tool_use_id: p,
+            }) if p.as_deref() == parent_tool_use_id => existing.push_str(text),
+            _ => live.content.push(LiveContentBlock::Thinking {
                 text: text.to_string(),
-            });
+                parent_tool_use_id: parent_tool_use_id.map(str::to_owned),
+            }),
         }
     }
 
@@ -1758,6 +1820,7 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::ContentDelta {
             text: "let me check".into(),
+            parent_tool_use_id: None,
         });
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-1".into(),
@@ -1773,6 +1836,7 @@ mod tests {
         });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "Found 3 files.\nDetails here".into(),
+            parent_tool_use_id: None,
         });
         // Last non-empty line of the text that follows the final tool call.
         assert_eq!(s.latest_live_reply(100).as_deref(), Some("Details here"));
@@ -1784,6 +1848,7 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::Thinking {
             text: "pondering options".into(),
+            parent_tool_use_id: None,
         });
         assert_eq!(
             s.latest_live_reply(100).as_deref(),
@@ -1818,6 +1883,7 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::ContentDelta {
             text: "0123456789abcdef".into(),
+            parent_tool_use_id: None,
         });
         assert_eq!(s.latest_live_reply(10).as_deref(), Some("0123456789…"));
     }
@@ -1833,6 +1899,7 @@ mod tests {
         let last = "résumé 完成 ▸ 配置已更新";
         s.apply_event(&AcpEvent::ContentDelta {
             text: format!("{huge}\nintermediate\n{last}\n   \n"),
+            parent_tool_use_id: None,
         });
         let out = s.latest_live_reply(8).unwrap();
         // First 8 chars of `last` are r é s u m é <space> 完, then a truncation
@@ -1849,10 +1916,12 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::ContentDelta {
             text: "Answer ".into(),
+            parent_tool_use_id: None,
         });
-        s.apply_event(&AcpEvent::Thinking { text: "hmm".into() });
+        s.apply_event(&AcpEvent::Thinking { text: "hmm".into(), parent_tool_use_id: None });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "continues here".into(),
+            parent_tool_use_id: None,
         });
         assert_eq!(
             s.latest_live_reply(100).as_deref(),
@@ -1884,6 +1953,7 @@ mod tests {
         });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "hello".into(),
+            parent_tool_use_id: None,
         });
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-1".into(),
@@ -2022,9 +2092,11 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::ContentDelta {
             text: "hello ".into(),
+            parent_tool_use_id: None,
         });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "world".into(),
+            parent_tool_use_id: None,
         });
         let live = s.live_message.as_ref().expect("live_message expected");
         assert_eq!(
@@ -2033,7 +2105,7 @@ mod tests {
             "consecutive text deltas merge into one block"
         );
         match &live.content[0] {
-            LiveContentBlock::Text { text } => assert_eq!(text, "hello world"),
+            LiveContentBlock::Text { text, .. } => assert_eq!(text, "hello world"),
             _ => panic!("expected text block"),
         }
         assert!(matches!(live.role, MessageRole::Assistant));
@@ -2042,23 +2114,197 @@ mod tests {
     #[test]
     fn thinking_delta_creates_separate_block_from_text() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "T".into() });
-        s.apply_event(&AcpEvent::Thinking { text: "X".into() });
-        s.apply_event(&AcpEvent::ContentDelta { text: "Y".into() });
+        s.apply_event(&AcpEvent::ContentDelta { text: "T".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::Thinking { text: "X".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta { text: "Y".into(), parent_tool_use_id: None });
         let live = s.live_message.as_ref().unwrap();
         assert_eq!(live.content.len(), 3);
         match &live.content[0] {
-            LiveContentBlock::Text { text } => assert_eq!(text, "T"),
+            LiveContentBlock::Text { text, .. } => assert_eq!(text, "T"),
             _ => panic!("expected text"),
         }
         match &live.content[1] {
-            LiveContentBlock::Thinking { text } => assert_eq!(text, "X"),
+            LiveContentBlock::Thinking { text, .. } => assert_eq!(text, "X"),
             _ => panic!("expected thinking"),
         }
         match &live.content[2] {
-            LiveContentBlock::Text { text } => assert_eq!(text, "Y"),
+            LiveContentBlock::Text { text, .. } => assert_eq!(text, "Y"),
             _ => panic!("expected text"),
         }
+    }
+
+    /// Parent → subagent → parent interleave must produce three blocks: the
+    /// merge predicate requires the SAME `parent_tool_use_id`, so subagent
+    /// prose can never concatenate onto the main thread (and vice versa).
+    #[test]
+    fn parented_delta_interleave_never_merges_across_attribution() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "main ".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "sub".into(),
+            parent_tool_use_id: Some("toolu_parent".into()),
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "more main".into(),
+            parent_tool_use_id: None,
+        });
+        let live = s.live_message.as_ref().unwrap();
+        assert_eq!(live.content.len(), 3, "attribution boundaries split blocks");
+        match &live.content[1] {
+            LiveContentBlock::Text {
+                text,
+                parent_tool_use_id,
+            } => {
+                assert_eq!(text, "sub");
+                assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_parent"));
+            }
+            other => panic!("expected parented text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parented_deltas_with_same_parent_merge() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "a".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "b".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        // A different parent's thinking starts its own block.
+        s.apply_event(&AcpEvent::Thinking {
+            text: "t1".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "t2".into(),
+            parent_tool_use_id: Some("toolu_q".into()),
+        });
+        let live = s.live_message.as_ref().unwrap();
+        assert_eq!(live.content.len(), 3);
+        assert!(
+            matches!(&live.content[0], LiveContentBlock::Text { text, .. } if text == "ab"),
+            "same-parent text deltas merge"
+        );
+        assert!(
+            matches!(&live.content[2], LiveContentBlock::Thinking { text, parent_tool_use_id }
+                if text == "t2" && parent_tool_use_id.as_deref() == Some("toolu_q")),
+            "different-parent thinking splits"
+        );
+    }
+
+    /// Out-of-turn parented chunks (async subagent still streaming after the
+    /// parent turn settled) must not resurrect a live_message via
+    /// `ensure_live_message` — the snapshot would hand that ghost to every
+    /// attaching client. Main-thread chunks keep the unconditional append.
+    #[test]
+    fn parented_delta_outside_prompting_does_not_touch_live_message() {
+        let mut s = fresh_state();
+        assert_ne!(s.status, ConnectionStatus::Prompting);
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "late sub text".into(),
+            parent_tool_use_id: Some("toolu_gone".into()),
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "late sub think".into(),
+            parent_tool_use_id: Some("toolu_gone".into()),
+        });
+        assert!(
+            s.live_message.is_none(),
+            "parented chunks must not create live_message outside a turn"
+        );
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "main".into(),
+            parent_tool_use_id: None,
+        });
+        assert!(
+            s.live_message.is_some(),
+            "main-thread append stays unconditional"
+        );
+    }
+
+    /// Snapshot round-trip: `parent_tool_use_id` survives serialization, and a
+    /// snapshot written by an older backend (no field) still deserializes.
+    #[test]
+    fn live_block_parent_survives_snapshot_and_old_snapshots_parse() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "sub".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        let snap = s.to_snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).unwrap();
+        let live = back.live_message.expect("live message in snapshot");
+        assert!(matches!(
+            &live.content[0],
+            LiveContentBlock::Text { parent_tool_use_id, .. }
+                if parent_tool_use_id.as_deref() == Some("toolu_p")
+        ));
+
+        let legacy: LiveContentBlock =
+            serde_json::from_str(r#"{"kind":"text","text":"old"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            LiveContentBlock::Text {
+                parent_tool_use_id: None,
+                ..
+            }
+        ));
+    }
+
+    /// `last_assistant_text` is the delegation child's result — a subagent's
+    /// trailing prose is the CHILD's voice and must not read as the answer.
+    #[test]
+    fn last_assistant_text_ignores_parented_blocks() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "final answer".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: " SUBAGENT NOISE".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess-1".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        assert_eq!(s.last_assistant_text.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn latest_live_reply_ignores_parented_blocks() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::Thinking {
+            text: "sub thinking".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "sub text".into(),
+            parent_tool_use_id: Some("toolu_p".into()),
+        });
+        assert_eq!(
+            s.latest_live_reply(200),
+            None,
+            "parented-only content must not surface as the parent's live reply"
+        );
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "main progress".into(),
+            parent_tool_use_id: None,
+        });
+        assert_eq!(s.latest_live_reply(200).as_deref(), Some("main progress"));
     }
 
     #[test]
@@ -2186,7 +2432,7 @@ mod tests {
     #[test]
     fn turn_complete_clears_live_and_tool_calls_and_pending_permission() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "hi".into() });
+        s.apply_event(&AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None });
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-1".into(),
             title: "x".into(),
@@ -2402,12 +2648,14 @@ mod tests {
             content: vec![
                 LiveContentBlock::Text {
                     text: "let me check ".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::ToolCallRef {
                     tool_call_id: "tc".into(),
                 },
                 LiveContentBlock::Text {
                     text: "the answer is 42".into(),
+                    parent_tool_use_id: None,
                 },
             ],
             started_at: Utc::now(),
@@ -2430,9 +2678,11 @@ mod tests {
             content: vec![
                 LiveContentBlock::Text {
                     text: "part 1 ".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::Text {
                     text: "part 2".into(),
+                    parent_tool_use_id: None,
                 },
             ],
             started_at: Utc::now(),
@@ -2456,6 +2706,7 @@ mod tests {
             content: vec![
                 LiveContentBlock::Text {
                     text: "running a tool".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::ToolCallRef {
                     tool_call_id: "tc".into(),
@@ -2483,12 +2734,14 @@ mod tests {
             content: vec![
                 LiveContentBlock::Text {
                     text: "let me check".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::ToolCallRef {
                     tool_call_id: "tc".into(),
                 },
                 LiveContentBlock::Text {
                     text: "the answer is 42".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::Plan {
                     entries: serde_json::json!([]),
@@ -2516,6 +2769,7 @@ mod tests {
             content: vec![
                 LiveContentBlock::Text {
                     text: "working".into(),
+                    parent_tool_use_id: None,
                 },
                 LiveContentBlock::ToolCallRef {
                     tool_call_id: "tc".into(),
@@ -2735,9 +2989,11 @@ mod tests {
             },
             AcpEvent::ContentDelta {
                 text: "Hello ".into(),
+                parent_tool_use_id: None,
             },
             AcpEvent::ContentDelta {
                 text: "world".into(),
+                parent_tool_use_id: None,
             },
             AcpEvent::ToolCall {
                 tool_call_id: "tc-1".into(),
@@ -2765,9 +3021,11 @@ mod tests {
             },
             AcpEvent::Thinking {
                 text: "considering".into(),
+                parent_tool_use_id: None,
             },
             AcpEvent::ContentDelta {
                 text: " More text".into(),
+                parent_tool_use_id: None,
             },
             AcpEvent::UsageUpdate {
                 used: 1234,
@@ -2857,8 +3115,8 @@ mod tests {
                 lm.content
                     .iter()
                     .map(|b| match b {
-                        LiveContentBlock::Text { text } => ("text", text.clone()),
-                        LiveContentBlock::Thinking { text } => ("thinking", text.clone()),
+                        LiveContentBlock::Text { text, .. } => ("text", text.clone()),
+                        LiveContentBlock::Thinking { text, .. } => ("thinking", text.clone()),
                         LiveContentBlock::ToolCallRef { tool_call_id } => {
                             ("tool_call_ref", tool_call_id.clone())
                         }
@@ -2891,10 +3149,12 @@ mod tests {
         let mut s = fresh_state();
         s.apply_event(&AcpEvent::ContentDelta {
             text: "before ".into(),
+            parent_tool_use_id: None,
         });
         s.apply_event(&tool_call_event("tc-1", "ls"));
         s.apply_event(&AcpEvent::ContentDelta {
             text: "between".into(),
+            parent_tool_use_id: None,
         });
         s.apply_event(&tool_call_event("tc-2", "pwd"));
 
@@ -3137,7 +3397,7 @@ mod tests {
     fn plan_update_appends_at_end_replacing_existing() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "A".into() });
+        s.apply_event(&AcpEvent::ContentDelta { text: "A".into(), parent_tool_use_id: None });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v1".into(),
@@ -3145,7 +3405,7 @@ mod tests {
                 status: "pending".into(),
             }],
         });
-        s.apply_event(&AcpEvent::ContentDelta { text: "B".into() });
+        s.apply_event(&AcpEvent::ContentDelta { text: "B".into(), parent_tool_use_id: None });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v2".into(),
@@ -3207,7 +3467,7 @@ mod tests {
     fn turn_complete_clears_plan_and_tool_refs() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "x".into() });
+        s.apply_event(&AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None });
         s.apply_event(&tool_call_event("tc-1", "ls"));
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
@@ -3237,14 +3497,14 @@ mod tests {
         let env = EventEnvelope {
             seq: 7,
             connection_id: "conn-x".into(),
-            payload: AcpEvent::ContentDelta { text: "abc".into() },
+            payload: AcpEvent::ContentDelta { text: "abc".into(), parent_tool_use_id: None },
         };
         let json = serde_json::to_string(&env).unwrap();
         let back: EventEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(back.seq, 7);
         assert_eq!(back.connection_id, "conn-x");
         match back.payload {
-            AcpEvent::ContentDelta { text } => assert_eq!(text, "abc"),
+            AcpEvent::ContentDelta { text, .. } => assert_eq!(text, "abc"),
             _ => panic!("expected ContentDelta"),
         }
     }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { inferLiveToolName, normalizeToolName } from "./tool-call-normalization"
+import {
+  claudeCodeMarksSubagent,
+  extractClaudeCodeMetaTitle,
+  inferLiveToolName,
+  normalizeToolName,
+} from "./tool-call-normalization"
 
 describe("inferLiveToolName meta.claudeCode.toolName override", () => {
   it("returns memory_recall for synthesized recall events without rawInput", () => {
@@ -115,6 +120,63 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
         meta: { claudeCode: { toolName: "Task" } },
       })
     ).toBe("agent")
+  })
+
+  it("classifies via the authoritative subagent marker before any input shape (≥0.63)", () => {
+    // Frame 1 of an Agent/Task launch: rawInput hasn't streamed, the meta
+    // toolName may be the legacy "Task" — the `subagent: true` marker alone
+    // must classify. (claude-agent-acp ≥0.63, _meta.claudeCode.subagent.)
+    expect(
+      inferLiveToolName({
+        title: "Implement feature X",
+        kind: "other",
+        rawInput: null,
+        meta: { claudeCode: { toolName: "Task", subagent: true } },
+      })
+    ).toBe("agent")
+    // The marker is authoritative even over a misleading input shape (a
+    // command-bearing payload would otherwise classify as bash).
+    expect(
+      inferLiveToolName({
+        title: "Run checks",
+        kind: "other",
+        rawInput: JSON.stringify({ command: "pnpm test" }),
+        meta: { claudeCode: { toolName: "Agent", subagent: true } },
+      })
+    ).toBe("agent")
+    // Strict `=== true`: any other shape leaves classification untouched.
+    expect(
+      inferLiveToolName({
+        title: "bash",
+        kind: "execute",
+        rawInput: JSON.stringify({ command: "ls" }),
+        meta: { claudeCode: { toolName: "Bash", subagent: "yes" } },
+      })
+    ).toBe("bash")
+  })
+
+  it("claudeCodeMarksSubagent / extractClaudeCodeMetaTitle guard their shapes", () => {
+    expect(claudeCodeMarksSubagent({ claudeCode: { subagent: true } })).toBe(
+      true
+    )
+    expect(claudeCodeMarksSubagent({ claudeCode: { subagent: false } })).toBe(
+      false
+    )
+    expect(claudeCodeMarksSubagent({ claudeCode: {} })).toBe(false)
+    expect(claudeCodeMarksSubagent(null)).toBe(false)
+    expect(claudeCodeMarksSubagent({ claudeCode: "subagent" })).toBe(false)
+
+    expect(
+      extractClaudeCodeMetaTitle({
+        claudeCode: { title: "Show current diff" },
+      })
+    ).toBe("Show current diff")
+    expect(extractClaudeCodeMetaTitle({ claudeCode: { title: "   " } })).toBe(
+      null
+    )
+    expect(extractClaudeCodeMetaTitle({ claudeCode: { title: 42 } })).toBe(null)
+    expect(extractClaudeCodeMetaTitle({ claudeCode: {} })).toBe(null)
+    expect(extractClaudeCodeMetaTitle(undefined)).toBe(null)
   })
 
   it("resolves delegation companion tools from meta over the input-shape heuristic", () => {

@@ -1773,6 +1773,146 @@ describe("buildStreamingTurnsFromLiveMessage — orphan status provenance", () =
   })
 })
 
+describe("buildStreamingTurnsFromLiveMessage — subagent transcript routing (claude-agent-acp ≥0.63)", () => {
+  function toolInfo(overrides: Partial<ToolCallInfo> = {}): ToolCallInfo {
+    return {
+      tool_call_id: "toolu_x",
+      title: "Bash",
+      kind: "execute",
+      status: "in_progress",
+      content: null,
+      raw_input: null,
+      raw_output_chunks: [],
+      raw_output_total_bytes: 0,
+      locations: null,
+      meta: null,
+      images: [],
+      ...overrides,
+    }
+  }
+  const agentCall = (id: string): LiveContentBlock => ({
+    type: "tool_call",
+    info: toolInfo({ tool_call_id: id, title: "Agent", kind: "other" }),
+  })
+  const build = (
+    content: LiveContentBlock[],
+    opts?: { attachAgentTranscripts?: boolean }
+  ) =>
+    buildStreamingTurnsFromLiveMessage(
+      1,
+      { id: "lm-sub", role: "assistant", startedAt: 0, content },
+      opts
+    )
+
+  it("routes parented text/thinking out of the main thread and attaches them in order", () => {
+    const result = build([
+      agentCall("toolu_agent"),
+      { type: "thinking", text: "planning", parentToolUseId: "toolu_agent" },
+      { type: "text", text: "found it", parentToolUseId: "toolu_agent" },
+    ])
+    const blocks = result.turns.flatMap((t) => t.blocks)
+    // No main-thread text/thinking leaked.
+    expect(blocks.some((b) => b.type === "text" || b.type === "thinking")).toBe(
+      false
+    )
+    const carrier = blocks.find((b) => b.type === "tool_result")
+    expect(
+      carrier?.type === "tool_result" ? carrier.agent_transcript : null
+    ).toEqual([
+      { type: "thinking", text: "planning" },
+      { type: "text", text: "found it" },
+    ])
+    // The carrier keeps the card in its running state.
+    expect(result.inProgressToolCallIds.has("toolu_agent")).toBe(true)
+  })
+
+  it("does not split a new turn group on parented text after a completed tool", () => {
+    const result = build([
+      {
+        type: "tool_call",
+        info: toolInfo({ tool_call_id: "toolu_done", status: "completed" }),
+      },
+      agentCall("toolu_agent"),
+      { type: "text", text: "sub prose", parentToolUseId: "toolu_agent" },
+    ])
+    expect(result.turns).toHaveLength(1)
+  })
+
+  it("keeps positional child capture alive across parented blocks", () => {
+    // Agent (in progress) → subagent text → child tool call WITHOUT explicit
+    // parent meta: the positional fallback must still nest the child.
+    const result = build([
+      agentCall("toolu_agent"),
+      { type: "text", text: "sub prose", parentToolUseId: "toolu_agent" },
+      {
+        type: "tool_call",
+        info: toolInfo({ tool_call_id: "toolu_child", title: "Read" }),
+      },
+    ])
+    const blocks = result.turns.flatMap((t) => t.blocks)
+    // The child folded into the agent card (no standalone tool_use for it).
+    const standalone = blocks.filter(
+      (b) => b.type === "tool_use" && b.tool_use_id === "toolu_child"
+    )
+    expect(standalone).toHaveLength(0)
+    const carrier = blocks.find((b) => b.type === "tool_result")
+    expect(
+      carrier?.type === "tool_result"
+        ? (carrier.agent_stats?.tool_calls ?? []).map((c) => c.tool_name)
+        : []
+    ).toEqual(["read"])
+  })
+
+  it("emits the carrier block for a text-only subagent (no child tools yet)", () => {
+    const result = build([
+      agentCall("toolu_agent"),
+      { type: "text", text: "just prose", parentToolUseId: "toolu_agent" },
+    ])
+    const carrier = result.turns
+      .flatMap((t) => t.blocks)
+      .find((b) => b.type === "tool_result")
+    expect(carrier).toBeDefined()
+    expect(
+      carrier?.type === "tool_result" ? carrier.agent_transcript : null
+    ).toEqual([{ type: "text", text: "just prose" }])
+  })
+
+  it("attachAgentTranscripts:false (promotion) routes blocks out but attaches nothing", () => {
+    const result = build(
+      [
+        agentCall("toolu_agent"),
+        { type: "text", text: "sub prose", parentToolUseId: "toolu_agent" },
+      ],
+      { attachAgentTranscripts: false }
+    )
+    const blocks = result.turns.flatMap((t) => t.blocks)
+    expect(blocks.some((b) => b.type === "text")).toBe(false)
+    for (const b of blocks) {
+      if (b.type === "tool_result") {
+        expect(b.agent_transcript).toBeUndefined()
+      }
+    }
+  })
+
+  it("drops a parented block whose parent is not a classified agent", () => {
+    const result = build([
+      {
+        type: "tool_call",
+        info: toolInfo({ tool_call_id: "toolu_bash" }),
+      },
+      { type: "text", text: "stray", parentToolUseId: "toolu_bash" },
+      { type: "text", text: "stray2", parentToolUseId: "toolu_gone" },
+    ])
+    const blocks = result.turns.flatMap((t) => t.blocks)
+    expect(blocks.some((b) => b.type === "text")).toBe(false)
+    for (const b of blocks) {
+      if (b.type === "tool_result") {
+        expect(b.agent_transcript).toBeUndefined()
+      }
+    }
+  })
+})
+
 describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () => {
   function kimiToolCall(
     rawInput: string | null,

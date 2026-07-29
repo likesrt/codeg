@@ -340,6 +340,23 @@ describe("RichComposer text paste (plain-text schema)", () => {
     )
   })
 
+  it("hydrates serialized references in a plain-text paste into badges", async () => {
+    const { ref } = await mount()
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    // The wire form of a sent message (file link + Codex `$` skill token): the
+    // composer must preview the same badges the transcript renders, not the
+    // literal serialized text.
+    const wire = "see [app.ts](file:///repo/app.ts) and $deploy"
+    dispatchPaste(dom, { text: wire })
+    const json = JSON.stringify(ref.current?.getJSON())
+    expect(json).toContain('"refType":"file"')
+    expect(json).toContain('"refType":"skill"')
+    // Round-trip: the hydrated badges re-serialize to exactly the pasted text
+    // (the `$` trigger survives — never downgraded to `/deploy`).
+    expect(ref.current?.getText()).toBe(wire)
+  })
+
   it("does not insert text when the host consumes the paste as files", async () => {
     const onPasteFiles = vi.fn(() => true)
     const { ref } = await mount({ onPasteFiles })

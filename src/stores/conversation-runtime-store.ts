@@ -7,6 +7,7 @@ import { getFolderConversation } from "@/lib/api"
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
 import type {
   AgentExecutionStats,
+  AgentTranscriptEntry,
   DbConversationDetail,
   MessageTurn,
   PlanEntryInfo,
@@ -685,8 +686,19 @@ function resolveLiveToolInput(
 
 export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
-  liveMessage: LiveMessage
+  liveMessage: LiveMessage,
+  opts?: {
+    /**
+     * When false (the COMPLETE_TURN promotion path), parented subagent
+     * text/thinking is still routed OUT of the main thread but no
+     * `agent_transcript` is attached — the transcript is transient live-only
+     * data and must not survive into promoted `localTurns` (the authoritative
+     * detail reload that replaces them has no counterpart for it).
+     */
+    attachAgentTranscripts?: boolean
+  }
 ): BuiltStreamingTurns {
+  const attachAgentTranscripts = opts?.attachAgentTranscripts !== false
   // Consolidate codex collab capsules first (spawn execution + per-wait result,
   // close folded in) so live matches the history reconstruction. No-op when the
   // message has no collab tool calls. See collab-collapse.ts.
@@ -719,6 +731,12 @@ export function buildStreamingTurnsFromLiveMessage(
     Array<{ info: ToolCallInfo; toolName: string }>
   >()
   const childToolCallIds = new Set<string>()
+  // Live subagent transcripts, keyed by the launching Agent tool call's id.
+  // Fed by parented text/thinking blocks (claude-agent-acp ≥0.63 subagent
+  // transcripts); attached to the in-progress Agent card's tool_result as
+  // `agent_transcript`. Entries arrive pre-merged (the reducer splits blocks
+  // only at kind/attribution boundaries), so they are pushed as-is.
+  const agentTranscripts = new Map<string, AgentTranscriptEntry[]>()
 
   // Cache inferred tool names — inferLiveToolName is called per tool_call
   // in both Phase 1 and Phase 2; caching avoids redundant computation.
@@ -800,10 +818,32 @@ export function buildStreamingTurnsFromLiveMessage(
             ?.push({ info: block.info, toolName })
         }
       }
-    } else if (positionalAgentId) {
-      // A non-tool block (text/thinking/plan) means the main agent is
-      // producing new content — stop position-based capture.
-      positionalAgentId = null
+    } else {
+      // Subagent-attributed text/thinking (claude-agent-acp ≥0.63
+      // transcripts) is collected here — BEFORE Phase 2 — so the transcript
+      // is complete when Phase 2 visits the (earlier-positioned) Agent
+      // tool_call and attaches it. A parented block whose parent is not a
+      // classified agent (snapshot-path orphan — the reducer's
+      // parent-presence gate does not cover snapshot-sourced content) is
+      // dropped by the `agentIds` check. Entries arrive pre-merged (the
+      // reducer splits blocks only at kind/attribution boundaries).
+      if (
+        (block.type === "text" || block.type === "thinking") &&
+        block.parentToolUseId
+      ) {
+        if (agentIds.has(block.parentToolUseId)) {
+          const list = agentTranscripts.get(block.parentToolUseId) ?? []
+          list.push({ type: block.type, text: block.text })
+          agentTranscripts.set(block.parentToolUseId, list)
+        }
+      } else if (positionalAgentId) {
+        // A non-tool block (text/thinking/plan) means the main agent is
+        // producing new content — stop position-based capture. (A parented
+        // block took the branch above: it is the SUBAGENT's own prose, so
+        // the positional window survives it — a child tool call arriving
+        // right after subagent text still nests.)
+        positionalAgentId = null
+      }
     }
   }
 
@@ -817,6 +857,18 @@ export function buildStreamingTurnsFromLiveMessage(
   const inProgressToolCallIds = new Set<string>()
 
   for (const block of content) {
+    // Parented subagent text/thinking never enters the main thread: it was
+    // already collected into `agentTranscripts` during Phase 1 (which is why
+    // an Agent tool_call positioned EARLIER in content sees its full
+    // transcript when Phase 2 attaches it below). Skipping here also means
+    // it never starts a new turn group and never counts as main content.
+    if (
+      (block.type === "text" || block.type === "thinking") &&
+      block.parentToolUseId
+    ) {
+      continue
+    }
+
     const isContentBlock =
       block.type === "text" ||
       block.type === "thinking" ||
@@ -970,6 +1022,13 @@ export function buildStreamingTurnsFromLiveMessage(
         const children = isAgent
           ? (agentChildren.get(block.info.tool_call_id) ?? [])
           : []
+        // Live subagent transcript for the RUNNING card only: at settle the
+        // card flips to the real result (and history has no counterpart), so
+        // the final-state branch below never attaches it.
+        const transcript =
+          attachAgentTranscripts && isAgent
+            ? agentTranscripts.get(block.info.tool_call_id)
+            : undefined
 
         const agentStats: AgentExecutionStats | undefined =
           isAgent && children.length > 0
@@ -1004,11 +1063,16 @@ export function buildStreamingTurnsFromLiveMessage(
             ...(agentStats ? { agent_stats: agentStats } : {}),
           })
           currentGroupHasCompletedTool = true
-        } else if (resolvedOutput || (isAgent && children.length > 0)) {
+        } else if (
+          resolvedOutput ||
+          (isAgent && (children.length > 0 || (transcript?.length ?? 0) > 0))
+        ) {
           // In-progress tool that already produced partial output (or an
-          // agent with child calls). Emit the running result so the renderer
-          // can display live output / nested tool calls, and flag the
-          // tool_call so the adapter keeps state="input-available".
+          // agent with child calls or a streaming transcript — a text-only
+          // subagent has no child tools yet but still needs the carrier
+          // block). Emit the running result so the renderer can display live
+          // output / nested tool calls, and flag the tool_call so the
+          // adapter keeps state="input-available".
           //
           // For Agents specifically, partial `content` from Claude Code's
           // Task tool echoes the prompt (and subagent message fragments)
@@ -1020,6 +1084,7 @@ export function buildStreamingTurnsFromLiveMessage(
             output_preview: isAgent ? null : (resolvedOutput ?? null),
             is_error: false,
             ...(agentStats ? { agent_stats: agentStats } : {}),
+            ...(transcript?.length ? { agent_transcript: transcript } : {}),
           })
           inProgressToolCallIds.add(block.info.tool_call_id)
         }
@@ -1435,11 +1500,15 @@ function reducer(
           ? action.liveMessage
           : current.liveMessage
 
-      // Convert liveMessage to completed MessageTurns (split into rounds)
+      // Convert liveMessage to completed MessageTurns (split into rounds).
+      // No agent transcripts on promotion: they are transient live-only data
+      // (see the option's doc) — parented blocks are still routed out of the
+      // main thread, just not re-attached to the promoted card.
       const streamingTurns = sourceLiveMessage
         ? buildStreamingTurnsFromLiveMessage(
             current.conversationId,
-            sourceLiveMessage
+            sourceLiveMessage,
+            { attachAgentTranscripts: false }
           ).turns
         : []
 

@@ -48,11 +48,11 @@ import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
 import { PlanApprovalCard } from "@/components/chat/plan-approval-card"
 import {
-  AGENT_LABELS,
   type AgentType,
   type PlanApprovalAnswer,
   type QuestionAnswer,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 
 interface Props {
   open: boolean
@@ -377,7 +377,7 @@ function SubAgentSessionBody({
           )}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
-          {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
+          {agentType ? getAgentLabel(agentType) : t("unknownAgent")}
         </span>
       </div>
       {childPendingPermission && (

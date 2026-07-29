@@ -28,7 +28,8 @@ import {
 } from "@/lib/content-search-settings"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
 import { rankFileMatches } from "@/lib/file-search-match"
-import { AGENT_LABELS, compareAgentType } from "@/lib/types"
+import { compareAgentType } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import { Button } from "@/components/ui/button"
@@ -1059,10 +1060,10 @@ function SearchTabButton({
 }
 
 /**
- * Renders agent filters for the conversations tab.
- * @param props Search dialog view model.
- * @returns Filter buttons or null.
- * @remarks Hidden unless more than one agent exists in the active folder.
+ * 渲染会话搜索页签的 Agent 筛选器。
+ * @param props.model 搜索对话框视图模型，包含当前页签、可用 Agent 与筛选状态。
+ * @returns 存在多个可选 Agent 时返回筛选按钮组，否则返回 `null`。
+ * @remarks Agent 名称通过动态注册表解析，以兼容上游新增的自定义 Agent；无额外副作用。
  */
 function ConversationFilters({
   model,
@@ -1083,7 +1084,7 @@ function ConversationFilters({
           key={at}
           active={model.agentFilter === at}
           onClick={() => model.setAgentFilter(at)}
-          label={AGENT_LABELS[at]}
+          label={getAgentLabel(at)}
           agentType={at}
         />
       ))}
@@ -1380,10 +1381,11 @@ function ConversationResults({
 }
 
 /**
- * Renders one conversation result row.
- * @param props Conversation and view model callbacks.
- * @returns Command item JSX.
- * @remarks The created-at timestamp is localized by the parent model.
+ * 渲染单条会话搜索结果，并绑定会话选择操作。
+ * @param props.conv 待展示的会话摘要。
+ * @param props.model 提供选择回调、翻译与日期区域设置的搜索视图模型。
+ * @returns 包含状态、标题、动态 Agent 名称及本地化创建时间的命令项。
+ * @remarks 自定义 Agent 名称由动态注册表解析；点击时会触发模型提供的导航副作用。
  */
 function ConversationItem({
   conv,
@@ -1403,7 +1405,7 @@ function ConversationItem({
         {title || model.t("untitledConversation")}
       </span>
       <span className="text-xs text-muted-foreground shrink-0">
-        {AGENT_LABELS[conv.agent_type]}
+        {getAgentLabel(conv.agent_type)}
       </span>
       <span className="text-xs text-muted-foreground shrink-0">
         {formatDistanceToNow(new Date(conv.created_at), {
