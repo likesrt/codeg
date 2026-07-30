@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI 編碼智慧體收進同一個地方 —— 並讓它們協同工作。
 
-它將所有支援的智慧體 CLI 的工作階段聚合進一個可搜尋的工作區，讓主智慧體在同一個任務內委派給其它類型的子智慧體，並可作為桌面應用、獨立伺服器或 Docker 容器執行；此外還有原生 iOS 與 Android 用戶端，讓你離開電腦後也能接手正在跑的任務。
+它將所有支援的智慧體 CLI 的工作階段聚合進一個可搜尋的工作區，讓主智慧體在同一個任務內委派給其它類型的子智慧體，並可作為桌面應用、獨立伺服器或 Docker 容器執行；此外還有原生 iOS 與 Android 用戶端，讓你離開電腦後也能接手正在跑的任務。內建十二個智慧體；從 0.22 起，你還可以自行註冊任何其它相容 ACP 的智慧體。
 
 ![工作區](../images/workspace-light.png#gh-light-mode-only)
 ![工作區](../images/workspace-dark.png#gh-dark-mode-only)
@@ -69,12 +69,25 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 其中大部分 Codeg 都能替你安裝、鎖定版本並更新。完整名單、各自的執行環境需求以及工作階段在磁碟上的存放位置，見 [支援的智慧體](https://docs.codeg.app/zh/guide/supported-agents)。
 
+名單之外的呢？自己加就行。從公開的 ACP 註冊表裡挑一個，或者貼上它的 distribution JSON，Codeg 會安裝它、預檢它能否啟動，然後像對待內建智慧體一樣對待它——出現在選擇器裡，接受 `@` 委派與技能設定；即便這個智慧體本身不留下任何歷史，它的工作階段也會被記錄下來並可搜尋。→ [自訂智慧體](https://docs.codeg.app/zh/guide/custom-agents)
+
 ## 🤝 多智慧體協作
 
 多智慧體協作，從此只需一個按鍵：輸入 `@`，選取智慧體，送出。剩下的排程全交給 Codeg —— 它把每個被提及的智慧體拉起為獨立工作階段，交付任務，再把工作即時匯流回你正在進行的對話。提及兩個，它們就並肩開工：Claude Code 起草，Codex 同步審查。不必來回切換脈絡，也不用在多個終端機之間複製貼上。
 
+如果智慧體自己派出了子智慧體——比如 Claude Code 的——它們的輸出會邊跑邊顯示在各自的卡片裡，而不是等結束後一次性出現。
+
 ![在單一 Codeg 對話中將任務委派給子智慧體](../images/collaboration-light.gif#gh-light-mode-only)
 ![在單一 Codeg 對話中將任務委派給子智慧體](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## 🪟 分割檢視
+
+一條標籤列不總是夠用。右鍵點擊對話標籤，即可把檢視**向右**或**向下**拆分，想拆幾次就拆幾次：左右兩欄、上下三格，或者一整片網格。每個分組都是獨立的工作區——自己的標籤、自己的標題列、自己的新建對話按鈕——所以左邊這格可以讓 Claude Code 重構，右邊那格讓 Codex 審閱 diff。
+
+把標籤從一個分組拖到另一個分組，它的工作階段在搬家途中也不會中斷；拖動兩個分組之間的分隔條，就能改變它們分配空間的方式。版面配置會按工作區記住，草稿也包含在內：重新打開 Codeg，拆分原樣回來，沒送出去的文字還在輸入框裡。
+
+![把對話區拆分成標籤分組構成的網格](../images/split-light.gif#gh-light-mode-only)
+![把對話區拆分成標籤分組構成的網格](../images/split-dark.gif#gh-dark-mode-only)
 
 ## 📄 Office 文件
 
@@ -105,7 +118,9 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[對話聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有支援的智慧體的工作階段匯入統一、可搜尋的工作區，並從上次中斷處繼續
 - **[多智慧體協作](https://docs.codeg.app/zh/guide/multi-agent)** — `@` 提及任一智慧體即可委派：不同類型的子智慧體各自作為獨立工作階段，在同一個任務內平行執行
+- **[自訂智慧體](https://docs.codeg.app/zh/guide/custom-agents)** — 從公開註冊表或 distribution JSON 註冊任何其它相容 ACP 的智慧體；Codeg 負責安裝、記錄歷史，並像內建智慧體一樣對待它
 - **[工作區](https://docs.codeg.app/zh/guide/workspace)** — 智慧體旁邊就是完整的工程閉環：檔案樹、編輯器與 diff、Git 變更、提交，以及內建終端機
+- **[分割檢視](https://docs.codeg.app/zh/guide/workspace#split-the-conversation-view-into-groups)** — 把對話區拆成任意多個標籤分組，在分組之間拖動標籤與分隔條，重啟後版面配置（含草稿）原樣回來
 - **[Git 與 Worktree](https://docs.codeg.app/zh/guide/git)** — 檢視並提交變更、管理 Git 遠端帳號，用內建 `git worktree` 流程平行開發
 - **[訊息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飛書、iLink（微信）裡直接驅動智慧體：建立任務、核准權限、即時接收進展
 - **[自動化](https://docs.codeg.app/zh/guide/automations)** — 把設定好的輸入框存成可重複使用的自動化任務，依 cron 排程或手動觸發、無介面執行

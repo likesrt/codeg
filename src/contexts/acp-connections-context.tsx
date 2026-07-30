@@ -3585,6 +3585,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     ]
   )
 
+  // Latest-ref for the event handler, so nothing downstream has to depend on
+  // `handleMappedEvent`'s identity. It closes over the i18n `t` / `tChat`,
+  // which are only stable while the locale is unchanged — a language switch
+  // (or any future unstable dep added to the callback) would otherwise churn
+  // both the global `acp://event` subscription below and every
+  // `setupAttachSubscription` consumer that hangs off `applyMappedEnvelope`.
+  // Tauri's `listen` / `unlisten` are both async IPC, so re-running that
+  // effect briefly leaves two listeners registered and every envelope is
+  // delivered twice. Duplicate delivery is already idempotent — the
+  // `lastAppliedSeq` guard below runs before the synchronous `EVENT_APPLIED`
+  // dispatch — but the subscription should simply never churn in the first
+  // place. See the mount-once regression test.
+  const handleMappedEventRef = useRef(handleMappedEvent)
+  // Re-sync each render so the latest closure is used at fire time.
+  useEffect(() => {
+    handleMappedEventRef.current = handleMappedEvent
+  })
+
   // Apply a single envelope to the store. Shared by the legacy global
   // listener and the attach-protocol per-subscription handlers so dedup +
   // dispatch ordering + JS subscriber fan-out stays identical between
@@ -3594,7 +3612,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const conn = storeRef.current.connections.get(contextKey)
       if (conn && envelope.seq <= conn.lastAppliedSeq) return
       lastActivityRef.current.set(contextKey, Date.now())
-      handleMappedEvent(contextKey, envelope)
+      handleMappedEventRef.current(contextKey, envelope)
       dispatch({ type: "EVENT_APPLIED", contextKey, seq: envelope.seq })
       for (const ref of eventSubscribersRef.current) {
         try {
@@ -3604,7 +3622,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [dispatch, handleMappedEvent]
+    [dispatch]
   )
 
   // Re-seed `DelegationProvider` bindings from a snapshot's active_delegations.
@@ -3782,7 +3800,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
       // Touch activity on every incoming event
       lastActivityRef.current.set(contextKey, Date.now())
-      handleMappedEvent(contextKey, envelope)
+      handleMappedEventRef.current(contextKey, envelope)
 
       // Advance lastAppliedSeq after the event's effects have dispatched.
       // EVENT_APPLIED is idempotent (only advances if higher).
@@ -3829,12 +3847,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       unlisten?.()
     }
-  }, [
-    bufferUnmappedEvent,
-    dispatch,
-    handleMappedEvent,
-    resolveListenerReadyWaiters,
-  ])
+    // Every dep here is a `useCallback(..., [])` — the subscription is
+    // registered once per mount and torn down only on unmount. The event
+    // handler deliberately isn't a dep; it's reached through
+    // `handleMappedEventRef` so a changing closure can't churn the listener.
+  }, [bufferUnmappedEvent, dispatch, resolveListenerReadyWaiters])
 
   // ── Backend keepalive timer ──
   // Frontend is the only side that knows which conversation tabs the

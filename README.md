@@ -19,7 +19,7 @@
 
 Codeg (Code Generation) is a multi-agent coding workspace: run every AI coding agent in one place — and let them work together.
 
-It aggregates your sessions from every supported agent CLI into one searchable workspace, lets a main agent delegate to sub-agents of other types within a single task, and runs as a desktop app, a standalone server, or a Docker container — with native iOS and Android clients for when you're away from your desk.
+It aggregates your sessions from every supported agent CLI into one searchable workspace, lets a main agent delegate to sub-agents of other types within a single task, and runs as a desktop app, a standalone server, or a Docker container — with native iOS and Android clients for when you're away from your desk. Twelve agents come built in, and since 0.22 you can register any other ACP-compatible agent yourself.
 
 ![workspace](./docs/images/workspace-light.png#gh-light-mode-only)
 ![workspace](./docs/images/workspace-dark.png#gh-dark-mode-only)
@@ -69,12 +69,25 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 Codeg installs, pins, and updates most of them for you. See [Supported Agents](https://docs.codeg.app/guide/supported-agents) for the full roster, each agent's runtime requirements, and where it keeps its sessions on disk.
 
+Not on the list? Add it yourself. Pick any agent from the public ACP registry or paste its distribution JSON, and Codeg installs it, checks it can launch, and treats it like a built-in — it shows up in the picker, takes `@` delegation and skills, and gets its conversations recorded and searchable even when the agent keeps no history of its own. → [Custom Agents](https://docs.codeg.app/guide/custom-agents)
+
 ## 🤝 Multi-Agent Collaboration
 
 Multi-agent collaboration, reduced to a single keystroke: type `@`, pick an agent, hit send. Codeg handles the scheduling — it launches each mentioned agent as its own session, hands over the task, and streams the work back into the thread you're already in. Mention two and they run side by side: Claude Code drafting while Codex reviews. No context switching, no copy-pasting between terminals.
 
+And when an agent spawns sub-agents of its own — Claude Code's, for instance — their output streams inside the card as they work, instead of landing all at once when they finish.
+
 ![Delegating a task to sub-agents from a single Codeg conversation](./docs/images/collaboration-light.gif#gh-light-mode-only)
 ![Delegating a task to sub-agents from a single Codeg conversation](./docs/images/collaboration-dark.gif#gh-dark-mode-only)
+
+## 🪟 Split View
+
+One tab strip isn't always enough. Right-click a conversation tab to split the view **right** or **down**, as many times as you like: two panes side by side, a stack of three, a grid. Each group is a workspace of its own — its own tabs, its own header, its own new-conversation button — so Claude Code can refactor in one pane while Codex reviews a diff in the next.
+
+Drag a tab from one group into another and its session keeps streaming through the move; drag the divider between two groups to change how they share the space. Your layout is remembered per workspace, drafts included: reopen Codeg and the split comes back, with the text you never sent still in the box.
+
+![Splitting the conversation area into a grid of tab groups](./docs/images/split-light.gif#gh-light-mode-only)
+![Splitting the conversation area into a grid of tab groups](./docs/images/split-dark.gif#gh-dark-mode-only)
 
 ## 📄 Office Documents
 
@@ -105,7 +118,9 @@ Step away from your desk, not your work. The native iOS and Android clients conn
 
 - **[Conversation Aggregation](https://docs.codeg.app/guide/aggregation)** — import sessions from every supported agent into one unified, searchable workspace, and pick any of them up where you left off
 - **[Multi-Agent Collaboration](https://docs.codeg.app/guide/multi-agent)** — `@`-mention any agent to delegate: sub-agents of different types run as their own sessions, in parallel, inside a single task
+- **[Custom Agents](https://docs.codeg.app/guide/custom-agents)** — register any other ACP-compatible agent from the public registry or its distribution JSON; Codeg installs it, records its history, and treats it like a built-in
 - **[The Workspace](https://docs.codeg.app/guide/workspace)** — the full engineering loop next to the agent: file tree, editor and diff, git changes, commit, and an embedded terminal
+- **[Split View](https://docs.codeg.app/guide/workspace#split-the-conversation-view-into-groups)** — split the conversation area into as many tab groups as you like, drag tabs and dividers between them, and get the layout back — drafts included — on restart
 - **[Git & Worktrees](https://docs.codeg.app/guide/git)** — review and commit changes, manage Git remote accounts, and run work in parallel with built-in `git worktree` flows
 - **[Chat Channels](https://docs.codeg.app/guide/chat-channels)** — drive your agents from Telegram, Lark (Feishu), and iLink (Weixin): create tasks, approve permissions, and get live updates
 - **[Automations](https://docs.codeg.app/guide/automations)** — save a fully-configured composer as a reusable automation that runs headlessly, on a cron schedule or on demand

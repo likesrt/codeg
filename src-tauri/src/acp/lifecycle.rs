@@ -1653,6 +1653,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 

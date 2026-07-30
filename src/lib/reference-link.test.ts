@@ -29,6 +29,27 @@ describe("buildFileUri", () => {
       "file://server/share/doc.md"
     )
   })
+  it("reduces a Windows verbatim drive path to its plain form", () => {
+    // What `fs::canonicalize` returns on Windows. Without the strip this hit
+    // the UNC branch and produced file://%3F/C%3A/... — a uri that decodes
+    // back to "?/C:/..." and fails to open (issue #392).
+    expect(buildFileUri("\\\\?\\C:\\Users\\song\\uploads\\img.png")).toBe(
+      "file:///C%3A/Users/song/uploads/img.png"
+    )
+  })
+  it("reduces a Windows verbatim UNC path to the authority form", () => {
+    expect(buildFileUri("\\\\?\\UNC\\server\\share\\doc.md")).toBe(
+      "file://server/share/doc.md"
+    )
+    expect(buildFileUri("\\\\?\\unc\\server\\share\\doc.md")).toBe(
+      "file://server/share/doc.md"
+    )
+  })
+  it("leaves a verbatim device path alone (it has no plain form)", () => {
+    expect(buildFileUri("\\\\?\\Volume{7b2f1c40}\\img.png")).toBe(
+      "file://%3F/Volume%7B7b2f1c40%7D/img.png"
+    )
+  })
 })
 
 describe("unescapeReferenceLabel", () => {

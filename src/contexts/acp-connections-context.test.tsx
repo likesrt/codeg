@@ -1,12 +1,14 @@
 import { useEffect } from "react"
 import { act, render } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { useTranslations } from "next-intl"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AcpConnectionsProvider,
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
 import { parsePermissionToolCall } from "@/lib/permission-request"
+import { subscribe } from "@/lib/platform"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import type { AttachHandlers } from "@/lib/transport/types"
 import type {
@@ -1291,5 +1293,134 @@ describe("HYDRATE_FROM_SNAPSHOT last_error recovery", () => {
       event_seq: 1,
     } as unknown as LiveSessionSnapshot)
     expect(h.store!.getConnection(TAB)!.error).toBeNull()
+  })
+})
+
+describe("global acp://event listener is mount-once", () => {
+  // Regression guard for the duplicated-reply report: `handleMappedEvent`
+  // closes over the i18n `t` / `tChat`, so if the global listener effect
+  // depends on its identity, every provider re-render tears the Tauri
+  // subscription down and re-registers it. Both `listen` and `unlisten` are
+  // async IPC, so that churn leaves two listeners live at once and each
+  // envelope is delivered twice. The handler must be reached through a
+  // latest-ref instead, so the subscription is registered exactly once.
+  let unlisten: ReturnType<typeof vi.fn>
+
+  function mountDesktop() {
+    return render(
+      <AcpConnectionsProvider>
+        <Probe />
+      </AcpConnectionsProvider>
+    )
+  }
+
+  beforeEach(() => {
+    // Desktop firehose path — the web/attach transport skips this effect.
+    h.eventStreamValue = null
+    unlisten = vi.fn()
+    vi.mocked(subscribe).mockClear()
+    vi.mocked(subscribe).mockImplementation(async () => unlisten)
+  })
+
+  // Restore the suite-wide default. `subscribe` is a module-level mock that
+  // the outer `beforeEach` does not reset, so leaving our implementation (or
+  // a bare `mockReset`, which returns `undefined` and would make the
+  // listener's `.then()` throw) installed would break any desktop-path test
+  // added after this block.
+  afterEach(() => {
+    vi.mocked(subscribe).mockImplementation(async () => () => {})
+  })
+
+  it("subscribes exactly once across provider re-renders", async () => {
+    // Precondition: this suite's next-intl mock hands out a FRESH `t` per
+    // call, so every re-render rebuilds `handleMappedEvent`. If that mock ever
+    // becomes memoized, this test would silently stop covering the bug.
+    expect(useTranslations("Folder.chat")).not.toBe(
+      useTranslations("Folder.chat")
+    )
+
+    const { rerender } = mountDesktop()
+    await act(async () => {})
+
+    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(subscribe).mock.calls[0]![0]).toBe("acp://event")
+
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        rerender(
+          <AcpConnectionsProvider>
+            <Probe />
+          </AcpConnectionsProvider>
+        )
+      })
+    }
+
+    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    // Never torn down while mounted — no window with two live listeners.
+    expect(unlisten).not.toHaveBeenCalled()
+  })
+
+  it("keeps delivering events through the surviving listener after re-renders", async () => {
+    // Guards the other half of the fix: the one subscription that survives
+    // must still route, and each delta must land exactly once (the reported
+    // symptom was doubled text). Note this canNOT distinguish an old from a
+    // new `t` closure — the suite's mocked translator returns the key
+    // verbatim, so both produce identical output. Ref freshness itself rests
+    // on the sync effect running every render; what this catches is a dead,
+    // detached, or wrongly-frozen handler.
+    const { rerender } = mountDesktop()
+    await act(async () => {})
+
+    await act(async () => {
+      // No conversationId → skip discovery → owner spawn (acpConnect).
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1")
+    })
+
+    await act(async () => {
+      rerender(
+        <AcpConnectionsProvider>
+          <Probe />
+        </AcpConnectionsProvider>
+      )
+    })
+
+    const onEvent = vi.mocked(subscribe).mock.calls[0]![1] as (
+      envelope: EventEnvelope
+    ) => void
+
+    act(() => {
+      onEvent({
+        seq: 1,
+        connection_id: "spawned-conn",
+        type: "status_changed",
+        status: "prompting",
+      } as EventEnvelope)
+      onEvent({
+        seq: 2,
+        connection_id: "spawned-conn",
+        type: "content_delta",
+        text: "你好",
+      } as EventEnvelope)
+    })
+    // Streaming deltas are queued and flushed on a 16ms timer.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 32))
+    })
+
+    const live = h.store!.getConnection(TAB)!.liveMessage
+    const text = (live!.content as Array<{ type: string; text?: string }>)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("")
+    expect(text).toBe("你好")
+  })
+
+  it("unsubscribes on unmount", async () => {
+    const { unmount } = mountDesktop()
+    await act(async () => {})
+
+    expect(vi.mocked(subscribe)).toHaveBeenCalledTimes(1)
+    unmount()
+    expect(unlisten).toHaveBeenCalledTimes(1)
   })
 })

@@ -11,7 +11,7 @@ use crate::app_error::{
     AppCommandError, UPLOAD_I18N_KEY_QUOTA_EXCEEDED, UPLOAD_I18N_KEY_TOO_LARGE,
 };
 use crate::commands::folders as folder_commands;
-use crate::paths::codeg_uploads_root;
+use crate::paths::{codeg_uploads_root, simplify_verbatim_path};
 
 use super::upload_jail;
 
@@ -1072,8 +1072,15 @@ async fn stream_and_finalize(
         }
     };
 
+    // The client turns this path back into a `file://` uri (the composer's
+    // `buildFileUri`), which `acp::prompt_hydration` then resolves to read the
+    // bytes back. `canon` is the canonicalized form, so on Windows it carries
+    // the `\\?\` verbatim prefix — a shape that round-trip mangles into
+    // `?/C:/…` and fails to resolve (issue #392). Hand out the plain form; the
+    // canonical value above is what the jail check ran against, and it is a
+    // no-op on every non-Windows host.
     Ok(UploadAttachmentResult {
-        path: canon.to_string_lossy().to_string(),
+        path: simplify_verbatim_path(&canon).to_string_lossy().to_string(),
         name: final_name,
         size: written,
         mime_type,

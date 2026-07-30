@@ -2360,6 +2360,15 @@ export function SidebarConversationList({
             <Rocket className="h-3.5 w-3.5 mr-1.5" />
             {tFolderDropdown("projectBoot")}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full max-w-[14rem] justify-start"
+            onClick={handleOpenImportWindow}
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            {t("importLocalSessions")}
+          </Button>
         </div>
       ) : (
         <ContextMenu>
@@ -2473,6 +2482,10 @@ export function SidebarConversationList({
             <ContextMenuItem onSelect={handleProjectBoot}>
               <Rocket className="h-4 w-4" />
               {tFolderDropdown("projectBoot")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={handleOpenImportWindow}>
+              <Download className="h-4 w-4" />
+              {t("importLocalSessions")}
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>

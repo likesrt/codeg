@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI 编码智能体收进同一个地方 —— 并让它们协同工作。
 
-它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体，并可作为桌面应用、独立服务器或 Docker 容器运行；此外还有原生 iOS 与 Android 客户端，让你离开电脑后也能接手正在跑的任务。
+它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体，并可作为桌面应用、独立服务器或 Docker 容器运行；此外还有原生 iOS 与 Android 客户端，让你离开电脑后也能接手正在跑的任务。内置十二个智能体；从 0.22 起，你还可以自行注册任何其它兼容 ACP 的智能体。
 
 ![工作区](../images/workspace-light.png#gh-light-mode-only)
 ![工作区](../images/workspace-dark.png#gh-dark-mode-only)
@@ -69,12 +69,25 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 其中大部分 Codeg 都能替你安装、锁定版本并更新。完整名单、各自的运行环境要求以及会话在磁盘上的存放位置，见 [支持的智能体](https://docs.codeg.app/zh/guide/supported-agents)。
 
+名单之外的呢？自己加就行。从公开的 ACP 注册表里挑一个，或者粘贴它的 distribution JSON，Codeg 会安装它、预检它能否启动，然后像对待内置智能体一样对待它——出现在选择器里，接受 `@` 委派与技能配置；即便这个智能体本身不留下任何历史，它的会话也会被记录下来并可搜索。→ [自定义智能体](https://docs.codeg.app/zh/guide/custom-agents)
+
 ## 🤝 多智能体协作
 
 多智能体协作，从此只需一个按键：输入 `@`，选中智能体，发送。剩下的调度全交给 Codeg —— 它把每个被提及的智能体拉起为独立会话，交付任务，再把工作实时汇流回你正在进行的对话。提及两个，它们就并肩开工：Claude Code 起草，Codex 同步评审。不用来回切换上下文，也不必在多个终端之间复制粘贴。
 
+如果智能体自己派出了子智能体——比如 Claude Code 的——它们的输出会边跑边显示在各自的卡片里，而不是等结束后一次性出现。
+
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-light.gif#gh-light-mode-only)
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## 🪟 分屏
+
+一条标签栏不总是够用。右键点击会话标签，即可把视图**向右**或**向下**拆分，想拆几次就拆几次：左右两栏、上下三格，或者一整片网格。每个分组都是独立的工作区——自己的标签、自己的标题栏、自己的新建会话按钮——所以左边这格可以让 Claude Code 重构，右边那格让 Codex 审阅 diff。
+
+把标签从一个分组拖到另一个分组，它的会话在搬家途中也不会中断；拖动两个分组之间的分隔条，就能改变它们分配空间的方式。布局会按工作区记住，草稿也包含在内：重新打开 Codeg，拆分原样回来，没发出去的文字还在输入框里。
+
+![把会话区拆分成标签分组构成的网格](../images/split-light.gif#gh-light-mode-only)
+![把会话区拆分成标签分组构成的网格](../images/split-dark.gif#gh-dark-mode-only)
 
 ## 📄 Office 文档
 
@@ -105,7 +118,9 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[会话聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有受支持智能体的会话导入统一、可搜索的工作区，并从上次中断处继续
 - **[多智能体协作](https://docs.codeg.app/zh/guide/multi-agent)** — `@` 提及任意智能体即可委派：不同类型的子智能体各自作为独立会话，在同一个任务内并行运行
+- **[自定义智能体](https://docs.codeg.app/zh/guide/custom-agents)** — 从公开注册表或 distribution JSON 注册任何其它兼容 ACP 的智能体；Codeg 负责安装、记录历史，并像内置智能体一样对待它
 - **[工作区](https://docs.codeg.app/zh/guide/workspace)** — 智能体旁边就是完整的工程闭环：文件树、编辑器与 diff、Git 变更、提交，以及内置终端
+- **[分屏](https://docs.codeg.app/zh/guide/workspace#split-the-conversation-view-into-groups)** — 把会话区拆成任意多个标签分组，在分组之间拖动标签与分隔条，重启后布局（含草稿）原样回来
 - **[Git 与 Worktree](https://docs.codeg.app/zh/guide/git)** — 查看并提交变更、管理 Git 远程账号，用内置 `git worktree` 流程并行开发
 - **[消息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飞书、iLink（微信）里直接驱动智能体：创建任务、批准权限、实时接收进展
 - **[自动化](https://docs.codeg.app/zh/guide/automations)** — 把配置好的输入框存成可复用的自动化任务，按 cron 计划或手动触发、无界面运行

@@ -344,11 +344,18 @@ impl TerminalRuntime {
         // least as correct. Deciding off a real failed spawn — rather than a
         // pre-spawn `which` guess that runs in codeg's own cwd/env — means we
         // never reroute a command that would otherwise have run.
+        //
+        // A spawn the kernel refuses with `ETXTBSY` is retried in place instead
+        // (see `spawn_retrying_exec_busy`): the program *is* runnable, it is
+        // just momentarily held open for writing — often by the agent's own
+        // brand-new script — so rerouting it through the shell would split a
+        // space-containing path for no reason.
         let mut direct = crate::process::tokio_command(&request.command);
         direct.args(&request.args);
         self.configure_command(&mut direct, &request);
 
-        let mut child = match direct.spawn() {
+        let spawned = crate::process::spawn_retrying_exec_busy(|| direct.spawn()).await;
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err)
                 if matches!(
@@ -928,6 +935,12 @@ mod tests {
     /// A real executable whose path contains spaces is exec'd directly: the
     /// direct spawn succeeds, so the shell fallback never fires (shell-wrapping
     /// would split the path at the space).
+    ///
+    /// Note: writing an executable and exec'ing it from a multi-threaded test
+    /// binary can hit a spurious `ETXTBSY` when a sibling test forks in the
+    /// window where the write descriptor is still open. The spawn's
+    /// `spawn_retrying_exec_busy` wrapper is what keeps this deterministic —
+    /// see `spawn_rides_out_a_transient_text_file_busy`.
     #[tokio::test]
     async fn executable_path_with_spaces_is_not_shell_wrapped() {
         use std::os::unix::fs::PermissionsExt;
@@ -992,6 +1005,52 @@ mod tests {
         assert!(
             output.contains("ran-relative"),
             "relative space-containing exe was not run in the effective cwd; got:\n{output}"
+        );
+    }
+
+    /// A brand-new executable that something still holds open for writing is
+    /// retried, not rejected. exec returns `ETXTBSY` while any write descriptor
+    /// to the file is open anywhere, and codeg forks constantly (git, agents,
+    /// other terminals), so a descriptor inherited across a `fork()` can make an
+    /// agent's just-written script briefly unrunnable — including in this test
+    /// binary, which is where the flake was first observed.
+    ///
+    /// Linux enforces `ETXTBSY` here, so this exercises the retry loop; macOS
+    /// does not enforce it for script exec, where the first attempt simply
+    /// succeeds and the assertion still holds.
+    #[tokio::test]
+    async fn spawn_rides_out_a_transient_text_file_busy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("busy-tool");
+        std::fs::write(&exe, "#!/bin/sh\necho ran-after-busy\n").expect("write script");
+        let mut perms = std::fs::metadata(&exe).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe, perms).expect("chmod");
+
+        // Hold a write descriptor open, then release it while the spawn is still
+        // retrying — the shape of the real race, with the timing made explicit.
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&exe)
+            .expect("hold write handle");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(writer);
+        });
+
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+        let session_id = SessionId::new("busy-exe".to_string());
+        // No whitespace in the command, so there is no shell fallback to mask a
+        // failed direct exec: if the retry does not ride out ETXTBSY,
+        // `create_terminal` errors and this test panics.
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), exe.to_string_lossy().to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("ran-after-busy"),
+            "transient ETXTBSY was not retried; got:\n{output}"
         );
     }
 }

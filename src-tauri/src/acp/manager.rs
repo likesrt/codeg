@@ -42,6 +42,14 @@ use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmit
 /// IM message, or the webhook body.
 const USER_PROMPT_PREVIEW_MAX_CHARS: usize = 500;
 
+/// Grace window `disconnect_all` waits after firing every `Disconnect` before
+/// hard-killing surviving agent process trees. Long enough for a driver thread
+/// to unwind and run its own post-loop cleanup (delegation/question/plan-approval
+/// reclaim), short enough not to stall a quit noticeably. It is NOT there to
+/// make the agent's death gentler — the graceful path ends in the same
+/// `kill_tree`.
+const DISCONNECT_ALL_GRACE: Duration = Duration::from_millis(500);
+
 /// True for ids in the parsers' turn-id namespace (`turn-<digits>`), which every
 /// parser assigns via `format!("turn-{}", n)`. A broadcast `message_id` must
 /// never land here: it would collide with a persisted transcript turn id and let
@@ -339,6 +347,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut map = self.connections.lock().await;
         map.insert(id.to_string(), conn);
@@ -381,6 +390,7 @@ impl ConnectionManager {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         self.connections.lock().await.insert(id.to_string(), conn);
         rx
@@ -1845,16 +1855,104 @@ impl ConnectionManager {
         disconnected
     }
 
+    /// Disconnect every connection, then hard-kill any surviving agent process
+    /// trees as a shutdown backstop.
+    ///
+    /// The graceful path (send `Disconnect` → the connection driver thread
+    /// breaks its command loop → `run_connection` unwinds → the vendored
+    /// `sacp-tokio` `ChildGuard::drop` runs `kill_tree`) is enough on its own
+    /// *when it gets to run*. It doesn't at process exit: `run_connection` is
+    /// driven on a dedicated `std::thread` (see `spawn_agent`), and when Tauri's
+    /// `ExitRequested` handler returns the process terminates those threads
+    /// mid-flight — often before the driver reaches `ChildGuard::drop` — so the
+    /// agent CLI (and its own children, e.g. MCP servers / a forked `node`) is
+    /// reparented and lingers until it independently notices its stdin EOF
+    /// (~30s for Claude Code / node).
+    ///
+    /// So: fire every `Disconnect`, give the graceful path a short grace window,
+    /// then synchronously `kill_tree` whatever is still running.
+    ///
+    /// What the window actually buys is NOT a gentler death for the agent — the
+    /// graceful path ends in the same `kill_tree` — it is time for the driver
+    /// thread's own post-loop cleanup (delegation-token revoke, `cancel_by_parent`
+    /// for delegations / questions / plan approvals), which at quit previously
+    /// got no time at all.
+    ///
+    /// Each pid is read from its live cell as late as possible — after the
+    /// window, inside the kill loop — never from an up-front snapshot. That is
+    /// load-bearing in both directions:
+    /// - A connection whose process was reaped during the window has already
+    ///   had its cell zeroed by the `on_exit` callback, so the backstop skips it
+    ///   instead of `kill_tree`-ing a pid the OS may have recycled onto an
+    ///   unrelated process tree. A connection that merely *ended* keeps its pid
+    ///   and still gets swept — `ChildGuard::drop` signals without waiting, so
+    ///   "the driver returned" is not "the agent is gone".
+    /// - A connection whose child spawned *after* quit began (still `Connecting`
+    ///   when the map was drained) publishes its pid into the same cell, so the
+    ///   backstop still reaches it — an up-front snapshot would read `0` and
+    ///   leak exactly the orphan this exists to kill.
+    ///
+    /// Only pids this manager spawned (and their descendants) are touched;
+    /// `child_pid == 0` (never spawned, already finished, or a test/viewer entry
+    /// that owns no process) is skipped.
     pub async fn disconnect_all(&self) -> usize {
-        let cmd_txs: Vec<_> = {
+        let handles: Vec<(
+            tokio::sync::mpsc::Sender<ConnectionCommand>,
+            Arc<std::sync::atomic::AtomicU32>,
+        )> = {
             let mut connections = self.connections.lock().await;
-            connections.drain().map(|(_, conn)| conn.cmd_tx).collect()
+            connections
+                .drain()
+                .map(|(_, conn)| (conn.cmd_tx, conn.child_pid))
+                .collect()
         };
-        let disconnected = cmd_txs.len();
-        for cmd_tx in cmd_txs {
-            let _ = cmd_tx.send(ConnectionCommand::Disconnect).await;
+        let disconnected = handles.len();
+        // `try_send`, not `send().await`: this is the shutdown path, and the
+        // backstop below is only reachable if every send returns. A connection
+        // whose command queue is full (32 deep) would otherwise park the whole
+        // quit here — precisely the wedged connection whose tree most needs
+        // killing. A dropped `Disconnect` just means that connection skips the
+        // graceful path and gets hard-killed instead.
+        for (cmd_tx, _) in &handles {
+            let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
         }
         tracing::info!("[ACP] disconnect_all count={}", disconnected);
+
+        if disconnected == 0 {
+            return 0;
+        }
+
+        // Grace window: let the drivers unwind and run their own cleanup.
+        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+
+        // Backstop: hard-kill whatever is still running. Runs on a blocking
+        // thread so the synchronous `kill_tree` doesn't stall the async runtime
+        // while a `block_on(disconnect_all())` shutdown caller waits on it.
+        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> =
+            handles.into_iter().map(|(_, pid)| pid).collect();
+        let _ = tokio::task::spawn_blocking(move || {
+            for cell in pid_cells {
+                // Load here, not before the window — see the doc comment.
+                let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
+                if pid == 0 {
+                    continue;
+                }
+                match kill_tree::blocking::kill_tree(pid) {
+                    Ok(_) => {
+                        tracing::info!(
+                            "[ACP] disconnect_all backstop killed process tree pid={pid}"
+                        );
+                    }
+                    Err(e) => {
+                        // The process can still exit between the load and the
+                        // kill; that error is expected, not a failure.
+                        tracing::debug!("[ACP] disconnect_all backstop kill_tree pid={pid}: {e}");
+                    }
+                }
+            }
+        })
+        .await;
+
         disconnected
     }
 
@@ -2831,7 +2929,165 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
+    }
+
+    /// Spawn a two-level process tree: `sh` (the stand-in for the agent CLI)
+    /// backgrounds a `sleep` grandchild (the stand-in for the agent's own
+    /// children — an MCP server, a forked `node`) and records its pid. The
+    /// grandchild is what the backstop assertions are about: it is the process
+    /// that gets reparented and lingers when only the direct child is killed.
+    ///
+    /// Returns the direct child — keep it alive, dropping a `Child` does NOT
+    /// kill it — and the grandchild pid.
+    #[cfg(unix)]
+    async fn spawn_process_tree(pidfile: &std::path::Path) -> (std::process::Child, i32) {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 30 & echo $! > '{}'; wait", pidfile.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        for _ in 0..150 {
+            if let Ok(raw) = std::fs::read_to_string(pidfile) {
+                if let Ok(pid) = raw.trim().parse::<i32>() {
+                    return (child, pid);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Bail-out path still reaps the tree, so a failing test can't leave a
+        // `sleep` behind for 30s.
+        let _ = kill_tree::blocking::kill_tree(child.id());
+        let _ = child.wait();
+        panic!("grandchild never recorded its pid");
+    }
+
+    /// True once `pid` is gone. `kill(pid, 0)` sends no signal, it only probes
+    /// existence; polling keeps the assertion from racing kernel teardown.
+    #[cfg(unix)]
+    async fn wait_until_dead(pid: i32) -> bool {
+        for _ in 0..150 {
+            // SAFETY: signal 0 only probes for existence; it sends no signal.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    fn is_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only probes for existence; it sends no signal.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Quit has to kill the agent's whole process TREE. Killing just the direct
+    /// child leaves its children reparented and lingering — that orphan window
+    /// is the entire reason the backstop exists.
+    ///
+    /// The test connection's command receiver is dropped, so the graceful path
+    /// is unavailable and the kill can only come from the backstop.
+    /// Unix-only (relies on `sh` / `kill(2)`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_kills_the_whole_agent_process_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-tree", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-tree".to_string(), conn);
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — the quit backstop did not kill the tree"
+        );
+        let _ = child.wait();
+    }
+
+    /// A connection still `Connecting` when quit begins publishes its pid AFTER
+    /// the map is drained. Reading the pids up front would see `0` there and
+    /// skip it, leaking exactly the orphan this exists to kill — so the load
+    /// has to happen after the grace window, from the live cell.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_reaches_a_child_that_spawns_during_the_grace_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-late", None);
+        // Still 0 at drain time, exactly like a connection whose agent process
+        // hasn't launched yet.
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-late".to_string(), conn);
+
+        let pid = child.id();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cell.store(pid, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        assert!(
+            wait_until_dead(gpid).await,
+            "grandchild {gpid} survived — a pid published during the grace window was missed"
+        );
+        let _ = child.wait();
+    }
+
+    /// The mirror image: once the agent process has been reaped, the `on_exit`
+    /// callback zeroes the cell and the backstop must leave that pid alone.
+    /// Without the clear, a quit fires `kill_tree` at a pid whose process is
+    /// already dead and reaped — and if the OS recycled that number, the victim
+    /// is an unrelated process tree.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_backstop_leaves_a_cleared_pid_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut child, gpid) = spawn_process_tree(&dir.path().join("g.pid")).await;
+
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection("conn-cleared", None);
+        conn.child_pid
+            .store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        let cell = Arc::clone(&conn.child_pid);
+        mgr.connections
+            .lock()
+            .await
+            .insert("conn-cleared".to_string(), conn);
+
+        // Stands in for the driver unwinding mid-window: the process is gone
+        // and the guard has zeroed the cell.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cell.store(0, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        // Settle: a wrongly-issued SIGTERM would have landed by now.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            is_alive(gpid),
+            "backstop killed a tree whose pid the driver had already cleared"
+        );
+
+        let _ = kill_tree::blocking::kill_tree(child.id());
+        let _ = child.wait();
     }
 
     /// Build a broadcaster + subscribed receiver. Subscribing here (not lazily
@@ -3003,6 +3259,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         mgr.connections
             .lock()
@@ -3336,6 +3593,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();
         mgr.connections
@@ -4908,6 +5166,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = Arc::new(ConnectionManager::new());
         {
@@ -5281,6 +5540,7 @@ mod tests {
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mgr = ConnectionManager::new();
         {

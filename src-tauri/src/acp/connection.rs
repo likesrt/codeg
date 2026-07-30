@@ -326,6 +326,23 @@ pub struct AgentConnection {
     /// no-op save (identical values) stays silent. Starts equal to
     /// `config_fingerprint`.
     pub last_observed_fingerprint: String,
+    /// OS process id of the spawned agent subprocess, published by the
+    /// vendored `sacp-tokio` `on_spawn` callback. `0` until the process has
+    /// launched (or if the pid was never observed). Used only as a shutdown
+    /// backstop: `disconnect_all` kills this pid's whole process tree
+    /// synchronously after the graceful-disconnect grace window, so agents
+    /// (and their own child processes, e.g. MCP servers) never leak as orphans
+    /// when the host process exits before `ChildGuard::drop` can run on the
+    /// connection driver thread.
+    ///
+    /// Reset to `0` by the paired `on_exit` callback the moment the process is
+    /// *reaped* — the only moment its pid stops naming our child and becomes
+    /// reassignable. That reset is what keeps the backstop from ever aiming at
+    /// a pid the OS has since handed to an unrelated process. Notably it does
+    /// NOT fire merely because the connection ended: `ChildGuard::drop` signals
+    /// the tree without waiting, so the agent may still be alive and still
+    /// needs the backstop.
+    pub child_pid: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl AgentConnection {
@@ -433,6 +450,37 @@ fn record_transcript_header_continuing(
     drop(crate::acp_transcript::record_header(dir, &header));
 }
 
+/// Record an outgoing prompt for a custom agent, and wait (briefly) for it to
+/// land. No-op for agents with their own store.
+///
+/// Bound-waited like [`record_turn_end`], but for a sharper reason. The gate
+/// that decides whether a later `session/load` replay may be recorded is
+/// `acp_transcript::has_entries`, and it reads the FILE — a queued prompt is
+/// invisible to it. Returning before the prompt is durable therefore leaves a
+/// window in which a reconnect concludes "this conversation has no transcript",
+/// records the agent's replay, and ends up with two copies of the same history.
+///
+/// The window is small but reachable (the writer can be behind on a slow disk,
+/// and a conversation can be torn down between its first prompt and its turn
+/// end, which is the other place codeg waits). A prompt happens once per turn,
+/// so closing it costs one disk write per turn — nothing the user can perceive,
+/// against a failure that is permanent and silent.
+async fn record_prompt(agent_type: AgentType, session_id: &str, blocks: &[ContentBlock]) {
+    let Some(dir) = transcript_dir_for(agent_type) else {
+        return;
+    };
+    let Ok(payload) = serde_json::to_value(blocks) else {
+        return;
+    };
+    let ack = crate::acp_transcript::record_entry(
+        dir,
+        session_id,
+        crate::acp_transcript::EntryKind::Prompt,
+        payload,
+    );
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
+}
+
 /// Record a turn's completion for a custom agent, and wait (briefly) for it to
 /// land. No-op for agents with their own store.
 ///
@@ -445,39 +493,132 @@ async fn record_turn_end(
     session_id: &str,
     stop_reason: &str,
     started_at_ms: u64,
+    model: Option<String>,
 ) {
     let Some(dir) = transcript_dir_for(agent_type) else {
         return;
     };
     let now = crate::acp_transcript::now_epoch_ms();
+    let mut payload = serde_json::json!({
+        "stopReason": stop_reason,
+        "durationMs": now.saturating_sub(started_at_ms),
+    });
+    // ACP puts no model on the prompt response, so the session's model selector
+    // is the only honest answer at turn end — and it is the same value the
+    // composer showed while the turn ran. Recorded per turn rather than once in
+    // the header because a mid-conversation model switch must not retroactively
+    // relabel the turns that ran before it.
+    if let (Some(obj), Some(model)) = (payload.as_object_mut(), model.filter(|m| !m.is_empty())) {
+        obj.insert("model".to_string(), serde_json::Value::String(model));
+    }
     let ack = crate::acp_transcript::record_entry(
         dir,
         session_id,
         crate::acp_transcript::EntryKind::TurnEnd,
-        serde_json::json!({
-            "stopReason": stop_reason,
-            "durationMs": now.saturating_sub(started_at_ms),
-        }),
+        payload,
     );
     let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
 }
 
-/// Record one raw `session/update` for a custom agent. No-op otherwise.
-fn record_transcript_update(agent_type: AgentType, session_id: &str, update: &SessionUpdate) {
-    let Some(dir) = transcript_dir_for(agent_type) else {
-        return;
-    };
-    let Ok(payload) = serde_json::to_value(update) else {
-        return;
-    };
-    // The ack receiver is dropped: streamed chunks must never make the read
-    // loop wait. Turn boundaries are the only place codeg bound-waits.
-    drop(crate::acp_transcript::record_entry(
+/// The model id a session's selectors currently report. Agent-agnostic: the
+/// ACP `category: "model"` selector is the one channel every agent that has a
+/// model at all publishes it on. `None` when the agent exposes no model
+/// selector — most custom agents don't, and a fabricated label would be worse
+/// than an empty field.
+fn current_model_id_from_opts(opts: &[SessionConfigOptionInfo]) -> Option<String> {
+    opts.iter()
+        .find(|o| o.category.as_deref() == Some("model"))
+        .map(|o| {
+            let SessionConfigKindInfo::Select(sel) = &o.kind;
+            sel.current_value.clone()
+        })
+        .filter(|m| !m.is_empty())
+}
+
+/// [`current_model_id_from_opts`] against the authoritative `SessionState`
+/// snapshot.
+async fn current_session_model_id(state: &Arc<RwLock<SessionState>>) -> Option<String> {
+    let opts = state.read().await.config_options.clone()?;
+    current_model_id_from_opts(&opts)
+}
+
+/// Queue one raw `session/update` for a custom agent, handing back the ack so
+/// the caller decides whether landing it matters.
+///
+/// `None` when nothing was queued: not a custom agent, an update the history
+/// projection never reads back (see
+/// [`crate::parsers::acp_native::is_recorded_update`], which owns that call so
+/// the filter cannot drift from the reader it exists to serve), or an
+/// unserializable payload.
+fn queue_transcript_update(
+    agent_type: AgentType,
+    session_id: &str,
+    update: &SessionUpdate,
+) -> Option<tokio::sync::oneshot::Receiver<()>> {
+    let dir = transcript_dir_for(agent_type)?;
+    if !crate::parsers::acp_native::is_recorded_update(update) {
+        return None;
+    }
+    let payload = serde_json::to_value(update).ok()?;
+    Some(crate::acp_transcript::record_entry(
         dir,
         session_id,
         crate::acp_transcript::EntryKind::Update,
         payload,
-    ));
+    ))
+}
+
+/// Record one raw `session/update` for a custom agent, fire and forget.
+///
+/// The ack is dropped: streamed chunks must never make the live read loop wait.
+/// Turn boundaries are the only place the live path bound-waits.
+fn record_transcript_update(agent_type: AgentType, session_id: &str, update: &SessionUpdate) {
+    drop(queue_transcript_update(agent_type, session_id, update));
+}
+
+/// How long one hydrated line may take to land before hydration gives up on
+/// recording. Only a wedged filesystem can reach it (a line costs tens of
+/// microseconds), so it is not a throughput bound — it is the difference
+/// between "the conversation opens with a truncated history and a warning" and
+/// "opening the conversation hangs forever".
+const HYDRATION_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [`record_transcript_update`] **with backpressure**, for the `session/load`
+/// hydration drain. Returns false once the writer has stopped keeping up, after
+/// which the caller must stop recording.
+///
+/// The live path can afford to drop the ack because a lost chunk costs one
+/// chunk. Hydration cannot: the replay it is draining is the ONLY copy of that
+/// history, and it arrives as fast as it parses while the writer runs at disk
+/// speed. Fire-and-forget there fills the bounded queue and then discards from
+/// the MIDDLE of the history — silently, leaving a transcript with holes that
+/// the `has_entries` gate will never let a later replay repair.
+///
+/// Awaiting each ack is async-native backpressure (no worker thread is blocked,
+/// and one outstanding line cannot overflow a queue of thousands), and it turns
+/// the pathological case from "history with random holes" into "history that
+/// stops cleanly at a point" — which is what a prefix-honest reader can work
+/// with.
+async fn record_hydrated_update(
+    agent_type: AgentType,
+    session_id: &str,
+    update: &SessionUpdate,
+) -> bool {
+    let Some(ack) = queue_transcript_update(agent_type, session_id, update) else {
+        return true;
+    };
+    match tokio::time::timeout(HYDRATION_ACK_TIMEOUT, ack).await {
+        // `Err(RecvError)` means the writer thread is gone; there is nothing
+        // left to wait for and nothing more will land either.
+        Ok(res) => res.is_ok(),
+        Err(_) => {
+            tracing::warn!(
+                "[ACP] transcript writer stalled while hydrating {session_id}; \
+                 stopping recording so the replay lands as a clean prefix"
+            );
+            false
+        }
+    }
 }
 
 async fn build_agent(
@@ -956,7 +1097,28 @@ pub async fn spawn_agent_connection(
     // agree. Computed here because `working_dir` is moved into run_connection
     // below.
     let launch_cwd = resolve_working_dir(working_dir.as_deref());
-    let agent = build_agent(agent_type, &runtime_env, &launch_cwd).await?;
+    // Shared cell that receives the agent process's OS pid the instant it
+    // spawns (via `on_spawn` below). Stored on the `AgentConnection` so the
+    // shutdown path can `kill_tree` the process tree synchronously as a
+    // backstop when the connection driver thread is torn down by process exit
+    // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
+    let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let agent = build_agent(agent_type, &runtime_env, &launch_cwd)
+        .await?
+        .on_spawn({
+            let child_pid = Arc::clone(&child_pid);
+            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
+        })
+        // Paired with `on_spawn`: publish 0 again once the process has been
+        // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
+        // has already handed to someone else. Fires ONLY on a real reap — a
+        // connection that merely ended keeps its pid published, because the
+        // vendored `ChildGuard` signals the tree without waiting and the agent
+        // may still be running.
+        .on_exit({
+            let child_pid = Arc::clone(&child_pid);
+            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
+        });
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
     // `run_connection` because it needs the full `runtime_env` (only the git
@@ -1012,6 +1174,7 @@ pub async fn spawn_agent_connection(
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
+            child_pid,
         },
     );
 
@@ -3258,14 +3421,33 @@ async fn run_connection(
                     }
                 }
 
-                // Load existing session via session/load
-                let load_req = build_load_session_request(
-                    agent_type,
-                    SessionId::new(sid.clone()),
-                    &cwd,
-                    mcp_servers.clone(),
-                );
-                let load_result = cx.send_request_to(Agent, load_req).block_task().await;
+                // Load existing session via session/load.
+                //
+                // ACP is explicit that a client MUST NOT send `session/load` to
+                // an agent that has not advertised `loadSession` (Zed enforces
+                // the same gate). Skipping the RPC lands on exactly the
+                // recovery its wire error would have taken — `session/new` plus
+                // a `continues_from` link, so a custom agent's conversation
+                // still reads as one history — without putting an unsupported
+                // method on the wire.
+                //
+                // Only a declared **false** is trusted. A declared true is not:
+                // agents that advertise `loadSession: true` and then answer
+                // "Method not found" are real, so the whole error ladder below
+                // stays exactly as it was.
+                let attempted_load = init_resp.agent_capabilities.load_session;
+                let load_result = if attempted_load {
+                    let load_req = build_load_session_request(
+                        agent_type,
+                        SessionId::new(sid.clone()),
+                        &cwd,
+                        mcp_servers.clone(),
+                    );
+                    cx.send_request_to(Agent, load_req).block_task().await
+                } else {
+                    Err(sacp::Error::method_not_found()
+                        .data("agent does not advertise the loadSession capability"))
+                };
 
                 match load_result {
                     Ok(load_resp) => {
@@ -3290,8 +3472,9 @@ async fn run_connection(
                         // so capture it instead of discarding it. When codeg
                         // already recorded the session live, the replay is a
                         // duplicate and stays drained.
-                        let hydrate_from_replay = transcript_dir_for(agent_type)
-                            .is_some_and(|dir| !crate::acp_transcript::has_entries(dir, &sid));
+                        let hydrate_from_replay = transcript_dir_for(agent_type).is_some_and(|dir| {
+                            !crate::acp_transcript::has_recorded_history(dir, &sid)
+                        });
                         if hydrate_from_replay {
                             tracing::info!(
                                 "[ACP] hydrating custom agent transcript for {sid} from session/load replay"
@@ -3304,6 +3487,12 @@ async fn run_connection(
                         // time, hence no folder in the conversation list).
                         record_transcript_header(agent_type, &sid, &cwd.to_string_lossy());
                         let mut drained = 0u32;
+                        // Cleared if the writer ever stalls: from then on the
+                        // drain still runs to completion (the session is not
+                        // usable until the replay is consumed) but records
+                        // nothing more, so the transcript ends at a line
+                        // boundary instead of growing holes.
+                        let mut recording = hydrate_from_replay;
                         while let Ok(Ok(msg)) = tokio::time::timeout(
                             std::time::Duration::from_millis(100),
                             session.read_update(),
@@ -3317,12 +3506,13 @@ async fn run_connection(
                                 let dispatch = fix_usage_update_nulls(dispatch);
                                 let _ = MatchDispatch::new(dispatch)
                                     .if_notification(async |notif: SessionNotification| {
-                                        if hydrate_from_replay {
-                                            record_transcript_update(
+                                        if recording {
+                                            recording = record_hydrated_update(
                                                 agent_type,
                                                 &sid,
                                                 &notif.update,
-                                            );
+                                            )
+                                            .await;
                                         }
                                         if matches!(
                                             notif.update,
@@ -3471,9 +3661,16 @@ async fn run_connection(
                             .await;
                             return Ok(());
                         }
-                        tracing::warn!(
-                            "[ACP] session/load failed ({err_str}), falling back to session/new"
-                        );
+                        if attempted_load {
+                            tracing::warn!(
+                                "[ACP] session/load failed ({err_str}), falling back to session/new"
+                            );
+                        } else {
+                            tracing::info!(
+                                "[ACP] agent declares no loadSession support; opening a new session \
+                                 for {sid} and linking its history instead of calling session/load"
+                            );
+                        }
                         // Only emit a visible error for unexpected failures;
                         // "Method not found" is expected for agents that don't
                         // support session resume (e.g. Cline).
@@ -3487,7 +3684,11 @@ async fn run_connection(
                         // itself is the expected steady state after a restart,
                         // not an incident — an error toast on every reopen
                         // would be pure noise.
-                        if !err_str.contains("Method not found") && !recovers_locally {
+                        // A load codeg deliberately never sent is not a failure
+                        // to report — the capability gate above is the expected
+                        // path for agents that don't implement it.
+                        if attempted_load && !err_str.contains("Method not found") && !recovers_locally
+                        {
                             emit_with_state(
                                 &state,
                                 &emitter_clone,
@@ -5446,17 +5647,9 @@ async fn run_conversation_loop<'a>(
                 let sid = session.session_id().clone();
                 // Record the prompt BEFORE sending, so the transcript's line
                 // order matches the wire order even if the agent replies
-                // instantly.
-                if let Some(dir) = transcript_dir_for(agent_type) {
-                    if let Ok(payload) = serde_json::to_value(&prompt_blocks) {
-                        drop(crate::acp_transcript::record_entry(
-                            dir,
-                            &sid.0,
-                            crate::acp_transcript::EntryKind::Prompt,
-                            payload,
-                        ));
-                    }
-                }
+                // instantly — and awaited, so the replay gate can never see
+                // this conversation as transcript-less (see `record_prompt`).
+                record_prompt(agent_type, &sid.0, &prompt_blocks).await;
                 let turn_started_at_ms = crate::acp_transcript::now_epoch_ms();
                 let prompt_request = PromptRequest::new(sid.clone(), prompt_blocks);
                 // Use Box::pin (heap) instead of tokio::pin! (stack) so the
@@ -5673,8 +5866,14 @@ async fn run_conversation_loop<'a>(
                             // streamed chunks this one is bound-awaited: a
                             // conversation reopened right after a turn must not
                             // miss its tail.
-                            record_turn_end(agent_type, &sid.0, reason_str, turn_started_at_ms)
-                                .await;
+                            record_turn_end(
+                                agent_type,
+                                &sid.0,
+                                reason_str,
+                                turn_started_at_ms,
+                                current_session_model_id(state).await,
+                            )
+                            .await;
                             emit_with_state(
                                 state,
                                 emitter,
@@ -8494,6 +8693,54 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    /// The `loadSession` capability gate hands the failure ladder a synthetic
+    /// error instead of sending an unsupported RPC. That error must classify as
+    /// "just open a new session": anything else would put a "session could not
+    /// be loaded" banner in front of every user whose agent simply does not
+    /// implement `session/load`.
+    #[test]
+    fn a_session_load_never_sent_falls_back_without_alarming_the_user() {
+        let e = sacp::Error::method_not_found()
+            .data("agent does not advertise the loadSession capability");
+        let text = e.to_string();
+        assert_eq!(classify_session_load_failure(e.code, &text), None);
+        assert!(text.contains("Method not found"), "{text}");
+        assert!(!text.contains("Authentication required"), "{text}");
+    }
+
+    #[test]
+    fn the_model_selector_is_the_model_recorded_on_a_turn() {
+        let select = |id: &str, category: &str, current: &str| SessionConfigOptionInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            category: Some(category.to_string()),
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: current.to_string(),
+                options: Vec::new(),
+                groups: Vec::new(),
+            }),
+        };
+
+        // The model comes from the `model` selector, not from whichever
+        // selector happens to be first — agents publish several.
+        assert_eq!(
+            current_model_id_from_opts(&[
+                select("effort", "mode", "high"),
+                select("model", "model", "grok-4"),
+            ]),
+            Some("grok-4".to_string())
+        );
+        // No model selector (the common case for custom agents) and an empty
+        // current value both mean "unknown", never a placeholder.
+        assert_eq!(
+            current_model_id_from_opts(&[select("effort", "mode", "high")]),
+            None
+        );
+        assert_eq!(current_model_id_from_opts(&[select("m", "model", "")]), None);
+        assert_eq!(current_model_id_from_opts(&[]), None);
     }
 
     #[test]

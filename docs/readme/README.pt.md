@@ -19,7 +19,7 @@
 
 O Codeg (Code Generation) é um espaço de trabalho de programação multiagente: rode todos os seus agentes de IA em um só lugar — e deixe que trabalhem juntos.
 
-Ele agrega as sessões de todas as CLIs de agentes suportadas em um único espaço de trabalho pesquisável, permite que um agente principal delegue a subagentes de outros tipos dentro de uma mesma tarefa e roda como aplicativo de desktop, servidor independente ou contêiner Docker — além de clientes nativos de iOS e Android para quando você está longe da mesa.
+Ele agrega as sessões de todas as CLIs de agentes suportadas em um único espaço de trabalho pesquisável, permite que um agente principal delegue a subagentes de outros tipos dentro de uma mesma tarefa e roda como aplicativo de desktop, servidor independente ou contêiner Docker — além de clientes nativos de iOS e Android para quando você está longe da mesa. Doze agentes já vêm integrados e, desde a 0.22, você pode registrar por conta própria qualquer outro agente compatível com ACP.
 
 ![Espaço de trabalho](../images/workspace-light.png#gh-light-mode-only)
 ![Espaço de trabalho](../images/workspace-dark.png#gh-dark-mode-only)
@@ -69,12 +69,25 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 O Codeg instala, fixa a versão e atualiza a maioria deles por você. Veja [Agentes suportados](https://docs.codeg.app/guide/supported-agents) para a lista completa, os requisitos de execução de cada um e onde ele guarda as sessões em disco.
 
+Não está na lista? Adicione você mesmo. Escolha qualquer agente no registro público do ACP ou cole o JSON de distribuição dele: o Codeg instala, verifica antes se ele consegue iniciar e o trata como um agente nativo — aparece no seletor, aceita delegação com `@` e skills, e suas conversas ficam registradas e pesquisáveis mesmo quando o agente não guarda histórico algum. → [Agentes personalizados](https://docs.codeg.app/guide/custom-agents)
+
 ## 🤝 Colaboração multiagente
 
 Colaboração multiagente reduzida a uma única tecla: digite `@`, escolha um agente e envie. O Codeg cuida da orquestração — inicia cada agente mencionado como sua própria sessão, entrega a tarefa e devolve o trabalho para a conversa em que você já está. Mencione dois e eles seguem lado a lado: o Claude Code redigindo enquanto o Codex revisa. Sem troca de contexto, sem copiar e colar entre terminais.
 
+E quando um agente dispara subagentes próprios — os do Claude Code, por exemplo — a saída deles vai aparecendo no cartão enquanto trabalham, em vez de chegar toda de uma vez no fim.
+
 ![Delegando uma tarefa a subagentes a partir de uma única conversa do Codeg](../images/collaboration-light.gif#gh-light-mode-only)
 ![Delegando uma tarefa a subagentes a partir de uma única conversa do Codeg](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## 🪟 Visualização dividida
+
+Uma única faixa de abas não basta sempre. Clique com o botão direito em uma aba de conversa para dividir a visualização **à direita** ou **para baixo**, quantas vezes quiser: dois painéis lado a lado, uma pilha de três, uma grade. Cada grupo é um espaço de trabalho completo — com suas abas, seu cabeçalho e seu próprio botão de nova conversa — então o Claude Code pode refatorar em um painel enquanto o Codex revisa um diff no painel ao lado.
+
+Arraste uma aba de um grupo para outro e a sessão continua transmitindo durante a mudança; arraste o divisor entre dois grupos para mudar como eles repartem o espaço. Seu layout é lembrado por espaço de trabalho, rascunhos incluídos: reabra o Codeg e a divisão volta, com o texto que você nunca enviou ainda na caixa.
+
+![Dividindo a área de conversa em uma grade de grupos de abas](../images/split-light.gif#gh-light-mode-only)
+![Dividindo a área de conversa em uma grade de grupos de abas](../images/split-dark.gif#gh-dark-mode-only)
 
 ## 📄 Documentos do Office
 
@@ -105,7 +118,9 @@ Saia da mesa, não do trabalho. Os clientes nativos de iOS e Android se conectam
 
 - **[Agregação de conversas](https://docs.codeg.app/guide/aggregation)** — importe as sessões de todos os agentes suportados para um espaço de trabalho unificado e pesquisável, e retome de onde parou
 - **[Colaboração multiagente](https://docs.codeg.app/guide/multi-agent)** — mencione qualquer agente com `@` para delegar: subagentes de tipos diferentes rodam como sessões próprias, em paralelo, dentro de uma mesma tarefa
+- **[Agentes personalizados](https://docs.codeg.app/guide/custom-agents)** — registre qualquer outro agente compatível com ACP a partir do registro público ou do JSON de distribuição; o Codeg instala, grava o histórico e o trata como um agente nativo
 - **[O espaço de trabalho](https://docs.codeg.app/guide/workspace)** — todo o ciclo de engenharia ao lado do agente: árvore de arquivos, editor e diff, alterações do git, commit e um terminal integrado
+- **[Visualização dividida](https://docs.codeg.app/guide/workspace#split-the-conversation-view-into-groups)** — divida a área de conversa em quantos grupos de abas quiser, arraste abas e divisores entre eles e recupere o layout — com rascunhos — ao reiniciar
 - **[Git e worktrees](https://docs.codeg.app/guide/git)** — revise e faça commit das alterações, gerencie contas remotas do Git e trabalhe em paralelo com os fluxos `git worktree` integrados
 - **[Canais de chat](https://docs.codeg.app/guide/chat-channels)** — comande seus agentes pelo Telegram, Lark (Feishu) e iLink (Weixin): crie tarefas, aprove permissões e receba atualizações ao vivo
 - **[Automações](https://docs.codeg.app/guide/automations)** — salve um compositor totalmente configurado como uma automação reutilizável que roda sem interface, por agendamento cron ou sob demanda

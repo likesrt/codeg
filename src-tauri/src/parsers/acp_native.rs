@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
 use sacp::schema::{SessionUpdate, ToolCallContent};
+use serde::Deserialize as _;
 
 use crate::acp::connection::{
     extract_tool_call_images, json_value_to_text, serialize_tool_call_content,
@@ -108,7 +109,12 @@ impl AgentParser for AcpNativeParser {
             return Err(ParseError::ConversationNotFound(conversation_id.to_string()));
         }
         let turns = project_turns(&transcript.entries);
-        let session_stats = session_stats(&turns);
+        let (used, size) = latest_context_window(&transcript.entries);
+        let session_stats = crate::parsers::merge_context_window_stats(
+            session_stats(&turns),
+            used,
+            size,
+        );
         Ok(ConversationDetail {
             summary: self.summarize(conversation_id, &transcript),
             turns,
@@ -292,6 +298,63 @@ impl PendingTurn {
     }
 }
 
+/// Whether a `session/update` carries anything this module reads back — the
+/// **write-side** gate, called by `acp::connection` before a line is recorded.
+///
+/// ACP broadcasts far more than conversation content: `available_commands_update`
+/// alone republishes the agent's whole slash-command catalog (tens of KB) every
+/// time it changes. Recording what nothing ever reads inflates every later parse
+/// of the file for no gain.
+///
+/// This is a whitelist, not a blacklist, so an unrecognized future variant
+/// degrades to "not recorded" rather than to "silently bloats every transcript".
+/// It MUST stay in step with the two consumers below —
+/// [`apply_update`]'s match arms and [`latest_context_window`] — and
+/// `recorded_updates_are_exactly_the_ones_the_projection_reads` fails the build
+/// if it drifts from either.
+pub fn is_recorded_update(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::UserMessageChunk(_)
+            | SessionUpdate::AgentMessageChunk(_)
+            | SessionUpdate::AgentThoughtChunk(_)
+            | SessionUpdate::ToolCall(_)
+            | SessionUpdate::ToolCallUpdate(_)
+            | SessionUpdate::Plan(_)
+            | SessionUpdate::UsageUpdate(_)
+    )
+}
+
+/// The context-window reading a transcript ends on: `(used, size)` from its
+/// last recorded `usage_update`.
+///
+/// ACP's usage channel reports context **occupancy** (`used` of `size` tokens),
+/// not the per-turn input/output counts `MessageTurn::usage` holds — so it
+/// feeds the session footer's context-window trio, exactly like the built-in
+/// parsers derive it from their own stores, and never a turn's token usage.
+/// (A turn's usage stays `None` for custom agents: ACP has no channel for it,
+/// and inventing one from occupancy deltas would be a guess rendered as fact.)
+///
+/// Matched on the raw payload rather than by deserializing: the answer is
+/// almost always in the last few entries, and a string compare per entry costs
+/// nothing next to building a `SessionUpdate`.
+fn latest_context_window(entries: &[TranscriptEntry]) -> (Option<u64>, Option<u64>) {
+    let found = entries.iter().rev().find(|e| {
+        e.k == EntryKind::Update
+            && e.p.get("sessionUpdate").and_then(|v| v.as_str()) == Some("usage_update")
+    });
+    let Some(entry) = found else {
+        return (None, None);
+    };
+    let field = |name: &str| entry.p.get(name).and_then(|v| v.as_u64());
+    // A window of zero is not a reading, it is an agent that reported nothing;
+    // surfacing "0 tokens of 0" as a live gauge would be worse than silence.
+    match field("size").filter(|s| *s > 0) {
+        Some(size) => (field("used"), Some(size)),
+        None => (None, None),
+    }
+}
+
 /// Project recorded transcript entries into turns.
 pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
     let mut turns: Vec<MessageTurn> = Vec::new();
@@ -336,7 +399,11 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
                 turn_start_hint = None;
             }
             EntryKind::Update => {
-                let Ok(update) = serde_json::from_value::<SessionUpdate>(entry.p.clone()) else {
+                // Deserialized from a BORROWED `&Value`, not a cloned one: this
+                // runs once per recorded chunk, and a long conversation records
+                // tens of thousands, so cloning each payload only to drop it a
+                // line later was a measurable share of the whole read.
+                let Ok(update) = SessionUpdate::deserialize(&entry.p) else {
                     // A transcript written by a newer schema than this build
                     // understands. The raw line stays on disk (it is the ACP
                     // wire format, not an internal type), so a later build can
@@ -544,8 +611,12 @@ fn apply_update(
             p.last_at_ms = at_ms;
             upsert_plan(p, &plan);
         }
-        // Slash-command catalogs, mode switches and the like carry no
-        // conversation content.
+        // Nothing else describes a TURN. `usage_update` does reach the
+        // projection, but through [`latest_context_window`] — it reports the
+        // session's context occupancy, not this turn's tokens. The rest
+        // (slash-command catalogs, mode switches, config echoes) is refused at
+        // record time by [`is_recorded_update`] and survives only in
+        // transcripts written before that filter existed.
         _ => {}
     }
 }
@@ -1110,6 +1181,71 @@ mod tests {
         assert_eq!(stats.total_duration_ms, 42);
     }
 
+    /// The write-side whitelist and the read-side match arms are two
+    /// hand-maintained views of one set. This asserts they agree by RUNNING the
+    /// projection over each variant rather than by restating either list, so
+    /// teaching `apply_update` a new variant without whitelisting it (or the
+    /// reverse) fails here instead of silently costing that content forever.
+    #[test]
+    fn recorded_updates_are_exactly_the_ones_the_projection_reads() {
+        let samples = [
+            text_chunk("user_message_chunk", "hi"),
+            text_chunk("agent_message_chunk", "hi"),
+            text_chunk("agent_thought_chunk", "hmm"),
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "c", "title": "Bash",
+                "kind": "execute", "status": "pending"
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "c", "status": "completed"
+            }),
+            serde_json::json!({
+                "sessionUpdate": "plan",
+                "entries": [{"content": "step", "priority": "high", "status": "pending"}]
+            }),
+            serde_json::json!({"sessionUpdate": "usage_update", "used": 1, "size": 2}),
+            // Not conversation content — the ones the filter exists for.
+            serde_json::json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
+            serde_json::json!({"sessionUpdate": "current_mode_update", "currentModeId": "ask"}),
+            serde_json::json!({"sessionUpdate": "config_option_update", "configOptions": []}),
+            serde_json::json!({"sessionUpdate": "session_info_update"}),
+        ];
+        for payload in samples {
+            // Deserializing first also proves the sample really is the variant
+            // it claims to be: a typo'd payload would otherwise pass as "not
+            // recorded, not read" and assert nothing.
+            let parsed: SessionUpdate = serde_json::from_value(payload.clone())
+                .unwrap_or_else(|e| panic!("sample is not a valid SessionUpdate: {payload} ({e})"));
+            let entry = [update(1, payload.clone())];
+            let read = !project_turns(&entry).is_empty()
+                || latest_context_window(&entry) != (None, None);
+            assert_eq!(
+                is_recorded_update(&parsed),
+                read,
+                "whitelist and projection disagree about {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_last_usage_update_becomes_the_context_window_footer() {
+        let entries = vec![
+            prompt(1, "hi"),
+            update(2, serde_json::json!({"sessionUpdate":"usage_update","used":100,"size":1000})),
+            update(3, text_chunk("agent_message_chunk", "ok")),
+            update(4, serde_json::json!({"sessionUpdate":"usage_update","used":250,"size":1000})),
+        ];
+        assert_eq!(latest_context_window(&entries), (Some(250), Some(1000)));
+        // Occupancy is NOT a turn's token usage: recording it must not put
+        // invented numbers on the turns.
+        assert!(project_turns(&entries).iter().all(|t| t.usage.is_none()));
+
+        // A window of zero is an agent reporting nothing, not a reading.
+        let zero = [update(5, serde_json::json!({"sessionUpdate":"usage_update","used":9,"size":0}))];
+        assert_eq!(latest_context_window(&zero), (None, None));
+        assert_eq!(latest_context_window(&[prompt(1, "hi")]), (None, None));
+    }
+
     #[test]
     fn unparsable_updates_are_skipped_without_losing_neighbours() {
         let entries = vec![
@@ -1156,6 +1292,10 @@ mod tests {
         for e in [
             prompt(1_750_000_000_100, "build the thing"),
             update(1_750_000_000_200, text_chunk("agent_message_chunk", "done")),
+            update(
+                1_750_000_000_300,
+                serde_json::json!({"sessionUpdate":"usage_update","used":3_000,"size":200_000}),
+            ),
         ] {
             crate::acp_transcript::append_line_in(
                 &root,
@@ -1174,6 +1314,12 @@ mod tests {
         assert_eq!(detail.summary.title.as_deref(), Some("build the thing"));
         assert_eq!(detail.summary.message_count, 1);
         assert_eq!(detail.turns.len(), 2);
+        // The recorded `usage_update` reaches the session footer's
+        // context-window gauge, which was unreachable for custom agents before.
+        let stats = detail.session_stats.as_ref().expect("stats");
+        assert_eq!(stats.context_window_used_tokens, Some(3_000));
+        assert_eq!(stats.context_window_max_tokens, Some(200_000));
+        assert_eq!(stats.context_window_usage_percent, Some(1.5));
 
         let listed = parser.list_conversations().expect("listed");
         assert_eq!(listed.len(), 1);

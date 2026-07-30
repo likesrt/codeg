@@ -207,8 +207,18 @@ pub async fn hydrate_prompt_blocks(
 ///
 /// A `#fragment` is stripped before decoding — `buildFileUri` percent-encodes
 /// literal `#` in path segments, so a bare `#` can only be a line-range
-/// fragment (never part of an uploaded filename). UNC uris (`file://server/…`)
-/// are not produced for uploads and fall through to canonicalize failure.
+/// fragment (never part of an uploaded filename).
+///
+/// **An authority-form uri (`file://host/share/…`) is deliberately NOT turned
+/// into the UNC path `\\host\share\…`.** These uris come straight off the wire,
+/// so resolving one would let any authenticated caller name an arbitrary SMB
+/// host and have this process connect to it during `canonicalize` — before the
+/// uploads-root check below can reject anything. On Windows that is a forced-
+/// authentication / credential-coercion primitive (and a connect-timeout stall
+/// while the prompt lock is held). Decoding it to a harmless relative path
+/// instead means it simply fails to resolve. A UNC uploads root is therefore
+/// unsupported; supporting one would require comparing the authority and share
+/// against the configured root *lexically*, before any filesystem call.
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let rest = rest.split('#').next().unwrap_or(rest);
@@ -217,19 +227,43 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     if decoded.is_empty() {
         return None;
     }
-    // `file:///C:/x` decodes to `/C:/x`; on Windows the leading slash is the
-    // uri separator, not part of the path. Unix never produces this shape
-    // (upload paths live under the user's home), so gate on the platform to
-    // avoid mangling a genuine `/C:/…` Unix directory.
     #[cfg(windows)]
     {
         let bytes = decoded.as_bytes();
+        // `file:///C:/x` decodes to `/C:/x`; on Windows the leading slash is
+        // the uri separator, not part of the path. Unix never produces this
+        // shape (upload paths live under the user's home), so gate on the
+        // platform to avoid mangling a genuine `/C:/…` Unix directory.
         if bytes.len() >= 3
             && bytes[0] == b'/'
             && bytes[1].is_ascii_alphabetic()
             && bytes[2] == b':'
         {
             return Some(PathBuf::from(&decoded[1..]));
+        }
+        // Compatibility with the mangled shape a pre-#392 client produced:
+        // `buildFileUri` read the `\\?\` verbatim prefix of a canonicalized
+        // upload path as a uri authority, so `\\?\C:\x` went out as
+        // `file://%3F/C%3A/x` and lands here as `?/C:/x`. Both sides now strip
+        // the prefix, which covers every mix of client and server version —
+        // this only rescues a uri built before an upgrade and sent after one
+        // (a browser tab held open across a server restart). Exactly that one
+        // shape is accepted, and it can only ever name a local drive; the
+        // uploads-root check below still applies.
+        if let Some(drive_path) = decoded.strip_prefix("?/") {
+            let bytes = drive_path.as_bytes();
+            // `C:/…` and nothing looser: the uri this rescues was built by
+            // percent-encoding a canonical path, which is always rooted and
+            // always slash-separated by the time `buildFileUri` is done with
+            // it. A drive-relative `C:x` or a backslash form never occurs, so
+            // neither is admitted.
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'/'
+            {
+                return Some(PathBuf::from(drive_path));
+            }
         }
     }
     Some(PathBuf::from(decoded))
@@ -508,5 +542,43 @@ mod tests {
         );
         assert_eq!(file_uri_to_path("clipboard://x"), None);
         assert_eq!(file_uri_to_path("file://"), None);
+    }
+
+    /// An authority-form uri must stay a relative path. Turning it into
+    /// `\\host\share\…` would make `canonicalize` dial an attacker-named SMB
+    /// host before the uploads-root check runs — forced authentication on
+    /// Windows, and a connect-timeout stall anywhere. The uri arrives straight
+    /// off the wire, so this is client-controlled input; keep it inert.
+    #[test]
+    fn authority_form_uris_are_never_resolved_as_unc() {
+        let decoded = file_uri_to_path("file://attacker-host/share/x.png")
+            .expect("authority-form uri still decodes");
+        assert_eq!(decoded, PathBuf::from("attacker-host/share/x.png"));
+        assert!(
+            decoded.is_relative(),
+            "must not become an absolute (UNC) path: {}",
+            decoded.display()
+        );
+        assert!(
+            !decoded.to_string_lossy().starts_with('\\'),
+            "must not gain a UNC prefix: {}",
+            decoded.display()
+        );
+    }
+
+    /// A uri built by a client that predates the #392 fix — `\\?\C:\x` went
+    /// out as `file://%3F/C%3A/x`. Accepted so a tab held open across a server
+    /// upgrade can still send; unrelated `?/…` shapes stay untouched.
+    #[test]
+    #[cfg(windows)]
+    fn file_uri_decoding_recovers_the_legacy_verbatim_shape() {
+        assert_eq!(
+            file_uri_to_path("file://%3F/C%3A/Users/song/uploads/img.png"),
+            Some(PathBuf::from(r"C:/Users/song/uploads/img.png"))
+        );
+        assert_eq!(
+            file_uri_to_path("file://%3F/UNC/srv/share/img.png"),
+            Some(PathBuf::from("?/UNC/srv/share/img.png"))
+        );
     }
 }

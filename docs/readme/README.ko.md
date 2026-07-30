@@ -19,7 +19,7 @@
 
 Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. 모든 AI 코딩 에이전트를 한곳에서 실행하고, 서로 협업하게 만듭니다.
 
-지원되는 모든 에이전트 CLI의 세션을 검색 가능한 하나의 워크스페이스로 모으고, 하나의 작업 안에서 메인 에이전트가 다른 종류의 서브 에이전트에게 위임할 수 있으며, 데스크톱 앱·독립 서버·Docker 컨테이너 어느 형태로든 실행됩니다. 또한 네이티브 iOS·Android 클라이언트가 있어 자리를 비운 사이에도 작업을 이어갈 수 있습니다.
+지원되는 모든 에이전트 CLI의 세션을 검색 가능한 하나의 워크스페이스로 모으고, 하나의 작업 안에서 메인 에이전트가 다른 종류의 서브 에이전트에게 위임할 수 있으며, 데스크톱 앱·독립 서버·Docker 컨테이너 어느 형태로든 실행됩니다. 또한 네이티브 iOS·Android 클라이언트가 있어 자리를 비운 사이에도 작업을 이어갈 수 있습니다. 열두 개의 에이전트가 기본 내장되며, 0.22부터는 ACP를 지원하는 다른 에이전트를 직접 등록할 수도 있습니다.
 
 ![워크스페이스](../images/workspace-light.png#gh-light-mode-only)
 ![워크스페이스](../images/workspace-dark.png#gh-dark-mode-only)
@@ -69,12 +69,25 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 이 중 대부분은 Codeg가 대신 설치하고, 버전을 고정하고, 업데이트합니다. 전체 목록과 각 에이전트의 실행 환경 요구 사항, 세션이 디스크에 저장되는 위치는 [지원 에이전트](https://docs.codeg.app/guide/supported-agents)를 참고하세요.
 
+목록에 없나요? 직접 추가하면 됩니다. 공개된 ACP 레지스트리에서 하나를 고르거나 distribution JSON을 붙여넣으면, Codeg가 설치하고 실행 가능한지 미리 확인한 뒤 내장 에이전트와 똑같이 취급합니다 — 선택기에 나타나고, `@` 위임과 스킬을 받아들이며, 그 에이전트가 자체 기록을 남기지 않아도 대화는 저장되고 검색됩니다. → [커스텀 에이전트](https://docs.codeg.app/guide/custom-agents)
+
 ## 🤝 멀티 에이전트 협업
 
 멀티 에이전트 협업이 키 하나로 끝납니다. `@`를 입력하고, 에이전트를 고르고, 보내기만 하면 됩니다. 나머지 스케줄링은 Codeg가 맡습니다 — 언급된 에이전트를 각각 독립 세션으로 실행하고, 작업을 넘기고, 그 결과를 지금 보고 있는 스레드로 다시 흘려보냅니다. 둘을 언급하면 나란히 진행됩니다. Claude Code가 초안을 쓰는 동안 Codex가 검토하는 식으로요. 컨텍스트 전환도, 터미널 사이를 오가는 복사·붙여넣기도 없습니다.
 
+에이전트가 자체 서브 에이전트를 띄우는 경우 — 예컨대 Claude Code처럼 — 그 출력은 끝난 뒤 한꺼번에 나타나지 않고, 작업하는 동안 카드 안에서 실시간으로 흘러갑니다.
+
 ![하나의 Codeg 대화에서 서브 에이전트에게 작업을 위임하는 모습](../images/collaboration-light.gif#gh-light-mode-only)
 ![하나의 Codeg 대화에서 서브 에이전트에게 작업을 위임하는 모습](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## 🪟 화면 분할
+
+탭 한 줄로는 부족할 때가 있습니다. 대화 탭을 오른쪽 클릭하면 뷰를 **오른쪽**이나 **아래쪽**으로, 원하는 만큼 몇 번이든 분할할 수 있습니다. 좌우 두 칸, 위아래 세 칸, 아니면 격자 전체로도요. 각 그룹은 그 자체로 하나의 워크스페이스입니다 — 자기 탭, 자기 헤더, 자기 새 대화 버튼을 가집니다. 그래서 한 칸에서는 Claude Code가 리팩터링하고, 옆 칸에서는 Codex가 diff를 검토할 수 있습니다.
+
+탭을 다른 그룹으로 끌어다 놓아도 그 세션은 이동 중에도 계속 스트리밍됩니다. 두 그룹 사이의 구분선을 끌면 공간을 나누는 비율이 바뀝니다. 레이아웃은 워크스페이스별로, 초안까지 함께 기억됩니다. Codeg를 다시 열면 분할이 그대로 돌아오고, 보내지 않은 글도 입력창에 남아 있습니다.
+
+![대화 영역을 탭 그룹 격자로 분할하기](../images/split-light.gif#gh-light-mode-only)
+![대화 영역을 탭 그룹 격자로 분할하기](../images/split-dark.gif#gh-dark-mode-only)
 
 ## 📄 Office 문서
 
@@ -105,7 +118,9 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[대화 통합](https://docs.codeg.app/guide/aggregation)** — 지원되는 모든 에이전트의 세션을 검색 가능한 하나의 워크스페이스로 가져오고, 멈춘 지점부터 이어서 진행합니다
 - **[멀티 에이전트 협업](https://docs.codeg.app/guide/multi-agent)** — `@`로 에이전트를 언급하면 곧 위임입니다. 서로 다른 종류의 서브 에이전트가 각자 독립 세션으로, 하나의 작업 안에서 병렬로 실행됩니다
+- **[커스텀 에이전트](https://docs.codeg.app/guide/custom-agents)** — 공개 레지스트리나 distribution JSON으로 ACP 호환 에이전트를 등록하세요. Codeg가 설치와 기록을 맡고, 내장 에이전트와 똑같이 다룹니다
 - **[워크스페이스](https://docs.codeg.app/guide/workspace)** — 에이전트 옆에 개발의 전 과정이 있습니다: 파일 트리, 에디터와 diff, Git 변경 사항, 커밋, 내장 터미널
+- **[화면 분할](https://docs.codeg.app/guide/workspace#split-the-conversation-view-into-groups)** — 대화 영역을 원하는 만큼 탭 그룹으로 나누고, 그룹 사이로 탭과 구분선을 끌어 조정하며, 재시작 후에도 초안까지 포함해 레이아웃이 돌아옵니다
 - **[Git과 Worktree](https://docs.codeg.app/guide/git)** — 변경 사항 검토와 커밋, Git 원격 계정 관리, 내장 `git worktree` 흐름을 이용한 병렬 작업
 - **[채팅 채널](https://docs.codeg.app/guide/chat-channels)** — Telegram, Lark(Feishu), iLink(Weixin)에서 에이전트를 조작합니다: 작업 생성, 권한 승인, 실시간 진행 상황 수신
 - **[자동화](https://docs.codeg.app/guide/automations)** — 설정을 마친 입력창을 재사용 가능한 자동화로 저장해 cron 일정이나 필요할 때 헤드리스로 실행합니다
