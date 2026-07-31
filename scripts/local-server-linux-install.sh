@@ -365,14 +365,23 @@ create_systemd_unit() {
 [Unit]
 Description=Codeg Server
 After=network.target
+# 5 分钟内重启超过 10 次则停止，防止 crash loop 无限刷日志
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
 EnvironmentFile=/opt/codeg/.env
 ExecStart=/usr/local/bin/codeg-server
-Restart=unless-stopped
+# always: 无论异常退出还是 OOM-kill 都重启；管理员 systemctl stop 仍会被尊重（不会在主动停止后自启）
+Restart=always
 RestartSec=3
 WorkingDirectory=/opt/codeg
+# 内存兜底：硬限 6G 防止进程把整机拖到 OOM；软限 5G 触发内核回收；
+# OOMPolicy=continue 让 cgroup OOM 只杀肇事进程而非整个 unit，配合 Restart=always 自动重启
+MemoryMax=6G
+MemoryHigh=5G
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target
