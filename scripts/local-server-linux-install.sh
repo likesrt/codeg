@@ -6,10 +6,10 @@ set -euo pipefail
 # 功能：从 GitHub Releases 下载 codeg-server 二进制和 web 资源，配置 systemd 服务
 # 用法：curl -fsSL https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 #       或：bash local-server-linux-install.sh [--force]
-# 国内服务器如果无法下载本脚本，可使用代理：
-#       curl -fsSL https://www.gitwarp.com/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
-# 也可通过环境变量 CODEG_PROXY 指定代理前缀：
-#       CODEG_PROXY=https://www.gitwarp.com/ bash local-server-linux-install.sh
+# 国内服务器如果无法下载本脚本，可使用代理（按优先级：ghproxy.net > github.dpik.top > gh-proxy.com > cdn.gh-proxy.com）：
+#       curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
+# 也可通过环境变量 CODEG_PROXY 指定代理前缀（设为 none 强制直连）：
+#       CODEG_PROXY=https://ghproxy.net/ bash local-server-linux-install.sh
 # ============================================================
 
 # ===== 常量 =====
@@ -17,7 +17,13 @@ REPO="likesrt/codeg"
 GITHUB_API="https://api.github.com/repos/$REPO/releases"
 GITHUB_BASE="https://github.com/$REPO"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
-DEFAULT_PROXY="https://www.gitwarp.com/"
+# GitHub 代理列表（按优先级排列，全部失败则报错）
+GH_PROXIES=(
+  "https://ghproxy.net/"
+  "https://github.dpik.top/"
+  "https://gh-proxy.com/"
+  "https://cdn.gh-proxy.com/"
+)
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/opt/codeg/data"
 WEB_DIR="/opt/codeg/web"
@@ -45,6 +51,13 @@ SYSTEM_DEPS=(
 # 返回：无
 log_info() {
   echo -e "\033[32m[INFO]\033[0m $1"
+}
+
+# 打印警告日志
+# 参数：$1 - 警告内容
+# 返回：无
+log_warn() {
+  echo -e "\033[33m[WARN]\033[0m $1"
 }
 
 # 打印错误日志并退出
@@ -89,6 +102,22 @@ dl() {
   curl --http1.1 "$@"
 }
 
+# 下载单个 GitHub URL，按优先级尝试各代理，全部失败则报错
+# 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径
+# 返回：成功返回 0，全部失败返回 1
+download_with_fallback() {
+  local url="$1"
+  local output="$2"
+  for proxy in "${GH_PROXIES[@]}"; do
+    if dl -fsSL --connect-timeout 10 --max-time 300 "${proxy}${url}" -o "$output" 2>/dev/null; then
+      log_info "下载成功：${url#"https://"}（via ${proxy}）"
+      return 0
+    fi
+    log_warn "下载失败，尝试下一个源 ..."
+  done
+  return 1
+}
+
 # 交互式询问代理方式（通过 /dev/tty 读取，支持 curl|bash 管道模式）
 # 参数：无
 # 返回：echo 输出 1（自动检测）、2（使用代理）、3（不使用代理）
@@ -128,17 +157,16 @@ detect_proxy() {
     return
   fi
 
-  PROXY_PREFIX="$DEFAULT_PROXY"
-
   # 交互式选择代理方式
   local mode
   mode=$(ask_proxy_mode)
   case "$mode" in
     2)
-      # 用户选择使用代理
+      # 用户选择使用代理：取列表中第一个能连通的代理
       API_NEED_PROXY=1
       RAW_NEED_PROXY=1
       DOWNLOAD_NEED_PROXY=1
+      pick_first_proxy
       log_info "已选择使用代理：$PROXY_PREFIX"
       return
       ;;
@@ -173,29 +201,25 @@ detect_proxy() {
   if [ "$total" -eq 0 ]; then
     log_info "GitHub 全部可直连，不使用代理"
   else
-    log_info "部分域名需要代理（api=$API_NEED_PROXY raw=$RAW_NEED_PROXY download=$DOWNLOAD_NEED_PROXY）"
+    pick_first_proxy
+    log_info "部分域名需要代理（api=$API_NEED_PROXY raw=$RAW_NEED_PROXY download=$DOWNLOAD_NEED_PROXY），首选代理：$PROXY_PREFIX"
   fi
 }
 
-# 给 URL 加上代理前缀（根据域名独立判断是否走代理）
-# 参数：$1 - 原始完整 URL
-# 返回：echo 输出处理后的 URL
-proxy_url() {
-  local url="$1"
-  case "$url" in
-    *"api.github.com"*)
-      [ "$API_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
-      ;;
-    *"raw.githubusercontent.com"*)
-      [ "$RAW_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
-      ;;
-    *"github.com"*)
-      [ "$DOWNLOAD_NEED_PROXY" -eq 1 ] && echo "${PROXY_PREFIX}${url}" || echo "$url"
-      ;;
-    *)
-      echo "$url"
-      ;;
-  esac
+# 从 GH_PROXIES 中选第一个能连通的代理，赋值给 PROXY_PREFIX
+# 参数：无
+# 返回：无。副作用：设置 PROXY_PREFIX；全部不可达时回退到列表第一项
+pick_first_proxy() {
+  for proxy in "${GH_PROXIES[@]}"; do
+    [ -z "$proxy" ] && continue
+    if check_url "${proxy}https://raw.githubusercontent.com/$REPO/main/scripts/local-server-linux-install.sh"; then
+      PROXY_PREFIX="$proxy"
+      return
+    fi
+  done
+  # 全部不可达，退回到列表第一个（仍会在实际下载时触发完整回退）
+  PROXY_PREFIX="${GH_PROXIES[0]}"
+  log_warn "所有代理探测均失败，下载阶段将逐一回退尝试"
 }
 
 # ===== 系统依赖安装 =====
@@ -245,10 +269,15 @@ get_local_version() {
 # 参数：无
 # 返回：echo 输出最新 tag（local-server-linux-YYYYMMDD-HHMM）
 get_remote_version() {
-  local api_url
-  api_url=$(proxy_url "$GITHUB_API")
-  dl -fsSL "$api_url" 2>/dev/null \
-    | jq -r '[.[] | select(.tag_name | startswith("local-server-linux-"))][0].tag_name // empty'
+  local tmp
+  tmp=$(mktemp)
+  # 按代理优先级列表回退；全部失败则报错
+  if ! download_with_fallback "$GITHUB_API" "$tmp"; then
+    rm -f "$tmp"
+    log_error "所有代理均下载失败：$GITHUB_API"
+  fi
+  jq -r '[.[] | select(.tag_name | startswith("local-server-linux-"))][0].tag_name // empty' "$tmp"
+  rm -f "$tmp"
 }
 
 # ===== 下载安装 =====
@@ -262,13 +291,11 @@ _CLEANUP_TMP=""
 download_and_install() {
   local tag="$1"
   local arch="$2"
-  local download_base
-  download_base=$(proxy_url "https://github.com/$REPO/releases/download/$tag")
 
   _CLEANUP_TMP=$(mktemp -d)
   trap 'rm -rf "$_CLEANUP_TMP"' EXIT
 
-  # 下载二进制（代理失败时回退直连）
+  # 按优先级尝试各代理下载，全部失败则报错
   local dl_files=(
     "codeg-server-linux-$arch:codeg-server"
     "codeg-mcp-linux-$arch:codeg-mcp"
@@ -280,13 +307,9 @@ download_and_install() {
     local dl_name="${entry##*:}"
     log_info "下载 $dl_file ..."
 
-    # 先尝试代理 URL，失败则回退直连
-    if ! dl -fsSL "$download_base/$dl_file" -o "$_CLEANUP_TMP/$dl_name" 2>/dev/null; then
-      if [ "$DOWNLOAD_NEED_PROXY" -eq 1 ]; then
-        local direct_url="https://github.com/$REPO/releases/download/$tag/$dl_file"
-        log_info "代理失败，尝试直连 ..."
-        dl -fsSL "$direct_url" -o "$_CLEANUP_TMP/$dl_name"
-      fi
+    # 按优先级尝试各代理，全部失败则报错
+    if ! download_with_fallback "https://github.com/$REPO/releases/download/$tag/$dl_file" "$_CLEANUP_TMP/$dl_name"; then
+      log_error "所有代理均下载失败：$dl_file"
     fi
   done
 
@@ -397,13 +420,14 @@ EOF
 install_scripts() {
   log_info "安装管理脚本 ..."
 
-  local raw_base
-  raw_base=$(proxy_url "$RAW_BASE")
-
-  dl -fsSL "$raw_base/local-server-linux-ctl.sh" -o "$INSTALL_DIR/codeg"
+  if ! download_with_fallback "$RAW_BASE/local-server-linux-ctl.sh" "$INSTALL_DIR/codeg"; then
+    log_error "所有代理均下载失败：$RAW_BASE/local-server-linux-ctl.sh"
+  fi
   chmod +x "$INSTALL_DIR/codeg"
 
-  dl -fsSL "$raw_base/local-server-linux-init-tools.sh" -o "$INSTALL_DIR/codeg-init-tools"
+  if ! download_with_fallback "$RAW_BASE/local-server-linux-init-tools.sh" "$INSTALL_DIR/codeg-init-tools"; then
+    log_error "所有代理均下载失败：$RAW_BASE/local-server-linux-init-tools.sh"
+  fi
   chmod +x "$INSTALL_DIR/codeg-init-tools"
 
   log_info "管理脚本安装完成"

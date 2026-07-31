@@ -14,13 +14,40 @@ SERVICE_NAME="codeg-server"
 ENV_FILE="/opt/codeg/.env"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/$REPO/main/scripts/local-server-linux-install.sh"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
-# GitHub 代理前缀（国内服务器自动使用）
-GH_PROXY="https://cdn.gh-proxy.org/"
+# GitHub 代理列表（按优先级排列，全部失败则报错）
+GH_PROXIES=(
+  "https://ghproxy.net/"
+  "https://github.dpik.top/"
+  "https://gh-proxy.com/"
+  "https://cdn.gh-proxy.com/"
+)
 # 管理脚本列表
 SCRIPTS=(
   "local-server-linux-ctl.sh:codeg"
   "local-server-linux-init-tools.sh:codeg-init-tools"
 )
+
+# 打印信息日志
+# 参数：$1 - 日志内容
+# 返回：无
+log_info() {
+  echo -e "\033[32m[INFO]\033[0m $1"
+}
+
+# 打印警告日志
+# 参数：$1 - 警告内容
+# 返回：无
+log_warn() {
+  echo -e "\033[33m[WARN]\033[0m $1"
+}
+
+# 打印错误日志并退出
+# 参数：$1 - 错误内容
+# 返回：无
+log_error() {
+  echo -e "\033[31m[ERROR]\033[0m $1" >&2
+  exit 1
+}
 
 # 打印菜单标题
 # 参数：无
@@ -128,18 +155,36 @@ do_disable() {
   echo "已关闭开机自启"
 }
 
-# 更新 codeg-server 到最新版（自动检测代理，重新执行安装脚本）
+# 下载单个文件，按优先级尝试各代理，全部失败则报错
+# 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径（可选，省略则输出到 stdout）
+# 返回：成功返回 0，全部失败返回非 0
+download_with_fallback() {
+  local url="$1"
+  local out_args=()
+  [ -n "${2:-}" ] && out_args=("-o" "$2")
+  for proxy in "${GH_PROXIES[@]}"; do
+    if curl --http1.1 -fsSL --connect-timeout 10 --max-time 120 "${proxy}${url}" "${out_args[@]}" 2>/dev/null; then
+      [ -n "${2:-}" ] && log_info "下载成功：${url#"https://"}（via ${proxy}）"
+      return 0
+    fi
+    log_warn "下载失败，尝试下一个源 ..."
+  done
+  return 1
+}
+
+# 更新 codeg-server 到最新版（按优先级尝试代理，重新执行安装脚本）
 # 参数：无
 # 返回：无
 do_update() {
   echo "正在更新 codeg-server ..."
-  local url="$INSTALL_SCRIPT_URL"
-  # 检测 GitHub 连通性，失败则使用代理（强制 HTTP/1.1 避免代理协议错误）
-  if ! curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$INSTALL_SCRIPT_URL" >/dev/null 2>&1; then
-    url="${GH_PROXY}${INSTALL_SCRIPT_URL}"
-    echo "GitHub 无法直连，使用代理"
+  local tmp
+  tmp=$(mktemp)
+  if ! download_with_fallback "$INSTALL_SCRIPT_URL" "$tmp"; then
+    rm -f "$tmp"
+    log_error "所有代理均下载失败：$INSTALL_SCRIPT_URL"
   fi
-  curl --http1.1 -fsSL "$url" | bash
+  bash "$tmp"
+  rm -f "$tmp"
 }
 
 # 仅更新管理脚本（codeg 和 codeg-init-tools），不更新二进制
@@ -147,18 +192,13 @@ do_update() {
 # 返回：无
 do_update_scripts() {
   echo "正在更新管理脚本 ..."
-  # 检测代理
-  local proxy=""
-  if ! curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$RAW_BASE/local-server-linux-ctl.sh" >/dev/null 2>&1; then
-    proxy="$GH_PROXY"
-    echo "GitHub 无法直连，使用代理"
-  fi
-
   for entry in "${SCRIPTS[@]}"; do
     local remote_file="${entry%%:*}"
     local local_name="${entry##*:}"
     echo "  下载 $remote_file -> /usr/local/bin/$local_name"
-    curl --http1.1 -fsSL "${proxy}${RAW_BASE}/${remote_file}" -o "/usr/local/bin/$local_name"
+    if ! download_with_fallback "$RAW_BASE/$remote_file" "/usr/local/bin/$local_name"; then
+      log_error "所有代理均下载失败：$RAW_BASE/$remote_file"
+    fi
     chmod +x "/usr/local/bin/$local_name"
   done
   echo "管理脚本更新完成"

@@ -155,12 +155,12 @@ ask_tool_selection() {
 
 # ===== 安装函数 =====
 
-# GitHub 代理列表（空字符串表示直连，按优先级排列）
+# GitHub 代理列表（按优先级排列，全部失败则报错）
 GITHUB_PROXIES=(
-  "https://cdn.gh-proxy.org/"
+  "https://ghproxy.net/"
+  "https://github.dpik.top/"
   "https://gh-proxy.com/"
-  "https://mirror.ghproxy.com/"
-  ""
+  "https://cdn.gh-proxy.com/"
 )
 
 # 尝试从 GitHub 下载文件，自动尝试多个代理直到成功
