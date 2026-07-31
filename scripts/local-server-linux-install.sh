@@ -7,9 +7,9 @@ set -euo pipefail
 # 用法：curl -fsSL https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 #       或：bash local-server-linux-install.sh [--force]
 # 国内服务器如果无法下载本脚本，可使用代理：
-#       curl -fsSL https://cdn.gh-proxy.org/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
+#       curl -fsSL https://www.gitwarp.com/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 # 也可通过环境变量 CODEG_PROXY 指定代理前缀：
-#       CODEG_PROXY=https://cdn.gh-proxy.org/ bash local-server-linux-install.sh
+#       CODEG_PROXY=https://www.gitwarp.com/ bash local-server-linux-install.sh
 # ============================================================
 
 # ===== 常量 =====
@@ -17,7 +17,7 @@ REPO="likesrt/codeg"
 GITHUB_API="https://api.github.com/repos/$REPO/releases"
 GITHUB_BASE="https://github.com/$REPO"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
-DEFAULT_PROXY="https://cdn.gh-proxy.org/"
+DEFAULT_PROXY="https://www.gitwarp.com/"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/opt/codeg/data"
 WEB_DIR="/opt/codeg/web"
