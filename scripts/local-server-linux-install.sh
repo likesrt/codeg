@@ -108,12 +108,19 @@ dl() {
 download_with_fallback() {
   local url="$1"
   local output="$2"
+
+  # 直连可用时优先使用原始 GitHub URL
+  if [ "$DOWNLOAD_NEED_PROXY" -eq 0 ] && dl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$output" 2>/dev/null; then
+    log_info "下载成功：${url#"https://"}（直连）" >&2
+    return 0
+  fi
+
   for proxy in "${GH_PROXIES[@]}"; do
     if dl -fsSL --connect-timeout 10 --max-time 300 "${proxy}${url}" -o "$output" 2>/dev/null; then
-      log_info "下载成功：${url#"https://"}（via ${proxy}）"
+      log_info "下载成功：${url#"https://"}（via ${proxy}）" >&2
       return 0
     fi
-    log_warn "下载失败，尝试下一个源 ..."
+    log_warn "下载失败，尝试下一个源 ..." >&2
   done
   return 1
 }

@@ -10,7 +10,6 @@
 #   5. pnpm test + cargo check      质量检查
 #   6. git push origin main         推送到远程
 #   7. 检测 package.json 大版本号变更，有变更则触发 CI
-#   8. 发送 webhook 通知
 #
 # 用法：./scripts/sync-release.sh
 #===========================================================================
@@ -21,7 +20,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ---- 配置 ----
-NOTIFY_URL="https://ts-shequn-webhook.broue.cn/api/webhooks/trigger/H0uIPKuD-SMsXQGWDq1-zg?access_token=25EKkIW1JlyJRz4u4XeRBgFaZWRRNjD6Dbsk0gPcH_8"
 UPSTREAM_REMOTE="xintaofei"
 UPSTREAM_BRANCH="main"
 
@@ -34,27 +32,6 @@ NC='\033[0m'
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
-
-# ---- 通知函数 ----
-send_notify() {
-    local source="$1"
-    local content="$2"
-    local payload
-    payload=$(printf '{"data":{"source":"%s","content":"%s"}}' "$source" "$content")
-
-    local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST "$NOTIFY_URL" \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        --max-time 15 2>/dev/null || echo "000")
-
-    if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
-        log_info "通知已发送 (HTTP $http_code)"
-    else
-        log_warn "通知发送异常 (HTTP $http_code)"
-    fi
-}
 
 # ---- 版本比较 ----
 # 比较两个 semver 字符串的大版本号（MAJOR.MINOR）
@@ -131,17 +108,9 @@ if is_major_version_changed "$OLD_VERSION" "$NEW_VERSION"; then
     gh workflow run build-windows-x64.yml --ref main
     log_info "  -> build-windows-x64.yml 已触发"
 
-    send_notify \
-        "Codeg通知：" \
-        "v${NEW_VERSION} 已发布。\nDocker Push 和 Windows x64 Desktop Build 已触发。"
-
     log_info "全部完成！版本 $OLD_VERSION -> $NEW_VERSION"
 else
     log_info "大版本号未变更，跳过 CI 触发。"
-
-    send_notify \
-        "Codeg通知：" \
-        "v${NEW_VERSION} 上游代码已同步，无大版本号变更。"
 
     log_info "全部完成！"
 fi
