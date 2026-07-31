@@ -4,6 +4,8 @@ import {
   decidePastedContent,
   textToHydratedInlineContent,
   textToInlineContent,
+  textToSeededDoc,
+  textToSeededInlineContent,
 } from "./plain-text-content"
 
 describe("decidePastedContent", () => {
@@ -106,6 +108,85 @@ describe("decidePastedContent", () => {
       { type: "hardBreak" },
       { type: "text", text: "two" },
     ])
+  })
+})
+
+describe("textToSeededInlineContent", () => {
+  it("hydrates the references a quick message carries into badges", () => {
+    // A quick message is stored in the same wire format a sent message uses, so
+    // filling one into the composer must show badges, not `[label](uri)` text.
+    expect(
+      textToSeededInlineContent(
+        "/review [app.ts](file:///repo/app.ts) with [@Codex](codeg://agent/codex)"
+      )
+    ).toEqual([
+      {
+        type: "reference",
+        attrs: expect.objectContaining({ refType: "skill", id: "review" }),
+      },
+      { type: "text", text: " " },
+      {
+        type: "reference",
+        attrs: expect.objectContaining({
+          refType: "file",
+          label: "app.ts",
+          uri: "file:///repo/app.ts",
+        }),
+      },
+      { type: "text", text: " with " },
+      {
+        type: "reference",
+        attrs: expect.objectContaining({ refType: "agent", label: "Codex" }),
+      },
+    ])
+  })
+
+  it("hydrates a session link", () => {
+    expect(
+      textToSeededInlineContent("续上次 [排查登录](codeg://session/42)")
+    ).toEqual([
+      { type: "text", text: "续上次 " },
+      {
+        type: "reference",
+        attrs: expect.objectContaining({
+          refType: "session",
+          id: "42",
+          label: "排查登录",
+        }),
+      },
+    ])
+  })
+
+  it("falls back to literal text (with hard breaks) when nothing hydrates", () => {
+    expect(textToSeededInlineContent("plain\nprose")).toEqual(
+      textToInlineContent("plain\nprose")
+    )
+    expect(textToSeededInlineContent("")).toEqual([])
+  })
+
+  it("keeps an embedded-attachment link literal (it would be dropped on send)", () => {
+    expect(
+      textToSeededInlineContent("see [report.pdf](codeg://embedded/abc-123)")
+    ).toEqual(textToInlineContent("see [report.pdf](codeg://embedded/abc-123)"))
+  })
+})
+
+describe("textToSeededDoc", () => {
+  it("wraps the seeded inline content in a single paragraph", () => {
+    const text = "看 [app.ts](file:///repo/app.ts)"
+    expect(textToSeededDoc(text)).toEqual({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: textToSeededInlineContent(text) },
+      ],
+    })
+  })
+
+  it("keeps an empty paragraph for empty text", () => {
+    expect(textToSeededDoc("")).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph", content: [] }],
+    })
   })
 })
 

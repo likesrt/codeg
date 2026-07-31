@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use sacp::schema::{
     TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 
 type TerminalMap = HashMap<String, Arc<TerminalInstance>>;
@@ -21,6 +21,27 @@ const DEFAULT_OUTPUT_BYTE_LIMIT: u64 = 1_000_000;
 /// inherit the pipe handle and keep it open long after the direct child
 /// exits, turning `wait_for_exit` into a silent hang.
 const READER_DRAIN_GRACE: Duration = Duration::from_millis(200);
+/// How long a killed command gets to honor `SIGTERM` before the owner task
+/// escalates to `SIGKILL`. `kill_tree` only sends `SIGTERM` by default, which a
+/// process that traps it can ignore forever.
+const KILL_ESCALATE_GRACE: Duration = Duration::from_secs(2);
+/// How long `kill_command` waits to be able to *report* that the process is
+/// gone. Bounding the report keeps session teardown and the cancel path
+/// responsive; it does NOT abandon the process — the owner task holds the
+/// `Child` and keeps reaping past this deadline.
+const KILL_REPORT_BUDGET: Duration = Duration::from_secs(5);
+/// Backoff cap between retries when `Child::wait` itself fails.
+const WAIT_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(1);
+/// How long the owner task retries a failing `Child::wait` before publishing a
+/// terminal state anyway. Without this, a persistently failing wait would pin
+/// `TerminalCompletion::Running` forever and any agent that polls
+/// `terminal/output` (rather than calling `terminal/wait_for_exit`) would hang —
+/// the very bug this module was rewritten to remove. The owner task keeps
+/// owning and reaping the child afterwards; only the *reporting* is unblocked.
+const WAIT_ERROR_BUDGET: Duration = Duration::from_secs(30);
+/// Retry cadence after `WAIT_ERROR_BUDGET` is spent and completion has already
+/// been published. Purely janitorial at that point, so it can be slow.
+const WAIT_ERROR_IDLE_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum TerminalRuntimeError {
@@ -45,22 +66,54 @@ struct TerminalSnapshot {
     exit_status: Option<TerminalExitStatus>,
 }
 
+/// What the owner task has published about the child process. Two states only:
+/// either it is still running, or it is **known** to be gone.
+///
+/// There is deliberately no "failed" state. An unknown-but-maybe-finished state
+/// would be indistinguishable from `Running` to `terminal/output` consumers
+/// (`exit_status: None` reads as "still going"), which is exactly how an agent
+/// turn hangs forever.
+#[derive(Debug, Clone)]
+enum TerminalCompletion {
+    Running,
+    /// The process is gone. Carries the real status when `Child::wait`
+    /// reported one; carries an empty [`TerminalExitStatus`] (no code, no
+    /// signal — ACP's "finished, details unknown") when the status is
+    /// unknowable, e.g. something else reaped the child out from under us.
+    Exited(TerminalExitStatus),
+}
+
 struct TerminalInstance {
     session_id: String,
     output_limit: Option<usize>,
-    child: Mutex<Option<tokio::process::Child>>,
     snapshot: Mutex<TerminalSnapshot>,
     reader_handles: Mutex<Vec<JoinHandle<()>>>,
+    /// Asks the owner task to kill the process tree.
+    ///
+    /// Callers signal rather than holding a pid of their own, so every kill
+    /// runs while the owner still holds the **un-reaped** `Child`. That is what
+    /// makes the pid safe to signal: an un-reaped child keeps its pid reserved,
+    /// so it cannot have been recycled onto some unrelated process.
+    kill: Notify,
+    /// Terminal state, published by the owner task.
+    ///
+    /// Always written with `send_replace`, never `send`: a `watch` **discards**
+    /// a value sent while no receiver exists (see the `Sender::new` doc in
+    /// tokio's `sync/watch.rs`, which asserts `send(..).is_err()`), so a
+    /// short-lived command that exits before anyone subscribes would strand
+    /// every later waiter.
+    completion: watch::Sender<TerminalCompletion>,
 }
 
 impl TerminalInstance {
-    fn new(session_id: String, output_limit: Option<u64>, child: tokio::process::Child) -> Self {
+    fn new(session_id: String, output_limit: Option<u64>) -> Self {
         Self {
             session_id,
             output_limit: output_limit.and_then(|v| usize::try_from(v).ok()),
-            child: Mutex::new(Some(child)),
             snapshot: Mutex::new(TerminalSnapshot::default()),
             reader_handles: Mutex::new(Vec::new()),
+            kill: Notify::new(),
+            completion: watch::Sender::new(TerminalCompletion::Running),
         }
     }
 
@@ -94,122 +147,247 @@ impl TerminalInstance {
         }
     }
 
-    async fn refresh_exit_status(&self) -> Result<(), TerminalRuntimeError> {
-        {
-            let snapshot = self.snapshot.lock().await;
-            if snapshot.exit_status.is_some() {
-                return Ok(());
-            }
-        }
-
-        let maybe_status = {
-            let mut child_guard = self.child.lock().await;
-            if let Some(child) = child_guard.as_mut() {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        *child_guard = None;
-                        Some(status)
-                    }
-                    Ok(None) => None,
-                    Err(err) => {
-                        return Err(TerminalRuntimeError::Internal(format!(
-                            "failed to query terminal exit status: {err}"
-                        )))
-                    }
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(status) = maybe_status {
-            // Drain readers BEFORE exposing exit_status. Otherwise a caller
-            // polling `terminal/output` can see `exit_status = Some(...)` while
-            // a grandchild process (e.g. Node spawned from a `.cmd` shim on
-            // Windows) still holds the stdout/stderr pipe and is flushing
-            // tail output. If the agent treats exit_status as "terminal done",
-            // the trailing bytes never reach the UI. Draining here upholds the
-            // invariant: whenever an external observer sees exit_status, the
-            // snapshot already contains (or has explicitly given up on) all
-            // reader output.
-            self.drain_readers().await;
-            let mut snapshot = self.snapshot.lock().await;
-            snapshot.exit_status = Some(map_exit_status(status));
-        }
-
-        Ok(())
-    }
-
+    /// Block until the owner task publishes a terminal state.
+    ///
+    /// Holds no lock for the duration, so `terminal/output`, `terminal/kill`
+    /// and the session cancel path stay responsive while a never-exiting
+    /// command (a dev server, `tail -f`, a watcher) is still running.
     async fn wait_for_exit(&self) -> Result<TerminalExitStatus, TerminalRuntimeError> {
-        self.refresh_exit_status().await?;
-        let cached_exit = self.snapshot.lock().await.exit_status.clone();
-        if let Some(exit_status) = cached_exit {
-            self.drain_readers().await;
-            return Ok(exit_status);
-        }
-
-        let exit_status = {
-            let mut child_guard = self.child.lock().await;
-            let Some(child) = child_guard.as_mut() else {
+        let mut completion = self.completion.subscribe();
+        loop {
+            let current = completion.borrow_and_update().clone();
+            if let TerminalCompletion::Exited(exit_status) = current {
+                return Ok(exit_status);
+            }
+            if completion.changed().await.is_err() {
                 return Err(TerminalRuntimeError::Internal(
-                    "terminal process missing while waiting for exit".to_string(),
+                    "terminal owner task ended without publishing an exit status".to_string(),
                 ));
-            };
-            let status = child.wait().await.map_err(|err| {
-                TerminalRuntimeError::Internal(format!(
-                    "failed waiting for terminal process to exit: {err}"
-                ))
-            })?;
-            *child_guard = None;
-            map_exit_status(status)
-        };
-
-        self.drain_readers().await;
-
-        let mut snapshot = self.snapshot.lock().await;
-        snapshot.exit_status = Some(exit_status.clone());
-        Ok(exit_status)
+            }
+        }
     }
 
     async fn kill_command(&self) -> Result<(), TerminalRuntimeError> {
-        self.refresh_exit_status().await?;
-        let already_exited = self.snapshot.lock().await.exit_status.is_some();
-        if already_exited {
-            self.drain_readers().await;
+        if matches!(
+            *self.completion.borrow(),
+            TerminalCompletion::Exited(_)
+        ) {
             return Ok(());
         }
 
-        let exit_status = {
-            let mut child_guard = self.child.lock().await;
-            let Some(child) = child_guard.as_mut() else {
-                return Ok(());
-            };
+        // The owner task performs the kill; see `TerminalInstance::kill`.
+        self.kill.notify_one();
 
-            if let Some(pid) = child.id() {
-                if let Err(err) = kill_tree::tokio::kill_tree(pid).await {
-                    tracing::error!("[ACP] kill_tree failed for pid {pid}: {err}");
-                }
-            }
-
-            let status = child.wait().await.map_err(|err| {
-                TerminalRuntimeError::Internal(format!(
-                    "failed to wait for killed terminal process: {err}"
-                ))
-            })?;
-            *child_guard = None;
-            map_exit_status(status)
-        };
-
-        self.drain_readers().await;
-
-        let mut snapshot = self.snapshot.lock().await;
-        snapshot.exit_status = Some(exit_status);
+        // Bound only how long we wait to *report*. The owner task keeps the
+        // `Child` and keeps escalating and reaping regardless, so returning
+        // early here never abandons the process — even once `release_terminal`
+        // has already dropped this terminal from the map.
+        if tokio::time::timeout(KILL_REPORT_BUDGET, self.wait_for_exit())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "[ACP] terminal for session {} did not reap within {:?} of being killed; \
+                 the owner task keeps trying",
+                self.session_id,
+                KILL_REPORT_BUDGET
+            );
+        }
         Ok(())
     }
 
     async fn snapshot(&self) -> TerminalSnapshot {
         self.snapshot.lock().await.clone()
     }
+}
+
+/// Signal a whole process tree, returning the pids the pass actually signalled.
+///
+/// `kill_tree` snapshots the tree, signals it children-first, and returns
+/// immediately without waiting for anything to die. A descendant that ignores
+/// the signal therefore outlives its parent and gets reparented away from
+/// `pid`, at which point no snapshot rooted at `pid` can find it again. The
+/// returned pids are the only remaining handle on such a survivor.
+async fn signal_tree(pid: Option<u32>, signal: &str) -> Vec<u32> {
+    let Some(pid) = pid else {
+        return Vec::new();
+    };
+    let config = kill_tree::Config {
+        signal: signal.to_string(),
+        include_target: true,
+    };
+    match kill_tree::tokio::kill_tree_with_config(pid, &config).await {
+        Ok(outputs) => outputs
+            .into_iter()
+            .filter_map(|output| match output {
+                kill_tree::Output::Killed { process_id, .. } => Some(process_id),
+                kill_tree::Output::MaybeAlreadyTerminated { .. } => None,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::error!("[ACP] kill_tree({signal}) failed for pid {pid}: {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// `SIGKILL` any recorded descendant that outlived the graceful pass.
+///
+/// Best-effort by construction: survivors are identified by pid alone, so a pid
+/// recycled inside the escalation window could in principle be signalled by
+/// mistake. That is the same trade-off `pkill -P`-style cleanup makes, and it
+/// is the price of reaching a descendant that has been reparented away. `root`
+/// is skipped — it is the direct child, whose pid is already protected by the
+/// un-reaped `Child` handle the owner task holds.
+async fn sweep_survivors(signalled: &HashSet<u32>, root: Option<u32>) {
+    for &pid in signalled {
+        if Some(pid) == root {
+            continue;
+        }
+        signal_tree(Some(pid), "SIGKILL").await;
+    }
+}
+
+/// True when `Child::wait` failed because the child was already reaped by
+/// something else, which means the process **is** gone but its status is lost
+/// forever — and, critically, that its pid is now free for reuse and must not
+/// be signalled.
+///
+/// Unix-only on purpose: on Windows `raw_os_error` carries Win32 codes, a
+/// different namespace from the CRT errno `libc::ECHILD` belongs to. Mirrors
+/// the `cfg`-guarded errno check in `crate::process::is_exec_busy`.
+#[cfg(unix)]
+fn is_already_reaped(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ECHILD)
+}
+
+#[cfg(not(unix))]
+fn is_already_reaped(_err: &std::io::Error) -> bool {
+    false
+}
+
+/// Sole owner of a spawned terminal's `Child` for the process's whole life.
+///
+/// Everything else in this module reads a snapshot or signals this task, which
+/// is what keeps `terminal/output`, `terminal/kill` and session teardown off
+/// the unbounded `Child::wait`. The task ends only once the process is **known**
+/// to be gone, so it never drops a possibly-live child (tokio does not kill on
+/// drop, and codeg never sets `kill_on_drop`).
+async fn own_terminal_process(terminal: Arc<TerminalInstance>, mut child: tokio::process::Child) {
+    let pid = child.id();
+    // Cumulative across every pass, never overwritten: a later `SIGKILL` pass
+    // re-snapshots the (by then smaller) tree, so only the union still holds a
+    // descendant that was recorded earlier and has since been reparented.
+    let mut signalled: HashSet<u32> = HashSet::new();
+    let mut escalate_at: Option<tokio::time::Instant> = None;
+    let mut kill_requested = false;
+    let mut escalated = false;
+    // State for the `Child::wait`-keeps-failing path.
+    let mut backoff = Duration::from_millis(10);
+    let mut wait_error_deadline: Option<tokio::time::Instant> = None;
+    let mut published_without_reaping = false;
+
+    let exit_status = loop {
+        let escalate = async {
+            match escalate_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+
+        tokio::select! {
+            reaped = child.wait() => match reaped {
+                Ok(status) => break map_exit_status(status),
+                Err(err) if is_already_reaped(&err) => {
+                    // Gone, but the status died with whoever reaped it. Do NOT
+                    // signal `pid` from here on: it is reusable now.
+                    tracing::error!(
+                        "[ACP] terminal child was reaped elsewhere; exit status unavailable: {err}"
+                    );
+                    terminal
+                        .append_output("\n[terminal exit status unavailable: child reaped elsewhere]\n")
+                        .await;
+                    break TerminalExitStatus::new();
+                }
+                Err(err) => {
+                    // Not "already reaped", so nothing has collected this child
+                    // and its pid is still ours. It may well still be running:
+                    // kill it hard and keep trying to reap it.
+                    tracing::error!("[ACP] failed waiting for terminal process to exit: {err}");
+                    signalled.extend(signal_tree(pid, "SIGKILL").await);
+
+                    let deadline = *wait_error_deadline
+                        .get_or_insert_with(|| tokio::time::Instant::now() + WAIT_ERROR_BUDGET);
+                    if !published_without_reaping && tokio::time::Instant::now() >= deadline {
+                        // Budget spent. Unblock every reader of the completion
+                        // state so no agent turn is left hanging, but keep
+                        // owning the child so cleanup still has a real handle.
+                        published_without_reaping = true;
+                        terminal
+                            .append_output(
+                                "\n[terminal exit status unavailable: could not reap the process]\n",
+                            )
+                            .await;
+                        terminal.drain_readers().await;
+                        let unknown = TerminalExitStatus::new();
+                        terminal.snapshot.lock().await.exit_status = Some(unknown.clone());
+                        terminal
+                            .completion
+                            .send_replace(TerminalCompletion::Exited(unknown));
+                    }
+
+                    let pause = if published_without_reaping {
+                        WAIT_ERROR_IDLE_RETRY
+                    } else {
+                        backoff = (backoff * 2).min(WAIT_RETRY_MAX_BACKOFF);
+                        backoff
+                    };
+                    tokio::time::sleep(pause).await;
+                }
+            },
+            () = escalate => {
+                escalate_at = None;
+                escalated = true;
+                signalled.extend(signal_tree(pid, "SIGKILL").await);
+            }
+            () = terminal.kill.notified() => {
+                let signal = if escalated { "SIGKILL" } else { "SIGTERM" };
+                signalled.extend(signal_tree(pid, signal).await);
+                // Only the first request arms the escalation deadline. Clearing
+                // `escalate_at` when the timer fires means a plain
+                // `get_or_insert` would let a later request arm a fresh one and
+                // push `SIGKILL` back indefinitely.
+                if !kill_requested {
+                    kill_requested = true;
+                    escalate_at = Some(tokio::time::Instant::now() + KILL_ESCALATE_GRACE);
+                }
+            }
+        }
+    };
+
+    if kill_requested {
+        sweep_survivors(&signalled, pid).await;
+    }
+
+    if published_without_reaping {
+        // Completion was already published on the budget-exhausted path; the
+        // real status arrived late and nobody is waiting for it any more.
+        return;
+    }
+
+    // Drain readers BEFORE publishing. Otherwise a caller polling
+    // `terminal/output` can see `exit_status = Some(...)` while a grandchild
+    // process (e.g. Node spawned from a `.cmd` shim on Windows) still holds the
+    // stdout/stderr pipe and is flushing tail output. If the agent treats
+    // exit_status as "terminal done", the trailing bytes never reach the UI.
+    // Draining first upholds the invariant: whenever an external observer sees
+    // exit_status, the snapshot already contains (or has explicitly given up
+    // on) all reader output.
+    terminal.drain_readers().await;
+    terminal.snapshot.lock().await.exit_status = Some(exit_status.clone());
+    terminal
+        .completion
+        .send_replace(TerminalCompletion::Exited(exit_status));
 }
 
 pub struct TerminalRuntime {
@@ -388,7 +566,6 @@ impl TerminalRuntime {
         let terminal = Arc::new(TerminalInstance::new(
             request.session_id.to_string(),
             Some(output_byte_limit),
-            child,
         ));
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
@@ -410,6 +587,12 @@ impl TerminalRuntime {
             terminal.reader_handles.lock().await.extend(handles);
         }
 
+        // Hand the child to its owner task only AFTER the reader handles are
+        // registered: the owner drains them before publishing the exit status,
+        // and a command that exits instantly would otherwise drain an empty
+        // list and leave the readers running past the published completion.
+        tokio::spawn(own_terminal_process(terminal.clone(), child));
+
         self.terminals
             .lock()
             .await
@@ -429,7 +612,6 @@ impl TerminalRuntime {
             )
             .await?;
 
-        terminal.refresh_exit_status().await?;
         let snapshot = terminal.snapshot().await;
 
         Ok(
@@ -445,7 +627,6 @@ impl TerminalRuntime {
         from_offset: Option<u64>,
     ) -> Result<TerminalOutputDelta, TerminalRuntimeError> {
         let terminal = self.find_terminal(terminal_id, session_id).await?;
-        terminal.refresh_exit_status().await?;
         let snapshot = terminal.snapshot().await;
 
         let output_len = u64::try_from(snapshot.output.len()).unwrap_or(u64::MAX);
@@ -539,11 +720,15 @@ impl TerminalRuntime {
             removed
         };
 
-        for terminal in removed {
+        // Kill concurrently. Sequentially, a session holding N terminals would
+        // cost up to N * KILL_REPORT_BUDGET to tear down, and this runs on the
+        // cancel path where the user is waiting.
+        futures::future::join_all(removed.into_iter().map(|terminal| async move {
             if let Err(err) = terminal.kill_command().await {
                 tracing::error!("[ACP] Failed to release terminal during cleanup: {err:?}");
             }
-        }
+        }))
+        .await;
     }
 
     async fn find_terminal(
@@ -686,7 +871,7 @@ fn decode_available_utf8(pending: &mut Vec<u8>) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use sacp::schema::{EnvVariable, SessionId, WaitForTerminalExitRequest};
+    use sacp::schema::{EnvVariable, SessionId, TerminalId, WaitForTerminalExitRequest};
 
     /// Regression: when an ACP agent calls `terminal/create` (e.g. to run
     /// `git push`), the runtime's base env — populated by the connection
@@ -1006,6 +1191,514 @@ mod tests {
             output.contains("ran-relative"),
             "relative space-containing exe was not run in the effective cwd; got:\n{output}"
         );
+    }
+
+    /// Spawn `command` and return `(runtime, session_id, terminal_id)` without
+    /// waiting for it to finish. For the long-running cases below, where the
+    /// point is what happens *while* the command is still alive.
+    async fn start(command: &str, session: &str) -> (Arc<TerminalRuntime>, SessionId, TerminalId) {
+        let runtime = Arc::new(TerminalRuntime::with_base_env(BTreeMap::new()));
+        let session_id = SessionId::new(session.to_string());
+        let request = CreateTerminalRequest::new(session_id.clone(), command.to_string());
+        let response = runtime
+            .create_terminal(request)
+            .await
+            .expect("create terminal");
+        let terminal_id = response.terminal_id.clone();
+        (runtime, session_id, terminal_id)
+    }
+
+    /// True while `pid` names a live process.
+    fn pid_is_alive(pid: u32) -> bool {
+        // Signal 0 performs the permission/existence check without delivering.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// Current parent pid of `pid`, or `None` if it is gone / unreadable.
+    fn parent_pid_of(pid: u32) -> Option<u32> {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+
+    /// Poll until `pid` is gone, or the deadline passes.
+    async fn wait_until_pid_gone(pid: u32, budget: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        !pid_is_alive(pid)
+    }
+
+    /// Regression: a waiter that subscribes AFTER a fast command already exited
+    /// must still get its exit status.
+    ///
+    /// This is the `watch::Sender::send` trap — `send` DISCARDS the value when
+    /// no receiver exists yet, so publishing completion with it would strand
+    /// every later waiter forever. Observing the exit through `terminal/output`
+    /// first is what guarantees the publication already happened; only then is
+    /// `wait_for_terminal_exit` called.
+    #[tokio::test]
+    async fn wait_for_exit_resolves_when_subscribing_after_a_fast_exit() {
+        let (runtime, session_id, terminal_id) = start("true", "fast-exit").await;
+
+        // Wait for the owner task to publish, observed via the output path.
+        let mut published = false;
+        for _ in 0..200 {
+            let out = runtime
+                .terminal_output(TerminalOutputRequest::new(
+                    session_id.clone(),
+                    terminal_id.clone(),
+                ))
+                .await
+                .expect("get output");
+            if out.exit_status.is_some() {
+                published = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(published, "owner task never published an exit status");
+
+        // Subscribing only now must not hang.
+        let exit = tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("wait_for_exit hung after a fast exit — completion was lost")
+        .expect("wait for exit");
+        assert_eq!(exit.exit_status.exit_code, Some(0));
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// The bug this module was rewritten for: an outstanding `wait_for_exit` on
+    /// a command that never exits must not block `terminal/output` or
+    /// `terminal/kill`. Previously `wait_for_exit` held the child mutex for the
+    /// whole wait, so both of those (and the session cancel path) deadlocked.
+    #[tokio::test]
+    async fn output_and_kill_work_while_wait_for_exit_is_outstanding() {
+        let (runtime, session_id, terminal_id) = start("sleep 30", "wait-outstanding").await;
+
+        let waiter = tokio::spawn({
+            let runtime = runtime.clone();
+            let session_id = session_id.clone();
+            let terminal_id = terminal_id.clone();
+            async move {
+                runtime
+                    .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                        session_id, terminal_id,
+                    ))
+                    .await
+            }
+        });
+        // Let the waiter actually park inside wait_for_exit.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.terminal_output(TerminalOutputRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("terminal_output blocked behind an outstanding wait_for_exit")
+        .expect("get output");
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            runtime.kill_terminal(KillTerminalRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("kill_terminal blocked behind an outstanding wait_for_exit")
+        .expect("kill terminal");
+
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the outstanding wait never resolved after the kill")
+            .expect("waiter task")
+            .expect("wait for exit");
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// Every concurrent waiter is released, not just the first one.
+    #[tokio::test]
+    async fn multiple_waiters_all_resolve() {
+        let (runtime, session_id, terminal_id) = start("sleep 30", "many-waiters").await;
+
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let runtime = runtime.clone();
+                let session_id = session_id.clone();
+                let terminal_id = terminal_id.clone();
+                tokio::spawn(async move {
+                    runtime
+                        .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                            session_id, terminal_id,
+                        ))
+                        .await
+                })
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        runtime
+            .kill_terminal(KillTerminalRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("kill terminal");
+
+        for waiter in waiters {
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .expect("a concurrent waiter was never released")
+                .expect("waiter task")
+                .expect("wait for exit");
+        }
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// `kill_tree` only sends `SIGTERM`, which a process that traps it ignores
+    /// forever. The owner task must escalate to `SIGKILL`.
+    #[tokio::test]
+    async fn kill_escalates_to_sigkill_for_a_sigterm_ignoring_process() {
+        let (runtime, session_id, terminal_id) = start(
+            "sh -c 'trap \"\" TERM; while :; do sleep 0.1; done'",
+            "sigterm-immune",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            runtime.kill_terminal(KillTerminalRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("kill_terminal never returned for a SIGTERM-immune process")
+        .expect("kill terminal");
+
+        let exit = tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("the SIGTERM-immune process was never reaped")
+        .expect("wait for exit");
+        assert!(
+            exit.exit_status.signal.is_some() || exit.exit_status.exit_code.is_some(),
+            "expected a terminal status after escalation, got {:?}",
+            exit.exit_status
+        );
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// A descendant that outlives a SIGTERM-obedient parent must still be
+    /// killed.
+    ///
+    /// Deliberately THREE levels deep: root traps TERM, the middle level dies
+    /// on TERM, the leaf traps TERM. When the middle level dies the leaf is
+    /// reparented, so no fresh snapshot rooted at the direct child can find it
+    /// again — only the cumulative record of everything the SIGTERM pass
+    /// signalled still reaches it. A two-level version of this test passes even
+    /// with a non-cumulative record, so it would not catch the regression.
+    #[tokio::test]
+    async fn kill_sweeps_a_descendant_that_outlives_a_sigterm_obedient_parent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("leaf.pid");
+        let leaf = dir.path().join("leaf.sh");
+        let middle = dir.path().join("middle.sh");
+        let root = dir.path().join("root.sh");
+
+        // Three files rather than one nested one-liner: the quoting of nested
+        // `sh -c "sh -c '...'"` is unreadable and easy to get subtly wrong.
+        //
+        // Note the ORDER in root.sh. `trap '' TERM` sets SIG_IGN, and SIG_IGN is
+        // inherited across both fork AND exec — and a shell that starts with a
+        // signal already ignored cannot restore its default (`trap - TERM` is a
+        // no-op there). Installing the trap before spawning would therefore make
+        // the ENTIRE subtree TERM-immune, the middle level would never die, the
+        // leaf would never be reparented, and this test would pass even with a
+        // non-cumulative record. Spawn first, then go immune.
+        std::fs::write(
+            &leaf,
+            format!(
+                "trap '' TERM\necho $$ > {}\nwhile :; do sleep 0.2; done\n",
+                pid_file.display()
+            ),
+        )
+        .expect("write leaf.sh");
+        std::fs::write(
+            &middle,
+            format!("sh {} &\nwhile :; do sleep 0.2; done\n", leaf.display()),
+        )
+        .expect("write middle.sh");
+        std::fs::write(
+            &root,
+            format!(
+                "sh {} &\ntrap '' TERM\nwhile :; do sleep 0.2; done\n",
+                middle.display()
+            ),
+        )
+        .expect("write root.sh");
+
+        let (runtime, session_id, terminal_id) =
+            start(&format!("sh {}", root.display()), "deep-tree").await;
+
+        // Wait for the leaf to announce itself.
+        let mut leaf_pid = None;
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    if pid > 0 {
+                        leaf_pid = Some(pid);
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let leaf_pid = leaf_pid.expect("leaf process never recorded its pid");
+        assert!(pid_is_alive(leaf_pid), "leaf should be running");
+
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            runtime.kill_terminal(KillTerminalRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            )),
+        )
+        .await
+        .expect("kill_terminal never returned")
+        .expect("kill terminal");
+
+        assert!(
+            wait_until_pid_gone(leaf_pid, Duration::from_secs(10)).await,
+            "reparented leaf {leaf_pid} survived the kill"
+        );
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// Sanity check for the test above: the middle level must actually die on
+    /// `SIGTERM` while the leaf survives and is reparented. If this stops
+    /// holding, `kill_sweeps_a_descendant_that_outlives_a_sigterm_obedient_parent`
+    /// silently stops testing the reparenting path it exists for.
+    #[tokio::test]
+    async fn deep_tree_fixture_reparents_the_leaf_on_sigterm() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_file = dir.path().join("leaf.pid");
+        let leaf = dir.path().join("leaf.sh");
+        let middle = dir.path().join("middle.sh");
+        let root = dir.path().join("root.sh");
+        std::fs::write(
+            &leaf,
+            format!(
+                "trap '' TERM\necho $$ > {}\nwhile :; do sleep 0.2; done\n",
+                pid_file.display()
+            ),
+        )
+        .expect("write leaf.sh");
+        std::fs::write(
+            &middle,
+            format!("sh {} &\nwhile :; do sleep 0.2; done\n", leaf.display()),
+        )
+        .expect("write middle.sh");
+        std::fs::write(
+            &root,
+            format!(
+                "sh {} &\ntrap '' TERM\nwhile :; do sleep 0.2; done\n",
+                middle.display()
+            ),
+        )
+        .expect("write root.sh");
+
+        let (runtime, session_id, terminal_id) =
+            start(&format!("sh {}", root.display()), "deep-tree-fixture").await;
+
+        let mut leaf_pid = None;
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    if pid > 0 {
+                        leaf_pid = Some(pid);
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let leaf_pid = leaf_pid.expect("leaf process never recorded its pid");
+        let middle_pid = parent_pid_of(leaf_pid).expect("leaf should have a parent");
+
+        // The graceful pass only: no escalation, no sweep.
+        signal_tree(Some(middle_pid), "SIGTERM").await;
+        let middle_died = wait_until_pid_gone(middle_pid, Duration::from_secs(5)).await;
+        let leaf_survived = pid_is_alive(leaf_pid);
+        let leaf_parent_now = parent_pid_of(leaf_pid);
+
+        // Clean up BEFORE asserting: a failing assertion would otherwise unwind
+        // past the cleanup and leave a TERM-immune spinner running forever on
+        // the machine (or the CI worker) that ran the test.
+        unsafe { libc::kill(leaf_pid as libc::pid_t, libc::SIGKILL) };
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+        let _ = terminal_id;
+
+        assert!(
+            middle_died,
+            "middle level ignored SIGTERM — the fixture no longer exercises reparenting"
+        );
+        assert!(
+            leaf_survived,
+            "leaf died on SIGTERM — the fixture no longer exercises reparenting"
+        );
+        // Deliberately NOT `== Some(1)`: under a child subreaper (containers,
+        // some init systems) an orphan is reparented to the subreaper rather
+        // than to pid 1. All this test needs is that the leaf moved off its
+        // dead parent, which is what makes it unreachable from the root.
+        assert!(
+            leaf_parent_now.is_some() && leaf_parent_now != Some(middle_pid),
+            "leaf was not reparented after its parent died (parent is still {leaf_parent_now:?})"
+        );
+    }
+
+    /// Session teardown kills terminals concurrently. Sequentially, N stubborn
+    /// terminals would each burn their own escalation grace and the cancel path
+    /// (which awaits this) would stall for N times as long.
+    ///
+    /// The commands deliberately ignore SIGTERM: with TERM-responsive ones each
+    /// kill returns in milliseconds, so a sequential implementation would finish
+    /// just as fast and the test would prove nothing. Ignoring TERM forces every
+    /// terminal to cost a full `KILL_ESCALATE_GRACE`, making the difference
+    /// between 4 * grace (sequential) and ~1 * grace (concurrent) unmistakable.
+    #[tokio::test]
+    async fn release_all_for_session_kills_many_terminals_concurrently() {
+        const TERMINALS: u32 = 4;
+        let runtime = Arc::new(TerminalRuntime::with_base_env(BTreeMap::new()));
+        let session_id = SessionId::new("bulk-release".to_string());
+        for _ in 0..TERMINALS {
+            let request = CreateTerminalRequest::new(
+                session_id.clone(),
+                "sh -c 'trap \"\" TERM; while :; do sleep 0.1; done'".to_string(),
+            );
+            runtime
+                .create_terminal(request)
+                .await
+                .expect("create terminal");
+        }
+        // Let every shell install its trap before we start killing.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            runtime.release_all_for_session(session_id.0.as_ref()),
+        )
+        .await
+        .expect("release_all_for_session never returned");
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < KILL_ESCALATE_GRACE * 2,
+            "teardown of {TERMINALS} SIGTERM-immune terminals took {elapsed:?}; \
+             concurrent kills should cost roughly one {KILL_ESCALATE_GRACE:?} grace, \
+             so this suggests they ran sequentially"
+        );
+    }
+
+    /// Output is readable while the command is still running — the snapshot is
+    /// not gated on the process finishing.
+    #[tokio::test]
+    async fn output_is_readable_before_the_command_exits() {
+        let (runtime, session_id, terminal_id) =
+            start("sh -c 'echo early-marker; sleep 30'", "live-output").await;
+
+        let mut saw_marker = false;
+        for _ in 0..200 {
+            let out = runtime
+                .terminal_output(TerminalOutputRequest::new(
+                    session_id.clone(),
+                    terminal_id.clone(),
+                ))
+                .await
+                .expect("get output");
+            if out.output.contains("early-marker") {
+                assert!(
+                    out.exit_status.is_none(),
+                    "command should still be running while we read its output"
+                );
+                saw_marker = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(saw_marker, "never saw output from a still-running command");
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// Once `wait_for_exit` returns, ALL output is already in the snapshot.
+    /// Guards the drain-before-publish ordering in the owner task: publishing
+    /// the exit status first would let a caller treat the terminal as done and
+    /// miss the tail.
+    #[tokio::test]
+    async fn all_output_is_present_after_wait_returns() {
+        let runtime = Arc::new(TerminalRuntime::with_base_env(BTreeMap::new()));
+        let session_id = SessionId::new("drain-order".to_string());
+        let request = CreateTerminalRequest::new(
+            session_id.clone(),
+            "sh -c 'i=0; while [ $i -lt 400 ]; do echo line-$i; i=$((i+1)); done'".to_string(),
+        );
+        let response = runtime
+            .create_terminal(request)
+            .await
+            .expect("create terminal");
+        let terminal_id = response.terminal_id.clone();
+
+        runtime
+            .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait for exit");
+
+        let out = runtime
+            .terminal_output(TerminalOutputRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("get output");
+        assert!(
+            out.output.contains("line-399"),
+            "tail output was missing after wait_for_exit returned"
+        );
+
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
     }
 
     /// A brand-new executable that something still holds open for writing is

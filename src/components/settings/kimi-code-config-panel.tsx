@@ -9,6 +9,7 @@ import {
   EyeOff,
   FolderOpen,
   Loader2,
+  Plus,
   RefreshCw,
   Save,
   XCircle,
@@ -16,6 +17,7 @@ import {
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -24,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { acpFetchKimiModels, acpUpdateKimiCodeConfig } from "@/lib/api"
 import { isLocalDesktop, revealItemInDir } from "@/lib/platform"
@@ -190,6 +193,11 @@ export interface KimiManagedConfig {
   maxContextSize?: number
   vertexProject?: string
   vertexLocation?: string
+  /** `[models.<alias>].capabilities`. Absent means kimi allows everything and
+   * advertises no Thinking picker; present means only what it lists is allowed. */
+  capabilities?: string[]
+  supportEfforts?: string[]
+  defaultEffort?: string
   hasManagedBlock?: boolean
   /** Whether `kimi acp`'s session gate is satisfied (a token file is present). */
   credentialPresent?: boolean
@@ -220,6 +228,29 @@ export function kimiInitialMode(config: KimiManagedConfig): KimiAuthMode {
   return "apikey"
 }
 
+/** Capability tokens that make `kimi acp` advertise its Thinking picker. */
+const KIMI_THINKING_CAPABILITY = "thinking"
+const KIMI_ALWAYS_THINKING_CAPABILITY = "always_thinking"
+/** Sentinel for "let kimi pick" in the default-effort Select (Radix rejects ""). */
+const KIMI_EFFORT_UNSET = "__unset__"
+
+/**
+ * Reasoning levels offered as one-click chips. NOT an enum codeg enforces —
+ * kimi forwards the string to the provider unmapped, so the right set depends
+ * on the model. These cover what kimi itself ships: Anthropic's budget
+ * (low/medium/high) and adaptive (+max) profiles, the latest-Opus profile
+ * (+xhigh), and Kimi's own catalog (low/high/max). `minimal` is there for
+ * OpenAI-compatible endpoints. Anything else goes in through the custom field.
+ */
+export const KIMI_COMMON_EFFORTS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+
 /** Every editable value in the panel, in one object so the whole form can be
  * re-seeded from disk and diffed against it in one place. */
 export interface KimiDraft {
@@ -235,6 +266,14 @@ export interface KimiDraft {
   maxContext: string
   vertexProject: string
   vertexLocation: string
+  /** Declares a thinking capability, which is the gate on kimi advertising the
+   * composer's Thinking picker at all. Off ⇒ no `capabilities` key is written. */
+  reasoningEnabled: boolean
+  /** `always_thinking` rather than `thinking`: the picker loses its Off row. */
+  alwaysThinking: boolean
+  /** The levels the picker offers. Empty ⇒ kimi degrades it to Off/On. */
+  supportEfforts: string[]
+  defaultEffort: string
 }
 
 /**
@@ -246,6 +285,8 @@ export interface KimiDraft {
  */
 export function kimiDraftFromConfig(config: KimiManagedConfig): KimiDraft {
   const interfaceType = config.interfaceType ?? "kimi"
+  const capabilities = config.capabilities ?? []
+  const alwaysThinking = capabilities.includes(KIMI_ALWAYS_THINKING_CAPABILITY)
   return {
     mode: kimiInitialMode(config),
     interfaceType,
@@ -257,7 +298,29 @@ export function kimiDraftFromConfig(config: KimiManagedConfig): KimiDraft {
     maxContext: String(config.maxContextSize ?? KIMI_DEFAULT_MAX_CONTEXT),
     vertexProject: config.vertexProject ?? "",
     vertexLocation: config.vertexLocation ?? "",
+    // Mirrors kimi's own `supportsThinking`: either capability turns the
+    // composer's picker on, and `always_thinking` additionally drops its Off row.
+    reasoningEnabled:
+      capabilities.includes(KIMI_THINKING_CAPABILITY) || alwaysThinking,
+    alwaysThinking,
+    supportEfforts: config.supportEfforts ?? [],
+    defaultEffort: config.defaultEffort ?? "",
   }
+}
+
+/** Field-by-field draft equality. Needed because `supportEfforts` is an array:
+ * a plain `!==` would report every freshly-seeded form as dirty. */
+export function kimiDraftEquals(a: KimiDraft, b: KimiDraft): boolean {
+  return (Object.keys(a) as (keyof KimiDraft)[]).every((key) => {
+    const left = a[key]
+    const right = b[key]
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return (
+        left.length === right.length && left.every((v, i) => v === right[i])
+      )
+    }
+    return left === right
+  })
 }
 
 /** The i18n key suffixes (under `AcpAgentSettings.kimiCode`) a validation rule
@@ -272,8 +335,10 @@ export type KimiErrorKey =
   | "errorMaxContextRequired"
   | "errorMaxContextInvalid"
   | "errorVertexProjectRequired"
+  | "errorDefaultEffortUnlisted"
 
 export type KimiErrorField =
+  | "defaultEffort"
   | "baseUrl"
   | "apiKey"
   | "model"
@@ -325,6 +390,17 @@ export function validateKimiDraft(draft: KimiDraft): KimiFieldErrors {
     errors.maxContext = "errorMaxContextRequired"
   } else if (!/^\d+$/.test(rawContext) || Number.parseInt(rawContext, 10) < 1) {
     errors.maxContext = "errorMaxContextInvalid"
+  }
+
+  // A default outside the offered levels is silently clamped to the middle
+  // entry by kimi, so the composer would open on a level the user never chose.
+  if (
+    draft.reasoningEnabled &&
+    draft.defaultEffort.trim() &&
+    draft.supportEfforts.length > 0 &&
+    !draft.supportEfforts.includes(draft.defaultEffort.trim())
+  ) {
+    errors.defaultEffort = "errorDefaultEffortUnlisted"
   }
 
   return errors
@@ -412,6 +488,8 @@ export function KimiCodeConfigPanel({
   // Models discovered via the provider's /models endpoint (doubles as a key test).
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [fetchingModels, setFetchingModels] = useState(false)
+  /** Free-text box for an effort level outside the common set. */
+  const [customEffort, setCustomEffort] = useState("")
 
   // raw editor
   const [rawConfig, setRawConfig] = useState(() => config.rawConfigToml ?? "")
@@ -452,10 +530,7 @@ export function KimiCodeConfigPanel({
   const errors = useMemo(() => validateKimiDraft(draft), [draft])
   const hasErrors = Object.keys(errors).length > 0
   const dirty = useMemo(
-    () =>
-      (Object.keys(savedDraft) as (keyof KimiDraft)[]).some(
-        (key) => draft[key] !== savedDraft[key]
-      ),
+    () => !kimiDraftEquals(draft, savedDraft),
     [draft, savedDraft]
   )
   const overridingEnvKeys = useMemo(
@@ -488,6 +563,50 @@ export function KimiCodeConfigPanel({
     },
     [patch]
   )
+
+  /** Common levels plus any already-saved custom one, so a hand-written value
+   * from config.toml still renders as a togglable chip instead of vanishing. */
+  const effortChoices = useMemo(() => {
+    const extra = draft.supportEfforts.filter(
+      (effort) => !KIMI_COMMON_EFFORTS.includes(effort)
+    )
+    return [...KIMI_COMMON_EFFORTS, ...extra]
+  }, [draft.supportEfforts])
+
+  const toggleEffort = useCallback(
+    (effort: string) => {
+      setDraft((current) => {
+        const on = current.supportEfforts.includes(effort)
+        const supportEfforts = on
+          ? current.supportEfforts.filter((e) => e !== effort)
+          : // Keep the chip order stable rather than append-on-click, so the
+            // written list reads low→high like kimi's own profiles.
+            effortChoices.filter(
+              (e) => e === effort || current.supportEfforts.includes(e)
+            )
+        return {
+          ...current,
+          supportEfforts,
+          // Drop a default that just lost its level; kimi would clamp it anyway.
+          defaultEffort: supportEfforts.includes(current.defaultEffort)
+            ? current.defaultEffort
+            : "",
+        }
+      })
+    },
+    [effortChoices]
+  )
+
+  const addCustomEffort = useCallback(() => {
+    const effort = customEffort.trim()
+    if (!effort) return
+    setCustomEffort("")
+    setDraft((current) =>
+      current.supportEfforts.includes(effort)
+        ? current
+        : { ...current, supportEfforts: [...current.supportEfforts, effort] }
+    )
+  }, [customEffort])
 
   const handleModelChange = useCallback(
     (value: string) => {
@@ -544,6 +663,12 @@ export function KimiCodeConfigPanel({
       apiKey: meta.usesApiKey ? draft.apiKey : null,
       model: draft.model,
       maxContextSize: Number.parseInt(draft.maxContext, 10),
+      // Off sends `false` and no levels, so the backend omits `capabilities`
+      // entirely and kimi keeps its permissive default.
+      reasoningEnabled: draft.reasoningEnabled,
+      alwaysThinking: draft.reasoningEnabled && draft.alwaysThinking,
+      supportEfforts: draft.reasoningEnabled ? draft.supportEfforts : [],
+      defaultEffort: draft.reasoningEnabled ? draft.defaultEffort : null,
       vertexProject: isVertex ? draft.vertexProject : null,
       vertexLocation: isVertex ? draft.vertexLocation : null,
     })
@@ -616,6 +741,7 @@ export function KimiCodeConfigPanel({
     errorMaxContextRequired: t("kimiCode.errorMaxContextRequired"),
     errorMaxContextInvalid: t("kimiCode.errorMaxContextInvalid"),
     errorVertexProjectRequired: t("kimiCode.errorVertexProjectRequired"),
+    errorDefaultEffortUnlisted: t("kimiCode.errorDefaultEffortUnlisted"),
   }
 
   /** Inline error line for a field, or null. */
@@ -1024,6 +1150,142 @@ export function KimiCodeConfigPanel({
                 <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>{t("kimiCode.modelNotInList")}</span>
               </p>
+            )}
+          </div>
+
+          {/* ---- Reasoning card ----
+              `kimi acp` only advertises its Thinking picker when the model
+              declares a thinking capability, and sources the picker's rows from
+              `support_efforts`. Both are written from here. */}
+          <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium">
+                {t("kimiCode.reasoningTitle")}
+              </span>
+              <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Switch
+                  checked={draft.reasoningEnabled}
+                  onCheckedChange={(checked) =>
+                    patch({ reasoningEnabled: checked })
+                  }
+                  disabled={saving}
+                  aria-label={t("kimiCode.reasoningEnableLabel")}
+                />
+                {t("kimiCode.reasoningEnableLabel")}
+              </label>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {t("kimiCode.reasoningDescription")}
+            </p>
+
+            {draft.reasoningEnabled && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">
+                    {t("kimiCode.effortsLabel")}
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {effortChoices.map((effort) => {
+                      const active = draft.supportEfforts.includes(effort)
+                      return (
+                        <button
+                          key={effort}
+                          type="button"
+                          disabled={saving}
+                          onClick={() => toggleEffort(effort)}
+                          aria-pressed={active}
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 font-mono text-[11px] transition-colors",
+                            active
+                              ? "border-primary/40 bg-primary/10 text-foreground"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          )}
+                        >
+                          {effort}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={customEffort}
+                      onChange={(event) => setCustomEffort(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return
+                        event.preventDefault()
+                        addCustomEffort()
+                      }}
+                      placeholder={t("kimiCode.effortsCustomPlaceholder")}
+                      className="h-7 text-xs"
+                      disabled={saving}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                      onClick={addCustomEffort}
+                      disabled={saving || !customEffort.trim()}
+                    >
+                      <Plus className="h-3 w-3" />
+                      {t("kimiCode.effortsAdd")}
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    {draft.supportEfforts.length === 0
+                      ? t("kimiCode.effortsEmptyHint")
+                      : t("kimiCode.effortsHint")}
+                  </p>
+                </div>
+
+                {draft.supportEfforts.length > 0 && (
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground">
+                      {t("kimiCode.defaultEffortLabel")}
+                    </label>
+                    <Select
+                      value={draft.defaultEffort || KIMI_EFFORT_UNSET}
+                      onValueChange={(value) =>
+                        patch({
+                          defaultEffort:
+                            value === KIMI_EFFORT_UNSET ? "" : value,
+                        })
+                      }
+                      disabled={saving}
+                    >
+                      <SelectTrigger
+                        className="w-full"
+                        aria-label={t("kimiCode.defaultEffortLabel")}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="start">
+                        <SelectItem value={KIMI_EFFORT_UNSET}>
+                          {t("kimiCode.defaultEffortAuto")}
+                        </SelectItem>
+                        {draft.supportEfforts.map((effort) => (
+                          <SelectItem key={effort} value={effort}>
+                            {effort}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {fieldError("defaultEffort")}
+                  </div>
+                )}
+
+                <label className="flex cursor-pointer items-start gap-2 text-[11px] text-muted-foreground">
+                  <Checkbox
+                    checked={draft.alwaysThinking}
+                    onCheckedChange={(checked) =>
+                      patch({ alwaysThinking: checked === true })
+                    }
+                    disabled={saving}
+                    className="mt-0.5"
+                  />
+                  <span>{t("kimiCode.alwaysThinkingLabel")}</span>
+                </label>
+              </>
             )}
           </div>
         </>

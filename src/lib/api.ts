@@ -627,6 +627,14 @@ export async function acpUpdateKimiCodeConfig(params: {
   vertexProject?: string | null
   vertexLocation?: string | null
   rawConfigToml?: string | null
+  /** Declares a thinking capability on the managed model, which is what makes
+   * `kimi acp` advertise its Thinking picker in the composer at all. */
+  reasoningEnabled?: boolean | null
+  /** Declares `always_thinking` instead of `thinking` — no "Off" row. */
+  alwaysThinking?: boolean | null
+  /** The reasoning levels the composer offers; passed to the provider verbatim. */
+  supportEfforts?: string[] | null
+  defaultEffort?: string | null
 }): Promise<number> {
   return getTransport().call("acp_update_kimi_code_config", {
     mode: params.mode,
@@ -639,6 +647,10 @@ export async function acpUpdateKimiCodeConfig(params: {
     vertexProject: params.vertexProject ?? null,
     vertexLocation: params.vertexLocation ?? null,
     rawConfigToml: params.rawConfigToml ?? null,
+    reasoningEnabled: params.reasoningEnabled ?? null,
+    alwaysThinking: params.alwaysThinking ?? null,
+    supportEfforts: params.supportEfforts ?? null,
+    defaultEffort: params.defaultEffort ?? null,
   })
 }
 

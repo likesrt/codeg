@@ -19,6 +19,10 @@ import {
   inferLiveToolName,
   parseGoalUpdateTitle,
 } from "@/lib/tool-call-normalization"
+import {
+  parseCodexListFilesTitle,
+  parseCodexSearchTitle,
+} from "@/lib/codex-command-action"
 import { COLLAB_AGENT_TOOL_NAME, mergeCollabOp } from "@/lib/collab-tool"
 import { collapseLiveCollabBlocks } from "@/lib/collab-collapse"
 import { kimiTodoWriteEntries } from "@/lib/plan-parse"
@@ -666,6 +670,25 @@ function resolveLiveToolInput(
   if (toolName === "read") {
     const path = firstLocationPath(info.locations)
     if (path) return JSON.stringify({ file_path: path })
+  }
+
+  // The sibling `search` / `listFiles` command actions have neither raw_input
+  // NOR `locations` — their query and path live only in the ACP title. Recover
+  // the canonical grep/glob input from it so the card shows the pattern chip and
+  // scope path, and derives a real title instead of a "<whole title>: <first
+  // line of output>" echo. See parseCodexSearchTitle.
+  if (toolName === "grep") {
+    const search = parseCodexSearchTitle(info.title)
+    if (search && (search.query || search.path)) {
+      return JSON.stringify({
+        ...(search.query ? { pattern: search.query } : {}),
+        ...(search.path ? { path: search.path } : {}),
+      })
+    }
+  }
+  if (toolName === "glob") {
+    const listFiles = parseCodexListFilesTitle(info.title)
+    if (listFiles?.path) return JSON.stringify({ path: listFiles.path })
   }
 
   const goal = parseGoalUpdateTitle(info.title)

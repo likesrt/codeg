@@ -7,6 +7,7 @@ import {
   formatFileRangeLabel,
   tokenizeReferenceLinks,
   unescapeReferenceLabel,
+  unwrapReferenceDestination,
 } from "./reference-link"
 
 describe("buildFileUri", () => {
@@ -64,6 +65,36 @@ describe("unescapeReferenceLabel", () => {
   })
 })
 
+describe("unwrapReferenceDestination", () => {
+  it("returns a bare destination trimmed and untouched", () => {
+    expect(unwrapReferenceDestination("file:///x/foo.ts")).toBe(
+      "file:///x/foo.ts"
+    )
+    expect(unwrapReferenceDestination("  codeg://session/42  ")).toBe(
+      "codeg://session/42"
+    )
+    // Not angle-wrapped: a lone backslash is part of the uri, not an escape.
+    expect(unwrapReferenceDestination("file:///x\\y")).toBe("file:///x\\y")
+  })
+
+  it("unwraps an angle-bracket destination", () => {
+    expect(unwrapReferenceDestination("<file:///x/a b.ts>")).toBe(
+      "file:///x/a b.ts"
+    )
+  })
+
+  it("decodes the escapes the serializer adds inside `<…>`", () => {
+    // escapeLinkDestination escapes `\`, `<` and `>` there; leaving them in
+    // would double the backslashes of a Windows path on every round-trip.
+    expect(unwrapReferenceDestination("<file:///C:\\\\repo\\\\app.ts>")).toBe(
+      "file:///C:\\repo\\app.ts"
+    )
+    expect(unwrapReferenceDestination("<file:///x/a\\<b\\>c.ts>")).toBe(
+      "file:///x/a<b>c.ts"
+    )
+  })
+})
+
 describe("tokenizeReferenceLinks", () => {
   it("splits prose around a bare-destination link", () => {
     expect(
@@ -82,7 +113,8 @@ describe("tokenizeReferenceLinks", () => {
 
   it("keeps the angle brackets in a <…>-wrapped destination", () => {
     // The destination must equal the old regex group `(<[^>]*>|[^)]*)` exactly —
-    // including the `<…>` — so handleMarkdownLink's own unwrap still applies.
+    // including the `<…>` — so consumers can unwrap it themselves (see
+    // {@link unwrapReferenceDestination}).
     expect(tokenizeReferenceLinks("[a b.ts](<file:///x/a b.ts>)")).toEqual([
       {
         type: "link",

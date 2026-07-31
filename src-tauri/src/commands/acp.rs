@@ -3904,7 +3904,32 @@ struct KimiManagedSpec {
     env: BTreeMap<String, String>,
     model: String,
     max_context_size: Option<i64>,
+    /// `[models.<alias>].capabilities`. Empty ⇒ omit the key entirely, which is
+    /// what "reasoning off" means — see `KIMI_BASE_CAPABILITIES`.
+    capabilities: Vec<String>,
+    /// `[models.<alias>].support_efforts` — the reasoning levels the composer's
+    /// Thinking picker offers. Empty ⇒ omit (kimi degrades to an Off/On toggle).
+    support_efforts: Vec<String>,
+    /// `[models.<alias>].default_effort`. Only written when it is one of
+    /// `support_efforts`; kimi otherwise falls back to the middle entry anyway.
+    default_effort: Option<String>,
 }
+
+/// Input modalities always declared alongside a thinking capability.
+///
+/// kimi reads capabilities permissively — `if (capabilities === undefined) return true`
+/// — so an ABSENT key allows everything, but a PRESENT array allows only what it
+/// lists. Declaring `thinking` therefore has to re-declare the modalities that
+/// were implicitly allowed before, or enabling reasoning would silently revoke
+/// image/video input. `tool_use` mirrors kimi's own `capabilitiesForModel`,
+/// which defaults it on (`model.supportsToolUse ?? true`). Users who need a
+/// narrower set can hand-edit config.toml.
+const KIMI_BASE_CAPABILITIES: &[&str] = &["image_in", "video_in", "tool_use"];
+/// Capability that makes kimi advertise the Thinking picker over ACP at all
+/// (`supportsThinking` = capabilities ∋ thinking | always_thinking).
+const KIMI_CAPABILITY_THINKING: &str = "thinking";
+/// Same, but kimi drops the `Off` row: the model cannot stop reasoning.
+const KIMI_CAPABILITY_ALWAYS_THINKING: &str = "always_thinking";
 
 /// Upsert (`Some`) or remove (`None`) the codeg-managed `[providers.codeg]` +
 /// `[models.codeg-managed]` block in a parsed config.toml document, preserving
@@ -3976,6 +4001,38 @@ fn apply_kimi_managed_block(
                 .filter(|c| *c > 0)
                 .unwrap_or(KIMI_DEFAULT_MAX_CONTEXT_SIZE);
             model_table.insert("max_context_size".to_string(), toml::Value::Integer(ctx));
+            // Reasoning metadata. Each key is omitted when empty so the block
+            // stays byte-identical to the pre-reasoning shape when the feature
+            // is off — kimi treats an absent `capabilities` as "allow all" and
+            // an absent `support_efforts` as "no effort levels".
+            if !spec.capabilities.is_empty() {
+                model_table.insert(
+                    "capabilities".to_string(),
+                    toml::Value::Array(
+                        spec.capabilities
+                            .iter()
+                            .map(|c| toml::Value::String(c.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            if !spec.support_efforts.is_empty() {
+                model_table.insert(
+                    "support_efforts".to_string(),
+                    toml::Value::Array(
+                        spec.support_efforts
+                            .iter()
+                            .map(|e| toml::Value::String(e.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(effort) = &spec.default_effort {
+                model_table.insert(
+                    "default_effort".to_string(),
+                    toml::Value::String(effort.clone()),
+                );
+            }
             models.insert(
                 KIMI_MANAGED_MODEL_ALIAS.to_string(),
                 toml::Value::Table(model_table),
@@ -4238,6 +4295,42 @@ fn project_kimi_managed_config(value: &toml::Value) -> serde_json::Map<String, s
                 serde_json::Value::Number(ctx.into()),
             );
         }
+        // Reasoning metadata. `capabilities` round-trips so the panel can tell
+        // whether reasoning is on (and whether it is the always-on flavour)
+        // without re-deriving it from the effort list.
+        let string_array = |key: &str| -> Option<Vec<serde_json::Value>> {
+            Some(
+                model
+                    .get(key)?
+                    .as_array()?
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| serde_json::Value::String(s.to_string()))
+                    .collect(),
+            )
+        };
+        if let Some(caps) = string_array("capabilities") {
+            merged.insert("capabilities".to_string(), serde_json::Value::Array(caps));
+        }
+        if let Some(efforts) = string_array("support_efforts") {
+            merged.insert(
+                "supportEfforts".to_string(),
+                serde_json::Value::Array(efforts),
+            );
+        }
+        if let Some(effort) = model
+            .get("default_effort")
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            merged.insert(
+                "defaultEffort".to_string(),
+                serde_json::Value::String(effort.to_string()),
+            );
+        }
     }
 
     let has_managed = merged.contains_key("interfaceType");
@@ -4291,6 +4384,17 @@ pub(crate) struct KimiCodeConfigUpdate {
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
     pub raw_config_toml: Option<String>,
+    /// Declare a thinking capability so `kimi acp` advertises its Thinking
+    /// picker at all. `None`/`false` writes no `capabilities` key, leaving
+    /// kimi's permissive default (and no picker) exactly as before.
+    pub reasoning_enabled: Option<bool>,
+    /// Use `always_thinking` instead of `thinking`, dropping the `Off` row.
+    pub always_thinking: Option<bool>,
+    /// The reasoning levels offered in the composer. Passed through to the
+    /// provider verbatim — kimi does no client-side mapping for non-Kimi
+    /// providers, so an unsupported level fails at request time, not here.
+    pub support_efforts: Option<Vec<String>>,
+    pub default_effort: Option<String>,
 }
 
 /// Validate + resolve a `native`-mode update into the managed block to write.
@@ -4365,6 +4469,55 @@ fn build_kimi_managed_spec(update: &KimiCodeConfigUpdate) -> Result<KimiManagedS
         }
     }
 
+    // ---- Reasoning metadata ----
+    // `kimi acp` suppresses its Thinking picker unless the model declares a
+    // thinking capability, and sources the picker's rows from `support_efforts`
+    // ("the single source of truth for efforts"). Both only apply when the user
+    // turned reasoning on; otherwise every key is left out and the block keeps
+    // its previous shape.
+    let reasoning_enabled = update.reasoning_enabled.unwrap_or(false);
+    let mut capabilities: Vec<String> = Vec::new();
+    let mut support_efforts: Vec<String> = Vec::new();
+    let mut default_effort: Option<String> = None;
+
+    if reasoning_enabled {
+        capabilities.push(
+            if update.always_thinking.unwrap_or(false) {
+                KIMI_CAPABILITY_ALWAYS_THINKING
+            } else {
+                KIMI_CAPABILITY_THINKING
+            }
+            .to_string(),
+        );
+        capabilities.extend(KIMI_BASE_CAPABILITIES.iter().map(|c| c.to_string()));
+
+        for raw in update.support_efforts.iter().flatten() {
+            let effort = raw.trim();
+            if effort.is_empty() {
+                continue;
+            }
+            if effort.contains(['\n', '\r']) {
+                return Err(AcpError::protocol(
+                    "kimi thinking effort must not contain newlines",
+                ));
+            }
+            if !support_efforts.iter().any(|e| e == effort) {
+                support_efforts.push(effort.to_string());
+            }
+        }
+
+        // kimi clamps an out-of-range default back to the middle entry, so an
+        // unlisted value is dropped rather than rejected — writing it would
+        // only misrepresent what the composer will actually show.
+        default_effort = update
+            .default_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter(|s| support_efforts.iter().any(|e| e == s))
+            .map(str::to_string);
+    }
+
     Ok(KimiManagedSpec {
         interface_type: interface_type.to_string(),
         base_url,
@@ -4372,6 +4525,9 @@ fn build_kimi_managed_spec(update: &KimiCodeConfigUpdate) -> Result<KimiManagedS
         env,
         model,
         max_context_size: update.max_context_size.filter(|c| *c > 0),
+        capabilities,
+        support_efforts,
+        default_effort,
     })
 }
 
@@ -9475,6 +9631,10 @@ pub async fn acp_update_kimi_code_config(
     vertex_project: Option<String>,
     vertex_location: Option<String>,
     raw_config_toml: Option<String>,
+    reasoning_enabled: Option<bool>,
+    always_thinking: Option<bool>,
+    support_efforts: Option<Vec<String>>,
+    default_effort: Option<String>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
     app: tauri::AppHandle,
@@ -9497,6 +9657,10 @@ pub async fn acp_update_kimi_code_config(
             vertex_project,
             vertex_location,
             raw_config_toml,
+            reasoning_enabled,
+            always_thinking,
+            support_efforts,
+            default_effort,
         },
         &db,
         &manager,
@@ -13984,6 +14148,9 @@ wire_api = "chat"
             env: BTreeMap::new(),
             model: "claude-opus-4-7".to_string(),
             max_context_size: Some(200_000),
+            capabilities: Vec::new(),
+            support_efforts: Vec::new(),
+            default_effort: None,
         };
         let mut doc = toml::Value::Table(toml::map::Map::new());
         // Pre-existing user content that must survive a managed-block write.
@@ -14046,6 +14213,9 @@ wire_api = "chat"
                 env: BTreeMap::new(),
                 model: "kimi-k2.7-code".to_string(),
                 max_context_size: ctx,
+                capabilities: Vec::new(),
+                support_efforts: Vec::new(),
+                default_effort: None,
             };
             let mut doc = toml::Value::Table(toml::map::Map::new());
             apply_kimi_managed_block(&mut doc, Some(&spec)).expect("write managed block");
@@ -14132,6 +14302,10 @@ model = "kimi-for-coding"
             vertex_project: None,
             vertex_location: None,
             raw_config_toml: None,
+            reasoning_enabled: None,
+            always_thinking: None,
+            support_efforts: None,
+            default_effort: None,
         };
         let spec = build_kimi_managed_spec(&update).expect("valid spec");
         // env auth → key lands in the provider env sub-table, NOT the inline field.
@@ -14152,6 +14326,10 @@ model = "kimi-for-coding"
             vertex_project: Some("my-proj".to_string()),
             vertex_location: Some("us-central1".to_string()),
             raw_config_toml: None,
+            reasoning_enabled: None,
+            always_thinking: None,
+            support_efforts: None,
+            default_effort: None,
         };
         let spec = build_kimi_managed_spec(&update).expect("valid vertex spec");
         assert!(spec.api_key.is_none());
@@ -14178,6 +14356,10 @@ model = "kimi-for-coding"
             vertex_project: None,
             vertex_location: None,
             raw_config_toml: None,
+            reasoning_enabled: None,
+            always_thinking: None,
+            support_efforts: None,
+            default_effort: None,
         };
         assert!(build_kimi_managed_spec(&base).is_err());
         let no_model = KimiCodeConfigUpdate {
@@ -14186,6 +14368,223 @@ model = "kimi-for-coding"
             ..base.clone()
         };
         assert!(build_kimi_managed_spec(&no_model).is_err());
+    }
+
+    /// A minimal valid api-key update; reasoning fields are filled per test.
+    fn kimi_reasoning_update(
+        reasoning_enabled: Option<bool>,
+        always_thinking: Option<bool>,
+        support_efforts: Option<Vec<String>>,
+        default_effort: Option<&str>,
+    ) -> KimiCodeConfigUpdate {
+        KimiCodeConfigUpdate {
+            mode: "apikey".to_string(),
+            interface_type: Some("kimi".to_string()),
+            auth_type: None,
+            base_url: None,
+            api_key: Some("sk-x".to_string()),
+            model: Some("kimi-k2".to_string()),
+            max_context_size: None,
+            vertex_project: None,
+            vertex_location: None,
+            raw_config_toml: None,
+            reasoning_enabled,
+            always_thinking,
+            support_efforts,
+            default_effort: default_effort.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn kimi_reasoning_off_writes_no_capability_keys() {
+        // With reasoning off the model block must stay byte-identical to the
+        // pre-feature shape: an ABSENT `capabilities` is what keeps kimi's
+        // permissive "allow every modality" default in force.
+        let spec = build_kimi_managed_spec(&kimi_reasoning_update(None, None, None, None))
+            .expect("valid spec");
+        assert!(spec.capabilities.is_empty());
+        assert!(spec.support_efforts.is_empty());
+        assert!(spec.default_effort.is_none());
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        apply_kimi_managed_block(&mut doc, Some(&spec)).expect("applied");
+        let model = doc
+            .get("models")
+            .and_then(|m| m.get(KIMI_MANAGED_MODEL_ALIAS))
+            .and_then(toml::Value::as_table)
+            .expect("model block");
+        assert!(model.get("capabilities").is_none());
+        assert!(model.get("support_efforts").is_none());
+        assert!(model.get("default_effort").is_none());
+    }
+
+    #[test]
+    fn kimi_reasoning_on_declares_thinking_plus_the_permissive_modalities() {
+        // `thinking` alone would REVOKE image/video input, because kimi only
+        // treats an absent capabilities array as "allow all".
+        let spec = build_kimi_managed_spec(&kimi_reasoning_update(
+            Some(true),
+            None,
+            Some(vec!["low".into(), "high".into()]),
+            Some("high"),
+        ))
+        .expect("valid spec");
+        assert_eq!(
+            spec.capabilities,
+            vec!["thinking", "image_in", "video_in", "tool_use"]
+        );
+        assert_eq!(spec.support_efforts, vec!["low", "high"]);
+        assert_eq!(spec.default_effort.as_deref(), Some("high"));
+
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        apply_kimi_managed_block(&mut doc, Some(&spec)).expect("applied");
+        let model = doc
+            .get("models")
+            .and_then(|m| m.get(KIMI_MANAGED_MODEL_ALIAS))
+            .and_then(toml::Value::as_table)
+            .expect("model block");
+        let caps: Vec<&str> = model["capabilities"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect();
+        assert!(caps.contains(&"thinking") && caps.contains(&"image_in"));
+        assert_eq!(
+            model["default_effort"].as_str(),
+            Some("high"),
+            "default_effort must reach config.toml"
+        );
+    }
+
+    #[test]
+    fn kimi_reasoning_off_clears_keys_a_previous_save_wrote() {
+        // Turning reasoning back off must REMOVE the keys, not just stop
+        // refreshing them: a lingering `capabilities` array would keep kimi in
+        // whitelist mode (and keep advertising a Thinking picker) forever.
+        let mut doc = toml::Value::Table(toml::map::Map::new());
+        let on = build_kimi_managed_spec(&kimi_reasoning_update(
+            Some(true),
+            Some(true),
+            Some(vec!["low".into(), "high".into()]),
+            Some("high"),
+        ))
+        .expect("valid spec");
+        apply_kimi_managed_block(&mut doc, Some(&on)).expect("write reasoning on");
+        assert!(doc["models"][KIMI_MANAGED_MODEL_ALIAS]
+            .get("capabilities")
+            .is_some());
+
+        let off = build_kimi_managed_spec(&kimi_reasoning_update(Some(false), None, None, None))
+            .expect("valid spec");
+        apply_kimi_managed_block(&mut doc, Some(&off)).expect("write reasoning off");
+        let model = doc["models"][KIMI_MANAGED_MODEL_ALIAS]
+            .as_table()
+            .expect("model block");
+        assert!(model.get("capabilities").is_none(), "capabilities must go");
+        assert!(model.get("support_efforts").is_none());
+        assert!(model.get("default_effort").is_none());
+        // The keys that are NOT part of reasoning must survive the rewrite.
+        assert_eq!(model["model"].as_str(), Some("kimi-k2"));
+        assert!(model.get("max_context_size").is_some());
+    }
+
+    #[test]
+    fn kimi_reasoning_always_thinking_swaps_the_capability() {
+        let spec = build_kimi_managed_spec(&kimi_reasoning_update(
+            Some(true),
+            Some(true),
+            Some(vec!["high".into()]),
+            None,
+        ))
+        .expect("valid spec");
+        assert!(spec.capabilities.contains(&"always_thinking".to_string()));
+        assert!(!spec.capabilities.contains(&"thinking".to_string()));
+    }
+
+    #[test]
+    fn kimi_reasoning_normalizes_efforts_and_drops_an_unlisted_default() {
+        let spec = build_kimi_managed_spec(&kimi_reasoning_update(
+            Some(true),
+            None,
+            Some(vec![
+                "  low  ".into(),
+                "".into(),
+                "low".into(),
+                "high".into(),
+            ]),
+            // kimi clamps an unlisted default to the middle entry anyway, so
+            // writing it would only misreport what the composer will show.
+            Some("max"),
+        ))
+        .expect("valid spec");
+        assert_eq!(spec.support_efforts, vec!["low", "high"]);
+        assert!(spec.default_effort.is_none());
+    }
+
+    #[test]
+    fn kimi_reasoning_rejects_a_newline_in_an_effort() {
+        let err = build_kimi_managed_spec(&kimi_reasoning_update(
+            Some(true),
+            None,
+            Some(vec!["hi\ngh".into()]),
+            None,
+        ));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn kimi_project_managed_config_round_trips_reasoning_metadata() {
+        let value: toml::Value = r#"
+default_model = "codeg-managed"
+[providers.codeg]
+type = "openai_responses"
+[models.codeg-managed]
+provider = "codeg"
+model = "gpt-5.6-sol"
+max_context_size = 1000000
+capabilities = ["thinking", "image_in", "video_in", "tool_use"]
+support_efforts = ["low", "medium", "high"]
+default_effort = "high"
+"#
+        .parse()
+        .expect("valid toml");
+        let proj = project_kimi_managed_config(&value);
+        let caps: Vec<&str> = proj["capabilities"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(caps.contains(&"thinking"));
+        let efforts: Vec<&str> = proj["supportEfforts"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(efforts, vec!["low", "medium", "high"]);
+        assert_eq!(proj.get("defaultEffort").and_then(|v| v.as_str()), Some("high"));
+    }
+
+    #[test]
+    fn kimi_project_managed_config_omits_reasoning_keys_when_absent() {
+        // The shape the panel wrote before this feature — the projection must
+        // not invent empty arrays, or the panel would read reasoning as "on".
+        let value: toml::Value = r#"
+[providers.codeg]
+type = "kimi"
+[models.codeg-managed]
+provider = "codeg"
+model = "kimi-k2"
+max_context_size = 262144
+"#
+        .parse()
+        .expect("valid toml");
+        let proj = project_kimi_managed_config(&value);
+        assert!(proj.get("capabilities").is_none());
+        assert!(proj.get("supportEfforts").is_none());
+        assert!(proj.get("defaultEffort").is_none());
     }
 
     #[test]

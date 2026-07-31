@@ -2186,3 +2186,82 @@ describe("buildStreamingTurnsFromLiveMessage — cursor task title folding", () 
     expect(input).toBe(claude)
   })
 })
+
+describe("buildStreamingTurnsFromLiveMessage — codex search/list-files command actions", () => {
+  // codex-acp announces a search-classified shell command with kind="search", a
+  // human title, and NO raw_input / locations (createCommandActionEvent), then
+  // completes it with rawOutput `{formatted_output, exit_code}`. The query and
+  // path exist nowhere but the title, so the store has to recover them — without
+  // that the card's "tool name" was the whole title (wrench icon, "other" group
+  // tally) and its body dumped the raw envelope as JSON.
+  function build(title: string, kind: string, output: string) {
+    return buildStreamingTurnsFromLiveMessage(1, {
+      id: "lm-search",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "tc-search",
+            title,
+            kind,
+            status: "completed",
+            content: null,
+            raw_input: null,
+            raw_output_chunks: [output],
+            raw_output_total_bytes: output.length,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+      ],
+    }).turns.flatMap((t) => t.blocks)
+  }
+
+  it("classifies a search command action as grep with a synthesized pattern/path", () => {
+    const blocks = build(
+      "Search for 'Tests run:' in com.forwayaudio.app",
+      "search",
+      JSON.stringify({ exit_code: 0, formatted_output: "Foo.java:42:hit" })
+    )
+
+    const toolUse = blocks.find((b) => b.type === "tool_use")
+    expect(toolUse?.type === "tool_use" ? toolUse.tool_name : null).toBe("grep")
+    expect(
+      JSON.parse(
+        (toolUse?.type === "tool_use" ? toolUse.input_preview : null) ?? "null"
+      )
+    ).toEqual({ pattern: "Tests run:", path: "com.forwayaudio.app" })
+  })
+
+  it("classifies a list-files command action as glob with a synthesized path", () => {
+    const blocks = build(
+      "List files in 'src/components'",
+      "read",
+      JSON.stringify({ exit_code: 0, formatted_output: "src/components/a.tsx" })
+    )
+
+    const toolUse = blocks.find((b) => b.type === "tool_use")
+    expect(toolUse?.type === "tool_use" ? toolUse.tool_name : null).toBe("glob")
+    expect(
+      JSON.parse(
+        (toolUse?.type === "tool_use" ? toolUse.input_preview : null) ?? "null"
+      )
+    ).toEqual({ path: "src/components" })
+  })
+
+  it("keeps the raw envelope on the result block for the renderer to unwrap", () => {
+    const output = JSON.stringify({
+      exit_code: 1,
+      formatted_output: "",
+    })
+    const blocks = build("Search for 'nothing'", "search", output)
+
+    const result = blocks.find((b) => b.type === "tool_result")
+    expect(result?.type === "tool_result" ? result.output_preview : null).toBe(
+      output
+    )
+  })
+})

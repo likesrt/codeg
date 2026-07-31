@@ -774,6 +774,14 @@ pub struct AcpUpdateKimiCodeConfigParams {
     pub vertex_location: Option<String>,
     #[serde(default)]
     pub raw_config_toml: Option<String>,
+    #[serde(default)]
+    pub reasoning_enabled: Option<bool>,
+    #[serde(default)]
+    pub always_thinking: Option<bool>,
+    #[serde(default)]
+    pub support_efforts: Option<Vec<String>>,
+    #[serde(default)]
+    pub default_effort: Option<String>,
 }
 
 pub async fn acp_update_kimi_code_config(
@@ -793,6 +801,10 @@ pub async fn acp_update_kimi_code_config(
             vertex_project: params.vertex_project,
             vertex_location: params.vertex_location,
             raw_config_toml: params.raw_config_toml,
+            reasoning_enabled: params.reasoning_enabled,
+            always_thinking: params.always_thinking,
+            support_efforts: params.support_efforts,
+            default_effort: params.default_effort,
         },
         &state.db,
         &state.connection_manager,

@@ -134,6 +134,27 @@ export function unescapeReferenceLabel(label: string): string {
 }
 
 /**
+ * Reverse `escapeLinkDestination` (reference-text.ts): unwrap a CommonMark
+ * angle-bracket destination (`<uri>`) AND drop the backslashes it escapes with,
+ * yielding the bare uri. A destination that isn't angle-wrapped carries no
+ * escapes (the serializer only wraps when it must) and is returned trimmed.
+ *
+ * The escape set mirrors the serializer's exactly: inside `<…>` it escapes `\`,
+ * `<` and `>`. Unwrapping without decoding them would hand back a uri whose
+ * backslashes are doubled — a wrong path on the badge/chip (`file:///C:\\dir`
+ * instead of `file:///C:\dir`), and one more doubling on every
+ * serialize → parse → serialize round-trip.
+ */
+export function unwrapReferenceDestination(destination: string): string {
+  const trimmed = destination.trim()
+  if (!trimmed.startsWith("<") || !trimmed.endsWith(">")) return trimmed
+  return trimmed
+    .slice(1, -1)
+    .trim()
+    .replace(/\\([\\<>])/g, "$1")
+}
+
+/**
  * Whether the backslash at `k` escapes the next character. CommonMark never lets
  * a backslash escape a space or line break, so a `\` + whitespace must END (not
  * extend) a label/destination scan — only `\` + a non-whitespace char (the

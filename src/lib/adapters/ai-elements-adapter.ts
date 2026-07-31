@@ -26,6 +26,7 @@ import {
 import {
   tokenizeReferenceLinks,
   unescapeReferenceLabel,
+  unwrapReferenceDestination,
 } from "@/lib/reference-link"
 
 /**
@@ -857,14 +858,11 @@ function handleMarkdownLink(
   resources: UserResourceDisplay[]
 ): string {
   const normalizedLabel = label.trim()
-  // Unwrap a CommonMark angle-bracket destination (`<uri>`) to the bare uri so
-  // scheme tests and the stored value are clean. `match` (returned for
-  // inline-kept refs) keeps the original bracketed form untouched.
-  const rawUri = uri.trim()
-  const normalizedUri =
-    rawUri.startsWith("<") && rawUri.endsWith(">")
-      ? rawUri.slice(1, -1).trim()
-      : rawUri
+  // Unwrap a CommonMark angle-bracket destination (`<uri>`) — and decode the
+  // `\`/`<`/`>` escapes it carries — so scheme tests and the stored chip uri see
+  // the real path, not `file:///C:\\dir`. `match` (returned for inline-kept
+  // refs) keeps the original bracketed form untouched.
+  const normalizedUri = unwrapReferenceDestination(uri)
   // A `codeg://` reference (session / commit / agent) renders as an inline badge
   // in the transcript (markdown-link → ReferenceBadge); never lift it to the
   // bottom resource-chip row. The guard mirrors markdown-link's interception

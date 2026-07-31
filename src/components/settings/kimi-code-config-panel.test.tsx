@@ -8,6 +8,7 @@ import {
   KimiCodeConfigPanel,
   kimiBaseUrlForRegion,
   kimiConfigSummary,
+  kimiDraftEquals,
   kimiDraftFromConfig,
   kimiEndpointRegionFromBaseUrl,
   kimiInitialMode,
@@ -278,6 +279,41 @@ describe("validateKimiDraft", () => {
     ).toBeUndefined()
   })
 
+  it("rejects a default level that is not among the offered ones", () => {
+    // kimi silently clamps an unlisted default to the middle entry, so the
+    // composer would open on a level the user never picked.
+    expect(
+      validateKimiDraft(
+        draft({
+          reasoningEnabled: true,
+          supportEfforts: ["low", "high"],
+          defaultEffort: "max",
+        })
+      ).defaultEffort
+    ).toBe("errorDefaultEffortUnlisted")
+    expect(
+      validateKimiDraft(
+        draft({
+          reasoningEnabled: true,
+          supportEfforts: ["low", "high"],
+          defaultEffort: "high",
+        })
+      ).defaultEffort
+    ).toBeUndefined()
+  })
+
+  it("ignores the default level while reasoning is off", () => {
+    expect(
+      validateKimiDraft(
+        draft({
+          reasoningEnabled: false,
+          supportEfforts: [],
+          defaultEffort: "max",
+        })
+      ).defaultEffort
+    ).toBeUndefined()
+  })
+
   it("rejects a URL without an http(s) scheme", () => {
     expect(
       validateKimiDraft(draft({ region: "custom", baseUrl: "api.example.com" }))
@@ -288,6 +324,59 @@ describe("validateKimiDraft", () => {
         draft({ region: "custom", baseUrl: "http://localhost:8080/v1" })
       ).baseUrl
     ).toBeUndefined()
+  })
+})
+
+describe("reasoning metadata in kimiDraftFromConfig", () => {
+  it("reads reasoning as off when the model declares no capabilities", () => {
+    // The shape the panel wrote before this feature. kimi treats an absent
+    // capabilities array as "allow everything" AND advertises no Thinking
+    // picker, so this must NOT read back as reasoning enabled.
+    const seeded = kimiDraftFromConfig({ interfaceType: "kimi", modelId: "m" })
+    expect(seeded.reasoningEnabled).toBe(false)
+    expect(seeded.alwaysThinking).toBe(false)
+    expect(seeded.supportEfforts).toEqual([])
+    expect(seeded.defaultEffort).toBe("")
+  })
+
+  it("reads either thinking capability as enabled, and always_thinking too", () => {
+    expect(
+      kimiDraftFromConfig({ capabilities: ["thinking", "image_in"] })
+    ).toMatchObject({ reasoningEnabled: true, alwaysThinking: false })
+    expect(
+      kimiDraftFromConfig({ capabilities: ["always_thinking"] })
+    ).toMatchObject({ reasoningEnabled: true, alwaysThinking: true })
+  })
+
+  it("round-trips the effort list and default", () => {
+    expect(
+      kimiDraftFromConfig({
+        capabilities: ["thinking"],
+        supportEfforts: ["low", "high"],
+        defaultEffort: "high",
+      })
+    ).toMatchObject({ supportEfforts: ["low", "high"], defaultEffort: "high" })
+  })
+})
+
+describe("kimiDraftEquals", () => {
+  it("compares the effort array by value, not by reference", () => {
+    // A plain `!==` here would mark every freshly-seeded form as dirty, since
+    // kimiDraftFromConfig builds a new array each call.
+    const config = { capabilities: ["thinking"], supportEfforts: ["low"] }
+    expect(
+      kimiDraftEquals(kimiDraftFromConfig(config), kimiDraftFromConfig(config))
+    ).toBe(true)
+  })
+
+  it("detects an added, removed or reordered level", () => {
+    const base = kimiDraftFromConfig({ supportEfforts: ["low", "high"] })
+    expect(kimiDraftEquals(base, { ...base, supportEfforts: ["low"] })).toBe(
+      false
+    )
+    expect(
+      kimiDraftEquals(base, { ...base, supportEfforts: ["high", "low"] })
+    ).toBe(false)
   })
 })
 
@@ -613,6 +702,78 @@ describe("KimiCodeConfigPanel", () => {
 
     expect(screen.getByLabelText(label(kimi.modelLabel))).toHaveValue(
       "typing-in-progress"
+    )
+  })
+
+  it("keeps reasoning out of the payload until it is switched on", () => {
+    // Off must send no levels, so the backend omits `capabilities` and kimi
+    // keeps its permissive default (the pre-feature behaviour).
+    renderPanel(makeAgent(null))
+    fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
+      target: { value: "sk-abc" },
+    })
+    fireEvent.change(screen.getByLabelText(label(kimi.modelLabel)), {
+      target: { value: "m" },
+    })
+    expect(
+      screen.queryByRole("button", { name: "high" })
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(saveLabel) }))
+    expect(acpUpdateKimiCodeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ reasoningEnabled: false, supportEfforts: [] })
+    )
+  })
+
+  it("sends the chosen levels once reasoning is switched on", () => {
+    renderPanel(makeAgent(null))
+    fireEvent.change(screen.getByLabelText(label(kimi.apiKeyLabel)), {
+      target: { value: "sk-abc" },
+    })
+    fireEvent.change(screen.getByLabelText(label(kimi.modelLabel)), {
+      target: { value: "m" },
+    })
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: new RegExp(kimi.reasoningEnableLabel),
+      })
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "low" }))
+    fireEvent.click(screen.getByRole("button", { name: "high" }))
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(saveLabel) }))
+
+    expect(acpUpdateKimiCodeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoningEnabled: true,
+        alwaysThinking: false,
+        supportEfforts: ["low", "high"],
+      })
+    )
+  })
+
+  it("drops a default level when its chip is switched back off", () => {
+    // Otherwise the saved default would name a level the composer no longer
+    // offers, and kimi would silently clamp it to the middle entry.
+    renderPanel(
+      makeAgent(
+        JSON.stringify({
+          hasManagedBlock: true,
+          interfaceType: "kimi",
+          key: "sk-saved",
+          modelId: "m",
+          maxContextSize: 262144,
+          capabilities: ["thinking"],
+          supportEfforts: ["low", "high"],
+          defaultEffort: "high",
+        })
+      )
+    )
+    fireEvent.click(screen.getByRole("button", { name: "high" }))
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(saveLabel) }))
+
+    expect(acpUpdateKimiCodeConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ supportEfforts: ["low"], defaultEffort: "" })
     )
   })
 

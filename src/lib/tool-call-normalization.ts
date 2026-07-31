@@ -1,3 +1,7 @@
+import {
+  parseCodexListFilesTitle,
+  parseCodexSearchTitle,
+} from "@/lib/codex-command-action"
 import { COLLAB_AGENT_TOOL_NAME, isCodexCollabInput } from "@/lib/collab-tool"
 
 const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
@@ -350,8 +354,8 @@ function inferFromInput(
 }
 
 export function normalizeToolName(toolName: string): string {
-  const trimmed = toolName
-    .trim()
+  const raw = toolName.trim()
+  const trimmed = raw
     .replace(/^[:：'"`“”‘’\s]+/, "")
     .replace(/['"`“”‘’\s]+$/, "")
   if (!trimmed) return "tool"
@@ -361,6 +365,19 @@ export function normalizeToolName(toolName: string): string {
 
   const goalUpdate = parseGoalUpdateTitle(trimmed)
   if (goalUpdate) return goalUpdate.toolName
+
+  // codex-acp command-action tool calls (`createCommandActionEvent`) carry no
+  // tool name and no rawInput — only a human title — so the search / list-files
+  // identity has to be read back out of it. Without this the whole title becomes
+  // the "tool name": no search icon, an "other" tool-group tally, and a body
+  // that dumps the raw `{formatted_output, exit_code}` envelope. The sibling
+  // `Read file '<path>'` shape already resolves via the `^read` freeform rule.
+  //
+  // Matched against `raw`, not `trimmed`: these titles END in the quote that
+  // closes the interpolated query/path (`Search for 'TODO'`), and the trailing-
+  // quote strip above would eat it.
+  if (parseCodexSearchTitle(raw)) return "grep"
+  if (parseCodexListFilesTitle(raw)) return "glob"
 
   const canonical = canonicalizeToolName(trimmed)
   const alias = EXACT_TOOL_NAME_ALIASES[canonical]
@@ -531,6 +548,21 @@ export function inferLiveToolName(params: {
   // heuristic rewrites `memory_recall` to `memory_re`.
   if (metaToolName) return metaToolName.toLowerCase()
 
+  // Grok stamps the authoritative tool name in `_meta["x.ai/tool"].name` while
+  // its `title` MUTATES across the lifecycle. A background-task poll is the
+  // worst case: `get_command_or_subagent_output` → "Get task output: term_…" →
+  // "/bin/bash -lc 'pnpm dev …' (term_b0d)", so the title fallback below named
+  // the same call three different things and finally collapsed it to "bash" —
+  // where the history path (which reads `x.ai/tool.name`) kept the real name.
+  //
+  // Placed AFTER `inferFromInput` so every input-shape classification is
+  // preserved (`search_replace` → "edit" via old_string/new_string,
+  // `run_terminal_command` → "bash" via command, …) and this only decides the
+  // cases where the input shape is silent. See `extractGrokToolName` for the
+  // `use_tool` exclusion.
+  const grokToolName = extractGrokToolName(params.meta)
+  if (grokToolName) return normalizeToolName(grokToolName)
+
   const byTitle = normalizeToolName(params.title ?? "")
   if (byTitle !== "tool") return byTitle
 
@@ -605,4 +637,27 @@ function extractGrokPlanModeToolName(
   if (kind === "enter_plan") return "enter_plan_mode"
   if (kind === "exit_plan") return "exit_plan_mode"
   return null
+}
+
+/**
+ * Grok's authoritative tool name from `_meta["x.ai/tool"].name` — the same
+ * field the history parser stores (`parsers/grok.rs`), and the only identity on
+ * the live wire that does NOT mutate across a call's lifecycle (`title` does).
+ *
+ * `use_tool` — Grok's generic MCP envelope — is excluded: the backend unwraps it
+ * and puts the inner `<server>__<tool>` name in the TITLE
+ * (`connection.rs::unwrap_grok_use_tool`), so the envelope name would send every
+ * MCP call (delegation companions included) to the generic tool card.
+ */
+function extractGrokToolName(
+  meta: Record<string, unknown> | null | undefined
+): string | null {
+  if (!meta || typeof meta !== "object") return null
+  const tool = (meta as Record<string, unknown>)["x.ai/tool"]
+  if (!tool || typeof tool !== "object") return null
+  const name = (tool as Record<string, unknown>).name
+  if (typeof name !== "string") return null
+  const trimmed = name.trim()
+  if (!trimmed || trimmed === "use_tool") return null
+  return trimmed
 }

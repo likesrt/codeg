@@ -13,9 +13,10 @@ import type { ReferenceAttrs } from "./types"
  * {@link "./to-prompt-blocks".serializeDocToText} maps back to `\n`, so the text
  * round-trips. An empty string yields an empty array.
  *
- * Used wherever the host seeds the composer from plain text (drafts, quick
- * messages, expert/office prompt templates, injected content) now that no
- * Markdown parser is loaded.
+ * Used wherever the host seeds the composer from plain text (drafts,
+ * expert/office prompt templates, injected content) now that no Markdown parser
+ * is loaded. Seeding paths that may carry serialized references should go
+ * through {@link textToSeededInlineContent} instead.
  */
 export function textToInlineContent(text: string): JSONContent[] {
   if (!text) return []
@@ -28,17 +29,6 @@ export function textToInlineContent(text: string): JSONContent[] {
     if (line.length > 0) out.push({ type: "text", text: line })
   })
   return out
-}
-
-/**
- * A whole document (one paragraph) holding {@link textToInlineContent}. Used to
- * replace the composer content from a plain-text string.
- */
-export function textToDoc(text: string): JSONContent {
-  return {
-    type: "doc",
-    content: [{ type: "paragraph", content: textToInlineContent(text) }],
-  }
 }
 
 /**
@@ -85,6 +75,36 @@ export function textToHydratedInlineContent(
     }
   }
   return out
+}
+
+/**
+ * Inline content for text the *host* seeds into the composer (a quick message,
+ * a stored draft, a prompt template): {@link textToHydratedInlineContent} when
+ * the text carries serialized references, literal {@link textToInlineContent}
+ * otherwise.
+ *
+ * Same reasoning as the paste path: seeded text is stored in the wire format a
+ * sent message uses (it usually *came from* `getText()`), so
+ * `[label](file:·codeg:…)` links and bare `/cmd`·`$skill` tokens must show as
+ * badges immediately instead of only after the message is sent. Hydration is
+ * lossless — the badges re-serialize to exactly the seeded text — so what gets
+ * sent is unchanged either way.
+ */
+export function textToSeededInlineContent(text: string): JSONContent[] {
+  return textToHydratedInlineContent(text) ?? textToInlineContent(text)
+}
+
+/**
+ * A whole document (one paragraph) holding {@link textToSeededInlineContent}.
+ * Used to replace the composer content from a plain-text string: `defaultText`,
+ * a legacy v1 Markdown draft, a queued message's display text, an injected
+ * quick-action/expert template, a saved automation's prompt.
+ */
+export function textToSeededDoc(text: string): JSONContent {
+  return {
+    type: "doc",
+    content: [{ type: "paragraph", content: textToSeededInlineContent(text) }],
+  }
 }
 
 /** The two clipboard flavors the paste decision looks at. */
