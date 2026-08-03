@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 use crate::acp::binary_cache;
-use crate::acp::registry::{self, AgentDistribution};
+use crate::acp::registry::{self, AcpAdapterRelation, AcpAgentMeta, AgentDistribution};
 use crate::models::agent::AgentType;
 
 /// Cache for npm environment check results.
@@ -42,12 +42,42 @@ pub struct CheckItem {
     pub fixes: Vec<FixAction>,
 }
 
+/// Everything the UI needs to explain that codeg's entry for this agent is an
+/// ACP *adapter*, not the vendor CLI the user already has — see
+/// [`registry::acp_adapter_relation`]. Deliberately STRUCTURED (no prose): the
+/// frontend owns the wording so it is localized, the same way
+/// `buildVersionCheck` already builds the version card.
+///
+/// `None` on [`PreflightResult`] for every non-adapter agent.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdapterInfo {
+    /// npm spec codeg installs, e.g. "@agentclientprotocol/claude-agent-acp@0.63.0".
+    pub adapter_package: String,
+    /// Command the launch gate resolves, e.g. "claude-agent-acp".
+    pub adapter_cmd: String,
+    /// Whether that command currently resolves.
+    pub adapter_installed: bool,
+    /// The vendor CLI, e.g. "claude".
+    pub native_cmd: String,
+    /// Display name for the vendor CLI, e.g. "Claude Code CLI".
+    pub native_label: String,
+    /// Where the user's own vendor CLI was found, if at all. codeg never
+    /// launches it — it is named so the user sees we did look.
+    pub native_path: Option<String>,
+    /// Config dir both read, so no second login is needed.
+    pub shared_config_dir: String,
+    pub docs_url: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PreflightResult {
     pub agent_type: AgentType,
     pub agent_name: String,
     pub passed: bool,
     pub checks: Vec<CheckItem>,
+    /// Adapter-vs-vendor-CLI explainer data; `None` unless this agent is an
+    /// ACP adapter. Never affects `passed` — it explains, it does not gate.
+    pub adapter: Option<AdapterInfo>,
 }
 
 pub fn clear_npm_env_cache() {
@@ -81,6 +111,66 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
         agent_name: meta.name.to_string(),
         passed,
         checks,
+        adapter: probe_adapter(&meta).await,
+    }
+}
+
+/// Probe the adapter/vendor-CLI split for an adapter agent (`None` otherwise).
+///
+/// Path resolution ONLY — no `--version` spawns. The Settings page runs a full
+/// preflight for every agent each time it opens, so this stays off the process
+/// spawner in the common case; the heavier version probe lives in the on-demand
+/// diagnostics report, which bounds every command with `DIAG_PROBE_TIMEOUT`.
+///
+/// The two lookups run concurrently because either can fall through to
+/// `resolve_npx_command`'s `npm prefix -g` probe (only when `which` misses), and
+/// a FAILED prefix resolution is never cached — `cached_npm_global_prefix_with`
+/// short-circuits on `None` before it reaches `OnceCell::set`. On a machine
+/// where that probe stalls, running these in sequence would pay
+/// `NPM_PREFIX_TIMEOUT` twice per adapter agent; overlapping them costs the same
+/// two spawns but bounds the added Settings latency to one timeout.
+async fn probe_adapter(meta: &AcpAgentMeta) -> Option<AdapterInfo> {
+    let relation = registry::acp_adapter_relation(meta.agent_type)?;
+    let adapter_cmd = match &meta.distribution {
+        AgentDistribution::Npx { cmd, .. } => *cmd,
+        // Both adapters are npx-distributed; a future non-npx one would need a
+        // launchability probe of its own rather than a silently wrong answer.
+        _ => return None,
+    };
+    let (adapter_installed, native_path) = tokio::join!(
+        crate::commands::acp::is_cmd_available(adapter_cmd),
+        crate::commands::acp::resolve_vendor_cli(relation.native_cmd, relation.extra_dirs),
+    );
+
+    Some(build_adapter_info(
+        meta,
+        &relation,
+        adapter_installed,
+        native_path.map(|p| p.to_string_lossy().to_string()),
+    ))
+}
+
+/// Pure assembly half of [`probe_adapter`], split out so the mapping is
+/// unit-testable without touching PATH or the filesystem.
+fn build_adapter_info(
+    meta: &AcpAgentMeta,
+    relation: &AcpAdapterRelation,
+    adapter_installed: bool,
+    native_path: Option<String>,
+) -> AdapterInfo {
+    let (adapter_package, adapter_cmd) = match &meta.distribution {
+        AgentDistribution::Npx { package, cmd, .. } => (package.to_string(), cmd.to_string()),
+        _ => (String::new(), String::new()),
+    };
+    AdapterInfo {
+        adapter_package,
+        adapter_cmd,
+        adapter_installed,
+        native_cmd: relation.native_cmd.to_string(),
+        native_label: relation.native_label.to_string(),
+        native_path,
+        shared_config_dir: relation.shared_config_dir.to_string(),
+        docs_url: relation.docs_url.to_string(),
     }
 }
 
@@ -603,4 +693,74 @@ async fn check_binary_environment(
     }
 
     checks
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+
+    fn info_for(agent_type: AgentType, native_path: Option<&str>, installed: bool) -> AdapterInfo {
+        let meta = registry::get_agent_meta(agent_type);
+        let relation = registry::acp_adapter_relation(agent_type)
+            .expect("agent under test must be an adapter agent");
+        build_adapter_info(
+            &meta,
+            &relation,
+            installed,
+            native_path.map(str::to_string),
+        )
+    }
+
+    // The card's whole argument rests on these four fields being concrete: the
+    // package we install, the command we look for, the vendor CLI we did NOT
+    // find under that name, and the config dir both share.
+    #[test]
+    fn claude_adapter_info_names_package_command_and_shared_config() {
+        let info = info_for(
+            AgentType::ClaudeCode,
+            Some("/opt/homebrew/bin/claude"),
+            false,
+        );
+        assert_eq!(
+            info.adapter_package,
+            "@agentclientprotocol/claude-agent-acp@0.64.1"
+        );
+        assert_eq!(info.adapter_cmd, "claude-agent-acp");
+        assert!(!info.adapter_installed);
+        assert_eq!(info.native_cmd, "claude");
+        assert_eq!(info.native_label, "Claude Code CLI");
+        assert_eq!(info.native_path.as_deref(), Some("/opt/homebrew/bin/claude"));
+        assert_eq!(info.shared_config_dir, "~/.claude");
+        assert!(info.docs_url.ends_with("#acp-adapters"));
+    }
+
+    #[test]
+    fn codex_adapter_info_uses_codex_home() {
+        let info = info_for(AgentType::Codex, None, true);
+        assert_eq!(info.adapter_package, "@agentclientprotocol/codex-acp@1.1.9");
+        assert_eq!(info.adapter_cmd, "codex-acp");
+        assert!(info.adapter_installed);
+        assert_eq!(info.native_cmd, "codex");
+        assert!(info.native_path.is_none());
+        assert_eq!(info.shared_config_dir, "~/.codex");
+    }
+
+    // Non-adapter agents must produce nothing: `probe_adapter` short-circuits
+    // on the registry relation, so an agent whose `cmd` IS the vendor CLI never
+    // gets an explainer claiming otherwise.
+    #[tokio::test]
+    async fn non_adapter_agents_have_no_adapter_info() {
+        for agent_type in [
+            AgentType::Gemini,
+            AgentType::Cline,
+            AgentType::OpenCode,
+            AgentType::Hermes,
+        ] {
+            let meta = registry::get_agent_meta(agent_type);
+            assert!(
+                probe_adapter(&meta).await.is_none(),
+                "unexpected adapter info for {agent_type:?}"
+            );
+        }
+    }
 }

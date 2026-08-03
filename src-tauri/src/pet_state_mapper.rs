@@ -587,6 +587,7 @@ mod tests {
                 message: "boom".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
         ));
@@ -946,6 +947,7 @@ mod tests {
                 message: "boom".into(),
                 agent_type: "codex".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
         ));
@@ -1061,6 +1063,7 @@ mod tests {
                 message: "x".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
             AcpEvent::PermissionRequest {
@@ -1315,6 +1318,7 @@ mod tests {
                 message: "boom".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
         );
@@ -1369,6 +1373,7 @@ mod tests {
                     message: "boom".into(),
                     agent_type: "claude_code".into(),
                     code: None,
+                    details: None,
                     terminal: true,
                 },
             );
@@ -1456,6 +1461,7 @@ mod tests {
                 message: "boom".into(),
                 agent_type: "claude_code".into(),
                 code: None,
+                details: None,
                 terminal: true,
             },
         );

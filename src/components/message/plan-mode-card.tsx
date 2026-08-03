@@ -11,17 +11,19 @@ import { cn } from "@/lib/utils"
 
 /**
  * Dedicated rendering for plan-*mode* transition tools — Claude Code's
- * `EnterPlanMode`/`ExitPlanMode` and Cline's `switch_mode`. These are mode
- * signals, not work tools, so they render directly here instead of folding into
- * the misleading "思考 N 次" tool-group (see `isPlanModeToolName` in
- * `plan-parse.ts` and the run-break in `groupConsecutiveToolCalls`).
+ * `EnterPlanMode`/`ExitPlanMode`, Cline's `switch_mode`, and codex-acp
+ * ≥1.1.8's `plan_review` gate. These are mode signals, not work tools, so they
+ * render directly here instead of folding into the misleading "思考 N 次"
+ * tool-group (see `isPlanModeToolName` in `plan-parse.ts` and the run-break in
+ * `groupConsecutiveToolCalls`).
  *
  * Content-driven, not name-driven:
  *   - input carries freeform plan markdown (ExitPlanMode, or a switch_mode that
  *     proposes a plan) → render the plan directly as a card.
  *   - otherwise → a compact, non-collapsible mode marker. `enterplanmode` and
  *     `exitplanmode` get plan-specific labels; a non-plan `switch_mode` gets a
- *     neutral "switched mode" marker (never mislabeled as a plan).
+ *     neutral "switched mode" marker (never mislabeled as a plan);
+ *     `plan_review` reports the user's decision.
  */
 
 function parseInput(input: string | null): Record<string, unknown> | null {
@@ -62,15 +64,29 @@ function PlanModeMarker({ label }: { label: string }) {
   )
 }
 
+/**
+ * codex-acp's own wording for an approved plan review, echoed back as the
+ * tool call's `rawOutput` (`"User approved the plan."`; the other branch is
+ * `"User kept the session in plan mode."`). Matching the adapter's constant is
+ * the same pragmatism `parseCodexSearchTitle` and `is_mcp_tool_call_approval`
+ * already apply to codex-specific wire strings. Anything unrecognised falls
+ * back to the "kept in plan mode" label, so a wording change downgrades the
+ * marker rather than mislabeling an approval.
+ */
+const CODEX_PLAN_APPROVED_PREFIX = "User approved"
+
 export const PlanModeCard = memo(function PlanModeCard({
   toolName,
   input,
+  output = null,
   errorText,
   state,
 }: {
-  /** Normalized (tool-call-normalization) form: enterplanmode|exitplanmode|switch_mode. */
+  /** Normalized (tool-call-normalization) form: enterplanmode|exitplanmode|switch_mode|plan_review. */
   toolName: string
   input: string | null
+  /** Tool result text. Only read for `plan_review`, to report the decision. */
+  output?: string | null
   errorText: string | null
   state: ToolCallState
 }) {
@@ -81,6 +97,17 @@ export const PlanModeCard = memo(function PlanModeCard({
 
   const markerLabel = (() => {
     if (toolName === "exitplanmode") return t("planMode.submitted")
+    if (toolName === "plan_review") {
+      // While the permission card is still open the seeded call is unsettled
+      // (`input-available`, no output yet). Reporting a decision here would
+      // state an outcome the user has not chosen — say "awaiting" until the
+      // tool call settles, then read the decision off the output.
+      const settled = state === "output-available" || state === "output-error"
+      if (!settled) return t("planMode.reviewPending")
+      return output?.trimStart().startsWith(CODEX_PLAN_APPROVED_PREFIX)
+        ? t("planMode.reviewApproved")
+        : t("planMode.reviewKept")
+    }
     if (toolName === "switch_mode") {
       const mode =
         typeof parsed?.mode === "string"

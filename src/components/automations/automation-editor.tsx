@@ -45,6 +45,7 @@ import { automationComputeNextRun } from "@/lib/api"
 import type {
   AgentType,
   Automation,
+  AutomationAction,
   AutomationDraft,
   AutomationIsolation,
   AutomationTriggerKind,
@@ -89,6 +90,9 @@ export function AutomationEditor({
   const folders = useAppWorkspaceStore((s) => s.folders)
 
   const [name, setName] = useState(automation?.name ?? "")
+  const [action, setAction] = useState<AutomationAction>(
+    automation?.config?.action ?? "launch_session"
+  )
   const [agentType, setAgentType] = useState<AgentType>(
     automation?.agent_type ?? "claude_code"
   )
@@ -137,6 +141,14 @@ export function AutomationEditor({
     () => folders.find((f) => f.id === folderId)?.path ?? null,
     [folders, folderId]
   )
+
+  // Task boards bind to project roots only — the enqueue action narrows the
+  // folder choice accordingly (sessions can still target any folder).
+  const projectFolders = useMemo(
+    () => folders.filter((f) => f.parent_id == null && f.kind === "regular"),
+    [folders]
+  )
+  const selectableFolders = action === "enqueue_task" ? projectFolders : folders
 
   // A folder is selected but its path hasn't resolved yet (folders list still
   // hydrating, or the folder was removed): the agent-options probe would fall
@@ -219,11 +231,11 @@ export function AutomationEditor({
     if (
       folderId == null &&
       automation?.root_folder_id == null &&
-      folders.length > 0
+      selectableFolders.length > 0
     ) {
-      setFolderId(folders[0].id)
+      setFolderId(selectableFolders[0].id)
     }
-  }, [folders, folderId, automation])
+  }, [selectableFolders, folderId, automation])
 
   const submit = async () => {
     setError(null)
@@ -278,6 +290,9 @@ export function AutomationEditor({
         ...snapshotLabels(snapshot, mode_id, config_values),
       }
 
+      // Enqueue-task automations never run in place: canonicalize the
+      // session-only fields so the stored row can't carry a stale branch.
+      const enqueue = action === "enqueue_task"
       const draft: AutomationDraft = {
         name: name.trim(),
         // Enable/disable lives on the detail header + row menu now; preserve an
@@ -288,19 +303,20 @@ export function AutomationEditor({
         timezone,
         agent_type: persistedAgentType,
         root_folder_id: folderId,
-        isolation,
+        isolation: enqueue ? "worktree_per_run" : isolation,
         branch:
-          isolation === "shared_in_root" && branch.trim()
+          !enqueue && isolation === "shared_in_root" && branch.trim()
             ? branch.trim()
             : null,
         is_remote_branch:
-          isolation === "shared_in_root" && branch.trim()
+          !enqueue && isolation === "shared_in_root" && branch.trim()
             ? isRemoteBranch
             : false,
         config: fellBackToSubstitute
           ? {
               // Preserve the original agent's saved config verbatim; only the
               // user-editable prompt is refreshed.
+              action,
               prompt_blocks: blocks,
               display_text: displayText,
               mode_id: automation.config?.mode_id ?? null,
@@ -309,6 +325,7 @@ export function AutomationEditor({
                 automation.config?.label_snapshot ?? label_snapshot,
             }
           : {
+              action,
               prompt_blocks: blocks,
               display_text: displayText,
               mode_id,
@@ -417,6 +434,59 @@ export function AutomationEditor({
         </div>
       </div>
 
+      {/* Action — what a fire does: launch a session (legacy) or enqueue a
+          task on the folder's board. */}
+      <div className="flex flex-col gap-2">
+        <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
+          {t("sectionAction")}
+        </h3>
+        <div
+          role="group"
+          aria-label={t("sectionAction")}
+          className="inline-flex w-fit rounded-lg border border-border bg-card/40 p-0.5"
+        >
+          {(
+            [
+              { value: "launch_session", label: t("actionLaunchSession") },
+              { value: "enqueue_task", label: t("actionEnqueueTask") },
+            ] as Array<{ value: AutomationAction; label: string }>
+          ).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={action === opt.value}
+              onClick={() => {
+                setAction(opt.value)
+                // The board only accepts project roots; drop a now-invalid
+                // folder selection instead of saving a doomed draft.
+                if (
+                  opt.value === "enqueue_task" &&
+                  folderId != null &&
+                  !projectFolders.some((f) => f.id === folderId)
+                ) {
+                  setFolderId(projectFolders[0]?.id ?? null)
+                  setBranch("")
+                  setIsRemoteBranch(false)
+                }
+              }}
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                action === opt.value
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {action === "enqueue_task" ? (
+          <p className="text-xs text-muted-foreground">
+            {t("actionEnqueueTaskHint")}
+          </p>
+        ) : null}
+      </div>
+
       {/* Target — where the run happens: workspace folder, isolation, branch. */}
       <div className="flex flex-col gap-2">
         <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
@@ -443,7 +513,7 @@ export function AutomationEditor({
               <SelectValue placeholder={t("folderPlaceholder")} />
             </SelectTrigger>
             <SelectContent>
-              {folders.map((f) => (
+              {selectableFolders.map((f) => (
                 <SelectItem key={f.id} value={String(f.id)}>
                   {f.name}
                 </SelectItem>
@@ -454,8 +524,9 @@ export function AutomationEditor({
           {/* A worktree run gets its own fresh tree, so a branch only applies to
               the shared-folder case — the picker shows there and the checkbox
               sits after it. Ticking the checkbox switches to worktree isolation
-              and hides the picker. */}
-          {isolation === "shared_in_root" ? (
+              and hides the picker. Enqueued tasks mint their own worktree in
+              the work-task engine, so neither control applies. */}
+          {action === "launch_session" && isolation === "shared_in_root" ? (
             <AutomationBranchPicker
               folderPath={folderPath}
               value={branch}
@@ -472,19 +543,23 @@ export function AutomationEditor({
             />
           ) : null}
 
-          <Label className="h-7 text-xs font-normal text-muted-foreground">
-            <Checkbox
-              checked={isolation === "worktree_per_run"}
-              onCheckedChange={(v) =>
-                setIsolation(v === true ? "worktree_per_run" : "shared_in_root")
-              }
-            />
-            {t("isolationWorktree")}
-          </Label>
+          {action === "launch_session" ? (
+            <Label className="h-7 text-xs font-normal text-muted-foreground">
+              <Checkbox
+                checked={isolation === "worktree_per_run"}
+                onCheckedChange={(v) =>
+                  setIsolation(
+                    v === true ? "worktree_per_run" : "shared_in_root"
+                  )
+                }
+              />
+              {t("isolationWorktree")}
+            </Label>
+          ) : null}
         </div>
         {/* Running in the folder shares the user's working tree (and any
             concurrent shared run); surface that trade-off where it's chosen. */}
-        {isolation === "shared_in_root" ? (
+        {action === "launch_session" && isolation === "shared_in_root" ? (
           <p className="text-xs text-muted-foreground">
             {t("isolationSharedCaveat")}
           </p>

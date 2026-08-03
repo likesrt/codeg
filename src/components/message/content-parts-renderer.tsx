@@ -34,6 +34,7 @@ import {
 } from "@/components/ai-elements/tool"
 import { Terminal } from "@/components/ai-elements/terminal"
 import { CodeBlock } from "@/components/ai-elements/code-block"
+import { JsonTreeView } from "@/components/ai-elements/json-tree"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { generateUnifiedDiff } from "@/lib/unified-diff-generator"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
@@ -52,6 +53,18 @@ import {
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { SearchResultsOutput } from "./search-results-output"
 import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
+import {
+  CODEX_SCRIPT_TOOL_NAME,
+  parseCodexScriptCard,
+  type CodexScriptCard,
+} from "@/lib/codex-code-mode"
+import {
+  describeStdinChars,
+  extractAnnouncedSessionId,
+  isShellSessionToolName,
+  parseShellSessionInput,
+  WAIT_TOOL_NAME,
+} from "@/lib/shell-session-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
@@ -80,7 +93,10 @@ import {
   WrenchIcon,
   ChevronRightIcon,
   BrainIcon,
+  CodeIcon,
+  KeyboardIcon,
   MessageCircleQuestionMarkIcon,
+  TimerIcon,
   UsersIcon,
 } from "lucide-react"
 
@@ -848,6 +864,18 @@ function getToolIcon(
     return <FilePlusIcon className={ICON_CLASS} />
   if (name === "bash" || name === "exec_command")
     return <TerminalIcon className={ICON_CLASS} />
+  if (name === CODEX_SCRIPT_TOOL_NAME)
+    return <CodeIcon className={ICON_CLASS} />
+  if (isShellSessionToolName(name)) {
+    // Sending keystrokes reads as input; everything else (including the 99% of
+    // `write_stdin` calls that send nothing) is a poll on a running session.
+    const chars = parseShellSessionInput(input ?? null)?.chars
+    return chars ? (
+      <KeyboardIcon className={ICON_CLASS} />
+    ) : (
+      <TimerIcon className={ICON_CLASS} />
+    )
+  }
   if (name === "apply_patch") return <FilePenLineIcon className={ICON_CLASS} />
   if (name === "glob" || name === "grep")
     return <SearchIcon className={ICON_CLASS} />
@@ -865,7 +893,8 @@ function getToolIcon(
   if (
     name === "enterplanmode" ||
     name === "exitplanmode" ||
-    name === "switch_mode"
+    name === "switch_mode" ||
+    name === "plan_review"
   )
     return <ListTodoIcon className={ICON_CLASS} />
   if (name === "attempt_completion")
@@ -928,6 +957,37 @@ function deriveToolTitle(
     if (name === "edit") return `Edit ${sp}`
     if (name === "write") return `Write ${sp}`
     if (name === "notebookedit") return `NotebookEdit ${sp}`
+  }
+
+  // Codex code-mode script that could not be decomposed: title from the first
+  // command the parser could read, else a plain "Script" label.
+  if (name === CODEX_SCRIPT_TOOL_NAME) {
+    const card = parseCodexScriptCard(input)
+    if (card?.title) {
+      return ellipsis(simplifyShellCommand(card.title).split("\n")[0], 80)
+    }
+    return "Script"
+  }
+
+  // codex unified-exec session tools: neither carries a command, so the bash
+  // branch below came up empty and the header fell back to the bare tool name
+  // ("wait" / "bash"). Title them by the command whose session they address —
+  // resolved by the history parser, see `shell-session-tool.ts`.
+  if (isShellSessionToolName(name)) {
+    const call = parseShellSessionInput(input)
+    if (call) {
+      if (call.chars) return `Stdin ${describeStdinChars(call.chars)}`
+      const verb =
+        name === WAIT_TOOL_NAME && call.terminate ? "Terminate" : "Wait"
+      if (call.command) {
+        return ellipsis(
+          `${verb} ${simplifyShellCommand(call.command).split("\n")[0]}`,
+          80
+        )
+      }
+      if (call.sessionId) return `${verb} cell ${call.sessionId}`
+    }
+    return null
   }
 
   // Command tools
@@ -1062,11 +1122,12 @@ function deriveToolTitle(
     if (sk) return `Skill: ${sk}`
   }
 
-  // EnterPlanMode / ExitPlanMode / SwitchMode
+  // EnterPlanMode / ExitPlanMode / SwitchMode / codex plan_review
   if (
     name === "enterplanmode" ||
     name === "exitplanmode" ||
-    name === "switch_mode"
+    name === "switch_mode" ||
+    name === "plan_review"
   ) {
     const plan = getField("plan")
     if (plan) {
@@ -1128,6 +1189,7 @@ function localizeDerivedToolTitle(
 
   if (title === "Edit") return t("title.edit")
   if (title === "Command") return t("title.command")
+  if (title === "Script") return t("title.script")
   if (title === "TodoWrite") return t("title.todoWrite")
   if (title === "Read") return t("title.read")
   if (title === "Write") return t("title.write")
@@ -1159,6 +1221,26 @@ function localizeDerivedToolTitle(
       target: notebookEditWithTarget[1],
     })
   }
+
+  // codex session tools. The `cell` forms must be tried first: they are the
+  // fallback shape for an unresolved session id, and `^Wait (.+)$` would eat
+  // them.
+  const waitCell = title.match(/^Wait cell (\d+)$/)
+  if (waitCell) return t("title.waitCell", { id: waitCell[1] })
+
+  const waitCommand = title.match(/^Wait (.+)$/)
+  if (waitCommand) return t("title.waitCommand", { command: waitCommand[1] })
+
+  const terminateCell = title.match(/^Terminate cell (\d+)$/)
+  if (terminateCell) return t("title.terminateCell", { id: terminateCell[1] })
+
+  const terminateCommand = title.match(/^Terminate (.+)$/)
+  if (terminateCommand) {
+    return t("title.terminateCommand", { command: terminateCommand[1] })
+  }
+
+  const stdinChars = title.match(/^Stdin (.+)$/)
+  if (stdinChars) return t("title.stdinChars", { chars: stdinChars[1] })
 
   const globWithPattern = title.match(/^Glob (.+)$/)
   if (globWithPattern) {
@@ -1658,6 +1740,25 @@ function TodoWriteToolInput({ input }: { input: Record<string, unknown> }) {
   return <PlanEntriesList entries={entries} />
 }
 
+/**
+ * Codex code-mode script the history parser could not decompose into real tool
+ * calls — show the JS source it ran instead of pretending it was a shell
+ * command. See `lib/codex-code-mode.ts`.
+ */
+function CodexScriptToolInput({ card }: { card: CodexScriptCard }) {
+  const t = useTranslations("Folder.chat.contentParts")
+  return (
+    <div className="space-y-2">
+      <CodeBlock code={card.source} language="javascript" />
+      {card.callCount > 0 && (
+        <div className="text-xs text-muted-foreground">
+          {t("scriptToolCalls", { count: card.callCount })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ApplyPatchToolInput({ input }: { input: string }) {
   return <UnifiedDiffPreview diffText={input} clickableFilePath />
 }
@@ -1675,7 +1776,13 @@ const CODE_FIELDS = new Set([
 ])
 
 /** Fields to hide */
-const HIDDEN_FIELDS = new Set(["dangerouslyDisableSandbox"])
+const HIDDEN_FIELDS = new Set([
+  "dangerouslyDisableSandbox",
+  // Resolved by the history parser purely to title the card
+  // (`shell-session-tool.ts`); repeating it as a parameter row would just
+  // duplicate the header.
+  "session_command",
+])
 
 function GenericToolInput({ input }: { input: string }) {
   const t = useTranslations("Folder.chat.contentParts")
@@ -1731,12 +1838,11 @@ function GenericToolInput({ input }: { input: string }) {
         }
 
         if (value !== null && value !== undefined) {
+          // Nested structured value on a tool with no dedicated card — same
+          // unreadable-JSON-wall problem the result panel had.
           return (
             <FieldBlock key={key} label={label}>
-              <CodeBlock
-                code={JSON.stringify(value, null, 2)}
-                language="json"
-              />
+              <JsonTreeView value={value} />
             </FieldBlock>
           )
         }
@@ -1774,6 +1880,11 @@ function StructuredToolInput({
       {t("inputTruncated")}
     </div>
   ) : null
+
+  if (name === CODEX_SCRIPT_TOOL_NAME) {
+    const card = parseCodexScriptCard(input)
+    if (card) return <CodexScriptToolInput card={card} />
+  }
 
   if (name === "apply_patch") {
     const patchInput =
@@ -2121,8 +2232,16 @@ const ToolCallPart = memo(function ToolCallPart({
     [part.toolName]
   )
   const toolNameLower = normalizedToolName.toLowerCase()
+  // codex's `wait` / `write_stdin` continue a background shell, so they share
+  // the command path: same output envelope to strip, same Terminal body. What
+  // they must NOT share is the `$ <command>` prompt line — the command already
+  // names the card, and reprinting it would read as a re-run (see
+  // `displayCommand` below).
+  const isShellSessionTool = isShellSessionToolName(toolNameLower)
   const isCommandTool =
-    toolNameLower === "bash" || toolNameLower === "exec_command"
+    toolNameLower === "bash" ||
+    toolNameLower === "exec_command" ||
+    isShellSessionTool
   const isCommandLikeTool = isCommandTool || toolNameLower === "apply_patch"
   const isSearchTool = toolNameLower === "grep" || toolNameLower === "glob"
   const isRunning =
@@ -2207,14 +2326,34 @@ const ToolCallPart = memo(function ToolCallPart({
     if (sec < 60) return `${sec.toFixed(1)}s`
     return `${(sec / 60).toFixed(1)}m`
   }, [part.output, part.errorText])
+  // The background shell this command left running, when its own script echoed
+  // the id (see `extractAnnouncedSessionId`). One session is polled by any
+  // number of later `wait` cards, and the ones this echo comes with are exactly
+  // the ones the parser could not title by a command — so naming the session
+  // here is what ties those "Wait cell 17983" cards back to the command that
+  // started it.
+  const announcedSessionId = useMemo(
+    () =>
+      toolNameLower === "exec_command"
+        ? extractAnnouncedSessionId(part.output ?? part.errorText)
+        : null,
+    [toolNameLower, part.output, part.errorText]
+  )
   const titleSuffix = useMemo(() => {
     const hasStats =
       lineChangeStats &&
       (lineChangeStats.additions > 0 || lineChangeStats.deletions > 0)
-    if (!hasStats && !wallTime && !backgroundLaunch) return null
+    if (!hasStats && !wallTime && !backgroundLaunch && !announcedSessionId) {
+      return null
+    }
 
     return (
       <span className="flex items-center gap-1.5 text-xs font-medium">
+        {announcedSessionId && (
+          <span className="text-muted-foreground/60 font-normal">
+            {t("shellSession", { id: announcedSessionId })}
+          </span>
+        )}
         {backgroundLaunch && (
           <span
             className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
@@ -2243,20 +2382,26 @@ const ToolCallPart = memo(function ToolCallPart({
         )}
       </span>
     )
-  }, [lineChangeStats, wallTime, backgroundLaunch, t])
+  }, [lineChangeStats, wallTime, backgroundLaunch, announcedSessionId, t])
 
   const icon = useMemo(
     () => getToolIcon(normalizedToolName, part.input),
     [normalizedToolName, part.input]
   )
   const displayCommand = useMemo(() => {
-    if (!isCommandTool) return null
+    if (!isCommandTool || isShellSessionTool) return null
     return (
       extractDisplayCommandFromToolInput(part.input) ??
       extractDisplayCommandFromToolInput(part.output) ??
       extractDisplayCommandFromToolInput(part.errorText)
     )
-  }, [isCommandTool, part.input, part.output, part.errorText])
+  }, [
+    isCommandTool,
+    isShellSessionTool,
+    part.input,
+    part.output,
+    part.errorText,
+  ])
   const commandOutput = useMemo(() => {
     if (!isCommandLikeTool) return null
     const source =
@@ -2368,6 +2513,7 @@ const ToolCallPart = memo(function ToolCallPart({
       toolNameLower === "switch_mode" ||
       toolNameLower === "enterplanmode" ||
       toolNameLower === "exitplanmode" ||
+      toolNameLower === "plan_review" ||
       isFileTool) &&
     !part.errorText
   // codex-acp #288: the context-compaction lifecycle is a `tool_call` tagged
@@ -2525,19 +2671,22 @@ const ToolCallPart = memo(function ToolCallPart({
     )
   }
 
-  // Plan-mode transition tools (EnterPlanMode/ExitPlanMode/switch_mode): render
-  // the plan directly via a dedicated card instead of folding into a misleading
-  // "思考 N 次" tool-group. `toolNameLower` is the underscore-preserving
-  // `tool-call-normalization` form, so `switch_mode` keeps its underscore here.
+  // Plan-mode transition tools (EnterPlanMode/ExitPlanMode/switch_mode, and
+  // codex's plan_review gate): render the plan directly via a dedicated card
+  // instead of folding into a misleading "思考 N 次" tool-group. `toolNameLower`
+  // is the underscore-preserving `tool-call-normalization` form, so
+  // `switch_mode` / `plan_review` keep their underscore here.
   if (
     toolNameLower === "enterplanmode" ||
     toolNameLower === "exitplanmode" ||
-    toolNameLower === "switch_mode"
+    toolNameLower === "switch_mode" ||
+    toolNameLower === "plan_review"
   ) {
     return (
       <PlanModeCard
         toolName={toolNameLower}
         input={part.input ?? null}
+        output={part.output ?? null}
         errorText={part.errorText ?? null}
         state={part.state}
       />

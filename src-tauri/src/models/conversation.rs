@@ -62,6 +62,11 @@ pub struct DbConversationSummary {
     pub parent_tool_use_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegation_call_id: Option<String>,
+    /// Mirror of `conversation.origin_cwd`: the working directory this
+    /// conversation actually ran in when it differs from its current folder's
+    /// path (set when a removed task worktree's conversations were re-parented).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

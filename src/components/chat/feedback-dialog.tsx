@@ -31,6 +31,11 @@ interface FeedbackDialogProps {
   onSubmit: (text: string) => void
   submitting?: boolean
   agentName?: string
+  /** Which channel the note rides (`useSessionFeedback().channel`): `native`
+   *  = injected into the running turn immediately, `pull` = read when the
+   *  agent next checks. Only swaps the description copy — the pull wording
+   *  ("the next time it checks") is wrong for an instant push. */
+  channel?: "native" | "pull"
 }
 
 interface FeedbackDialogFormProps {
@@ -38,6 +43,7 @@ interface FeedbackDialogFormProps {
   onCancel: () => void
   submitting: boolean
   agentName?: string
+  channel: "native" | "pull"
 }
 
 function FeedbackDialogForm({
@@ -45,6 +51,7 @@ function FeedbackDialogForm({
   onCancel,
   submitting,
   agentName,
+  channel,
 }: FeedbackDialogFormProps) {
   const t = useTranslations("LiveFeedback")
   const [text, setText] = useState("")
@@ -61,7 +68,13 @@ function FeedbackDialogForm({
     <>
       <DialogHeader>
         <DialogTitle>{t("dialogTitle")}</DialogTitle>
-        <DialogDescription>{t("dialogDescription")}</DialogDescription>
+        <DialogDescription>
+          {t(
+            channel === "native"
+              ? "dialogDescriptionInstant"
+              : "dialogDescription"
+          )}
+        </DialogDescription>
       </DialogHeader>
       <Textarea
         autoFocus
@@ -111,6 +124,7 @@ export function FeedbackDialog({
   onSubmit,
   submitting = false,
   agentName,
+  channel = "pull",
 }: FeedbackDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -120,6 +134,7 @@ export function FeedbackDialog({
           onCancel={() => onOpenChange(false)}
           submitting={submitting}
           agentName={agentName}
+          channel={channel}
         />
       </DialogContent>
     </Dialog>

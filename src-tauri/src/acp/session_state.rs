@@ -165,6 +165,11 @@ pub struct PendingPermissionState {
 pub struct SessionLastError {
     pub message: String,
     pub code: Option<String>,
+    /// Mirrors `AcpEvent::Error.details` so a client that attached after the
+    /// error (snapshot path) sees the same diagnostic evidence as one that was
+    /// live for it. Already redacted at the source.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub details: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -387,6 +392,17 @@ pub struct SessionState {
     /// (possibly later-toggled) global setting.
     pub feedback_tool_available: bool,
 
+    /// Whether live-feedback notes for THIS session go over the native ACP
+    /// `_session/steering` push channel instead of the `check_user_feedback`
+    /// pull tool. Synthesized ONCE at initialize from three gates (extension
+    /// advertised + registry policy + `agent_info.version` runtime proof — see
+    /// `connection.rs::init_advertises_steering`) so every consumer reads one
+    /// authoritative bool and the frontend never re-derives it from agent
+    /// type. Downgraded to `false` for the rest of the session if a steer ever
+    /// comes back `startedNewTurn` (adapter ignored the `promptRequired`
+    /// opt-in), rerouting subsequent notes to the MCP pull path.
+    pub native_steering_available: bool,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -493,6 +509,7 @@ impl SessionState {
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
             feedback_tool_available: false,
+            native_steering_available: false,
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
@@ -940,7 +957,12 @@ impl SessionState {
                 // already done — the event fires only once per connection.
                 self.selectors_ready = true;
             }
-            AcpEvent::Error { message, code, .. } => {
+            AcpEvent::Error {
+                message,
+                code,
+                details,
+                ..
+            } => {
                 // Capture so post-mortem readers (probe path, debug
                 // snapshots) can surface the agent's own error message
                 // after the connection task has cleaned up its map
@@ -949,6 +971,7 @@ impl SessionState {
                 self.last_error = Some(SessionLastError {
                     message: message.clone(),
                     code: code.clone(),
+                    details: details.clone(),
                 });
             }
             AcpEvent::DelegationStarted {
@@ -1329,6 +1352,7 @@ impl SessionState {
             feedback: self.feedback.clone(),
             background_outstanding: self.background_outstanding,
             feedback_tool_available: self.feedback_tool_available,
+            native_steering_available: self.native_steering_available,
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
             config_options: self.config_options.clone(),
@@ -1419,6 +1443,12 @@ pub struct LiveSessionSnapshot {
     /// it. Always serialized (a plain bool) so the frontend can rely on it.
     #[serde(default)]
     pub feedback_tool_available: bool,
+    /// Whether feedback notes ride the native `_session/steering` push channel
+    /// (see `SessionState.native_steering_available`). `#[serde(default)]` so
+    /// older payloads deserialize to `false`; always serialized (plain bool)
+    /// like `feedback_tool_available` so the frontend can rely on it.
+    #[serde(default)]
+    pub native_steering_available: bool,
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
@@ -1784,6 +1814,7 @@ mod tests {
             message: "ACP protocol error: forbidden".into(),
             agent_type: "claude_code".into(),
             code: Some("forbidden".into()),
+            details: None,
             terminal: true,
         });
 
@@ -1793,6 +1824,7 @@ mod tests {
             Some(SessionLastError {
                 message: "ACP protocol error: forbidden".into(),
                 code: Some("forbidden".into()),
+                details: None,
             })
         );
 

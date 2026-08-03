@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   claudeCodeMarksSubagent,
+  codexMarksPlanReview,
   extractClaudeCodeMetaTitle,
   inferLiveToolName,
   normalizeToolName,
@@ -738,5 +739,56 @@ describe("normalizeToolName codex command-action titles", () => {
         rawInput: null,
       })
     ).toBe("glob")
+  })
+})
+
+describe("inferLiveToolName codex plan_review marker", () => {
+  it("classifies the seeded plan-review call from _meta.codex.kind", () => {
+    // codex-acp ≥1.1.8 (#351): codeg seeds this tool call from the permission
+    // request, so it has no rawInput and its title is a question. Only the
+    // marker identifies it.
+    expect(
+      inferLiveToolName({
+        title: "Implement this plan?",
+        kind: "switch_mode",
+        rawInput: null,
+        meta: { codex: { kind: "plan_review", planItemId: "item-7" } },
+      })
+    ).toBe("plan_review")
+  })
+
+  it("keeps the marker ahead of the title heuristic", () => {
+    // Guard the ordering: without the marker branch the human question would
+    // reach normalizeToolName and become some arbitrary name. Assert the title
+    // alone does NOT already resolve to plan_review, so the test above proves
+    // the marker (not the title) did the work.
+    expect(normalizeToolName("Implement this plan?")).not.toBe("plan_review")
+  })
+
+  it("does not fire for other codex meta or a non-plan_review kind", () => {
+    expect(
+      inferLiveToolName({
+        title: "Implement this plan?",
+        kind: "switch_mode",
+        rawInput: null,
+        meta: { codex: { kind: "mcp_tool_call" } },
+      })
+    ).not.toBe("plan_review")
+    expect(codexMarksPlanReview(null)).toBe(false)
+    expect(codexMarksPlanReview({ codex: { subagent: true } })).toBe(false)
+    expect(codexMarksPlanReview({ codex: { kind: "plan_review" } })).toBe(true)
+  })
+
+  it("still lets a real input shape win over the marker", () => {
+    // The marker sits below inferFromInput, so a call that actually carries a
+    // command is a bash call regardless of a stray marker.
+    expect(
+      inferLiveToolName({
+        title: "Implement this plan?",
+        kind: "execute",
+        rawInput: JSON.stringify({ command: "pnpm test" }),
+        meta: { codex: { kind: "plan_review" } },
+      })
+    ).toBe("bash")
   })
 })

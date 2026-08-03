@@ -44,9 +44,10 @@ use tokio::sync::{oneshot, Mutex};
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_feedback_round_trip, client_round_trip, client_session_round_trip,
-    client_status_round_trip, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerSessionRequest, BrokerStatusRequest,
+    client_status_round_trip, client_task_complete_round_trip, client_task_progress_round_trip,
+    BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerFeedbackRequest, BrokerRequest, BrokerResponse, BrokerSessionRequest,
+    BrokerStatusRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -138,6 +139,9 @@ pub struct CompanionFeatures {
     pub feedback: bool,
     pub ask: bool,
     pub sessions: bool,
+    /// Work-task reporting tools (`task_progress` / `task_complete`) — injected
+    /// only into spawns launched by the task engine.
+    pub tasks: bool,
 }
 
 impl CompanionFeatures {
@@ -153,6 +157,7 @@ impl CompanionFeatures {
                 feedback: false,
                 ask: false,
                 sessions: false,
+                tasks: false,
             };
         };
         let mut f = Self {
@@ -160,6 +165,7 @@ impl CompanionFeatures {
             feedback: false,
             ask: false,
             sessions: false,
+            tasks: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -167,6 +173,7 @@ impl CompanionFeatures {
                 "feedback" => f.feedback = true,
                 "ask" => f.ask = true,
                 "sessions" => f.sessions = true,
+                "tasks" => f.tasks = true,
                 _ => {}
             }
         }
@@ -179,6 +186,7 @@ impl CompanionFeatures {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
             "get_session_info" => self.sessions,
+            "task_progress" | "task_complete" => self.tasks,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
             _ => false,
         }
@@ -614,6 +622,58 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_session_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_session_result).await
+        }
+        "task_progress" => {
+            let message = arguments
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let Some(message) = message else {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "task_progress requires a non-empty `message` string",
+                ));
+            };
+            let req = BrokerTaskProgressRequest {
+                token: ctx.token.clone(),
+                message,
+            };
+            // No external_handle: a fire-and-forget report has nothing to
+            // cancel broker-side.
+            let round_trip =
+                Box::pin(async move { client_task_progress_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_ack).await
+        }
+        "task_complete" => {
+            let verdict = arguments
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if !matches!(verdict, "success" | "needs_review" | "blocked") {
+                return LineAction::Respond(err(
+                    id,
+                    -32602,
+                    "task_complete requires `verdict` of success | needs_review | blocked",
+                ));
+            }
+            let summary = arguments
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let req = BrokerTaskCompleteRequest {
+                token: ctx.token.clone(),
+                verdict: verdict.to_string(),
+                summary,
+            };
+            let round_trip =
+                Box::pin(async move { client_task_complete_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_ack).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -1118,6 +1178,27 @@ pub fn render_session_result(outcome: &Value) -> Value {
     })
 }
 
+/// Map a `task_progress` / `task_complete` round-trip outcome (a
+/// `{ recorded, note? }` ack) into an MCP `tools/call` result. A report that
+/// could not be attributed (no active work task for this session) is readable
+/// text with `isError: false` — the agent just carries on with its work.
+pub fn render_task_ack(outcome: &Value) -> Value {
+    let recorded = outcome
+        .get("recorded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = outcome
+        .get("note")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if recorded { "Recorded." } else { "Not recorded." })
+        .to_string();
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// Build the human-readable summary block for a found session: a metadata header
 /// plus, when present, a "Recent messages" section.
 fn render_session_summary_text(o: &Value) -> String {
@@ -1240,6 +1321,7 @@ mod tests {
             feedback: false,
             ask: false,
             sessions: false,
+            tasks: false,
         })
     }
 
@@ -1812,24 +1894,28 @@ mod tests {
         feedback: true,
         ask: false,
         sessions: false,
+        tasks: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
         feedback: true,
         ask: false,
         sessions: false,
+        tasks: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
         feedback: false,
         ask: true,
         sessions: false,
+        tasks: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
         feedback: false,
         ask: false,
         sessions: true,
+        tasks: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {

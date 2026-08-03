@@ -226,15 +226,30 @@ export function useComposerInvocations({
  * The floating list for {@link useComposerInvocations}. Render inside a
  * `relative` wrapper around the composer; it anchors below the box (the editor
  * sits near the top of the scrollable form, so opening upward gets clipped by the
- * ScrollArea). Navigation is routed from the editor's keydown, so this only
- * handles pointer selection.
+ * ScrollArea). Both hosts (automation editor, task editor dialog) put the
+ * composer inside a scrollable form, so the popup scrolls itself into view on
+ * open — an absolutely-positioned child extends the scrollable overflow, it
+ * just isn't revealed automatically. Navigation is routed from the editor's
+ * keydown, so this only handles pointer selection.
  */
 export function ComposerInvocationsPopup({
   inv,
 }: {
   inv: ComposerInvocations
 }) {
+  const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  const itemCount = inv.commands.length + inv.skills.length
+  // Reveal the popup inside the surrounding scroll container when it opens or
+  // grows (async skills load / loosened filter). `nearest` keeps this a no-op
+  // while already fully visible; guarded — jsdom has no scrollIntoView.
+  useEffect(() => {
+    if (!inv.isOpen) return
+    const el = rootRef.current
+    if (el && typeof el.scrollIntoView === "function")
+      el.scrollIntoView({ block: "nearest" })
+  }, [inv.isOpen, itemCount])
 
   // Keep the active row in view as the user arrows through (manual scrollTop,
   // mirroring the chat composer — no scrollIntoView, which jsdom lacks).
@@ -255,7 +270,10 @@ export function ComposerInvocationsPopup({
   if (!inv.isOpen) return null
 
   return (
-    <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
+    <div
+      ref={rootRef}
+      className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
+    >
       <div ref={listRef} className="flex-1 overflow-y-auto p-1">
         {inv.commands.map((cmd, i) => (
           <button

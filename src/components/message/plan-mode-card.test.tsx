@@ -16,6 +16,7 @@ import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
 function renderCard(props: {
   toolName: string
   input: string | null
+  output?: string | null
   errorText?: string | null
   state?: ToolCallState
 }) {
@@ -24,6 +25,7 @@ function renderCard(props: {
       <PlanModeCard
         toolName={props.toolName}
         input={props.input}
+        output={props.output ?? null}
         errorText={props.errorText ?? null}
         state={props.state ?? "output-available"}
       />
@@ -83,5 +85,47 @@ describe("PlanModeCard", () => {
       state: "output-error",
     })
     expect(screen.getByText("boom")).toBeInTheDocument()
+  })
+
+  it("reports an approved codex plan review from its rawOutput", () => {
+    // codex-acp ≥1.1.8: codeg seeds the call from the permission request (no
+    // input), and codex's follow-up update supplies the decision text.
+    renderCard({
+      toolName: "plan_review",
+      input: null,
+      output: "User approved the plan.",
+    })
+    expect(screen.getByText("Plan approved — implementing")).toBeInTheDocument()
+    expect(screen.queryByText("Plan")).toBeNull()
+  })
+
+  it("reports a declined codex plan review, and defaults to it when the output is unknown", () => {
+    const kept = renderCard({
+      toolName: "plan_review",
+      input: null,
+      output: "User kept the session in plan mode.",
+    })
+    expect(screen.getByText("Kept in plan mode")).toBeInTheDocument()
+    kept.unmount()
+
+    // A settled call with unrecognised / missing output must never read as an
+    // approval.
+    renderCard({ toolName: "plan_review", input: null, output: null })
+    expect(screen.getByText("Kept in plan mode")).toBeInTheDocument()
+  })
+
+  it("says the decision is pending while the plan-review call is unsettled", () => {
+    // The seeded call is `input-available` for as long as the permission card
+    // is open. Claiming either outcome there would state a decision the user
+    // has not made yet.
+    renderCard({
+      toolName: "plan_review",
+      input: null,
+      output: null,
+      state: "input-available",
+    })
+    expect(screen.getByText("Awaiting plan decision")).toBeInTheDocument()
+    expect(screen.queryByText("Kept in plan mode")).toBeNull()
+    expect(screen.queryByText("Plan approved — implementing")).toBeNull()
   })
 })

@@ -752,11 +752,38 @@ pub enum ElicitationPlan {
 /// `<questionId>__other` (`__other1`, `__other2`… on collision). The card
 /// offers its own "Other" on every question, so companions are skipped and the
 /// typed answer rides the main field (codex falls back to it).
+///
+/// Name-based, and deliberately kept alongside the `_meta` marker below:
+/// codex-acp 1.1.9 (the pinned version) still emits ONLY this shape.
 fn is_other_companion(id: &str) -> bool {
     let Some(pos) = id.rfind("__other") else {
         return false;
     };
     pos > 0 && id[pos + "__other".len()..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// True when the raw schema property carries the shared custom-answer marker
+/// (`_meta._askUserQuestionCustomAnswer.isCustomAnswer`), i.e. it is the
+/// free-text "Other" companion of a sibling select question.
+///
+/// claude-agent-acp 0.64.0 (#929) introduced this key deliberately WITHOUT an
+/// agent namespace so every AskUserQuestion bridge can be recognized the same
+/// way; its own companion fields are named `question_<n>_custom`, which
+/// [`is_other_companion`]'s `__other` heuristic does not match. Reading the
+/// marker means codeg keeps collapsing the companion into the card's built-in
+/// "Other" input no matter which adapter produced the form.
+///
+/// Like [`is_secret_property`], this reads the raw JSON: the typed sacp
+/// property structs drop `_meta`.
+fn is_custom_answer_property(raw: &Value, id: &str) -> bool {
+    raw.get("requestedSchema")
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(id))
+        .and_then(|prop| prop.get("_meta"))
+        .and_then(|m| m.get("_askUserQuestionCustomAnswer"))
+        .and_then(|c| c.get("isCustomAnswer"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// True when the request is codex's MCP tool-call approval elicitation. The
@@ -961,8 +988,11 @@ fn parse_form_questions(
             );
             break;
         }
-        // Skip codex's synthetic free-text "Other" companion fields.
-        if is_other_companion(id) {
+        // Skip synthetic free-text "Other" companion fields — codex's
+        // name-based `<id>__other[N]` shape, and any adapter's `_meta`-marked
+        // companion (claude-agent-acp ≥0.64). The card always offers its own
+        // "Other" input, so a companion would render as a duplicate question.
+        if is_other_companion(id) || is_custom_answer_property(raw, id) {
             continue;
         }
         let (title, description, kind, multi_select, choices) = match prop {
@@ -1089,6 +1119,14 @@ fn parse_bool_answer(v: &str) -> Option<bool> {
 /// omitted rather than sent mistyped. A declined card or an empty result maps
 /// to `Decline`, which the agent reads as "no answer" and proceeds — never
 /// worse than the pre-bridge behavior.
+///
+/// Every value is written under the MAIN field id, including a free-text
+/// "Other": the companion property skipped by [`is_custom_answer_property`] /
+/// [`is_other_companion`] is never written back. That is correct for codex,
+/// which falls back to the main field. If codeg ever advertises
+/// `elicitation.form` to an agent that requires the answer under the companion
+/// key instead (claude-agent-acp reads `question_<n>_custom` separately), this
+/// has to route the free-text answer there using the marker's `questionId`.
 pub fn build_elicitation_response(
     questions: &ElicitationQuestions,
     outcome: &QuestionOutcome,
@@ -1407,6 +1445,64 @@ mod tests {
         let v = serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap();
         assert_eq!(v["action"], "accept");
         assert_eq!(v["content"]["q1"], "Ada Lovelace");
+    }
+
+    #[test]
+    fn classify_elicitation_skips_meta_marked_custom_answer_companion() {
+        // claude-agent-acp ≥0.64 (#929) names its companion `question_<n>_custom`
+        // — the `__other` heuristic misses it — and marks it with the shared,
+        // un-namespaced `_meta._askUserQuestionCustomAnswer`. The marker alone
+        // must collapse it into the card's built-in "Other" input.
+        let raw = elicitation_raw(
+            json!({
+                "question_0": {
+                    "type": "string",
+                    "title": "Pick one",
+                    "enum": ["a", "b"],
+                },
+                "question_0_custom": {
+                    "type": "string",
+                    "title": "Other",
+                    "description": "Type your own answer instead.",
+                    "_meta": {
+                        "_askUserQuestionCustomAnswer": {
+                            "questionId": "question_0",
+                            "isCustomAnswer": true,
+                        }
+                    },
+                },
+            }),
+            json!([]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs.len(), 1, "companion must not render as a question");
+        assert_eq!(q.specs[0].id, "question_0");
+        assert_eq!(q.specs[0].options.len(), 2);
+    }
+
+    #[test]
+    fn classify_elicitation_keeps_unmarked_free_text_field() {
+        // Defense against over-skipping: a plain string field that merely sits
+        // next to a select — no marker, no `__other` name — is a real question.
+        let raw = elicitation_raw(
+            json!({
+                "question_0": {"type": "string", "title": "Pick one", "enum": ["a", "b"]},
+                "notes": {"type": "string", "title": "Notes"},
+                "unmarked_custom": {
+                    "type": "string",
+                    "title": "Other",
+                    "_meta": {"_askUserQuestionCustomAnswer": {"questionId": "question_0"}},
+                },
+            }),
+            json!([]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        let ids: Vec<&str> = q.specs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["notes", "question_0", "unmarked_custom"],
+            "only `isCustomAnswer: true` skips; a marker without it does not"
+        );
     }
 
     #[test]

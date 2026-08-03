@@ -32,6 +32,7 @@ import {
   TextSelect,
   Upload,
   X,
+  Zap,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -93,7 +94,8 @@ import {
 // the remote server — `api.readFileBase64` would route through the remote
 // transport and try to read the local path on the wrong machine.
 import { readFileBase64 as readLocalFileBase64 } from "@/lib/tauri"
-import { extractAppCommandError } from "@/lib/app-error"
+import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
+import { isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { openFileDialog } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
@@ -252,6 +254,13 @@ interface MessageInputProps {
    *  draft synchronously (clears on click); the parent re-queues it if the fork
    *  can't run, so it is never lost. */
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
+  /** Inject the draft's TEXT into the RUNNING turn (native live-feedback
+   *  steering). Present only on sessions whose feedback channel is native —
+   *  when absent, the prompting branch renders its historical Stop-only form.
+   *  Awaited: resolve = injected + recorded (clear the draft); reject =
+   *  failure, where a turn-end `NoActiveTurn` race falls back to the queue
+   *  and anything else keeps the draft. */
+  onSteer?: (text: string) => Promise<void>
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
   onAddFeedback?: () => void
@@ -525,6 +534,7 @@ export function MessageInput({
   onSaveQueueEdit,
   onCancelQueueEdit,
   onForkSend,
+  onSteer,
   onAddFeedback,
   feedbackAddDisabled,
   injectContent,
@@ -2696,6 +2706,60 @@ export function MessageInput({
     resetComposer,
   ])
 
+  // Mid-turn "insert into current turn" (native steering). Awaited, unlike
+  // the synchronous send/enqueue/fork paths: the draft clears ONLY once the
+  // backend confirms the injection was recorded — a turn-end race falls back
+  // to the queue (the note is never lost), any other failure keeps the draft
+  // for retry. Steering is text-only: a draft carrying non-text blocks (file
+  // badges) is queued whole instead of being silently stripped; image
+  // attachments disable the menu entry at render (which also keeps unsettled
+  // uploads out of this path — the enqueue fallback below bypasses
+  // `handleSend`'s uploading gate).
+  const [steering, setSteering] = useState(false)
+  const handleSteerClick = useCallback(async () => {
+    if (!onSteer || steering) return
+    const draft = buildDraft()
+    if (!draft) return
+    const enqueueInstead = () => {
+      if (!onEnqueue) return
+      onEnqueue(draft, showModeSelector ? effectiveModeId : null)
+      resetComposer()
+      toast.info(t("steerQueuedInstead"))
+    }
+    if (draft.blocks.some((b) => b.type !== "text")) {
+      enqueueInstead()
+      return
+    }
+    const text = draft.blocks
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("\n")
+      .trim()
+    if (!text) return
+    setSteering(true)
+    try {
+      await onSteer(text)
+      resetComposer()
+    } catch (err) {
+      if (isNoActiveTurnRejection(err)) {
+        // The turn ended in the race window — reroute through the queue.
+        enqueueInstead()
+      } else {
+        toast.error(t("steerFailed"), { description: toErrorMessage(err) })
+      }
+    } finally {
+      setSteering(false)
+    }
+  }, [
+    onSteer,
+    steering,
+    buildDraft,
+    onEnqueue,
+    showModeSelector,
+    effectiveModeId,
+    resetComposer,
+    t,
+  ])
+
   // Navigation/confirm/escape keys for the `/` (commands) and `$` (Codex skills)
   // runtime menu, routed from inside the editor (RichComposer.onExternalMenuKeyDown)
   // because ProseMirror's DOM handler fires before a host capture handler could.
@@ -3023,15 +3087,71 @@ export function MessageInput({
       </Button>
     </div>
   ) : isPrompting && onCancel ? (
-    <Button
-      onClick={onCancel}
-      variant="destructive"
-      size="icon"
-      className="h-8 w-8"
-      title={t("cancel")}
-    >
-      <Square className="size-4" />
-    </Button>
+    onSteer && onEnqueue && hasSendableContent ? (
+      // Native-steering sessions surface the mid-turn actions that already
+      // exist but were keyboard-only/invisible: the primary half of the split
+      // queues the draft (what Enter has always done here), the dropdown
+      // injects it into the RUNNING turn. Without `onSteer` this branch stays
+      // pixel-identical to the historical Stop-only form below.
+      <div className="flex items-center gap-1">
+        <Button
+          onClick={onCancel}
+          variant="destructive"
+          size="icon"
+          className="h-8 w-8"
+          title={t("cancel")}
+        >
+          <Square className="size-4" />
+        </Button>
+        <div className="flex items-center">
+          <Button
+            onClick={handleSend}
+            disabled={steering}
+            size="icon"
+            className="h-8 w-8 rounded-r-none"
+            title={t("queueMessage")}
+          >
+            <Send className="size-4" />
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                disabled={steering}
+                size="icon"
+                className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
+                aria-label={t("steerIntoTurn")}
+              >
+                <ChevronUp className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top">
+              <DropdownMenuItem
+                onSelect={() => void handleSteerClick()}
+                disabled={steering || attachments.length > 0}
+                title={
+                  attachments.length > 0
+                    ? t("steerAttachmentsUnsupported")
+                    : undefined
+                }
+              >
+                <Zap className="h-4 w-4" />
+                {t("steerIntoTurn")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    ) : (
+      <Button
+        onClick={onCancel}
+        variant="destructive"
+        size="icon"
+        className="h-8 w-8"
+        title={t("cancel")}
+      >
+        <Square className="size-4" />
+      </Button>
+    )
   ) : onForkSend ? (
     <div className="flex items-center">
       <Button

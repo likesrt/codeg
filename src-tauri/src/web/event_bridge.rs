@@ -317,6 +317,27 @@ pub enum AutomationChange {
     },
 }
 
+/// Global side-channel for cross-client work-task board sync. Mirrors
+/// [`AUTOMATION_CHANGED_EVENT`]: the task engine runs headless, so this
+/// broadcast is the only way an open tasks view (or the sidebar badge) learns a
+/// task advanced. Payload is id-only — clients refetch.
+pub const WORK_TASK_CHANGED_EVENT: &str = "task://changed";
+
+/// Payload for [`WORK_TASK_CHANGED_EVENT`]. Ids only — clients respond with a
+/// refetch of the task list (and badge count).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkTaskChange {
+    /// Insert-or-replace by id (create, edit, any status transition).
+    Upsert { id: i32 },
+    /// Soft-deleted by id.
+    Deleted { id: i32 },
+    /// Folder task settings changed.
+    Settings { folder_id: i32 },
+    /// Bulk change (e.g. boot reconcile) — refetch everything.
+    Refresh,
+}
+
 /// Unified event emission: serializes the payload exactly once and dispatches
 /// the shared `Arc<Value>` to both the Tauri webview and the web broadcaster.
 pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) {

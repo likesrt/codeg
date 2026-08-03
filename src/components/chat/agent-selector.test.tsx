@@ -27,6 +27,7 @@ function agent(
     description: "",
     available: true,
     distribution_type: "system",
+    is_acp_adapter: false,
     custom_source: null,
     enabled: true,
     sort_order: 0,

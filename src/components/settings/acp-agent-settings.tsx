@@ -108,6 +108,7 @@ import {
 } from "@/lib/api"
 import type {
   AcpAgentInfo,
+  AdapterInfo,
   AgentType,
   CheckStatus,
   CodexGranularApproval,
@@ -3346,6 +3347,82 @@ function isValidCustomVersion(value: string): boolean {
   return /^[0-9][0-9A-Za-z.\-+]*$/.test(normalized) && normalized.includes(".")
 }
 
+/**
+ * The explainer card for agents whose codeg entry is a third-party ACP
+ * *adapter* rather than the vendor's own CLI — Claude Code and Codex.
+ *
+ * Ten of the twelve built-ins install the vendor CLI itself, so a user's
+ * existing global install is simply detected. These two are the exception:
+ * neither `claude` nor `codex` speaks ACP, so codeg installs `claude-agent-acp`
+ * / `codex-acp` instead, and the launch gate looks for THAT command. Without
+ * this card the user only sees "Not installed" next to an agent they demonstrably
+ * have — by far the most-reported confusion.
+ *
+ * Returns `null` for every non-adapter agent (backend decides, via
+ * `PreflightResult.adapter`), and while preflight hasn't resolved yet.
+ *
+ * Deliberately carries NO install action: the Version Status card directly below
+ * already has one, and two install buttons on adjacent cards only breeds doubt
+ * about which is the right one.
+ */
+export function buildAcpAdapterCheck(
+  adapter: AdapterInfo | null | undefined
+): UiCheckItem | null {
+  if (!adapter) return null
+
+  const values = {
+    nativeLabel: adapter.native_label,
+    nativeCmd: adapter.native_cmd,
+    nativePath: adapter.native_path ?? "",
+    adapterPackage: adapter.adapter_package,
+    adapterCmd: adapter.adapter_cmd,
+    configDir: adapter.shared_config_dir,
+  }
+
+  // Installed → `pass`, so renderCheck collapses it: the relationship stays
+  // documented for anyone who wonders later, without nagging a working setup.
+  const installed = adapter.adapter_installed
+  const sawNative = Boolean(adapter.native_path)
+  // The English fallbacks mirror the four i18n messages one-for-one (they are
+  // what renders if no translator is mounted), so each state keeps the detail
+  // that state is about — above all, the path we found the vendor CLI at.
+  const split = `Codeg drives agents over ACP and the ${adapter.native_label} does not speak ACP, so Codeg needs a separate adapter package, ${adapter.adapter_package}.`
+  const coexist = `It ships its own runtime, never modifies or replaces your ${adapter.native_cmd} command, and reads the same ${adapter.shared_config_dir} — your existing sign-in and settings carry over.`
+  const [key, fallback] = installed
+    ? sawNative
+      ? [
+          "adapter.readyWithNative",
+          `Adapter ${adapter.adapter_cmd} is installed — that is what Codeg launches, not your own ${adapter.native_cmd} at ${adapter.native_path}. They are separate packages that coexist, and both read ${adapter.shared_config_dir}.`,
+        ]
+      : [
+          "adapter.ready",
+          `Adapter ${adapter.adapter_cmd} is installed — that is what Codeg launches. It ships its own runtime, so the ${adapter.native_label} is not required.`,
+        ]
+    : sawNative
+      ? [
+          "adapter.missingWithNative",
+          `Found your own ${adapter.native_label} at ${adapter.native_path}. ${split} ${coexist} Install it below.`,
+        ]
+      : [
+          "adapter.missing",
+          `${split} It ships its own runtime, so the ${adapter.native_cmd} CLI is not required first; if you do have it, the two coexist and share the same ${adapter.shared_config_dir} sign-in and settings. Install it below.`,
+        ]
+
+  return {
+    check_id: "acp_adapter",
+    label: acpText("adapter.label", "ACP adapter"),
+    status: installed ? "pass" : "warn",
+    message: acpText(key, fallback, values),
+    fixes: [
+      {
+        label: acpText("adapter.learnMore", "Learn more"),
+        kind: "open_url",
+        payload: adapter.docs_url,
+      },
+    ],
+  }
+}
+
 // `uvReady` reports whether the uv runtime (uvx) is installed — only meaningful
 // for uvx agents (Hermes). Derived from the uv preflight check by the caller.
 // uvx agents need uv installed before their package can be prepared, so when
@@ -3611,7 +3688,13 @@ export function getAgentChecks(
       fixes: [...check.fixes],
     })
   )
-  return versionCheck ? [versionCheck, ...remoteChecks] : remoteChecks
+  // The adapter explainer goes FIRST: it answers "why does this say not
+  // installed when I have the CLI?" before the Version Status card below it
+  // offers the Install that fixes it.
+  const adapterCheck = buildAcpAdapterCheck(current?.result?.adapter)
+  return [adapterCheck, versionCheck, ...remoteChecks].filter(
+    (check): check is UiCheckItem => check != null
+  )
 }
 
 interface AgentReorderItemProps {
@@ -7202,6 +7285,18 @@ export function AcpAgentSettings() {
                     <Badge variant="outline" className="shrink-0">
                       {selectedAgent.distribution_type}
                     </Badge>
+                    {/* Names the thing codeg actually installs, right next to
+                        the vendor's name — so the split is visible even before
+                        anyone reads the preflight card below. */}
+                    {selectedAgent.is_acp_adapter && (
+                      <Badge
+                        variant="secondary"
+                        className="shrink-0"
+                        title={t("adapter.badgeHint")}
+                      >
+                        {t("adapter.badge")}
+                      </Badge>
+                    )}
                     {isCustomAgentType(selectedAgent.agent_type) && (
                       <Badge variant="secondary" className="shrink-0">
                         {t("customAgentBadge")}

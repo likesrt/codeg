@@ -83,6 +83,27 @@ impl codeg_lib::acp::session_info::SessionInfoAccess for NoSessionInfo {
     }
 }
 
+/// Task-tool stub: the e2e delegation tests never exercise the task arms.
+struct NoTaskTools;
+#[async_trait]
+impl codeg_lib::acp::work_task_tools::WorkTaskToolAccess for NoTaskTools {
+    async fn report_progress(
+        &self,
+        _parent: &str,
+        _message: &str,
+    ) -> codeg_lib::acp::work_task_tools::TaskReportAck {
+        codeg_lib::acp::work_task_tools::TaskReportAck::rejected("no engine")
+    }
+    async fn complete(
+        &self,
+        _parent: &str,
+        _verdict: &str,
+        _summary: Option<&str>,
+    ) -> codeg_lib::acp::work_task_tools::TaskReportAck {
+        codeg_lib::acp::work_task_tools::TaskReportAck::rejected("no engine")
+    }
+}
+
 fn unique_pipe(tag: &str) -> String {
     format!(
         r"\\.\pipe\codeg-e2e-{}-{}-{}",
@@ -171,6 +192,7 @@ async fn end_to_end_named_pipe_happy_path() {
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
+        Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
     );
 
     let pipe = unique_pipe("happy");
@@ -272,6 +294,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
+        Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
     );
 
     let pipe = unique_pipe("repeat");

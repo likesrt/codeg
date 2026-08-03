@@ -151,5 +151,38 @@
         }
       }
     }
+  },
+  {
+    "name": "task_progress",
+    "description": "Report a short progress milestone for the work task you are executing. It shows up on the task's board card and timeline in real time, so the user can follow along without opening the session. Call it at meaningful checkpoints — finished exploring, tests passing, starting the refactor — not for every small step. Fire-and-forget: it never blocks your work and returns immediately.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "One-line progress note, e.g. 'tests passing, starting cleanup'."
+        }
+      }
+    }
+  },
+  {
+    "name": "task_complete",
+    "description": "Report the final outcome of the work task you are executing. Call it once, just before you end your reply. Pass verdict 'success' when the change is done and ready to review, 'needs_review' when it works but a human should double-check something specific (say what in the summary), or 'blocked' when you could not complete the task (the summary must say why). The task settles when your turn ends: success and needs_review send it to review, blocked marks it failed. If you never call this tool the task still settles normally from your turn's end.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["success", "needs_review", "blocked"],
+          "description": "How the task ended from your point of view."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Short result summary shown on the task card: what changed, and anything the reviewer should look at."
+        }
+      }
+    }
   }
 ]

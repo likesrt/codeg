@@ -8,6 +8,7 @@ import {
   buildGrokSaveOptions,
   buildGrokStructuredConfig,
   buildMergeConfigPayload,
+  buildAcpAdapterCheck,
   buildVersionCheck,
   configTextForClaudeSave,
   getAgentChecks,
@@ -16,7 +17,12 @@ import {
   patchImportantConfigText,
   setClaudeEnvFlagInConfigText,
 } from "./acp-agent-settings"
-import type { AcpAgentInfo, AgentType, PreflightResult } from "@/lib/types"
+import type {
+  AcpAgentInfo,
+  AdapterInfo,
+  AgentType,
+  PreflightResult,
+} from "@/lib/types"
 
 function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
   return {
@@ -28,6 +34,7 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     description: "",
     available: true,
     distribution_type: "uvx",
+    is_acp_adapter: false,
     custom_source: null,
     enabled: true,
     sort_order: 0,
@@ -527,6 +534,137 @@ describe("inferGrokMode — Grok auth-method recognition", () => {
   })
 })
 
+describe("buildAcpAdapterCheck", () => {
+  function makeAdapter(overrides: Partial<AdapterInfo> = {}): AdapterInfo {
+    return {
+      adapter_package: "@agentclientprotocol/claude-agent-acp@0.63.0",
+      adapter_cmd: "claude-agent-acp",
+      adapter_installed: false,
+      native_cmd: "claude",
+      native_label: "Claude Code CLI",
+      native_path: "/opt/homebrew/bin/claude",
+      shared_config_dir: "~/.claude",
+      docs_url: "https://docs.codeg.app/guide/supported-agents#acp-adapters",
+      ...overrides,
+    }
+  }
+
+  // Nothing for the ten agents whose registry command IS the vendor CLI, and
+  // nothing before preflight resolves — the card must never appear speculatively.
+  it("produces nothing for non-adapter agents or before preflight resolves", () => {
+    expect(buildAcpAdapterCheck(null)).toBeNull()
+    expect(buildAcpAdapterCheck(undefined)).toBeNull()
+  })
+
+  // The whole point of the card: the user has `claude`, we say so by path, and
+  // name the different thing we actually need.
+  it("names the detected CLI, the adapter package and the shared config dir", () => {
+    const check = buildAcpAdapterCheck(makeAdapter())
+    expect(check?.check_id).toBe("acp_adapter")
+    // warn, not fail: Version Status below already fails: this one explains.
+    expect(check?.status).toBe("warn")
+    expect(check?.message).toContain("/opt/homebrew/bin/claude")
+    expect(check?.message).toContain(
+      "@agentclientprotocol/claude-agent-acp@0.63.0"
+    )
+    expect(check?.message).toContain("~/.claude")
+  })
+
+  // Undetected vendor CLI is not a dead end — the explanation still stands, it
+  // just can't point at a path.
+  it("still explains the split when no vendor CLI was found", () => {
+    const check = buildAcpAdapterCheck(makeAdapter({ native_path: null }))
+    expect(check?.status).toBe("warn")
+    expect(check?.message).toContain(
+      "@agentclientprotocol/claude-agent-acp@0.63.0"
+    )
+    expect(check?.message).not.toContain("/opt/homebrew/bin/claude")
+  })
+
+  // Installed → pass, so renderCheck collapses it and a working setup isn't
+  // nagged by an explainer it no longer needs.
+  it("passes once the adapter is installed", () => {
+    const check = buildAcpAdapterCheck(makeAdapter({ adapter_installed: true }))
+    expect(check?.status).toBe("pass")
+    expect(check?.message).toContain("claude-agent-acp")
+  })
+
+  // Exactly one action, and it never duplicates the Install button that lives
+  // on the Version Status card directly below.
+  it("offers only a docs link, never a second install button", () => {
+    const check = buildAcpAdapterCheck(makeAdapter())
+    expect(check?.fixes).toHaveLength(1)
+    expect(check?.fixes[0].kind).toBe("open_url")
+    expect(check?.fixes[0].payload).toContain("#acp-adapters")
+  })
+})
+
+describe("getAgentChecks adapter ordering", () => {
+  // The explainer answers "why does this say not installed?" and must be read
+  // BEFORE the Version Status card that offers the fix.
+  it("puts the adapter card first, then version, then backend checks", () => {
+    const checks = getAgentChecks(
+      makeAgent({
+        agent_type: "claude_code" as AgentType,
+        distribution_type: "npx",
+        is_acp_adapter: true,
+        registry_version: "0.63.0",
+        installed_version: null,
+      }),
+      {
+        result: {
+          agent_type: "claude_code" as AgentType,
+          agent_name: "Claude Code",
+          passed: true,
+          checks: [
+            {
+              check_id: "node_available",
+              label: "Node.js",
+              status: "pass",
+              message: "Node.js v22.0.0 available",
+              fixes: [],
+            },
+          ],
+          adapter: {
+            adapter_package: "@agentclientprotocol/claude-agent-acp@0.63.0",
+            adapter_cmd: "claude-agent-acp",
+            adapter_installed: false,
+            native_cmd: "claude",
+            native_label: "Claude Code CLI",
+            native_path: "/usr/local/bin/claude",
+            shared_config_dir: "~/.claude",
+            docs_url:
+              "https://docs.codeg.app/guide/supported-agents#acp-adapters",
+          },
+        },
+      }
+    )
+
+    expect(checks.map((c) => c.check_id)).toEqual([
+      "acp_adapter",
+      "version_status",
+      "node_available",
+    ])
+  })
+
+  // A plain agent's list is byte-for-byte what it was before this feature.
+  it("adds nothing for an agent with no adapter relation", () => {
+    const checks = getAgentChecks(
+      makeAgent({ distribution_type: "npx", installed_version: "1.0.0" }),
+      {
+        result: {
+          agent_type: "gemini" as AgentType,
+          agent_name: "Gemini CLI",
+          passed: true,
+          checks: [],
+          adapter: null,
+        },
+      }
+    )
+    expect(checks.some((c) => c.check_id === "acp_adapter")).toBe(false)
+  })
+})
+
 describe("buildVersionCheck", () => {
   // A manually written definition has no registry behind it — its stored
   // version is user-typed — so the check must show the local side alone and
@@ -692,6 +830,7 @@ describe("getAgentChecks uv gating", () => {
           fixes: [{ label: "Install uv", kind: "install_uv", payload: "" }],
         },
       ],
+      adapter: null,
     },
   }
 

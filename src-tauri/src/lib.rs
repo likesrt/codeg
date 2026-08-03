@@ -41,6 +41,7 @@ mod terminal;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
+pub mod work_task;
 pub mod workspace_state;
 pub mod workspace_transfer;
 
@@ -72,7 +73,8 @@ mod tauri_app {
         remote_workspace as remote_workspace_commands, science as science_commands,
         session_info as session_info_commands,
         system_settings, terminal as terminal_commands,
-        version_control, windows, workspace_state as workspace_state_commands,
+        version_control, windows, work_task as work_task_commands,
+        workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -591,6 +593,7 @@ mod tauri_app {
                                 }),
                             ),
                         ),
+                        std::sync::Arc::new(crate::work_task::EngineWorkTaskTools),
                     );
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = listener.run(socket_path).await {
@@ -681,6 +684,23 @@ mod tauri_app {
                     effective_data_dir.clone(),
                 ) {
                     tauri::async_runtime::spawn(crate::automation::run_automation_engine(engine));
+                }
+
+                // Work-task engine: drives the todo→…→done pipeline, settles
+                // runs off the event bus, recovers merges from git truth on
+                // boot. One per process; mirrored in `bin/codeg_server.rs`.
+                if let Some(engine) = crate::work_task::build_task_engine(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    app.state::<ConnectionManager>().clone_ref(),
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    app.state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone(),
+                    effective_data_dir.clone(),
+                ) {
+                    tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
                 }
 
                 // Single-window workspace: ensure the main window exists.
@@ -1218,6 +1238,33 @@ mod tauri_app {
                 automation_commands::automation_compute_next_run,
                 automation_commands::automation_run_now,
                 automation_commands::automation_cancel_run,
+                work_task_commands::work_task_list,
+                work_task_commands::work_task_get,
+                work_task_commands::work_task_events,
+                work_task_commands::work_task_attention_count,
+                work_task_commands::work_task_create,
+                work_task_commands::work_task_update,
+                work_task_commands::work_task_reorder,
+                work_task_commands::work_task_delete,
+                work_task_commands::work_task_start,
+                work_task_commands::work_task_start_all,
+                work_task_commands::work_task_retry,
+                work_task_commands::work_task_requeue,
+                work_task_commands::work_task_return,
+                work_task_commands::work_task_cancel,
+                work_task_commands::work_task_merge,
+                work_task_commands::work_task_archive,
+                work_task_commands::work_task_cleanup,
+                work_task_commands::work_task_diff,
+                work_task_commands::work_task_changed_files,
+                work_task_commands::work_task_settings_get,
+                work_task_commands::work_task_settings_get_own,
+                work_task_commands::work_task_settings_effective,
+                work_task_commands::work_task_settings_set,
+                work_task_commands::work_task_settings_delete,
+                work_task_commands::work_task_template_list,
+                work_task_commands::work_task_template_save,
+                work_task_commands::work_task_template_delete,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

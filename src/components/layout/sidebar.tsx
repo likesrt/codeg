@@ -7,6 +7,7 @@ import {
   ListChevronsDownUp,
   ListChevronsUpDown,
   Search,
+  ListTodo,
   SquarePen,
   Zap,
   type LucideIcon,
@@ -17,6 +18,7 @@ import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useTabActions } from "@/contexts/tab-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useAutomationsView } from "@/contexts/automations-view-context"
+import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import {
   SidebarConversationList,
@@ -119,6 +121,7 @@ export function Sidebar() {
   const { openNewConversationTab, openChatModeTab } = useTabActions()
   const { setOpen: setSearchOpen } = useSearchDialog()
   const { unseenFailures } = useAutomationsView()
+  const { attentionCount } = useTasksView()
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
   const { isMac: platformIsMac } = usePlatform()
@@ -414,6 +417,21 @@ export function Sidebar() {
             unseenFailures > 0 ? (
               <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-destructive/15 px-1 font-mono text-[0.625rem] font-medium leading-none text-destructive">
                 {unseenFailures}
+              </span>
+            ) : null
+          }
+        />
+        <SidebarNavButton
+          icon={ListTodo}
+          label={t("tasks")}
+          active={routeId === "tasks"}
+          onClick={() => setRoute("tasks")}
+          trailing={
+            attentionCount > 0 ? (
+              // Attention (not failure): tasks waiting on the user — primary
+              // tint like the shortcut chips, not destructive.
+              <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[0.625rem] font-medium leading-none text-primary">
+                {attentionCount}
               </span>
             ) : null
           }

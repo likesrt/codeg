@@ -11,6 +11,7 @@ import {
   Pin,
   PinOff,
   CheckCircle2,
+  FolderX,
   Info,
   ChevronRight,
 } from "lucide-react"
@@ -314,6 +315,23 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                   {formatConversationTitle(conversation.title) ||
                     t("untitledConversation")}
                 </span>
+                {/* Re-parented out of a removed worktree: history loads fine,
+                    but "continue" may need a fresh session (the agent's files
+                    were keyed to the old path). */}
+                {conversation.origin_cwd ? (
+                  <span
+                    className="inline-flex shrink-0 items-center"
+                    title={tSidebar("worktreeRemovedBadge")}
+                  >
+                    <FolderX
+                      className="h-3 w-3 text-muted-foreground/60"
+                      aria-hidden
+                    />
+                    <span className="sr-only">
+                      {tSidebar("worktreeRemovedBadge")}
+                    </span>
+                  </span>
+                ) : null}
               </button>
 
               {/* Expand/collapse affordance for delegation children. It overlays

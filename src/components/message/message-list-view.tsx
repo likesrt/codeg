@@ -50,7 +50,9 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  ListTodo,
 } from "lucide-react"
+import { useCreateTaskFromMessage } from "./use-create-task-from-message"
 import { Button } from "@/components/ui/button"
 import { useTranslations } from "next-intl"
 import {
@@ -93,6 +95,13 @@ interface MessageListViewProps {
    * conversation view; disabled in compact embeds (e.g. the sub-agent dialog).
    */
   showMessageNav?: boolean
+  /**
+   * Optional phase label for a user turn (work-task transcripts label each
+   * engine-dispatched round: work / retry / return / merge). Called at render
+   * time per user-role turn; MUST be pure — the thread is virtualized, so
+   * items render in arbitrary order and multiplicity. `null` = no divider.
+   */
+  userTurnHeader?: ((group: ResolvedMessageGroup) => string | null) | null
 }
 
 export interface ResolvedMessageGroup {
@@ -523,6 +532,29 @@ const UserMessageCopyButton = memo(function UserMessageCopyButton({
   )
 })
 
+const UserMessageTaskButton = memo(function UserMessageTaskButton({
+  parts,
+}: {
+  parts: AdaptedContentPart[]
+}) {
+  const t = useTranslations("Tasks")
+  const getText = useCallback(
+    () => unescapeComposerText(extractTextFromParts(parts)),
+    [parts]
+  )
+  const createTask = useCreateTaskFromMessage(getText)
+  return (
+    <MessageAction
+      tooltip={t("createFromMessage")}
+      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      onClick={createTask}
+      size="icon-xs"
+    >
+      <ListTodo size={12} />
+    </MessageAction>
+  )
+})
+
 const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   group,
   dimmed = false,
@@ -550,6 +582,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
         ) : null}
         {group.role === "user" ? (
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
+            <UserMessageTaskButton parts={group.parts} />
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>
               <CollapsibleUserMessage parts={group.parts} />
@@ -637,6 +670,7 @@ export function MessageListView({
   onReload,
   onNewSession,
   showMessageNav = true,
+  userTurnHeader = null,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -825,36 +859,52 @@ export function MessageListView({
     [historicalPlanEntries]
   )
 
-  const renderThreadItem = useCallback((item: ThreadRenderItem) => {
-    switch (item.kind) {
-      case "turn": {
-        const pt = item.isRoleTransition ? 16 : 0
-        return (
-          <div style={pt > 0 ? { paddingTop: pt } : undefined}>
-            <HistoricalMessageGroup
-              group={item.group}
-              dimmed={item.phase === "optimistic"}
-              showStats={item.showStats}
-              previousUserIndex={item.previousUserIndex}
-              isResponseComplete={item.phase === "persisted"}
-              sourceTurns={item.sourceTurns}
-            />
-          </div>
-        )
+  const renderThreadItem = useCallback(
+    (item: ThreadRenderItem) => {
+      switch (item.kind) {
+        case "turn": {
+          const pt = item.isRoleTransition ? 16 : 0
+          const phaseLabel =
+            item.group.role === "user" && userTurnHeader
+              ? userTurnHeader(item.group)
+              : null
+          return (
+            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+              {phaseLabel ? (
+                <div className="flex items-center gap-2 px-1 pb-3 pt-1">
+                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                  <span className="shrink-0 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[0.625rem] font-medium leading-none text-muted-foreground">
+                    {phaseLabel}
+                  </span>
+                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                </div>
+              ) : null}
+              <HistoricalMessageGroup
+                group={item.group}
+                dimmed={item.phase === "optimistic"}
+                showStats={item.showStats}
+                previousUserIndex={item.previousUserIndex}
+                isResponseComplete={item.phase === "persisted"}
+                sourceTurns={item.sourceTurns}
+              />
+            </div>
+          )
+        }
+        case "typing":
+          return <PendingTypingIndicator />
+        case "compaction":
+          // Chrome-less centered divider between turns (no avatar / stats footer).
+          return (
+            <div className="px-1 py-2">
+              <ContextCompactionCard meta={item.meta} />
+            </div>
+          )
+        default:
+          return null
       }
-      case "typing":
-        return <PendingTypingIndicator />
-      case "compaction":
-        // Chrome-less centered divider between turns (no avatar / stats footer).
-        return (
-          <div className="px-1 py-2">
-            <ContextCompactionCard meta={item.meta} />
-          </div>
-        )
-      default:
-        return null
-    }
-  }, [])
+    },
+    [userTurnHeader]
+  )
 
   const emptyState = useMemo(
     () =>

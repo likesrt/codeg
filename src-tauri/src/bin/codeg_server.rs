@@ -347,6 +347,7 @@ async fn async_main() -> ExitCode {
                     conn: state.db.conn.clone(),
                 }),
             )),
+            Arc::new(codeg_lib::work_task::EngineWorkTaskTools),
         );
         let socket = delegation_socket_path.clone();
         tokio::spawn(async move {
@@ -465,6 +466,20 @@ async fn async_main() -> ExitCode {
         state.data_dir.clone(),
     ) {
         tokio::spawn(codeg_lib::automation::run_automation_engine(engine));
+    }
+
+    // Work-task engine (mirrors lib.rs setup): manual pipeline, event-bus
+    // settlement, merging git-truth recovery. One per process.
+    if let Some(engine) = codeg_lib::work_task::build_task_engine(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.connection_manager.clone_ref(),
+        state.emitter.clone(),
+        state.acp_event_bus.clone(),
+        state.data_dir.clone(),
+    ) {
+        tokio::spawn(codeg_lib::work_task::run_task_engine(engine));
     }
 
     // Sweep abandoned upload staging files from any prior run before

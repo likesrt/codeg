@@ -2471,29 +2471,41 @@ function computeTimelinePrefix(
   }
 
   // Phase 1: DB historical turns.
-  // When liveOwnsActiveTurn is set (sub-agent dialog), the live/local reply
-  // is authoritative for the child's current (only) reply. Strip any
-  // persisted assistant turns while there's a live or just-promoted local
-  // reply in this session — only the kickoff prefix (everything before the
-  // first assistant turn) is shown from the DB. This eliminates the
-  // partial-plus-live duplicate for all timing scenarios, including a
-  // connection-id-null open where we can't read the live store during fetch.
+  // When liveOwnsActiveTurn is set (read-only viewer), the live/local reply is
+  // authoritative for the ACTIVE reply — the persisted copy of that one reply
+  // must not render beside it. This eliminates the partial-plus-live duplicate
+  // for all timing scenarios, including a connection-id-null open where we
+  // can't read the live store during fetch.
   //
-  // Delegation children are SINGLE-REPLY (one-shot): stripping from the
-  // first assistant turn onward removes exactly the persisted copy of that
-  // one reply. (A hypothetical multi-turn child would have earlier replies
-  // hidden during the live/grace window — not a case the viewer supports.)
+  // Scoped to the active round: strip only what follows the LAST persisted
+  // user turn. For a one-shot delegation child ([user, assistant]) that is
+  // exactly the old "from the first assistant turn" rule. For a MULTI-ROUND
+  // session — a work task runs work → rework → retry → merge in one
+  // conversation — the old rule erased every earlier round from the viewer the
+  // whole time it was streaming, leaving only the kickoff and the live reply.
+  // With no persisted user turn at all (transcript still cold) there is no
+  // anchor, so fall back to the first assistant turn: the only assistant
+  // content that can exist is the reply being streamed.
   const rawPersistedTurns = session.detail?.turns ?? []
   const hasLiveOrLocalReply =
     session.liveOwnsActiveTurn &&
     (session.liveMessage !== null || session.localTurns.length > 0)
-  const firstAssistantIdx = hasLiveOrLocalReply
-    ? rawPersistedTurns.findIndex((t) => t.role === "assistant")
-    : -1
+  let stripFrom = -1
+  if (hasLiveOrLocalReply) {
+    let lastUserIdx = -1
+    for (let i = rawPersistedTurns.length - 1; i >= 0; i--) {
+      if (rawPersistedTurns[i]!.role === "user") {
+        lastUserIdx = i
+        break
+      }
+    }
+    stripFrom =
+      lastUserIdx === -1
+        ? rawPersistedTurns.findIndex((t) => t.role === "assistant")
+        : lastUserIdx + 1
+  }
   const persistedTurns =
-    hasLiveOrLocalReply && firstAssistantIdx !== -1
-      ? rawPersistedTurns.slice(0, firstAssistantIdx)
-      : rawPersistedTurns
+    stripFrom !== -1 ? rawPersistedTurns.slice(0, stripFrom) : rawPersistedTurns
 
   // Suppress the persisted PARTIAL in-flight reply for a non-delegation
   // cross-client viewer. While a reply is streaming, some agents (OpenCode,

@@ -260,13 +260,20 @@ pub struct GitWorktreeAddParams {
     pub path: String,
     pub branch_name: String,
     pub worktree_path: String,
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 pub async fn git_worktree_add(
     Json(params): Json<GitWorktreeAddParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_worktree_add(params.path, params.branch_name, params.worktree_path)
-        .await?;
+    folder_commands::git_worktree_add(
+        params.path,
+        params.branch_name,
+        params.worktree_path,
+        params.base,
+    )
+    .await?;
     Ok(Json(()))
 }
 

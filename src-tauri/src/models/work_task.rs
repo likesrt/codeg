@@ -1,0 +1,227 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+pub use crate::db::entities::work_task::WorkTaskStatus;
+
+/// One folder-bound work task. Wire form mirrors `src/lib/types.ts`
+/// (`WorkTask`).
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkTaskInfo {
+    pub id: i32,
+    pub folder_id: i32,
+    pub title: String,
+    /// Opaque `WorkTaskConfig` snapshot (prompt blocks + per-task overrides);
+    /// replayed at launch, never queried.
+    pub config: serde_json::Value,
+    pub status: WorkTaskStatus,
+    pub failure_reason: Option<String>,
+    pub last_error: Option<String>,
+    pub run_seq: i32,
+    pub sort_order: i32,
+    pub worktree_folder_id: Option<i32>,
+    pub conversation_id: Option<i32>,
+    /// Live ACP connection of the current generation — the transcript viewer
+    /// attaches by it. Only meaningful while the task is running/awaiting;
+    /// stale after a settle (gate on status client-side).
+    pub connection_id: Option<String>,
+    pub base_branch: Option<String>,
+    pub base_sha: Option<String>,
+    pub work_branch: Option<String>,
+    pub cleanup_state: Option<String>,
+    pub verdict: Option<String>,
+    pub result_summary: Option<String>,
+    pub files_changed: Option<i32>,
+    pub additions: Option<i32>,
+    pub deletions: Option<i32>,
+    pub merge_commit: Option<String>,
+    /// `WorkTaskPreflight` snapshot (acceptance red/green light), if a
+    /// preflight command ran for this review.
+    pub preflight: Option<serde_json::Value>,
+    pub archived_at: Option<DateTime<Utc>>,
+    /// Latest `agent_progress` milestone (filled by `list` for live tasks only
+    /// — the card's realtime progress line).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_progress: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub settled_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// One timeline entry of a task (append-only; see `work_task_event`).
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkTaskEventInfo {
+    pub id: i32,
+    pub task_id: i32,
+    pub kind: String,
+    pub actor: String,
+    pub payload: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Create/update payload — the editor loads the whole task and saves it back
+/// wholesale (title + captured composer config).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkTaskDraft {
+    pub folder_id: i32,
+    pub title: String,
+    pub config: serde_json::Value,
+}
+
+/// Wire DTO for a saved task template: a display name plus the title seed and
+/// the same opaque `WorkTaskConfig` snapshot a task row stores.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkTaskTemplateInfo {
+    pub id: i32,
+    pub name: String,
+    pub title: String,
+    pub config: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Save payload for a template. Saving under an existing name updates that
+/// template in place (upsert by exact name).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkTaskTemplateDraft {
+    pub name: String,
+    pub title: String,
+    pub config: serde_json::Value,
+}
+
+/// The structured shape stored inside `work_task.config`. Kept tolerant
+/// (`#[serde(default)]`) so an older/newer snapshot still deserializes. Empty
+/// optional fields inherit the folder's `WorkTaskFolderSettings` at launch —
+/// the actually-effective values are recorded on a `config_effective` audit
+/// event instead of being frozen here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkTaskConfig {
+    #[serde(default)]
+    pub prompt_blocks: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub display_text: String,
+    /// Per-task agent override. `None` = inherit folder settings.
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub mode_id: Option<String>,
+    #[serde(default)]
+    pub config_values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub label_snapshot: Option<serde_json::Value>,
+}
+
+/// Per-folder defaults stored in `work_task_settings.config`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTaskFolderSettings {
+    /// `None` → fall back to `folder.default_agent_type`.
+    #[serde(default)]
+    pub default_agent_type: Option<String>,
+    #[serde(default)]
+    pub mode_id: Option<String>,
+    #[serde(default)]
+    pub config_values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub label_snapshot: Option<serde_json::Value>,
+    /// P1: the scheduler claims due todos automatically. Stored now, hidden in
+    /// the P0 UI.
+    #[serde(default)]
+    pub auto_process: bool,
+    /// Max concurrently active tasks per folder; 0 = unlimited.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: i32,
+    /// "squash" (default) | "merge"
+    #[serde(default = "default_merge_strategy")]
+    pub merge_strategy: String,
+    /// Merge dialog's "delete worktree after merge" default.
+    #[serde(default = "default_true")]
+    pub delete_worktree_default: bool,
+    /// P2: `folder_command` id run in the worktree when a task settles into
+    /// review — the acceptance red/green light. `None` = no preflight.
+    #[serde(default)]
+    pub preflight_command_id: Option<i32>,
+    /// Free-form preflight shell line; takes precedence over
+    /// `preflight_command_id` when non-empty.
+    #[serde(default)]
+    pub preflight_command: Option<String>,
+    /// Shell line run inside a freshly created worktree before the agent
+    /// starts (deps install, env seeding). Not re-run on reused worktrees.
+    #[serde(default)]
+    pub init_command: Option<String>,
+}
+
+impl Default for WorkTaskFolderSettings {
+    fn default() -> Self {
+        Self {
+            default_agent_type: None,
+            mode_id: None,
+            config_values: Default::default(),
+            label_snapshot: None,
+            auto_process: false,
+            max_concurrent: default_max_concurrent(),
+            merge_strategy: default_merge_strategy(),
+            delete_worktree_default: true,
+            preflight_command_id: None,
+            preflight_command: None,
+            init_command: None,
+        }
+    }
+}
+
+fn default_max_concurrent() -> i32 {
+    2
+}
+
+fn default_merge_strategy() -> String {
+    "squash".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// The merge intent persisted (as JSON in `work_task.merge_state`) in the same
+/// transaction as the review→merging CAS. The merge itself is performed by the
+/// agent in its session; the engine settles from git truth against
+/// `pre_merge_head` (base advanced + work content contained), never from the
+/// agent's word.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTaskMergeState {
+    /// Project-folder HEAD right before the merge generation was dispatched.
+    pub pre_merge_head: String,
+    /// The commit message the agent is told to use ("" when auto-generated).
+    pub message: String,
+    /// "squash" | "merge"
+    pub strategy: String,
+    /// Whether the user asked to delete the worktree after landing — persisted
+    /// so crash recovery can honor the choice when it back-fills `done`.
+    #[serde(default)]
+    pub delete_worktree: bool,
+    /// The agent writes the commit message itself (`message` is empty then).
+    #[serde(default)]
+    pub auto_message: bool,
+}
+
+/// Outcome of the folder's preflight command for one review generation,
+/// serialized into `work_task.preflight` (and mirrored on the wire verbatim).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTaskPreflight {
+    /// "running" | "passed" | "failed"
+    pub status: String,
+    /// Display name of the folder command that ran.
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Trailing combined output (capped) — shown when the light is red.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
+}
+
+/// Changed file of a task worktree vs. its recorded base (`git diff --numstat`).
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkTaskChangedFile {
+    pub file: String,
+    pub additions: i32,
+    pub deletions: i32,
+}

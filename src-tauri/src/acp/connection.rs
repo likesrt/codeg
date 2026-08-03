@@ -34,6 +34,7 @@ use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy};
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
+use crate::acp::stderr_tail::{summarize_parser_error, StderrTail, TailScope};
 use crate::acp::terminal_runtime::{TerminalRuntime, TerminalRuntimeError};
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokEffortSpec,
@@ -223,6 +224,26 @@ pub enum GoalControlAction {
     Clear,
 }
 
+/// How the adapter disposed of a `_session/steering` message — the wire
+/// `outcome` string, parsed by [`parse_steer_outcome`]. The distinction that
+/// matters to callers is CONSUMPTION: `Injected` and `StartedNewTurn` mean the
+/// adapter took the content (record it delivered, never resend);
+/// `PromptRequired` means it did not (safe to resubmit as a normal prompt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerOutcome {
+    /// Pushed into the RUNNING turn's input — consumed.
+    Injected,
+    /// The turn settled first and the adapter honored the
+    /// `idleBehavior = "promptRequired"` opt-in — NOT consumed, still
+    /// host-owned. The caller reroutes it through `session/prompt`.
+    PromptRequired,
+    /// The adapter ignored the opt-in (pre-0.64 claude adapter, codex-acp)
+    /// and spun up a detached turn no host request owns — consumed. The
+    /// manager records it delivered, warns, and downgrades
+    /// `native_steering_available` for the rest of the session.
+    StartedNewTurn,
+}
+
 /// Commands sent from Tauri command handlers to the ACP connection loop.
 pub enum ConnectionCommand {
     Prompt {
@@ -254,6 +275,18 @@ pub enum ConnectionCommand {
     Fork {
         reply:
             tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
+    },
+    /// Inject a live-feedback note into the RUNNING turn over the ACP
+    /// `_session/steering` extension (native push channel — see
+    /// `manager::submit_feedback`). The loop does the protocol round-trip
+    /// only and replies the parsed outcome; recording the note + the
+    /// `FeedbackSubmitted` broadcast happen in the manager's
+    /// cancellation-shielded task, mirroring Fork's protocol/persistence
+    /// split. The idle arm replies `Err(NoActiveTurn)` so the oneshot can
+    /// never hang.
+    Steer {
+        text: String,
+        reply: tokio::sync::oneshot::Sender<Result<SteerOutcome, AcpError>>,
     },
     Disconnect,
 }
@@ -621,10 +654,55 @@ async fn record_hydrated_update(
     }
 }
 
+/// Build the `with_debug` callback for a spawned agent.
+///
+/// stderr does double duty: it is tee'd to `tracing::debug!` (historical
+/// behavior, invisible at the default `Info` level) AND pushed into
+/// `stderr_tail`, an in-memory ring buffer that survives regardless of the log
+/// level. The buffer is what a silent-`EndTurn` diagnosis reads from — see
+/// [`crate::acp::stderr_tail`]. stdin/stdout are NEVER buffered: they carry
+/// JSON-RPC traffic including prompt text and file contents.
+fn agent_debug_callback(
+    agent_name: String,
+    stderr_tail: Arc<StderrTail>,
+    stdio_debug_enabled: bool,
+) -> impl Fn(&str, sacp_tokio::LineDirection) + Send + Sync + 'static {
+    move |line, dir| {
+        let (tag, enabled) = match dir {
+            sacp_tokio::LineDirection::Stderr => {
+                stderr_tail.push(line);
+                ("stderr", true)
+            }
+            sacp_tokio::LineDirection::Stdout => ("stdout", stdio_debug_enabled),
+            sacp_tokio::LineDirection::Stdin => ("stdin", stdio_debug_enabled),
+        };
+        if !enabled {
+            return;
+        }
+        const MAX: usize = 256;
+        if line.len() > MAX {
+            let head = line
+                .char_indices()
+                .take_while(|(i, _)| *i < MAX)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(MAX);
+            tracing::debug!(
+                "[ACP][{agent_name}][{tag}] {}... <truncated {} bytes>",
+                &line[..head],
+                line.len() - head
+            );
+        } else {
+            tracing::debug!("[ACP][{agent_name}][{tag}] {line}");
+        }
+    }
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
     cwd: &Path,
+    stderr_tail: &Arc<StderrTail>,
 ) -> Result<AcpAgent, AcpError> {
     // A conversation can outlive the custom-agent definition it was started
     // with (the user deleted it in settings). `get_agent_meta` cannot report
@@ -737,13 +815,13 @@ async fn build_agent(
             }
             let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
             let agent_name = meta.name.to_string();
+            let tail = Arc::clone(stderr_tail);
             AcpAgent::from_args(&refs)
                 .map(|a| {
-                    a.with_debug(move |line, dir| {
-                        if dir == sacp_tokio::LineDirection::Stderr {
-                            tracing::debug!("[ACP][{agent_name}][stderr] {line}");
-                        }
-                    })
+                    // `false`: this branch never logged stdin/stdout, and the
+                    // shared callback must not quietly widen that. Only the
+                    // Binary branch opts into the CODEG_ACP_DEBUG stdio dump.
+                    a.with_debug(agent_debug_callback(agent_name, tail, false))
                 })
                 .map_err(|e| AcpError::SpawnFailed(e.to_string()))
         }
@@ -901,34 +979,10 @@ async fn build_agent(
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             let agent_name = meta.name.to_string();
+            let tail = Arc::clone(stderr_tail);
             Ok(
                 AcpAgent::new(sacp::schema::McpServer::Stdio(server)).with_debug(
-                    move |line, dir| {
-                        let (tag, enabled) = match dir {
-                            sacp_tokio::LineDirection::Stderr => ("stderr", true),
-                            sacp_tokio::LineDirection::Stdout => ("stdout", stdio_debug_enabled),
-                            sacp_tokio::LineDirection::Stdin => ("stdin", stdio_debug_enabled),
-                        };
-                        if !enabled {
-                            return;
-                        }
-                        const MAX: usize = 256;
-                        if line.len() > MAX {
-                            let head = line
-                                .char_indices()
-                                .take_while(|(i, _)| *i < MAX)
-                                .last()
-                                .map(|(i, c)| i + c.len_utf8())
-                                .unwrap_or(MAX);
-                            tracing::debug!(
-                                "[ACP][{agent_name}][{tag}] {}... <truncated {} bytes>",
-                                &line[..head],
-                                line.len() - head
-                            );
-                        } else {
-                            tracing::debug!("[ACP][{agent_name}][{tag}] {line}");
-                        }
-                    },
+                    agent_debug_callback(agent_name, tail, stdio_debug_enabled),
                 ),
             )
         }
@@ -988,13 +1042,11 @@ async fn build_agent(
             }
             let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
             let agent_name = meta.name.to_string();
+            let tail = Arc::clone(stderr_tail);
             AcpAgent::from_args(&refs)
                 .map(|a| {
-                    a.with_debug(move |line, dir| {
-                        if dir == sacp_tokio::LineDirection::Stderr {
-                            tracing::debug!("[ACP][{agent_name}][stderr] {line}");
-                        }
-                    })
+                    // `false` for the same reason as the Npx branch above.
+                    a.with_debug(agent_debug_callback(agent_name, tail, false))
                 })
                 .map_err(|e| AcpError::SpawnFailed(e.to_string()))
         }
@@ -1103,7 +1155,12 @@ pub async fn spawn_agent_connection(
     // backstop when the connection driver thread is torn down by process exit
     // before `ChildGuard::drop` can run. 0 = not spawned yet / unknown.
     let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let agent = build_agent(agent_type, &runtime_env, &launch_cwd)
+    // Connection-scoped ring buffer of the agent's stderr, populated by the
+    // `with_debug` callback `build_agent` installs and read at turn end when a
+    // turn is diagnosed as silently empty. Created here so both the spawn side
+    // and the conversation loop share the same buffer.
+    let stderr_tail = Arc::new(StderrTail::new());
+    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail)
         .await?
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
@@ -1217,6 +1274,7 @@ pub async fn spawn_agent_connection(
             preferred_config_values,
             delegation_injection,
             fs_policy,
+            stderr_tail,
         )
         .await;
 
@@ -1253,6 +1311,7 @@ pub async fn spawn_agent_connection(
                     message: e.to_string(),
                     agent_type: agent_type.to_string(),
                     code,
+                    details: None,
                     // The only genuinely terminal emit site: `run_connection`
                     // is unwinding and the next event is `Disconnected`.
                     // The lifecycle worker uses this flag to decide whether
@@ -1939,6 +1998,57 @@ fn build_grok_set_model_params(
     params
 }
 
+/// Send `_session/steering` (the ACP steering extension) to inject a message
+/// into the RUNNING turn. Untyped like `session/resume` — an extension method
+/// the schema has no typed request for. Always opts into the 0.64.0
+/// `promptRequired` idle contract; codeg only enables native steering for
+/// adapters proven to honor it (see [`synthesize_native_steering`]), but the
+/// caller still handles every outcome in case the proof was wrong.
+async fn send_steer_request(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    text: &str,
+) -> Result<SteerOutcome, AcpError> {
+    let params = build_steer_params(session_id.0.as_ref(), text);
+    let untyped_req = UntypedMessage::new("_session/steering", params).map_err(|e| {
+        AcpError::protocol(format!("Failed to build steering request: {e}"))
+    })?;
+    let raw = cx
+        .send_request_to(Agent, untyped_req)
+        .block_task()
+        .await
+        .map_err(|e| AcpError::protocol(format!("Steering request failed: {e}")))?;
+    parse_steer_outcome(&raw)
+}
+
+/// Build the `_session/steering` params. The prompt is a single text block
+/// (codeg steering is text-only), and `_meta.steering.idleBehavior =
+/// "promptRequired"` opts into the turn-end-race contract: a turn that
+/// settled first yields `{outcome:"promptRequired"}` WITHOUT consuming the
+/// content, so the host resubmits it through a normal `session/prompt`.
+fn build_steer_params(session_id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "prompt": [{ "type": "text", "text": text }],
+        "_meta": { "steering": { "idleBehavior": "promptRequired" } },
+    })
+}
+
+/// Parse a `_session/steering` response's top-level `outcome`. Strict on
+/// unknowns: a missing or unrecognized outcome is a protocol error, NOT a
+/// silent success — the caller must know whether the content was consumed
+/// before it decides between "record delivered" and "safe to resend".
+fn parse_steer_outcome(raw: &serde_json::Value) -> Result<SteerOutcome, AcpError> {
+    match raw.get("outcome").and_then(serde_json::Value::as_str) {
+        Some("injected") => Ok(SteerOutcome::Injected),
+        Some("promptRequired") => Ok(SteerOutcome::PromptRequired),
+        Some("startedNewTurn") => Ok(SteerOutcome::StartedNewTurn),
+        other => Err(AcpError::protocol(format!(
+            "unexpected _session/steering outcome: {other:?}"
+        ))),
+    }
+}
+
 /// On reconnect, re-apply the user's last-picked Grok model AND reasoning effort
 /// (both saved per agent by the frontend and shipped back as preferred config
 /// values), reflecting each in its selector's `current_value`. Model is applied
@@ -2116,6 +2226,7 @@ async fn emit_grok_incompatible_agent_switch(
                 .to_string(),
             agent_type: AgentType::Grok.to_string(),
             code: Some(GROK_INCOMPATIBLE_AGENT_ERROR_CODE.to_string()),
+            details: None,
             // Recoverable: the conversation continues on its current model.
             terminal: false,
         },
@@ -2608,17 +2719,25 @@ fn is_executable_file(path: &Path) -> bool {
 /// delegate tool silently. Skipping leaves the agent fully functional minus
 /// `delegate_to_agent`, which is the right degradation when codeg-mcp didn't
 /// make it into the install.
-/// The `--features` value for a companion launch given the four feature flags,
+/// The `--features` value for a companion launch given the five feature flags,
 /// or `None` when none is enabled (the companion isn't injected at all).
 /// Pulled out as a pure function so the inject/skip decision is unit-testable
-/// without a real binary on disk or a live broker.
+/// without a real binary on disk or a live broker. `tasks` is per-spawn (task
+/// engine launches only), not a settings toggle — on its own it still injects
+/// the companion so a task session always has its reporting tools.
 fn companion_features_arg(
     delegation_enabled: bool,
     feedback_enabled: bool,
     ask_enabled: bool,
     sessions_enabled: bool,
+    tasks_enabled: bool,
 ) -> Option<String> {
-    if !delegation_enabled && !feedback_enabled && !ask_enabled && !sessions_enabled {
+    if !delegation_enabled
+        && !feedback_enabled
+        && !ask_enabled
+        && !sessions_enabled
+        && !tasks_enabled
+    {
         return None;
     }
     let mut features: Vec<&str> = Vec::new();
@@ -2633,6 +2752,9 @@ fn companion_features_arg(
     }
     if sessions_enabled {
         features.push("sessions");
+    }
+    if tasks_enabled {
+        features.push("tasks");
     }
     Some(features.join(","))
 }
@@ -2650,11 +2772,14 @@ async fn inject_codeg_mcp(
     injection: &DelegationInjection,
     parent_connection_id: &str,
     working_dir: &Path,
+    tasks_enabled: bool,
 ) -> Option<CompanionInjection> {
     // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
     // Inject it when EITHER feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
     // surface to the LLM. (Historically this was gated on delegation alone.)
+    // `tasks_enabled` is per-spawn: true only for task-engine launches, which
+    // must get their reporting tools regardless of the settings toggles.
     let delegation_enabled = injection.broker.config_snapshot().await.enabled;
     let feedback_enabled = injection.feedback.is_enabled().await;
     let ask_enabled = injection.ask.is_enabled().await;
@@ -2665,6 +2790,7 @@ async fn inject_codeg_mcp(
         feedback_enabled,
         ask_enabled,
         sessions_enabled,
+        tasks_enabled,
     )?;
     let Some(binary_path) = locate_codeg_mcp_binary() else {
         tracing::warn!(
@@ -2879,6 +3005,10 @@ async fn run_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     fs_policy: FsAccessPolicy,
+    // Connection-scoped agent stderr buffer, shared with the `with_debug`
+    // callback installed by `build_agent`. Read only when a turn ends without
+    // agent output, to attach evidence to the synthesized error.
+    stderr_tail: Arc<StderrTail>,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     // `terminal_base_env` already filtered to just the credential helper
@@ -2966,6 +3096,7 @@ async fn run_connection(
                         &emitter_inner,
                         &perms,
                         &perm_cwd,
+                        agent_type,
                         req,
                         responder,
                     )
@@ -3225,6 +3356,32 @@ async fn run_connection(
                 init_resp.agent_capabilities.load_session, supports_fork, supports_resume
             );
 
+            // Native live-feedback steering, synthesized ONCE from three gates
+            // so every consumer (the submit split, the snapshot, the frontend)
+            // reads a single authoritative bool: (1) the adapter advertises
+            // the extension (top-level `_meta`), (2) the registry says this
+            // agent type honors the `promptRequired` idle opt-in, and (3) the
+            // RUNNING binary proves it via `agent_info.version` — launch
+            // prefers a PATH-resolved install over the pinned package, so (2)
+            // alone can't vouch for the process on the other end of the pipe.
+            // The raw advertisement is deliberately NOT stored: exposing it
+            // would tempt the frontend to re-derive eligibility and show the
+            // instant channel for adapters (codex) that advertise steering but
+            // would detach a turn on the idle race.
+            let steering_advertised = init_advertises_steering(init_resp.meta.as_ref());
+            let native_steering_available = synthesize_native_steering(
+                agent_type,
+                init_resp.meta.as_ref(),
+                init_resp.agent_info.as_ref(),
+            );
+            tracing::info!(
+                "[ACP][{}] steering: advertised={}, agent_version={:?}, native={}",
+                agent_type,
+                steering_advertised,
+                init_resp.agent_info.as_ref().map(|i| i.version.as_str()),
+                native_steering_available
+            );
+
             // Whether this agent accepts MCP server entries over the ACP wire
             // (`session/new`'s `mcpServers`). Almost all do; OpenClaw rejects
             // any server entry and fails session creation, so it must receive
@@ -3286,19 +3443,31 @@ async fn run_connection(
             // for agents that don't accept MCP over the wire (above).
             let delegate_injection = if agent_supports_mcp && agent_delivers_wire_mcp(agent_type) {
                 if let Some(inj) = delegation_injection.as_ref() {
-                    inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd).await
+                    // Task-engine launches (owner label "work_task") carry the
+                    // task_progress / task_complete tool group.
+                    let tasks_enabled =
+                        { state.read().await.owner_window_label == "work_task" };
+                    inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd, tasks_enabled).await
                 } else {
                     None
                 }
             } else {
                 None
             };
-            if let Some(ref injected) = delegate_injection {
+            {
                 let mut s = state.write().await;
-                s.delegation_token = Some(injected.token.clone());
-                // The agent's actual feedback capability for this session — the
-                // authoritative gate for submit + UI, fixed at launch.
-                s.feedback_tool_available = injected.feedback_available;
+                // Native steering is independent of the MCP companion — set it
+                // even when no codeg-mcp is injected (it's exactly the channel
+                // that needs no tool; OpenClaw-style `supports_mcp: false`
+                // agents could ship it someday).
+                s.native_steering_available = native_steering_available;
+                if let Some(ref injected) = delegate_injection {
+                    s.delegation_token = Some(injected.token.clone());
+                    // The agent's actual feedback capability for this session
+                    // — the authoritative gate for submit + UI, fixed at
+                    // launch.
+                    s.feedback_tool_available = injected.feedback_available;
+                }
             }
 
             // Emit fork support capability
@@ -3400,6 +3569,7 @@ async fn run_connection(
                                 supports_fork,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
+                                &stderr_tail,
                             )
                             .await;
                             terminal_runtime.release_all_for_session(&sid).await;
@@ -3421,6 +3591,7 @@ async fn run_connection(
                                 &cwd_string,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
+                                &stderr_tail,
                             )
                             .await;
                         }
@@ -3616,6 +3787,7 @@ async fn run_connection(
                             supports_fork,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
+                            &stderr_tail,
                         )
                         .await;
                         terminal_runtime.release_all_for_session(&sid).await;
@@ -3633,6 +3805,7 @@ async fn run_connection(
                             &cwd_string,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
+                            &stderr_tail,
                         )
                         .await
                     }
@@ -3721,6 +3894,7 @@ async fn run_connection(
                                     message: format!("Failed to load session, starting new: {e}"),
                                     agent_type: agent_type.to_string(),
                                     code: None,
+                                    details: None,
                                     // Recoverable: we fall through to `session/new`
                                     // below. Connection stays alive.
                                     terminal: false,
@@ -3790,6 +3964,7 @@ async fn run_connection(
                             supports_fork,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
+                            &stderr_tail,
                         )
                         .await;
                         terminal_runtime
@@ -3809,6 +3984,7 @@ async fn run_connection(
                             &cwd_string,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
+                            &stderr_tail,
                         )
                         .await
                     }
@@ -3869,6 +4045,7 @@ async fn run_connection(
                     supports_fork,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
+                    &stderr_tail,
                 )
                 .await;
                 terminal_runtime.release_all_for_session(&sid).await;
@@ -3886,6 +4063,7 @@ async fn run_connection(
                     &cwd_string,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
+                    &stderr_tail,
                 )
                 .await
             }
@@ -4208,6 +4386,9 @@ async fn handle_elicitation_request(
                     option_id: o.option_id.clone(),
                     name: o.label.clone(),
                     kind: o.kind.to_string(),
+                    // Synthesized from an elicitation form, not from ACP
+                    // `PermissionOption`s — there is no wire `_meta` to forward.
+                    meta: None,
                 })
                 .collect();
             perms.lock().await.insert(
@@ -4336,10 +4517,41 @@ async fn handle_permission_request(
     emitter: &EventEmitter,
     perms: &PendingPermissions,
     cwd: &str,
+    agent_type: AgentType,
     req: RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse>,
 ) {
     let request_id = uuid::Uuid::new_v4().to_string();
+
+    // Codex Plan-mode review gate: seed the tool call codex never announced, so
+    // its follow-up `tool_call_update` (status + rawOutput only) merges into a
+    // card that has an identity instead of creating an untitled orphan. See
+    // `is_codex_plan_review`. `raw_input` is deliberately omitted: the plan text
+    // is already in the transcript (codex emits the plan as an
+    // `agent_message_chunk` before this) and the permission card renders it from
+    // the request's own `rawInput.plan` — a third copy would be noise.
+    if is_codex_plan_review(agent_type, req.meta.as_ref()) {
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::ToolCall {
+                tool_call_id: req.tool_call.tool_call_id.to_string(),
+                title: req.tool_call.fields.title.clone().unwrap_or_default(),
+                kind: "switch_mode".to_string(),
+                status: "pending".to_string(),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                locations: None,
+                meta: req
+                    .meta
+                    .as_ref()
+                    .map(|m| serde_json::Value::Object(m.clone())),
+                images: None,
+            },
+        )
+        .await;
+    }
 
     let options: Vec<PermissionOptionInfo> = req
         .options
@@ -4354,6 +4566,12 @@ async fn handle_permission_request(
                 PermissionOptionKind::RejectAlways => "reject_always".into(),
                 _ => "unknown".into(),
             },
+            // Opaque passthrough — the frontend reads codex-acp ≥1.1.8's
+            // `_meta.permission.changes[].description` off this.
+            meta: opt
+                .meta
+                .as_ref()
+                .map(|m| serde_json::Value::Object(m.clone())),
         })
         .collect();
 
@@ -5253,6 +5471,10 @@ async fn handle_fork_or_exit(
     // run_conversation_loop call has the same delegation cascade
     // capability as the original.
     delegation_injection: Option<&DelegationInjection>,
+    // Same rationale: the forked session keeps writing into (and reading from)
+    // the SAME connection-scoped stderr buffer — the agent process is unchanged
+    // across a fork, so its stderr history stays relevant.
+    stderr_tail: &Arc<StderrTail>,
 ) -> Result<(), sacp::Error> {
     let fork_info = match loop_result {
         Ok(Some(info)) => info,
@@ -5337,6 +5559,7 @@ async fn handle_fork_or_exit(
         true, // fork already succeeded on this process
         prompt_ledger,
         delegation_injection,
+        stderr_tail,
     )
     .await;
     terminal_runtime.release_all_for_session(&new_sid).await;
@@ -5356,6 +5579,7 @@ async fn handle_fork_or_exit(
         cwd_string,
         prompt_ledger,
         delegation_injection,
+        stderr_tail,
     ))
     .await
 }
@@ -5450,6 +5674,281 @@ fn is_agent_output_update(update: &SessionUpdate) -> bool {
     )
 }
 
+/// Handle one typed `SessionNotification` inside an active turn.
+///
+/// Extracted from the `if_notification` closure it is called from, and
+/// **returns `()` rather than `Result` on purpose**: the closure's only
+/// remaining statement is `Ok(())`, which makes it structurally impossible for
+/// downstream handling to contribute an `Err` to `MatchDispatch`. That is what
+/// lets the caller attribute a `MatchDispatch` failure to
+/// [`DropSite::Dispatch`] (a params/schema mismatch) — without it, a future
+/// `?` added here would silently be counted as a protocol mismatch, sending
+/// triage in the wrong direction with no compile-time signal. A genuine
+/// "downstream handling failed" channel must be added as an explicit new
+/// `DropSite`, surfaced from this function's return type.
+#[allow(clippy::too_many_arguments)]
+async fn handle_turn_notification(
+    notif: SessionNotification,
+    agent_type: AgentType,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    terminal_runtime: &TerminalRuntime,
+    session_id: &SessionId,
+    cwd: Option<&str>,
+    tracked_terminal_tool_calls: &mut HashMap<String, TrackedTerminalToolCall>,
+    raw_output_cache: &mut ToolCallOutputCache,
+    cb_state: &mut CodeBuddyLiveState,
+    probe: &mut TurnOutputProbe,
+) {
+    let should_poll_now = track_terminal_tool_calls(&notif.update, tracked_terminal_tool_calls);
+    probe.note_update(&notif.update);
+    // Custom agents have no store of their own to parse later.
+    record_transcript_update(agent_type, &session_id.0, &notif.update);
+    emit_conversation_update(
+        state,
+        emitter,
+        agent_type,
+        notif.update,
+        cwd,
+        raw_output_cache,
+        cb_state,
+    )
+    .await;
+    if should_poll_now {
+        poll_tracked_terminal_tool_calls(
+            terminal_runtime,
+            session_id,
+            state,
+            emitter,
+            tracked_terminal_tool_calls,
+        )
+        .await;
+    }
+}
+
+/// Which of the two in-turn silent-drop sites swallowed an update.
+///
+/// They fail at different layers and point at different root causes, so they
+/// are counted separately rather than lumped into one "dropped" bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropSite {
+    /// `session.read_update()` could not decode the message at all — the agent
+    /// most likely emitted malformed JSON-RPC.
+    Decode,
+    /// `MatchDispatch` matched the method but could not deserialize its params
+    /// into the typed `SessionNotification` — an ACP schema version drift.
+    Dispatch,
+}
+
+impl DropSite {
+    fn label(self) -> &'static str {
+        match self {
+            DropSite::Decode => "decode",
+            DropSite::Dispatch => "dispatch",
+        }
+    }
+}
+
+/// What a single turn was observed to produce. Scoped to one turn and reset at
+/// each turn start.
+///
+/// This exists because `EndTurn` with no output is ambiguous: it can be a real
+/// agent-side failure, a turn whose output codeg failed to parse, or a
+/// legitimately output-free command turn. Distinguishing them needs more than
+/// the single "did we see output" bit this replaces.
+#[derive(Debug, Default)]
+struct TurnOutputProbe {
+    /// Real agent output: reply text, thinking, or a tool call.
+    saw_agent_output: bool,
+    /// A `SessionUpdate` arrived, but a metadata-only one (plan, mode, usage,
+    /// user echo, …).
+    saw_metadata_update: bool,
+    dropped_decode: u32,
+    dropped_dispatch: u32,
+    /// First drop's site and *already-redacted* summary. Redaction happens
+    /// here, at capture time, so nothing downstream can hold plaintext —
+    /// parser errors inline the offending value, and that value comes off the
+    /// `session/update` channel (prompt text, file contents, tool args).
+    first_drop: Option<(DropSite, String)>,
+    /// `StderrTail` write position at turn start, so the diagnosis can scope
+    /// stderr to this turn.
+    stderr_mark: u64,
+}
+
+impl TurnOutputProbe {
+    fn new(stderr_mark: u64) -> Self {
+        Self {
+            stderr_mark,
+            ..Default::default()
+        }
+    }
+
+    fn note_update(&mut self, update: &SessionUpdate) {
+        if is_agent_output_update(update) {
+            self.saw_agent_output = true;
+        } else {
+            self.saw_metadata_update = true;
+        }
+    }
+
+    fn note_dropped(&mut self, site: DropSite, error: &impl std::fmt::Display) {
+        match site {
+            DropSite::Decode => self.dropped_decode += 1,
+            DropSite::Dispatch => self.dropped_dispatch += 1,
+        }
+        if self.first_drop.is_none() {
+            self.first_drop = Some((site, summarize_parser_error(&error.to_string())));
+        }
+    }
+
+    fn dropped_total(&self) -> u32 {
+        self.dropped_decode + self.dropped_dispatch
+    }
+}
+
+/// Why a turn ended with `EndTurn` but no agent output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyTurnCause {
+    /// codeg dropped updates it could not parse — the agent may well have
+    /// replied; we just couldn't read it.
+    ProtocolMismatch,
+    /// Only metadata arrived. Observational only: this is NOT proof the turn
+    /// was harmless — a real failure can follow a plan or usage update.
+    MetadataOnly,
+    /// Nothing arrived at all.
+    NoOutput,
+}
+
+impl EmptyTurnCause {
+    fn code(self) -> &'static str {
+        match self {
+            // Unchanged from before this split, so old clients and replayed
+            // snapshots still localize the common case.
+            EmptyTurnCause::NoOutput => "turn_failed_empty",
+            EmptyTurnCause::ProtocolMismatch => "turn_failed_empty_protocol",
+            EmptyTurnCause::MetadataOnly => "turn_failed_empty_metadata",
+        }
+    }
+
+    fn message(self, agent_type: AgentType) -> String {
+        match self {
+            EmptyTurnCause::NoOutput => {
+                format!("{agent_type} ended the turn without producing any response.")
+            }
+            EmptyTurnCause::ProtocolMismatch => format!(
+                "{agent_type} produced output that codeg could not parse — \
+                 the agent version may not match the protocol."
+            ),
+            EmptyTurnCause::MetadataOnly => format!(
+                "{agent_type} sent only status updates this turn and no reply."
+            ),
+        }
+    }
+}
+
+/// A diagnosed empty turn: its cause plus the redacted evidence behind it.
+#[derive(Debug, Clone)]
+struct EmptyTurnReport {
+    cause: EmptyTurnCause,
+    details: Option<String>,
+}
+
+/// Classify an empty turn. `ProtocolMismatch` wins over `MetadataOnly`:
+/// "we couldn't read the output" is a stronger signal than "we only saw
+/// metadata", and it changes where the user should look.
+fn diagnose_empty_turn(probe: &TurnOutputProbe) -> EmptyTurnCause {
+    if probe.dropped_total() > 0 {
+        EmptyTurnCause::ProtocolMismatch
+    } else if probe.saw_metadata_update {
+        EmptyTurnCause::MetadataOnly
+    } else {
+        EmptyTurnCause::NoOutput
+    }
+}
+
+/// Max stderr lines quoted in an error's `details`.
+const EMPTY_TURN_STDERR_LINES: usize = 12;
+/// Max bytes of stderr quoted in an error's `details`.
+const EMPTY_TURN_STDERR_BYTES: usize = 900;
+/// Overall cap on `details`.
+const MAX_DETAILS_BYTES: usize = 1200;
+
+/// Assemble the user-facing evidence for an empty turn: what we failed to
+/// parse, and what the agent printed to stderr.
+///
+/// Every fragment is already redacted at its source (`TurnOutputProbe` for
+/// parser errors, `StderrTail` for stderr), so this only formats.
+fn build_empty_turn_details(probe: &TurnOutputProbe, stderr_tail: &StderrTail) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+
+    if probe.dropped_total() > 0 {
+        let mut line = format!(
+            "dropped {} update(s) ({} decode, {} dispatch)",
+            probe.dropped_total(),
+            probe.dropped_decode,
+            probe.dropped_dispatch
+        );
+        if let Some((site, summary)) = &probe.first_drop {
+            line.push_str(&format!("; first ({}): {summary}", site.label()));
+        }
+        sections.push(line);
+    }
+
+    let tail = stderr_tail.tail_since(
+        probe.stderr_mark,
+        EMPTY_TURN_STDERR_LINES,
+        EMPTY_TURN_STDERR_BYTES,
+    );
+    if !tail.is_empty() {
+        let scope = match tail.scope {
+            TailScope::ThisTurn => "this turn",
+            TailScope::Recent => "recent",
+        };
+        let mut block = format!("stderr ({scope}, last {} lines):", tail.lines.len());
+        for line in &tail.lines {
+            block.push_str("\n  ");
+            block.push_str(line);
+        }
+        sections.push(block);
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+    let joined = sections.join("\n");
+    if joined.len() <= MAX_DETAILS_BYTES {
+        return Some(joined);
+    }
+    let end = joined
+        .char_indices()
+        .take_while(|(i, c)| i + c.len_utf8() <= MAX_DETAILS_BYTES)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    Some(format!("{}…", &joined[..end]))
+}
+
+/// Resolve a turn's final stop reason and, when it is `"empty"`, the diagnosis
+/// behind it.
+///
+/// **Pure.** It emits nothing, records nothing, and cancels nothing — the two
+/// turn exits keep their own (deliberately asymmetric) side effects in place.
+/// In particular the `StopReason`-message exit does NOT call `record_turn_end`
+/// while the prompt-response exit does; sharing this helper must not quietly
+/// "align" them.
+fn finish_turn_reason<'a>(
+    probe: &TurnOutputProbe,
+    raw_reason_str: &'a str,
+    stderr_tail: &StderrTail,
+) -> (&'a str, Option<EmptyTurnReport>) {
+    if raw_reason_str != "end_turn" || probe.saw_agent_output {
+        return (raw_reason_str, None);
+    }
+    let cause = diagnose_empty_turn(probe);
+    let details = build_empty_turn_details(probe, stderr_tail);
+    ("empty", Some(EmptyTurnReport { cause, details }))
+}
+
 /// Build an `AcpEvent::Error` for a non-success stop reason so the user gets a
 /// toast instead of a silent transition to `PendingReview`. Returns `None` for
 /// `end_turn` (success) and `cancelled` (already user-driven).
@@ -5457,39 +5956,53 @@ fn is_agent_output_update(update: &SessionUpdate) -> bool {
 /// `Refusal` is included because OpenCode (and similar agents) map backend /
 /// gateway errors to `Refusal` per the ACP spec gap — see
 /// <https://shashikantjagtap.net/openclaw-acp-what-coding-agent-users-need-to-know-about-protocol-gaps/>.
-/// `empty` is a synthesized reason emitted by `run_conversation_loop` when
-/// the agent reports `EndTurn` without producing any agent output.
-fn turn_failure_error_event(reason_str: &str, agent_type: AgentType) -> Option<AcpEvent> {
-    let (code, message) = match reason_str {
+/// `empty` is a synthesized reason emitted by `run_conversation_loop` when the
+/// agent reports `EndTurn` without producing any agent output; `empty` carries
+/// an `EmptyTurnReport` that refines the code and attaches redacted evidence.
+fn turn_failure_error_event(
+    reason_str: &str,
+    agent_type: AgentType,
+    empty: Option<&EmptyTurnReport>,
+) -> Option<AcpEvent> {
+    let (code, message, details) = match reason_str {
         "refusal" => (
             "turn_failed_refusal",
             format!("{agent_type} refused to continue this turn."),
+            None,
         ),
         "max_tokens" => (
             "turn_failed_max_tokens",
             format!("{agent_type} reached the maximum token limit for this turn."),
+            None,
         ),
         "max_turn_requests" => (
             "turn_failed_max_turn_requests",
             format!("{agent_type} reached the maximum number of allowed requests for this turn."),
+            None,
         ),
         "unknown" => (
             "turn_failed_unknown",
             format!("{agent_type} ended the turn with an unrecognized stop reason."),
+            None,
         ),
-        "empty" => (
-            "turn_failed_empty",
-            format!(
-                "{agent_type} ended the turn without producing any response. \
-                 Please check the agent's configuration."
-            ),
-        ),
+        "empty" => {
+            // A missing report can only happen on a path that didn't run the
+            // diagnosis; fall back to the pre-split behavior rather than
+            // dropping the error entirely.
+            let cause = empty.map(|r| r.cause).unwrap_or(EmptyTurnCause::NoOutput);
+            (
+                cause.code(),
+                cause.message(agent_type),
+                empty.and_then(|r| r.details.clone()),
+            )
+        }
         _ => return None,
     };
     Some(AcpEvent::Error {
         message,
         agent_type: agent_type.to_string(),
         code: Some(code.to_string()),
+        details,
         // Non-terminal: this Error is paired with a `TurnComplete`
         // carrying the same stop reason. The connection stays alive and
         // the broker's pending entry is drained by `complete_call` with
@@ -5522,6 +6035,9 @@ async fn run_conversation_loop<'a>(
     // delegations on parent prompt cancel / non-success TurnComplete.
     // `None` for test paths that don't wire delegation.
     delegation_injection: Option<&DelegationInjection>,
+    // Connection-scoped (like `prompt_ledger`): the agent's stderr ring buffer,
+    // read at turn end to explain a silent `EndTurn`.
+    stderr_tail: &Arc<StderrTail>,
 ) -> Result<Option<ForkExitInfo>, sacp::Error> {
     // Session-scoped cache for diffing cumulative `raw_output` snapshots
     // into incremental deltas. Shared across the idle loop and the active
@@ -5619,6 +6135,7 @@ async fn run_conversation_loop<'a>(
                             message: "Prompt must contain at least one content block".into(),
                             agent_type: agent_type.to_string(),
                             code: None,
+                            details: None,
                             // Recoverable: idle loop continues, awaiting the
                             // next user command. Connection stays alive.
                             terminal: false,
@@ -5677,6 +6194,13 @@ async fn run_conversation_loop<'a>(
                 record_prompt(agent_type, &sid.0, &prompt_blocks).await;
                 let turn_started_at_ms = crate::acp_transcript::now_epoch_ms();
                 let prompt_request = PromptRequest::new(sid.clone(), prompt_blocks);
+                // Snapshot the stderr write position BEFORE the request is
+                // dispatched. An agent that fails the moment the prompt lands
+                // (bad credentials, unknown model) prints its error almost
+                // immediately; marking after dispatch would race those lines
+                // out of "this turn" and demote the most relevant evidence to a
+                // stale-looking `recent` fallback.
+                let stderr_mark = stderr_tail.mark();
                 // Use Box::pin (heap) instead of tokio::pin! (stack) so the
                 // future can be moved into a background task on cancel.
                 let mut prompt_response = Box::pin(
@@ -5692,13 +6216,12 @@ async fn run_conversation_loop<'a>(
                 terminal_poll_interval
                     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut disconnect_requested = false;
-                // Tracks whether the agent produced any real output during
-                // this turn (text reply, thinking chunk, or tool call). When
-                // an agent reports `EndTurn` with this still false, we treat
-                // it as a silent failure and synthesize an `"empty"` stop
-                // reason so the user gets an error toast instead of a
-                // confusing `PendingReview` on a blank conversation.
-                let mut turn_had_agent_output = false;
+                // What this turn was observed to produce. When an agent reports
+                // `EndTurn` having produced no real output, we synthesize an
+                // `"empty"` stop reason so the user gets an error toast instead
+                // of a confusing `PendingReview` on a blank conversation — and
+                // the probe's other fields say *why* it looked empty.
+                let mut probe = TurnOutputProbe::new(stderr_mark);
                 // A CodeBuddy native sub-agent's full lifecycle (Agent tool call
                 // open → completed) happens within one turn, so reset the
                 // suppression window at each turn start. This bounds the tracking
@@ -5718,6 +6241,12 @@ async fn run_conversation_loop<'a>(
                             let update = match update {
                                 Ok(u) => u,
                                 Err(e) => {
+                                    // Silent-drop site #1 (transport/decode).
+                                    // Record it: an agent whose output we
+                                    // couldn't decode looks identical to one
+                                    // that said nothing, and the two need
+                                    // completely different fixes.
+                                    probe.note_dropped(DropSite::Decode, &e);
                                     tracing::warn!("[ACP] Ignoring unrecognized session update: {e}");
                                     continue;
                                 }
@@ -5737,36 +6266,29 @@ async fn run_conversation_loop<'a>(
                                     // about to be consumed) so a compaction-only turn
                                     // isn't misclassified as `"empty"` at turn end.
                                     if grok_ext_notification_is_turn_output(&dispatch, agent_type) {
-                                        turn_had_agent_output = true;
+                                        probe.saw_agent_output = true;
                                     }
                                     if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
-                                                let should_poll_now = track_terminal_tool_calls(
-                                                    &notif.update,
-                                                    &mut tracked_terminal_tool_calls,
-                                                );
-                                                if is_agent_output_update(&notif.update) {
-                                                    turn_had_agent_output = true;
-                                                }
-                                                // Custom agents have no store
-                                                // of their own to parse later.
-                                                record_transcript_update(
+                                                // Body lives in a named `-> ()`
+                                                // function so this closure is
+                                                // infallible by construction —
+                                                // see `handle_turn_notification`.
+                                                handle_turn_notification(
+                                                    notif,
                                                     agent_type,
-                                                    &session_id.0,
-                                                    &notif.update,
-                                                );
-                                                emit_conversation_update(&st, &h, agent_type, notif.update, cwd_opt, &mut raw_output_cache, &mut cb_state).await;
-                                                if should_poll_now {
-                                                    poll_tracked_terminal_tool_calls(
-                                                        runtime.as_ref(),
-                                                        &session_id,
-                                                        &st,
-                                                        &h,
-                                                        &mut tracked_terminal_tool_calls,
-                                                    )
-                                                    .await;
-                                                }
+                                                    &st,
+                                                    &h,
+                                                    runtime.as_ref(),
+                                                    &session_id,
+                                                    cwd_opt,
+                                                    &mut tracked_terminal_tool_calls,
+                                                    &mut raw_output_cache,
+                                                    &mut cb_state,
+                                                    &mut probe,
+                                                )
+                                                .await;
                                                 Ok(())
                                             },
                                         )
@@ -5777,6 +6299,12 @@ async fn run_conversation_loop<'a>(
                                         })
                                         .await
                                     {
+                                        // Silent-drop site #2 (dispatch/params).
+                                        // Both handler closures are infallible
+                                        // by construction, so this `Err` can
+                                        // only be a typed-deserialization
+                                        // failure — i.e. ACP schema drift.
+                                        probe.note_dropped(DropSite::Dispatch, &e);
                                         tracing::warn!("[ACP] Ignoring dispatch parse error: {e}");
                                     }
                                 }
@@ -5792,16 +6320,19 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                     let raw_reason_str = stop_reason_to_str(reason);
-                                    let reason_str = if raw_reason_str == "end_turn"
-                                        && !turn_had_agent_output
-                                    {
-                                        "empty"
-                                    } else {
-                                        raw_reason_str
-                                    };
-                                    if let Some(err_event) =
-                                        turn_failure_error_event(reason_str, agent_type)
-                                    {
+                                    // Pure: resolves the reason and (for an
+                                    // empty turn) its diagnosis. Side effects
+                                    // below stay exactly where they were — note
+                                    // this exit deliberately does NOT call
+                                    // `record_turn_end`, unlike the
+                                    // prompt-response exit.
+                                    let (reason_str, empty_report) =
+                                        finish_turn_reason(&probe, raw_reason_str, stderr_tail);
+                                    if let Some(err_event) = turn_failure_error_event(
+                                        reason_str,
+                                        agent_type,
+                                        empty_report.as_ref(),
+                                    ) {
                                         emit_with_state(state, emitter, err_event).await;
                                     }
                                     // Clean completions only — a canceled/empty
@@ -5868,15 +6399,13 @@ async fn run_conversation_loop<'a>(
                                 .await;
                             }
                             let raw_reason_str = stop_reason_to_str(reason);
-                            let reason_str = if raw_reason_str == "end_turn"
-                                && !turn_had_agent_output
-                            {
-                                "empty"
-                            } else {
-                                raw_reason_str
-                            };
+                            // Same pure helper as the StopReason-message exit,
+                            // so the two can't drift. This exit keeps its own
+                            // extra side effect (`record_turn_end` below).
+                            let (reason_str, empty_report) =
+                                finish_turn_reason(&probe, raw_reason_str, stderr_tail);
                             if let Some(err_event) =
-                                turn_failure_error_event(reason_str, agent_type)
+                                turn_failure_error_event(reason_str, agent_type, empty_report.as_ref())
                             {
                                 emit_with_state(state, emitter, err_event).await;
                             }
@@ -5970,6 +6499,7 @@ async fn run_conversation_loop<'a>(
                                                     message: format!("Failed to set mode: {e}"),
                                                     agent_type: agent_type.to_string(),
                                                     code: None,
+                                                    details: None,
                                                     // Recoverable: just a failed mode toggle.
                                                     terminal: false,
                                                 },
@@ -6002,6 +6532,7 @@ async fn run_conversation_loop<'a>(
                                                 message: format!("Failed to set config option: {e}"),
                                                 agent_type: agent_type.to_string(),
                                                 code: None,
+                                                details: None,
                                                 // Recoverable: just a failed config-option toggle.
                                                 terminal: false,
                                             },
@@ -6018,12 +6549,27 @@ async fn run_conversation_loop<'a>(
                                                 message: format!("Failed to control goal: {e}"),
                                                 agent_type: agent_type.to_string(),
                                                 code: None,
+                                                details: None,
                                                 // Recoverable: a failed pause/clear leaves the turn alive.
                                                 terminal: false,
                                             },
                                         )
                                         .await;
                                     }
+                                }
+                                Some(ConnectionCommand::Steer { text, reply }) => {
+                                    // Protocol round-trip only — the manager's
+                                    // cancellation-shielded task records the
+                                    // note + broadcasts `FeedbackSubmitted`
+                                    // once this outcome arrives (Fork's
+                                    // protocol/persistence split). Awaiting
+                                    // inline matches SetMode/SetConfigOption:
+                                    // sacp pumps I/O on its own task, so the
+                                    // round-trip only defers other queued
+                                    // commands, not session updates. A dead
+                                    // receiver is fine — the reply is then
+                                    // moot (teardown), nothing to unwind.
+                                    let _ = reply.send(send_steer_request(&cx, &sid, &text).await);
                                 }
                                 Some(ConnectionCommand::Cancel) => {
                                     // Send CancelNotification to agent to stop the current turn
@@ -6177,6 +6723,7 @@ async fn run_conversation_loop<'a>(
                             message: format!("Failed to set mode: {e}"),
                             agent_type: agent_type.to_string(),
                             code: None,
+                            details: None,
                             // Recoverable: idle SetMode failure leaves the
                             // connection alive — same rationale as the
                             // mid-prompt SetMode site above.
@@ -6208,6 +6755,7 @@ async fn run_conversation_loop<'a>(
                             message: format!("Failed to set config option: {e}"),
                             agent_type: agent_type.to_string(),
                             code: None,
+                            details: None,
                             // Recoverable: idle SetConfigOption failure leaves
                             // the connection alive.
                             terminal: false,
@@ -6227,6 +6775,7 @@ async fn run_conversation_loop<'a>(
                             message: format!("Failed to control goal: {e}"),
                             agent_type: agent_type.to_string(),
                             code: None,
+                            details: None,
                             // Recoverable: an idle pause/clear failure leaves the
                             // connection alive.
                             terminal: false,
@@ -6234,6 +6783,13 @@ async fn run_conversation_loop<'a>(
                     )
                     .await;
                 }
+            }
+            Some(ConnectionCommand::Steer { text: _, reply }) => {
+                // Steering only means something for a RUNNING turn. Reply —
+                // never drop — so the manager's shielded task can't hang on
+                // the oneshot; the caller falls back to a normal prompt (the
+                // same reroute the frontend already has for a turn-end race).
+                let _ = reply.send(Err(AcpError::NoActiveTurn));
             }
             Some(ConnectionCommand::Cancel) => {
                 let cx = session.connection();
@@ -6856,6 +7412,89 @@ fn is_codex_subagent_activity(
         .is_some()
 }
 
+/// True when a `session/request_permission` is codex's Plan-mode review gate
+/// (codex-acp #351, v1.1.8+): `_meta.codex = {kind: "plan_review", planItemId}`
+/// on the REQUEST (sibling of `options`), not on the tool call.
+///
+/// codex-acp raises this once a plan item settles while `collaboration_mode` is
+/// `plan`, asking whether to implement the plan (`implement_plan`) or stay in
+/// plan mode (`revise_plan`). Its `toolCall` (`plan-review:<itemId>`) is NEVER
+/// announced as a `tool_call` — the only follow-up on the wire is a
+/// `tool_call_update` carrying just a status and `rawOutput`. Without seeding a
+/// tool call from this request that update lands on an unknown id and renders as
+/// an untitled generic tool card, so `handle_permission_request` emits one.
+/// Gated on Codex, mirroring [`is_codex_subagent_activity`].
+fn is_codex_plan_review(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    if agent_type != AgentType::Codex {
+        return false;
+    }
+    meta.and_then(|m| m.get("codex"))
+        .and_then(|codex| codex.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        == Some("plan_review")
+}
+
+/// True when an `initialize` response advertises the ACP steering extension —
+/// the TOP-LEVEL `_meta.steering.supported` flag, a sibling of
+/// `agentCapabilities` (NOT `agentCapabilities._meta`, which belongs to other
+/// conventions such as sacp's symposium capability ext). Both claude-agent-acp
+/// (0.61+) and codex-acp (1.1.6+) advertise here; whether codeg actually
+/// steers natively additionally requires the
+/// `registry::steering_prompt_required_min_version` policy plus the runtime
+/// version proof (see the synthesis in `run_connection`).
+fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    meta.and_then(|m| m.get("steering"))
+        .and_then(|s| s.get("supported"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Strict SemVer floor check: true when `version >= min` by SemVer
+/// PRECEDENCE. Prerelease ordering matters here — `0.64.0-rc1` precedes
+/// `0.64.0` and may predate the very commit that shipped the
+/// `promptRequired` guarantee, so it must NOT satisfy a `0.64.0` floor
+/// (`0.64.1-beta.2` still does: its numeric core is above the floor). Build
+/// metadata (`+sha`) is precedence-ignored per spec. Fail closed: anything
+/// `semver` can't parse (missing segments, `v` prefixes, garbage suffixes)
+/// routes live feedback to the MCP pull path — today's behavior.
+fn version_at_least(version: &str, min: &str) -> bool {
+    let (Ok(actual), Ok(floor)) = (
+        semver::Version::parse(version.trim()),
+        semver::Version::parse(min),
+    ) else {
+        return false;
+    };
+    actual.cmp_precedence(&floor) != std::cmp::Ordering::Less
+}
+
+/// Runtime half of the native-steering gate: does the adapter binary that is
+/// ACTUALLY running — which launch may have resolved from PATH rather than
+/// the pinned npx package (see `commands::acp::acp_get_agent_status_core`) —
+/// report an `agent_info.version` at or above the registry minimum? Fail
+/// closed on a missing `agent_info` or an unparseable version.
+fn steering_version_ok(agent_info: Option<&sacp::schema::Implementation>, min: &str) -> bool {
+    agent_info.is_some_and(|info| version_at_least(&info.version, min))
+}
+
+/// Synthesize `SessionState.native_steering_available` from an `initialize`
+/// response: extension advertised (top-level `_meta`) AND registry policy says
+/// this agent type honors `promptRequired` AND the running binary's
+/// `agent_info.version` proves it. Pure so the full gate matrix is unit-tested;
+/// `run_connection` calls it once and everything downstream reads the stored
+/// bool.
+fn synthesize_native_steering(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    agent_info: Option<&sacp::schema::Implementation>,
+) -> bool {
+    init_advertises_steering(meta)
+        && registry::steering_prompt_required_min_version(agent_type)
+            .is_some_and(|min| steering_version_ok(agent_info, min))
+}
+
 /// Extract a retryable-turn-error indicator from a Codex `session_info_update`'s
 /// `_meta` (codex-acp #289, v1.1.3+). codex ships a transient, auto-retried
 /// error as `_meta.codex.error = {message, codexErrorInfo, additionalDetails,
@@ -7311,6 +7950,7 @@ fn map_grok_ext_notification(
             ),
             agent_type: agent_type.to_string(),
             code: None,
+            details: None,
             terminal: false,
         }),
         _ => None,
@@ -7979,6 +8619,29 @@ mod tests {
     }
 
     #[test]
+    fn codex_plan_review_detected_only_for_codex_plan_review_meta() {
+        // codex-acp #351: `_meta.codex.kind = "plan_review"` on the permission
+        // REQUEST marks the Plan-mode review gate whose tool call was never
+        // announced.
+        let review = meta_map(serde_json::json!({
+            "codex": { "kind": "plan_review", "planItemId": "item-7" }
+        }));
+        assert!(is_codex_plan_review(AgentType::Codex, Some(&review)));
+        // Gated on Codex: an identical meta from another agent seeds nothing.
+        assert!(!is_codex_plan_review(AgentType::ClaudeCode, Some(&review)));
+        // Ordinary permission requests carry no meta at all.
+        assert!(!is_codex_plan_review(AgentType::Codex, None));
+        // Sibling `codex` keys and other `kind` values must not seed a card.
+        let other_kind = meta_map(serde_json::json!({ "codex": { "kind": "mcp_tool_call" } }));
+        assert!(!is_codex_plan_review(AgentType::Codex, Some(&other_kind)));
+        let sub = meta_map(serde_json::json!({ "codex": { "subagent": { "threadId": "t1" } } }));
+        assert!(!is_codex_plan_review(AgentType::Codex, Some(&sub)));
+        // A non-string `kind` must not be coerced into a match.
+        let numeric = meta_map(serde_json::json!({ "codex": { "kind": 1 } }));
+        assert!(!is_codex_plan_review(AgentType::Codex, Some(&numeric)));
+    }
+
+    #[test]
     fn config_option_state_command_suppressed_only_for_codex_set_config_action() {
         // codex-acp #293: `/plan` is a config-option state toggle (rendered as the
         // `collaboration_mode` selector), not an invokable slash command.
@@ -8033,6 +8696,127 @@ mod tests {
             serde_json::from_value::<GoalControlAction>(serde_json::json!("clear")).unwrap(),
             GoalControlAction::Clear
         );
+    }
+
+    // --- native steering: capability synthesis + wire helpers -------------
+    // (reuses the shared `meta_map` test helper defined above)
+
+    #[test]
+    fn init_advertises_steering_reads_the_top_level_meta_flag() {
+        let on = meta_map(serde_json::json!({"steering": {"supported": true}}));
+        assert!(init_advertises_steering(Some(&on)));
+
+        let off = meta_map(serde_json::json!({"steering": {"supported": false}}));
+        assert!(!init_advertises_steering(Some(&off)));
+
+        // Wrong nesting (e.g. another convention's namespace) must not count.
+        let nested = meta_map(
+            serde_json::json!({"symposium": {"steering": {"supported": true}}}),
+        );
+        assert!(!init_advertises_steering(Some(&nested)));
+
+        // Non-bool / absent → false.
+        let stringly = meta_map(serde_json::json!({"steering": {"supported": "true"}}));
+        assert!(!init_advertises_steering(Some(&stringly)));
+        assert!(!init_advertises_steering(None));
+    }
+
+    #[test]
+    fn version_at_least_is_strict_semver_and_fails_closed() {
+        assert!(version_at_least("0.64.0", "0.64.0"));
+        assert!(version_at_least("0.64.1", "0.64.0"));
+        assert!(version_at_least("0.65.0", "0.64.0"));
+        assert!(version_at_least("1.0.0", "0.64.0"));
+        // SemVer precedence: a prerelease of the FLOOR release precedes it —
+        // it may predate the commit that shipped the promptRequired
+        // guarantee, so it must not open the native channel…
+        assert!(!version_at_least("0.64.0-rc1", "0.64.0"));
+        // …while a prerelease whose numeric core is above the floor is fine.
+        assert!(version_at_least("0.64.1-beta.2", "0.64.0"));
+        // Build metadata is precedence-ignored per spec.
+        assert!(version_at_least("0.64.0+sha.deadbeef", "0.64.0"));
+        // Below the floor.
+        assert!(!version_at_least("0.63.9", "0.64.0"));
+        assert!(!version_at_least("0.9.9", "0.64.0"));
+        // Fail closed on anything semver can't parse.
+        assert!(!version_at_least("", "0.64.0"));
+        assert!(!version_at_least("beta", "0.64.0"));
+        assert!(!version_at_least("v0.64.0", "0.64.0"));
+        assert!(!version_at_least("0.64", "0.64.0"));
+        assert!(!version_at_least("0..1", "0.64.0"));
+        assert!(!version_at_least("0.64.1abc", "0.64.0"));
+    }
+
+    #[test]
+    fn synthesize_native_steering_stays_off_while_the_registry_disables_it() {
+        use sacp::schema::Implementation;
+        let advertised = meta_map(serde_json::json!({"steering": {"supported": true}}));
+        let proven = Implementation::new("claude-agent-acp", "0.64.0");
+
+        // claude-agent-acp #934: `injected` settles the owning prompt when
+        // the injection lands mid-generation, so the registry policy gate is
+        // None for EVERY agent — a perfect advertisement plus a proven
+        // version must still synthesize to the pull channel. The other two
+        // gates keep their direct coverage above (`init_advertises_steering_*`
+        // / `version_at_least_*`); when upstream ships the fix and the
+        // registry re-enables claude, restore the three-gate positive matrix
+        // here (advertisement × policy × version, including the stale-install
+        // fail-closed arm).
+        assert!(!synthesize_native_steering(
+            AgentType::ClaudeCode,
+            Some(&advertised),
+            Some(&proven)
+        ));
+        assert!(!synthesize_native_steering(
+            AgentType::Codex,
+            Some(&advertised),
+            Some(&proven)
+        ));
+        assert!(!synthesize_native_steering(
+            AgentType::ClaudeCode,
+            Some(&advertised),
+            None
+        ));
+        assert!(!synthesize_native_steering(
+            AgentType::ClaudeCode,
+            None,
+            Some(&proven)
+        ));
+    }
+
+    #[test]
+    fn build_steer_params_shape_carries_the_prompt_required_opt_in() {
+        let params = build_steer_params("sess-1", "use the staging db");
+        assert_eq!(params["sessionId"], "sess-1");
+        assert_eq!(params["prompt"][0]["type"], "text");
+        assert_eq!(params["prompt"][0]["text"], "use the staging db");
+        // The opt-in is what keeps the idle race host-owned — its absence
+        // would regress to detached `startedNewTurn` turns.
+        assert_eq!(params["_meta"]["steering"]["idleBehavior"], "promptRequired");
+    }
+
+    #[test]
+    fn parse_steer_outcome_maps_the_wire_strings_and_rejects_unknowns() {
+        assert_eq!(
+            parse_steer_outcome(&serde_json::json!({"outcome": "injected"})).unwrap(),
+            SteerOutcome::Injected
+        );
+        assert_eq!(
+            parse_steer_outcome(
+                &serde_json::json!({"outcome": "promptRequired", "reason": "noRunningTurn"})
+            )
+            .unwrap(),
+            SteerOutcome::PromptRequired
+        );
+        assert_eq!(
+            parse_steer_outcome(&serde_json::json!({"outcome": "startedNewTurn"})).unwrap(),
+            SteerOutcome::StartedNewTurn
+        );
+        // Unknown or missing outcome is a protocol error, not a silent
+        // success — the caller must know whether the content was consumed.
+        assert!(parse_steer_outcome(&serde_json::json!({"outcome": "queued"})).is_err());
+        assert!(parse_steer_outcome(&serde_json::json!({})).is_err());
+        assert!(parse_steer_outcome(&serde_json::json!({"outcome": 1})).is_err());
     }
 
     #[test]
@@ -8712,6 +9496,237 @@ mod tests {
             &notif("auto_compact_completed"),
             AgentType::Codex
         ));
+    }
+
+    // ---- empty-turn diagnosis ----
+
+    fn drop_err(msg: &str) -> String {
+        msg.to_string()
+    }
+
+    #[test]
+    fn note_update_splits_agent_output_from_metadata() {
+        use sacp::schema::{ContentChunk, Plan};
+
+        let mut probe = TurnOutputProbe::new(0);
+        probe.note_update(&SessionUpdate::Plan(Plan::new(Vec::new())));
+        assert!(!probe.saw_agent_output, "Plan is not agent output");
+        assert!(probe.saw_metadata_update);
+
+        probe.note_update(&SessionUpdate::AgentMessageChunk(ContentChunk::new(
+            "hi".into(),
+        )));
+        assert!(probe.saw_agent_output);
+    }
+
+    /// The classifier's whole purpose is to separate "we went blind" from
+    /// "nothing came" — a `Plan`-only turn must not read as agent output.
+    #[test]
+    fn diagnose_empty_turn_covers_three_causes_and_priority() {
+        let mut none = TurnOutputProbe::new(0);
+        assert_eq!(diagnose_empty_turn(&none), EmptyTurnCause::NoOutput);
+
+        none.saw_metadata_update = true;
+        assert_eq!(diagnose_empty_turn(&none), EmptyTurnCause::MetadataOnly);
+
+        // Dropped updates outrank metadata: not being able to read the output
+        // is the stronger signal and points somewhere else entirely.
+        none.note_dropped(DropSite::Decode, &drop_err("boom"));
+        assert_eq!(diagnose_empty_turn(&none), EmptyTurnCause::ProtocolMismatch);
+
+        let mut dispatch_only = TurnOutputProbe::new(0);
+        dispatch_only.note_dropped(DropSite::Dispatch, &drop_err("boom"));
+        assert_eq!(
+            diagnose_empty_turn(&dispatch_only),
+            EmptyTurnCause::ProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn note_dropped_counts_each_site_separately_and_keeps_the_first() {
+        let mut probe = TurnOutputProbe::new(0);
+        probe.note_dropped(DropSite::Dispatch, &drop_err("missing field `sessionUpdate`"));
+        probe.note_dropped(DropSite::Decode, &drop_err("missing field `update`"));
+        probe.note_dropped(DropSite::Decode, &drop_err("missing field `content`"));
+
+        assert_eq!(probe.dropped_decode, 2);
+        assert_eq!(probe.dropped_dispatch, 1);
+        assert_eq!(probe.dropped_total(), 3);
+        let (site, summary) = probe.first_drop.as_ref().expect("first drop recorded");
+        assert_eq!(*site, DropSite::Dispatch, "first wins, not last");
+        assert_eq!(summary, "missing field `sessionUpdate`");
+    }
+
+    /// Drop reasons reach the UI, so they must be redacted at capture time —
+    /// a parser error inlines the value it choked on, and that value came off
+    /// the `session/update` channel.
+    #[test]
+    fn note_dropped_redacts_the_captured_error() {
+        const SECRET: &str = "sk-live-abcdefghijklmnop";
+        let mut probe = TurnOutputProbe::new(0);
+        probe.note_dropped(
+            DropSite::Dispatch,
+            &drop_err(&format!(
+                r#"invalid type: string "{SECRET}", expected u64 at line 1 column 40"#
+            )),
+        );
+        let (_, summary) = probe.first_drop.as_ref().unwrap();
+        assert!(!summary.contains(SECRET), "leaked: {summary}");
+        assert_eq!(summary, "invalid type, expected u64 at line 1 column 40");
+    }
+
+    #[test]
+    fn finish_turn_reason_passes_through_non_empty_reasons() {
+        let tail = StderrTail::new();
+        let mut probe = TurnOutputProbe::new(0);
+        probe.saw_agent_output = true;
+
+        for reason in ["end_turn", "cancelled", "refusal", "max_tokens", "unknown"] {
+            let (out, report) = finish_turn_reason(&probe, reason, &tail);
+            assert_eq!(out, reason);
+            assert!(report.is_none());
+        }
+
+        // Without agent output, only `end_turn` is rewritten.
+        let silent = TurnOutputProbe::new(0);
+        assert_eq!(finish_turn_reason(&silent, "cancelled", &tail).0, "cancelled");
+        assert_eq!(finish_turn_reason(&silent, "end_turn", &tail).0, "empty");
+    }
+
+    /// Guards the two-exit refactor: the helper only computes, so calling it
+    /// twice (as the two exits each do) is identical and side-effect free.
+    #[test]
+    fn finish_turn_reason_is_pure() {
+        let tail = StderrTail::new();
+        tail.push("boom");
+        let probe = TurnOutputProbe::new(0);
+
+        let (first_reason, first) = finish_turn_reason(&probe, "end_turn", &tail);
+        let (second_reason, second) = finish_turn_reason(&probe, "end_turn", &tail);
+        assert_eq!(first_reason, second_reason);
+        assert_eq!(
+            first.as_ref().map(|r| r.cause),
+            second.as_ref().map(|r| r.cause)
+        );
+        assert_eq!(
+            first.as_ref().and_then(|r| r.details.clone()),
+            second.as_ref().and_then(|r| r.details.clone())
+        );
+    }
+
+    #[test]
+    fn empty_turn_details_quote_stderr_scoped_to_the_turn() {
+        let tail = StderrTail::new();
+        tail.push("older line from a previous turn");
+        let probe = TurnOutputProbe::new(tail.mark());
+        tail.push("Error: 401 Unauthorized");
+
+        let details = build_empty_turn_details(&probe, &tail).expect("details");
+        assert!(details.contains("stderr (this turn"), "{details}");
+        assert!(details.contains("Error: 401 Unauthorized"));
+        assert!(!details.contains("older line"));
+    }
+
+    #[test]
+    fn empty_turn_details_fall_back_to_recent_stderr() {
+        let tail = StderrTail::new();
+        tail.push("connect-time failure");
+        let probe = TurnOutputProbe::new(tail.mark());
+
+        let details = build_empty_turn_details(&probe, &tail).expect("details");
+        assert!(details.contains("stderr (recent"), "{details}");
+        assert!(details.contains("connect-time failure"));
+    }
+
+    #[test]
+    fn empty_turn_details_report_drop_counts() {
+        let tail = StderrTail::new();
+        let mut probe = TurnOutputProbe::new(0);
+        probe.note_dropped(DropSite::Decode, &drop_err("trailing characters"));
+        probe.note_dropped(DropSite::Dispatch, &drop_err("EOF while parsing a value"));
+
+        let details = build_empty_turn_details(&probe, &tail).expect("details");
+        assert!(details.contains("dropped 2 update(s) (1 decode, 1 dispatch)"), "{details}");
+        assert!(details.contains("first (decode): trailing characters"), "{details}");
+    }
+
+    #[test]
+    fn empty_turn_details_are_none_without_evidence() {
+        let tail = StderrTail::new();
+        let probe = TurnOutputProbe::new(0);
+        assert!(build_empty_turn_details(&probe, &tail).is_none());
+    }
+
+    #[test]
+    fn empty_turn_details_are_bounded() {
+        let tail = StderrTail::new();
+        for i in 0..40 {
+            tail.push(&format!("{i:03} {}", "x".repeat(200)));
+        }
+        let probe = TurnOutputProbe::new(0);
+        let details = build_empty_turn_details(&probe, &tail).expect("details");
+        assert!(details.len() <= MAX_DETAILS_BYTES + '…'.len_utf8());
+    }
+
+    /// The existing non-empty reasons must keep their exact codes and stay
+    /// `details`-free; only the empty family gained anything.
+    #[test]
+    fn turn_failure_error_event_preserves_existing_reasons() {
+        assert!(turn_failure_error_event("end_turn", AgentType::ClaudeCode, None).is_none());
+        assert!(turn_failure_error_event("cancelled", AgentType::ClaudeCode, None).is_none());
+
+        for (reason, expected) in [
+            ("refusal", "turn_failed_refusal"),
+            ("max_tokens", "turn_failed_max_tokens"),
+            ("max_turn_requests", "turn_failed_max_turn_requests"),
+            ("unknown", "turn_failed_unknown"),
+        ] {
+            let Some(AcpEvent::Error { code, details, .. }) =
+                turn_failure_error_event(reason, AgentType::ClaudeCode, None)
+            else {
+                panic!("{reason} should produce an error event");
+            };
+            assert_eq!(code.as_deref(), Some(expected));
+            assert!(details.is_none(), "{reason} must not carry details");
+        }
+    }
+
+    #[test]
+    fn turn_failure_error_event_maps_each_empty_cause() {
+        for (cause, expected) in [
+            (EmptyTurnCause::NoOutput, "turn_failed_empty"),
+            (
+                EmptyTurnCause::ProtocolMismatch,
+                "turn_failed_empty_protocol",
+            ),
+            (EmptyTurnCause::MetadataOnly, "turn_failed_empty_metadata"),
+        ] {
+            let report = EmptyTurnReport {
+                cause,
+                details: Some("evidence".into()),
+            };
+            let Some(AcpEvent::Error {
+                code,
+                details,
+                terminal,
+                ..
+            }) = turn_failure_error_event("empty", AgentType::ClaudeCode, Some(&report))
+            else {
+                panic!("empty should produce an error event");
+            };
+            assert_eq!(code.as_deref(), Some(expected));
+            assert_eq!(details.as_deref(), Some("evidence"));
+            assert!(!terminal, "an empty turn never kills the connection");
+        }
+
+        // No report (a path that skipped diagnosis) keeps the original code.
+        let Some(AcpEvent::Error { code, details, .. }) =
+            turn_failure_error_event("empty", AgentType::ClaudeCode, None)
+        else {
+            panic!("empty should produce an error event");
+        };
+        assert_eq!(code.as_deref(), Some("turn_failed_empty"));
+        assert!(details.is_none());
     }
 
     #[test]
@@ -10667,6 +11682,7 @@ mod tests {
             &injection,
             "parent-conn",
             std::path::Path::new("/tmp"),
+            false,
         )
         .await;
 
@@ -10754,32 +11770,41 @@ mod tests {
     #[test]
     fn companion_features_arg_inject_skip_decision() {
         // All off → no companion at all.
-        assert_eq!(companion_features_arg(false, false, false, false), None);
+        assert_eq!(companion_features_arg(false, false, false, false, false), None);
         // Delegation only.
         assert_eq!(
-            companion_features_arg(true, false, false, false),
+            companion_features_arg(true, false, false, false, false),
             Some("delegation".to_string())
         );
         // Feedback only — the decoupling: companion injected for feedback even
         // when delegation is off.
         assert_eq!(
-            companion_features_arg(false, true, false, false),
+            companion_features_arg(false, true, false, false, false),
             Some("feedback".to_string())
         );
         // Ask only — likewise injects the companion on its own.
         assert_eq!(
-            companion_features_arg(false, false, true, false),
+            companion_features_arg(false, false, true, false, false),
             Some("ask".to_string())
         );
         // Sessions only — likewise injects the companion on its own.
         assert_eq!(
-            companion_features_arg(false, false, false, true),
+            companion_features_arg(false, false, false, true, false),
             Some("sessions".to_string())
         );
         // All on → comma-joined, in declaration order.
         assert_eq!(
-            companion_features_arg(true, true, true, true),
+            companion_features_arg(true, true, true, true, false),
             Some("delegation,feedback,ask,sessions".to_string())
+        );
+        // Per-spawn tasks group: injects alone, and rides along with the rest.
+        assert_eq!(
+            companion_features_arg(false, false, false, false, true),
+            Some("tasks".to_string())
+        );
+        assert_eq!(
+            companion_features_arg(true, true, true, true, true),
+            Some("delegation,feedback,ask,sessions,tasks".to_string())
         );
     }
 }

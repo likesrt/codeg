@@ -5,7 +5,11 @@ import {
   useWorkbenchRoute,
   type WorkbenchRouteId,
 } from "@/contexts/workbench-route-context"
-import { AutomationsPage } from "@/components/automations/automations-page"
+import {
+  AutomationsPage,
+  AutomationsPageTitle,
+} from "@/components/automations/automations-page"
+import { TasksPage, TasksPageTitle } from "@/components/tasks/tasks-page"
 
 /**
  * Registry of full-page routes that take over the main content region. The
@@ -16,7 +20,16 @@ import { AutomationsPage } from "@/components/automations/automations-page"
  */
 const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   automations: AutomationsPage,
+  tasks: TasksPage,
 }
+
+/** Optional per-route content for the window-chrome strip above the page
+ *  (the h-10 band the fixed corner overlays sit on) — e.g. the page title. */
+const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
+  {
+    automations: AutomationsPageTitle,
+    tasks: TasksPageTitle,
+  }
 
 /**
  * Renders the active non-conversation route page, or nothing when the
@@ -27,4 +40,18 @@ export function WorkbenchRoutePage() {
   const { routeId } = useWorkbenchRoute()
   const Page = WORKBENCH_ROUTES[routeId]
   return Page ? <Page /> : null
+}
+
+/** The active route's strip content (page title), or nothing. */
+export function WorkbenchRouteStrip() {
+  const { routeId } = useWorkbenchRoute()
+  const Strip = WORKBENCH_ROUTE_STRIPS[routeId]
+  return Strip ? <Strip /> : null
+}
+
+/** Whether the active route contributes chrome-strip content — lets the host
+ *  style the band (e.g. its bottom border) only when a title renders. */
+export function useHasWorkbenchRouteStrip(): boolean {
+  const { routeId } = useWorkbenchRoute()
+  return WORKBENCH_ROUTE_STRIPS[routeId] != null
 }

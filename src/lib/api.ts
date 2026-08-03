@@ -18,6 +18,13 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  WorkTask,
+  WorkTaskChangedFile,
+  WorkTaskConfig,
+  WorkTaskDraft,
+  WorkTaskEvent,
+  WorkTaskFolderSettings,
+  WorkTaskTemplate,
   ConversationSummary,
   ConversationDetail,
   DbConversationDetail,
@@ -2607,6 +2614,175 @@ export async function automationRunNow(automationId: number): Promise<number> {
 /** Cancel an in-flight (or clear a wedged) run. */
 export async function automationCancelRun(runId: number): Promise<void> {
   return getTransport().call("automation_cancel_run", { runId })
+}
+
+// Work tasks
+
+export async function workTaskList(
+  folderId?: number | null
+): Promise<WorkTask[]> {
+  return getTransport().call("work_task_list", { folderId: folderId ?? null })
+}
+
+export async function workTaskGet(id: number): Promise<WorkTask> {
+  return getTransport().call("work_task_get", { id })
+}
+
+export async function workTaskEvents(
+  taskId: number,
+  limit = 500
+): Promise<WorkTaskEvent[]> {
+  return getTransport().call("work_task_events", { taskId, limit })
+}
+
+export async function workTaskCreate(draft: WorkTaskDraft): Promise<WorkTask> {
+  return getTransport().call("work_task_create", { draft })
+}
+
+export async function workTaskUpdate(
+  id: number,
+  draft: WorkTaskDraft
+): Promise<WorkTask> {
+  return getTransport().call("work_task_update", { id, draft })
+}
+
+/** Persist the pending column's drag order (index → sort_order). */
+export async function workTaskReorder(
+  folderId: number,
+  orderedIds: number[]
+): Promise<void> {
+  return getTransport().call("work_task_reorder", { folderId, orderedIds })
+}
+
+export async function workTaskDelete(
+  id: number,
+  deleteWorktree = false
+): Promise<void> {
+  return getTransport().call("work_task_delete", { id, deleteWorktree })
+}
+
+export async function workTaskStart(id: number): Promise<void> {
+  return getTransport().call("work_task_start", { id })
+}
+
+/** Queue every todo of the folder — or of every folder holding todos when
+ *  `folderId` is null. Returns how many were claimed. */
+export async function workTaskStartAll(
+  folderId: number | null
+): Promise<number> {
+  return getTransport().call("work_task_start_all", { folderId })
+}
+
+export async function workTaskRetry(id: number): Promise<void> {
+  return getTransport().call("work_task_retry", { id })
+}
+
+/** canceled → todo (back onto the board; started again explicitly). */
+export async function workTaskRequeue(id: number): Promise<void> {
+  return getTransport().call("work_task_requeue", { id })
+}
+
+/** Return a reviewed task to the agent with feedback. */
+export async function workTaskReturn(
+  id: number,
+  feedback: string
+): Promise<void> {
+  return getTransport().call("work_task_return", { id, feedback })
+}
+
+export async function workTaskCancel(id: number): Promise<void> {
+  return getTransport().call("work_task_cancel", { id })
+}
+
+/** Dispatch the agent-driven merge (`message: null` = the agent writes the
+ *  commit message itself); the outcome rides `task://changed` events. */
+export async function workTaskMerge(
+  id: number,
+  message: string | null,
+  deleteWorktree: boolean
+): Promise<void> {
+  return getTransport().call("work_task_merge", {
+    id,
+    message,
+    deleteWorktree,
+  })
+}
+
+export async function workTaskArchive(
+  id: number,
+  archived: boolean
+): Promise<void> {
+  return getTransport().call("work_task_archive", { id, archived })
+}
+
+/** Remove the task's worktree + branch (also retries a failed cleanup). */
+export async function workTaskCleanup(id: number): Promise<void> {
+  return getTransport().call("work_task_cleanup", { id })
+}
+
+/** Unified diff of the worktree vs the task's recorded base. */
+export async function workTaskDiff(
+  id: number,
+  file?: string | null
+): Promise<string> {
+  return getTransport().call("work_task_diff", { id, file: file ?? null })
+}
+
+export async function workTaskChangedFiles(
+  id: number
+): Promise<WorkTaskChangedFile[]> {
+  return getTransport().call("work_task_changed_files", { id })
+}
+
+/** Effective settings after the folder → global → built-in fallback — what
+ *  the engine will actually use for this folder. */
+export async function workTaskSettingsEffective(
+  folderId: number
+): Promise<WorkTaskFolderSettings> {
+  return getTransport().call("work_task_settings_effective", { folderId })
+}
+
+export async function workTaskSettingsGet(
+  folderId: number
+): Promise<WorkTaskFolderSettings> {
+  return getTransport().call("work_task_settings_get", { folderId })
+}
+
+/** The folder's own settings row, or null when it follows the global
+ *  defaults — how the settings dialog tells the two apart. */
+export async function workTaskSettingsGetOwn(
+  folderId: number
+): Promise<WorkTaskFolderSettings | null> {
+  return getTransport().call("work_task_settings_get_own", { folderId })
+}
+
+export async function workTaskSettingsSet(
+  folderId: number,
+  settings: WorkTaskFolderSettings
+): Promise<void> {
+  return getTransport().call("work_task_settings_set", { folderId, settings })
+}
+
+/** Drop the folder's own settings row — it reverts to the global defaults. */
+export async function workTaskSettingsDelete(folderId: number): Promise<void> {
+  return getTransport().call("work_task_settings_delete", { folderId })
+}
+
+export async function workTaskTemplateList(): Promise<WorkTaskTemplate[]> {
+  return getTransport().call("work_task_template_list", {})
+}
+
+/** Upsert by exact name: an existing template of the same name is replaced. */
+export async function workTaskTemplateSave(draft: {
+  name: string
+  title: string
+  config: WorkTaskConfig
+}): Promise<WorkTaskTemplate> {
+  return getTransport().call("work_task_template_save", { draft })
+}
+
+export async function workTaskTemplateDelete(id: number): Promise<void> {
+  return getTransport().call("work_task_template_delete", { id })
 }
 
 // Directory browser (for web/server mode)

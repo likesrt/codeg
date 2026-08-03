@@ -153,4 +153,143 @@ describe("PermissionDialog", () => {
     )
     expect(container.querySelector("pre")).toBeNull()
   })
+
+  it("lists what each option grants from _meta.permission.changes (codex ≥1.1.8)", () => {
+    // codex-acp #342 hangs a structured, already-humanized change list on each
+    // permission option. The card must show those sentences so "Allow for
+    // Session" stops being an opaque button. codex states the duration inside
+    // its own sentences AND in `lifetime`, so the suffix repeats it here —
+    // uniform rendering beats string-sniffing whether it is already spelled out.
+    const permission: PendingPermission = {
+      request_id: "req-changes",
+      tool_call: { title: "Need extra access", kind: "other" },
+      options: [
+        {
+          option_id: "allow_permissions_session",
+          name: "Allow for Session",
+          kind: "allow_always",
+          meta: {
+            permission: {
+              version: 1,
+              changes: [
+                {
+                  type: "grant",
+                  operation: "grant",
+                  description: "Allow network access for this session",
+                  lifetime: { scope: "session" },
+                },
+                {
+                  type: "grant",
+                  operation: "grant",
+                  description:
+                    "Allow write access to /repo/tmp for this session",
+                  lifetime: { scope: "session" },
+                },
+              ],
+            },
+          },
+        },
+        { option_id: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    }
+    renderWithIntl(
+      <PermissionDialog permission={permission} onRespond={() => {}} />
+    )
+    expect(
+      screen.getByText(/Allow network access for this session/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/Allow write access to \/repo\/tmp for this session/)
+    ).toBeInTheDocument()
+    // The grant list names its option, and the button itself keeps its label.
+    expect(screen.getAllByText("Allow for Session")).toHaveLength(2)
+    expect(screen.getAllByText("This session")).toHaveLength(2)
+  })
+
+  it("spells out how long each change lasts (claude ≥0.64.1)", () => {
+    // claude-agent-acp #930 speaks the same contract, but its descriptions
+    // NEVER state the duration — that lives only in `lifetime`. Unread, this
+    // card would pair "Always Allow" with "Allow all Bash calls" and never
+    // reveal that the rule is about to be written into settings the repo
+    // commits. Only the always-allow option carries metadata, as claude sends it.
+    const permission: PendingPermission = {
+      request_id: "req-claude-changes",
+      tool_call: { title: "Bash", kind: "execute" },
+      options: [
+        { option_id: "reject", name: "Deny", kind: "reject_once" },
+        { option_id: "allow", name: "Allow Once", kind: "allow_once" },
+        {
+          option_id: "allow_always",
+          name: "Always Allow",
+          kind: "allow_always",
+          meta: {
+            permission: {
+              version: 1,
+              changes: [
+                {
+                  type: "policy_rule",
+                  operation: "add",
+                  ruleBehavior: "allow",
+                  description: "Allow Bash calls matching npm test:*",
+                  lifetime: { scope: "persistent", storage: "project" },
+                  targets: [{ type: "tool", toolName: "Bash" }],
+                },
+                {
+                  type: "permission_mode",
+                  operation: "set",
+                  description: "Set Claude Code permission mode to acceptEdits",
+                  lifetime: { scope: "unknown" },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    }
+    renderWithIntl(
+      <PermissionDialog permission={permission} onRespond={() => {}} />
+    )
+    expect(
+      screen.getByText(/Allow Bash calls matching npm test:\*/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("Saved to project settings")).toBeInTheDocument()
+    // An unknown scope says nothing about duration rather than guessing.
+    expect(
+      screen.getByText(/Set Claude Code permission mode to acceptEdits/)
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Saved permanently")).toBeNull()
+    // Options without metadata are named by their button alone — the grant
+    // list only lists the one option that carries metadata.
+    expect(screen.getByText("Allow Once")).toBeInTheDocument()
+    expect(screen.getAllByText("Always Allow")).toHaveLength(2)
+    expect(screen.getByText("What each option grants")).toBeInTheDocument()
+  })
+
+  it("ignores option metadata that is absent or of an unknown version", () => {
+    const permission: PendingPermission = {
+      request_id: "req-nochanges",
+      tool_call: { title: "Run unit tests", kind: "shell" },
+      options: [
+        {
+          option_id: "allow",
+          name: "Allow once",
+          kind: "allow_once",
+          // A future revision codeg does not understand must render nothing
+          // rather than a half-read list.
+          meta: {
+            permission: {
+              version: 2,
+              changes: [{ description: "Something new" }],
+            },
+          },
+        },
+        { option_id: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    }
+    renderWithIntl(
+      <PermissionDialog permission={permission} onRespond={() => {}} />
+    )
+    expect(screen.queryByText(/Something new/)).toBeNull()
+    expect(screen.getByText("Allow once")).toBeInTheDocument()
+  })
 })

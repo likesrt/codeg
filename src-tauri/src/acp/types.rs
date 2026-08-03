@@ -197,6 +197,22 @@ pub enum AcpEvent {
         /// When present, the frontend renders a localized message keyed on
         /// this code; otherwise it falls back to `message`.
         code: Option<String>,
+        /// Out-of-band diagnostic evidence for errors codeg *inferred* rather
+        /// than received — currently the `turn_failed_empty*` family, where the
+        /// agent reported success and the wire carried no error at all. Holds
+        /// the turn's agent stderr tail and a summary of updates codeg failed
+        /// to parse.
+        ///
+        /// **Already redacted and length-bounded at the source**
+        /// ([`crate::acp::stderr_tail`]): it is rendered in the UI and, in
+        /// server mode, pushed over the WebSocket, so it must never carry a
+        /// credential or a `session/update` payload fragment. Deliberately kept
+        /// out of the OS notification and out of the frontend's `conn.error`
+        /// tooltip — see the frontend `case "error"` handler.
+        ///
+        /// Omitted from the wire when absent, so old clients are unaffected.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        details: Option<String>,
         /// Whether this Error signals connection-level death — i.e. the
         /// `run_connection` task is about to emit `Disconnected` and tear
         /// the session down. Non-terminal Errors (turn failure, `SetMode`
@@ -531,6 +547,19 @@ pub struct PermissionOptionInfo {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+    /// The option's ACP `_meta`, forwarded verbatim (same opaque-passthrough
+    /// treatment as the request's `tool_call`). codex-acp ≥1.1.8 (#342) and
+    /// claude-agent-acp ≥0.64.1 (#930) hang
+    /// `_meta.permission = {version: 1, changes: [...]}` here, where each change
+    /// carries a ready-made human `description` of what picking this option
+    /// would grant, plus the `lifetime` saying for how long — the permission
+    /// card renders those instead of leaving the user to guess what "Allow for
+    /// Session" or "Always Allow" covers.
+    ///
+    /// `default` so pre-existing serialized snapshots (`PendingPermissionState`,
+    /// the pet payload, the chat-channel bridge) still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -669,6 +698,13 @@ pub struct AcpAgentInfo {
     pub description: String,
     pub available: bool,
     pub distribution_type: String,
+    /// Whether codeg's entry for this agent is a third-party ACP *adapter*
+    /// wrapping a vendor CLI of a different name (Claude Code, Codex — see
+    /// `registry::acp_adapter_relation`). Lets the surfaces that have no
+    /// preflight result (composer block banner, settings header badge) say
+    /// "the adapter isn't installed" instead of "the agent isn't", without
+    /// hardcoding a second copy of the agent list frontend-side.
+    pub is_acp_adapter: bool,
     /// For custom agents, where the definition came from (`registry` |
     /// `manual`); `None` for built-ins. A manual definition's
     /// `registry_version` is user-typed, so the version-status display shows
@@ -1009,6 +1045,9 @@ pub struct AcpAgentStatus {
     pub available: bool,
     pub enabled: bool,
     pub installed_version: Option<String>,
+    /// See [`AcpAgentInfo::is_acp_adapter`] — the connect pre-check uses it to
+    /// pick the right "not installed" wording.
+    pub is_acp_adapter: bool,
 }
 
 /// Severity of a single diagnostics check / the overall verdict.

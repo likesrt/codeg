@@ -405,6 +405,10 @@ export interface DbConversationSummary {
   parent_id?: number | null
   parent_tool_use_id?: string | null
   delegation_call_id?: string | null
+  /** Set when the conversation was re-parented out of a removed worktree: the
+   *  worktree path it originally ran in. Drives the "source worktree removed"
+   *  badge. */
+  origin_cwd?: string | null
 }
 
 /** Payload for the global `conversation://changed` side-channel that keeps
@@ -1017,6 +1021,14 @@ export interface PermissionOptionInfo {
   option_id: string
   name: string
   kind: string
+  /**
+   * The option's ACP `_meta`, forwarded verbatim from the wire. codex-acp
+   * ≥1.1.8 and claude-agent-acp ≥0.64.1 hang
+   * `permission: {version: 1, changes: [...]}` here — see
+   * `parsePermissionOptionChanges` in `lib/permission-request.ts`. Absent for
+   * agents that send no option metadata.
+   */
+  meta?: Record<string, unknown> | null
 }
 
 // --- ask_user_question (mirror of Rust `crate::acp::question`) ---
@@ -1160,10 +1172,15 @@ export interface AutomationLabelSnapshot {
   branch_label?: string
 }
 
+/** What firing the automation does. Optional in stored configs — absent means
+ *  the legacy `launch_session`. */
+export type AutomationAction = "launch_session" | "enqueue_task"
+
 /** The captured composer snapshot stored in `automation.config`. `mode_id` +
  *  `config_values` are exactly AgentDelegationDefaults; the model rides inside
  *  `config_values["model"]`, never as its own field. */
 export interface AutomationConfig {
+  action?: AutomationAction
   prompt_blocks: PromptInputBlock[]
   display_text: string
   mode_id?: string | null
@@ -1224,6 +1241,140 @@ export interface AutomationDraft {
   branch: string | null
   is_remote_branch: boolean
   config: AutomationConfig
+}
+
+// ─── Work tasks ────────────────────────────────────────────────────────────
+// Mirrors src-tauri/src/models/work_task.rs. Wire form is snake_case like
+// Automations. (Named WorkTask* because `Task` is taken by task-context.tsx.)
+
+export type WorkTaskStatus =
+  | "todo"
+  | "queued"
+  | "running"
+  | "awaiting_input"
+  | "review"
+  | "merging"
+  | "done"
+  | "failed"
+  | "canceled"
+
+/** The captured composer snapshot stored in `work_task.config`. Optional
+ *  agent/mode/config fields are per-task overrides; empty = inherit the
+ *  folder's task settings at launch. */
+export interface WorkTaskConfig {
+  prompt_blocks: PromptInputBlock[]
+  display_text: string
+  agent_type?: AgentType | null
+  mode_id?: string | null
+  config_values: Record<string, string>
+  label_snapshot?: AutomationLabelSnapshot | null
+}
+
+export interface WorkTask {
+  id: number
+  folder_id: number
+  title: string
+  // Serialized from an opaque JSON column; guard against a null parse fallback.
+  config: WorkTaskConfig | null
+  status: WorkTaskStatus
+  /** agent_error | setup_error | verdict_blocked | interrupted */
+  failure_reason: string | null
+  last_error: string | null
+  run_seq: number
+  sort_order: number
+  worktree_folder_id: number | null
+  conversation_id: number | null
+  /** Live ACP connection of the current generation; stale after a settle —
+   *  gate on status before attaching. */
+  connection_id: string | null
+  base_branch: string | null
+  base_sha: string | null
+  work_branch: string | null
+  /** null = nothing pending; "failed" = worktree cleanup failed (retryable). */
+  cleanup_state: string | null
+  verdict: string | null
+  result_summary: string | null
+  files_changed: number | null
+  additions: number | null
+  deletions: number | null
+  merge_commit: string | null
+  /** Acceptance red/green light of the current review, if a preflight
+   *  command ran. */
+  preflight: WorkTaskPreflight | null
+  archived_at: string | null
+  /** Latest agent_progress milestone — present on live (running/awaiting/merging) rows only. */
+  latest_progress?: string | null
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  settled_at: string | null
+  finished_at: string | null
+}
+
+/** Result of the folder's preflight command for one review generation. */
+export interface WorkTaskPreflight {
+  status: "running" | "passed" | "failed"
+  /** Display name of the folder command that ran. */
+  command: string
+  exit_code?: number | null
+  /** Trailing combined output — present when the light is red. */
+  output_tail?: string | null
+}
+
+/** One append-only timeline entry ("how the task advanced"). */
+export interface WorkTaskEvent {
+  id: number
+  task_id: number
+  kind: string
+  actor: string
+  payload: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface WorkTaskDraft {
+  folder_id: number
+  title: string
+  config: WorkTaskConfig
+}
+
+/** A saved task blueprint (global; the folder is picked at creation time).
+ *  Saving under an existing name replaces that template. */
+export interface WorkTaskTemplate {
+  id: number
+  name: string
+  title: string
+  // Serialized from an opaque JSON column; guard against a null parse fallback.
+  config: WorkTaskConfig | null
+  created_at: string
+  updated_at: string
+}
+
+/** Per-folder task defaults (work_task_settings.config). */
+export interface WorkTaskFolderSettings {
+  default_agent_type?: AgentType | null
+  mode_id?: string | null
+  config_values: Record<string, string>
+  label_snapshot?: AutomationLabelSnapshot | null
+  auto_process: boolean
+  /** 0 = unlimited. */
+  max_concurrent: number
+  merge_strategy: "squash" | "merge"
+  delete_worktree_default: boolean
+  /** folder_command id run in the worktree when a task settles into review
+   *  (the acceptance red/green light); null = no preflight. */
+  preflight_command_id?: number | null
+  /** Free-form preflight shell line; wins over `preflight_command_id`. */
+  preflight_command?: string | null
+  /** Shell line run inside a freshly created worktree before the agent
+   *  starts (deps install, env seeding). */
+  init_command?: string | null
+}
+
+/** Changed file of a task worktree vs its recorded base. */
+export interface WorkTaskChangedFile {
+  file: string
+  additions: number
+  deletions: number
 }
 
 export interface PlanEntryInfo {
@@ -1407,6 +1558,17 @@ export type AcpEvent =
       agent_type: string
       /** Stable backend error identifier for localization (e.g. "initialize_timeout"). */
       code: string | null
+      /**
+       * Diagnostic evidence for errors the backend *inferred* rather than
+       * received — the `turn_failed_empty*` family, where the agent reported
+       * success and the wire carried no error. Agent stderr tail plus a
+       * summary of updates the backend could not parse.
+       *
+       * Already redacted and length-bounded by the backend. Render it in the
+       * alert detail only: it must not reach the OS notification or the
+       * connection-status tooltip.
+       */
+      details?: string | null
     }
   | {
       // codex-acp #289: a retryable turn error that keeps the turn alive (codex
@@ -1724,6 +1886,8 @@ export interface FeedbackItem {
 export interface SessionLastError {
   message: string
   code?: string | null
+  /** Mirrors `AcpEvent` error `details`; already redacted by the backend. */
+  details?: string | null
 }
 
 export interface LiveSessionSnapshot {
@@ -1762,6 +1926,11 @@ export interface LiveSessionSnapshot {
    *  The frontend gates the feedback bar on this — the agent's real capability —
    *  not the (possibly later-toggled) global setting. Absent → `false`. */
   feedback_tool_available?: boolean
+  /** Whether feedback notes ride the native `_session/steering` push channel
+   *  (synthesized backend-side from advertisement + registry policy + runtime
+   *  version proof — the frontend must NOT re-derive it from agent type).
+   *  Absent → `false`. */
+  native_steering_available?: boolean
   modes: SessionModeStateInfo | null
   current_mode: string | null
   config_options: SessionConfigOptionInfo[] | null
@@ -1812,6 +1981,14 @@ export interface AcpAgentInfo {
   description: string
   available: boolean
   distribution_type: string
+  /**
+   * Whether codeg's entry for this agent is a third-party ACP *adapter*
+   * wrapping a vendor CLI of a different name (Claude Code → claude-agent-acp,
+   * Codex → codex-acp). Surfaces without a preflight result use it to say "the
+   * ACP adapter isn't installed" rather than "the agent isn't" — the single
+   * most-reported confusion.
+   */
+  is_acp_adapter: boolean
   /**
    * For custom agents, where the definition came from ("registry" | "manual");
    * null for built-ins. A manual definition's registry_version is user-typed,
@@ -2027,6 +2204,8 @@ export interface AcpAgentStatus {
   available: boolean
   enabled: boolean
   installed_version: string | null
+  /** See AcpAgentInfo.is_acp_adapter. */
+  is_acp_adapter: boolean
 }
 
 // Environment diagnostics (returned by acp_env_diagnostics). Mirrors the Rust
@@ -2828,11 +3007,36 @@ export interface CheckItem {
   fixes: FixAction[]
 }
 
+/**
+ * Structured explainer data for agents whose codeg entry is a third-party ACP
+ * adapter rather than the vendor's own CLI (Claude Code, Codex). The backend
+ * ships only facts — the wording lives in i18n, the same way buildVersionCheck
+ * owns the version card's copy.
+ */
+export interface AdapterInfo {
+  /** npm spec codeg installs, e.g. "@agentclientprotocol/codex-acp@1.1.9". */
+  adapter_package: string
+  /** Command the launch gate resolves, e.g. "codex-acp". */
+  adapter_cmd: string
+  adapter_installed: boolean
+  /** The vendor CLI, e.g. "codex". */
+  native_cmd: string
+  /** Display name for the vendor CLI, e.g. "Codex CLI". */
+  native_label: string
+  /** Where the user's own vendor CLI was found. codeg never launches it. */
+  native_path: string | null
+  /** Config dir both read, so installing the adapter needs no second login. */
+  shared_config_dir: string
+  docs_url: string
+}
+
 export interface PreflightResult {
   agent_type: AgentType
   agent_name: string
   passed: boolean
   checks: CheckItem[]
+  /** Null unless this agent is an ACP adapter. Never affects `passed`. */
+  adapter: AdapterInfo | null
 }
 
 // ─── OpenCode Plugins ───

@@ -221,6 +221,34 @@ pub(crate) fn resolve_system_agent_binary(cmd: &str) -> Option<PathBuf> {
     cand.is_file().then_some(cand)
 }
 
+/// Resolve the VENDOR CLI wrapped by an ACP adapter agent (`claude`, `codex`
+/// — see [`registry::acp_adapter_relation`]). codeg never launches this: it is
+/// probed purely so preflight/diagnostics can say "we found your own CLI, but
+/// it doesn't speak ACP" instead of a bare "not installed".
+///
+/// Widest resolution of the three probes, because a false negative here loses
+/// the most convincing evidence: PATH + the npm global prefix (the GUI-PATH-gap
+/// fallback `resolve_npx_command` already implements), then `~/.local/bin` via
+/// [`resolve_system_agent_binary`], then the vendor installers' own dirs.
+pub(crate) async fn resolve_vendor_cli(cmd: &str, extra_dirs: &[&str]) -> Option<PathBuf> {
+    if let Some(path) = resolve_npx_command(cmd).await {
+        return Some(path);
+    }
+    if let Some(path) = resolve_system_agent_binary(cmd) {
+        return Some(path);
+    }
+    let exe = if cfg!(windows) {
+        format!("{cmd}.exe")
+    } else {
+        cmd.to_string()
+    };
+    let home = home_dir_or_default();
+    extra_dirs.iter().find_map(|dir| {
+        let cand = home.join(dir).join(&exe);
+        cand.is_file().then_some(cand)
+    })
+}
+
 /// Resolve the `uvx` (uv tool runner) executable used to launch Python ACP
 /// agents (e.g. Hermes). Checks PATH first (respecting a user's own `uv`),
 /// then codeg's managed uv cache, then the common install locations the
@@ -737,6 +765,25 @@ struct AgentDiag {
     detected_version: Option<String>,
     /// `agent_setting.installed_version` recorded in the DB.
     db_version: Option<String>,
+    /// Set only for ACP *adapter* agents (Claude Code, Codex): the vendor CLI
+    /// the user probably already installed, which codeg does NOT launch. See
+    /// [`registry::acp_adapter_relation`].
+    adapter: Option<AdapterProbe>,
+}
+
+/// The vendor CLI behind an adapter agent, probed so the report can say "we
+/// found your own `claude`, but codeg launches `claude-agent-acp`" instead of a
+/// bare "not installed" the user reads as plain wrong.
+#[derive(Default, Clone)]
+struct AdapterProbe {
+    /// e.g. "claude".
+    native_cmd: String,
+    /// Where the vendor CLI resolved, if anywhere.
+    native_path: Option<String>,
+    /// First `--version` line of the vendor CLI (bounded probe).
+    native_version: Option<String>,
+    /// Config dir shared by the vendor CLI and the adapter.
+    shared_config_dir: String,
 }
 
 #[derive(Default, Clone)]
@@ -929,6 +976,24 @@ async fn collect_agent_diag(
             .await
             .ok()
             .flatten();
+
+            // Adapter agents only: locate the vendor CLI the user installed
+            // themselves. Unlike preflight (path-only, runs on every Settings
+            // open) this report is on demand, so it can afford `--version` —
+            // naming the exact build is what makes "we DID see your CLI" land.
+            if let Some(relation) = registry::acp_adapter_relation(agent_type) {
+                let native_path = resolve_vendor_cli(relation.native_cmd, relation.extra_dirs).await;
+                let native_version = match &native_path {
+                    Some(p) => diag_run(p, &["--version"]).await,
+                    None => None,
+                };
+                diag.adapter = Some(AdapterProbe {
+                    native_cmd: relation.native_cmd.to_string(),
+                    native_path: native_path.map(|p| p.to_string_lossy().to_string()),
+                    native_version,
+                    shared_config_dir: relation.shared_config_dir.to_string(),
+                });
+            }
         }
         registry::AgentDistribution::Binary { cmd, platforms, .. } => {
             diag.cmd = cmd.to_string();
@@ -1135,6 +1200,28 @@ fn compute_verdict(inp: &DiagInputs) -> DiagnosticsVerdict {
     }
 
     if agent.resolve_npx.is_none() {
+        // An ACP adapter agent that was never installed is the single most
+        // reported "bug": the user has the vendor CLI and reads "not installed"
+        // as codeg failing to see it. Answer the question they're actually
+        // asking, before the generic not-installed verdict. Node problems above
+        // still win — those block the adapter install itself.
+        if let Some(adapter) = &agent.adapter {
+            if agent.db_version.is_none() && agent.detected_version.is_none() {
+                return if adapter.native_path.is_some() {
+                    diag_verdict(
+                        DiagLevel::Info,
+                        "adapter_missing_native_present",
+                        "Your own vendor CLI is installed, but codeg launches a separate ACP adapter, which is not.",
+                    )
+                } else {
+                    diag_verdict(
+                        DiagLevel::Info,
+                        "adapter_missing",
+                        "codeg launches a separate ACP adapter for this agent, which is not installed.",
+                    )
+                };
+            }
+        }
         if agent.db_version.is_some() || agent.detected_version.is_some() {
             if agent.user_prefix_bin.is_some() {
                 return diag_verdict(
@@ -1302,6 +1389,30 @@ fn build_report(
                 a.detected_version.as_deref().unwrap_or("none"),
                 DiagLevel::Info,
                 Some("covers both prefixes — what the Settings badge uses"),
+            ));
+        }
+        // Adapter agents: show the vendor CLI next to the adapter it is NOT.
+        // Both rows land in `plain_text` too, so a pasted report answers the
+        // "but I have claude installed" question without a round trip.
+        if let Some(ad) = &a.adapter {
+            checks.push(diag_check(
+                &format!("{} (your own CLI)", ad.native_cmd),
+                &match (&ad.native_path, &ad.native_version) {
+                    (Some(path), Some(ver)) => format!("{ver}  ({path})"),
+                    (Some(path), None) => path.clone(),
+                    _ => "not found".to_string(),
+                },
+                DiagLevel::Info,
+                Some(
+                    "codeg never launches this — it launches the ACP adapter above, \
+                     a separate package that shares the same config dir",
+                ),
+            ));
+            checks.push(diag_check(
+                "shared config dir",
+                &ad.shared_config_dir,
+                DiagLevel::Info,
+                Some("read by BOTH your CLI and the adapter — no second login"),
             ));
         }
         checks.push(diag_check(
@@ -1633,6 +1744,103 @@ mod diagnostics_tests {
             ..Default::default()
         };
         assert_eq!(compute_verdict(&missing).code, "not_installed");
+    }
+
+    fn adapter_agent_never_installed(native_path: Option<&str>) -> AgentDiag {
+        AgentDiag {
+            name: "Codex CLI".to_string(),
+            cmd: "codex-acp".to_string(),
+            distribution: "npx",
+            adapter: Some(AdapterProbe {
+                native_cmd: "codex".to_string(),
+                native_path: native_path.map(str::to_string),
+                native_version: native_path.map(|_| "codex-cli 0.145.0".to_string()),
+                shared_config_dir: "~/.codex".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    // The canonical support ticket: `codex` is on the machine, the adapter is
+    // not. The generic "not installed" verdict reads as codeg being wrong, so
+    // this case gets its own code.
+    #[test]
+    fn verdict_adapter_missing_while_vendor_cli_present() {
+        let mut inp = base_inputs();
+        inp.agent = Some(adapter_agent_never_installed(Some("/opt/homebrew/bin/codex")));
+        let v = compute_verdict(&inp);
+        assert_eq!(v.code, "adapter_missing_native_present");
+        assert_eq!(v.level, DiagLevel::Info);
+    }
+
+    #[test]
+    fn verdict_adapter_missing_without_vendor_cli() {
+        let mut inp = base_inputs();
+        inp.agent = Some(adapter_agent_never_installed(None));
+        assert_eq!(compute_verdict(&inp).code, "adapter_missing");
+    }
+
+    // Node problems still win: they block installing the adapter in the first
+    // place, so explaining the adapter split there would bury the real fix.
+    #[test]
+    fn verdict_node_missing_outranks_adapter_missing() {
+        let inp = DiagInputs {
+            agent: Some(adapter_agent_never_installed(Some(
+                "/opt/homebrew/bin/codex",
+            ))),
+            ..Default::default()
+        };
+        assert_eq!(compute_verdict(&inp).code, "node_missing");
+    }
+
+    // Once the adapter resolves the split is irrelevant — plain ok, no special
+    // casing that would leave an adapter agent permanently "explaining itself".
+    #[test]
+    fn verdict_ok_when_adapter_resolves_even_with_vendor_cli() {
+        let mut inp = base_inputs();
+        let mut a = adapter_agent_never_installed(Some("/opt/homebrew/bin/codex"));
+        a.resolve_npx = Some("/usr/local/bin/codex-acp".to_string());
+        inp.agent = Some(a);
+        assert_eq!(compute_verdict(&inp).code, "ok");
+    }
+
+    // A previously-installed adapter that stopped resolving is a PATH problem,
+    // not an explainer case — the adapter branch must not swallow it.
+    #[test]
+    fn verdict_installed_but_unresolved_still_wins_for_adapter_agents() {
+        let mut inp = base_inputs();
+        let mut a = adapter_agent_never_installed(Some("/opt/homebrew/bin/codex"));
+        a.db_version = Some("1.1.7".to_string());
+        inp.agent = Some(a);
+        assert_eq!(compute_verdict(&inp).code, "installed_but_unresolved");
+    }
+
+    // The pasted report has to answer "but I have codex installed" on its own.
+    #[test]
+    fn report_names_the_vendor_cli_and_shared_config_dir() {
+        let mut inp = base_inputs();
+        inp.agent = Some(adapter_agent_never_installed(Some("/opt/homebrew/bin/codex")));
+        let r = build_report(&inp, "FIXED-TS".to_string(), Some(AgentType::Codex));
+        assert!(r.plain_text.contains("codex (your own CLI)"));
+        assert!(r.plain_text.contains("/opt/homebrew/bin/codex"));
+        assert!(r.plain_text.contains("~/.codex"));
+        assert!(r.plain_text.contains("verdict [adapter_missing_native_present]"));
+    }
+
+    // Non-adapter agents keep the old shape exactly — no stray rows.
+    #[test]
+    fn report_omits_adapter_rows_for_plain_agents() {
+        let mut inp = base_inputs();
+        inp.agent = Some(AgentDiag {
+            name: "Gemini CLI".to_string(),
+            cmd: "gemini".to_string(),
+            distribution: "npx",
+            resolve_npx: Some("/usr/local/bin/gemini".to_string()),
+            ..Default::default()
+        });
+        let r = build_report(&inp, "FIXED-TS".to_string(), Some(AgentType::Gemini));
+        assert!(!r.plain_text.contains("your own CLI"));
+        assert!(!r.plain_text.contains("shared config dir"));
     }
 
     #[test]
@@ -8668,6 +8876,7 @@ pub(crate) async fn acp_get_agent_status_core(
         available,
         enabled: setting.map(|m| m.enabled).unwrap_or(true),
         installed_version,
+        is_acp_adapter: registry::acp_adapter_relation(agent_type).is_some(),
     })
 }
 
@@ -8887,6 +9096,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             description: meta.description.to_string(),
             available,
             distribution_type: dist_type.to_string(),
+            is_acp_adapter: registry::acp_adapter_relation(agent_type).is_some(),
             custom_source: agent_type
                 .custom_id()
                 .and_then(crate::acp::custom_registry::source_of)

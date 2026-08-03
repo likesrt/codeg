@@ -1197,6 +1197,106 @@ pub fn build_router(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
         )
+        // ─── Work tasks ───
+        .route("/work_task_list", post(handlers::work_task::work_task_list))
+        .route("/work_task_get", post(handlers::work_task::work_task_get))
+        .route(
+            "/work_task_events",
+            post(handlers::work_task::work_task_events),
+        )
+        .route(
+            "/work_task_attention_count",
+            post(handlers::work_task::work_task_attention_count),
+        )
+        .route(
+            "/work_task_create",
+            post(handlers::work_task::work_task_create),
+        )
+        .route(
+            "/work_task_update",
+            post(handlers::work_task::work_task_update),
+        )
+        .route(
+            "/work_task_reorder",
+            post(handlers::work_task::work_task_reorder),
+        )
+        .route(
+            "/work_task_delete",
+            post(handlers::work_task::work_task_delete),
+        )
+        .route(
+            "/work_task_start",
+            post(handlers::work_task::work_task_start),
+        )
+        .route(
+            "/work_task_start_all",
+            post(handlers::work_task::work_task_start_all),
+        )
+        .route(
+            "/work_task_retry",
+            post(handlers::work_task::work_task_retry),
+        )
+        .route(
+            "/work_task_requeue",
+            post(handlers::work_task::work_task_requeue),
+        )
+        .route(
+            "/work_task_return",
+            post(handlers::work_task::work_task_return),
+        )
+        .route(
+            "/work_task_cancel",
+            post(handlers::work_task::work_task_cancel),
+        )
+        .route(
+            "/work_task_merge",
+            post(handlers::work_task::work_task_merge),
+        )
+        .route(
+            "/work_task_archive",
+            post(handlers::work_task::work_task_archive),
+        )
+        .route(
+            "/work_task_cleanup",
+            post(handlers::work_task::work_task_cleanup),
+        )
+        .route("/work_task_diff", post(handlers::work_task::work_task_diff))
+        .route(
+            "/work_task_changed_files",
+            post(handlers::work_task::work_task_changed_files),
+        )
+        .route(
+            "/work_task_settings_get",
+            post(handlers::work_task::work_task_settings_get),
+        )
+        .route(
+            "/work_task_settings_effective",
+            post(handlers::work_task::work_task_settings_effective),
+        )
+        .route(
+            "/work_task_settings_get_own",
+            post(handlers::work_task::work_task_settings_get_own),
+        )
+        .route(
+            "/work_task_settings_set",
+            post(handlers::work_task::work_task_settings_set),
+        )
+        .route(
+            "/work_task_settings_delete",
+            post(handlers::work_task::work_task_settings_delete),
+        )
+        .route(
+            "/work_task_template_list",
+            post(handlers::work_task::work_task_template_list),
+        )
+        .route(
+            "/work_task_template_save",
+            post(handlers::work_task::work_task_template_save),
+        )
+        .route(
+            "/work_task_template_delete",
+            post(handlers::work_task::work_task_template_delete),
+        )
         // ─── Workspace background ───
         .route(
             "/background_read",

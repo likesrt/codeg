@@ -874,13 +874,43 @@ fn build_historical_delegation_meta(child: &DbConversationSummary) -> serde_json
     serde_json::Value::Object(obj)
 }
 
-/// Walk every `delegate_to_agent` ToolUse block in `turns` and, when its
-/// `tool_use_id` matches a child conversation in `children`, set
-/// `meta["codeg.delegation"]` to the DB-derived snapshot. Skips blocks
-/// whose meta is already populated so the live-broker write (when present)
-/// always wins. Tool-name match is by substring to cover the
-/// MCP-prefixed (`mcp__codeg-mcp__delegate_to_agent`) and bare forms
-/// the host may have emitted.
+/// The broker-minted task id a `delegate_to_agent` result announces. Codex
+/// persists the ack as prose (`Delegation successful. task_id=<id>. Call
+/// get_delegation_status …`); other hosts return `{"task_id":"<id>"}` — both
+/// are covered by reading `task_id` followed by `=` or `:`. Mirrors the
+/// frontend's `parseDelegateTaskId` (`lib/delegation-card.ts`).
+fn parse_delegate_task_id(output: &str) -> Option<String> {
+    let at = output.find("task_id")? + "task_id".len();
+    let rest = output[at..].trim_start();
+    // Closing quote of a JSON key, then the separator, then the value's quote.
+    let rest = rest.strip_prefix('"').unwrap_or(rest).trim_start();
+    let rest = rest.strip_prefix(['=', ':'])?.trim_start();
+    let rest = rest.strip_prefix('"').unwrap_or(rest);
+    let id: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Walk every `delegate_to_agent` ToolUse block in `turns` and, when it can be
+/// matched to a child conversation in `children`, set `meta["codeg.delegation"]`
+/// to the DB-derived snapshot. Skips blocks whose meta is already populated so
+/// the live-broker write (when present) always wins. Tool-name match is by
+/// substring to cover the MCP-prefixed (`mcp__codeg-mcp__delegate_to_agent`)
+/// and bare forms the host may have emitted.
+///
+/// Matching is by `parent_tool_use_id` first, then by the broker's task id.
+/// The fallback is what covers codex: its rollout names the call `call_<id>`,
+/// while the broker — which sees the call over the ACP wire, where code mode
+/// renames every inner call — recorded `exec-<uuid>`. The two never meet, so
+/// every codex delegation card lost its `child_conversation_id` and with it the
+/// "查看会话" affordance. The task id round-trips: the broker mirrors it into
+/// `delegation_call_id`, and the ack the model received carries it verbatim.
 fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationSummary]) {
     if children.is_empty() {
         return;
@@ -889,6 +919,31 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
         .iter()
         .filter_map(|c| c.parent_tool_use_id.as_deref().map(|tu| (tu, c)))
         .collect();
+    let by_task_id: HashMap<&str, &DbConversationSummary> = children
+        .iter()
+        .filter_map(|c| c.delegation_call_id.as_deref().map(|id| (id, c)))
+        .collect();
+
+    // The task id lives on the call's RESULT, which the parsers emit as a
+    // separate block (usually a later turn), so collect it up front.
+    let mut task_id_by_call: HashMap<String, String> = HashMap::new();
+    if !by_task_id.is_empty() {
+        for turn in turns.iter() {
+            for block in turn.blocks.iter() {
+                if let ContentBlock::ToolResult {
+                    tool_use_id: Some(tu),
+                    output_preview: Some(output),
+                    ..
+                } = block
+                {
+                    if let Some(task_id) = parse_delegate_task_id(output) {
+                        task_id_by_call.insert(tu.clone(), task_id);
+                    }
+                }
+            }
+        }
+    }
+
     for turn in turns.iter_mut() {
         for block in turn.blocks.iter_mut() {
             if let ContentBlock::ToolUse {
@@ -904,7 +959,12 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
                 if !tool_name.contains("delegate_to_agent") {
                     continue;
                 }
-                if let Some(child) = by_parent_tool_use_id.get(tu.as_str()) {
+                let child = by_parent_tool_use_id.get(tu.as_str()).or_else(|| {
+                    task_id_by_call
+                        .get(tu.as_str())
+                        .and_then(|task_id| by_task_id.get(task_id.as_str()))
+                });
+                if let Some(child) = child {
                     *meta = Some(serde_json::json!({
                         "codeg.delegation": build_historical_delegation_meta(child),
                     }));
@@ -934,12 +994,17 @@ pub async fn get_folder_conversation_core(
         let at = summary.agent_type;
         let eid = ext_id.clone();
         let db_created_at = summary.created_at;
-        let folder_path_for_fallback = {
-            let folder = folder_service::get_folder_by_id(conn, summary.folder_id)
+        // Prefer the recorded origin cwd (set when a removed task worktree's
+        // conversations were re-parented) over the current folder's path — the
+        // session file still carries the ORIGINAL cwd, so matching on the new
+        // parent folder would never find it.
+        let folder_path_for_fallback = match summary.origin_cwd.clone() {
+            Some(cwd) => Some(cwd),
+            None => folder_service::get_folder_by_id(conn, summary.folder_id)
                 .await
                 .ok()
-                .flatten();
-            folder.map(|f| f.path)
+                .flatten()
+                .map(|f| f.path),
         };
         tokio::task::spawn_blocking(move || -> Result<_, AppCommandError> {
             let parser: Box<dyn AgentParser> = match at {
@@ -1980,6 +2045,7 @@ mod tests {
             parent_id: Some(1),
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),
+            origin_cwd: None,
         }
     }
 
@@ -2292,6 +2358,83 @@ mod tests {
             inner.get("error_code").is_none(),
             "completed has no error_code"
         );
+    }
+
+    fn tool_result_turn(tool_use_id: &str, output: &str) -> MessageTurn {
+        MessageTurn {
+            id: "t2".into(),
+            // Tool results are folded into the assistant turn that owns them.
+            role: TurnRole::Assistant,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: Some(tool_use_id.into()),
+                output_preview: Some(output.into()),
+                is_error: false,
+                agent_stats: None,
+                images: Vec::new(),
+            }],
+            timestamp: chrono::Utc::now(),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: None,
+        }
+    }
+
+    /// codex's rollout names the call `call_<id>` while the broker recorded the
+    /// ACP-side `exec-<uuid>` — the two never meet, so the card lost its
+    /// `child_conversation_id` (and the "查看会话" affordance) entirely. The
+    /// broker's task id, echoed in the ack the model received, is the bridge.
+    #[test]
+    fn inject_delegation_meta_falls_back_to_the_task_id() {
+        let mut turns = vec![
+            tool_use_turn(Some("call_73UFK2"), "mcp__codeg_mcp__delegate_to_agent"),
+            tool_result_turn(
+                "call_73UFK2",
+                "Delegation successful. task_id=8ff4c14c-740c-4482-b758-8f2091f97063. \
+                 Call get_delegation_status with this id in the task_ids array.",
+            ),
+        ];
+        let mut child = summary_child(2890, "exec-0fb6db94-3042-4cc4-b492-2edd1804c1fa", "completed");
+        child.delegation_call_id = Some("8ff4c14c-740c-4482-b758-8f2091f97063".into());
+
+        inject_delegation_meta(&mut turns, &[child]);
+
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .expect("meta should be set");
+        assert_eq!(inner["child_conversation_id"], 2890);
+    }
+
+    #[test]
+    fn inject_delegation_meta_does_not_bind_a_foreign_task_id() {
+        let mut turns = vec![
+            tool_use_turn(Some("call_a"), "delegate_to_agent"),
+            tool_result_turn("call_a", "Delegation successful. task_id=aaaa."),
+        ];
+        let mut child = summary_child(1, "exec-zzz", "completed");
+        child.delegation_call_id = Some("bbbb".into());
+
+        inject_delegation_meta(&mut turns, &[child]);
+
+        assert!(
+            first_block_meta(&turns[0]).is_none(),
+            "a different task's child must not be bound"
+        );
+    }
+
+    #[test]
+    fn parse_delegate_task_id_reads_both_ack_shapes() {
+        assert_eq!(
+            parse_delegate_task_id("Delegation successful. task_id=8ff4c14c-740c. Call …")
+                .as_deref(),
+            Some("8ff4c14c-740c")
+        );
+        assert_eq!(
+            parse_delegate_task_id(r#"{"task_id":"abc-123","status":"running"}"#).as_deref(),
+            Some("abc-123")
+        );
+        assert_eq!(parse_delegate_task_id("no id here"), None);
+        assert_eq!(parse_delegate_task_id("task_id="), None);
     }
 
     #[test]

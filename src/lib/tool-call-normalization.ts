@@ -2,7 +2,9 @@ import {
   parseCodexListFilesTitle,
   parseCodexSearchTitle,
 } from "@/lib/codex-command-action"
+import { CODEX_SCRIPT_TOOL_NAME } from "@/lib/codex-code-mode"
 import { COLLAB_AGENT_TOOL_NAME, isCodexCollabInput } from "@/lib/collab-tool"
+import { WAIT_TOOL_NAME, WRITE_STDIN_TOOL_NAME } from "@/lib/shell-session-tool"
 
 const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   shell_command: "bash",
@@ -27,7 +29,6 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   change: "edit",
   "functions.change": "edit",
   changes: "edit",
-  write_stdin: "bash",
   read_file: "read",
   read_text_file: "read",
   readfile: "read",
@@ -67,6 +68,17 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   browser_action: "webfetch",
   use_mcp_tool: "tool",
   // Codex
+  // Code-mode script card (`parsers/codex_code_mode.rs`). MUST be an exact
+  // alias: the freeform `exec(ute)?` matcher below would otherwise collapse it
+  // to "bash" and render the JS source as a shell command.
+  [CODEX_SCRIPT_TOOL_NAME]: CODEX_SCRIPT_TOOL_NAME,
+  // Unified-exec session tools. They keep their own identity (see
+  // `shell-session-tool.ts`) instead of collapsing into "bash": their arguments
+  // carry a session id, not a command, so the Terminal card's title derivation
+  // came up empty and every one of them rendered as a bare "bash" / "wait".
+  // Listed explicitly so no future freeform rule can hijack them.
+  [WAIT_TOOL_NAME]: WAIT_TOOL_NAME,
+  [WRITE_STDIN_TOOL_NAME]: WRITE_STDIN_TOOL_NAME,
   spawn_agent: "agent",
   wait_agent: "task",
   close_agent: "task",
@@ -563,6 +575,14 @@ export function inferLiveToolName(params: {
   const grokToolName = extractGrokToolName(params.meta)
   if (grokToolName) return normalizeToolName(grokToolName)
 
+  // codex-acp ≥1.1.8 Plan-mode review gate. The backend seeds this tool call
+  // from the `session/request_permission` (see `is_codex_plan_review`), so it
+  // carries no `rawInput` and its human title is a question ("Implement this
+  // plan?") that the title heuristic below would happily mangle into a tool
+  // name. Resolve the identity from the marker instead — MUST stay above
+  // `byTitle` for that reason.
+  if (codexMarksPlanReview(params.meta)) return "plan_review"
+
   const byTitle = normalizeToolName(params.title ?? "")
   if (byTitle !== "tool") return byTitle
 
@@ -597,6 +617,21 @@ export function claudeCodeMarksSubagent(
   const cc = (meta as Record<string, unknown>).claudeCode
   if (!cc || typeof cc !== "object") return false
   return (cc as Record<string, unknown>).subagent === true
+}
+
+/**
+ * codex-acp ≥1.1.8 (#351) marks the Plan-mode review gate with
+ * `_meta.codex = {kind: "plan_review", planItemId}`. The backend forwards that
+ * `_meta` onto the tool call it seeds from the permission request, which is the
+ * only identity signal the card has (no `rawInput`, and a question for a title).
+ */
+export function codexMarksPlanReview(
+  meta: Record<string, unknown> | null | undefined
+): boolean {
+  if (!meta || typeof meta !== "object") return false
+  const codex = (meta as Record<string, unknown>).codex
+  if (!codex || typeof codex !== "object") return false
+  return (codex as Record<string, unknown>).kind === "plan_review"
 }
 
 /**

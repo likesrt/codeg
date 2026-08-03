@@ -15,3 +15,7 @@ pub use super::folder_command::Entity as FolderCommand;
 pub use super::model_provider::Entity as ModelProvider;
 pub use super::opened_tab::Entity as OpenedTab;
 pub use super::quick_message::Entity as QuickMessage;
+pub use super::work_task::Entity as WorkTask;
+pub use super::work_task_event::Entity as WorkTaskEvent;
+pub use super::work_task_settings::Entity as WorkTaskSettings;
+pub use super::work_task_template::Entity as WorkTaskTemplate;

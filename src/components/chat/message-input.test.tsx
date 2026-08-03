@@ -85,6 +85,11 @@ vi.mock("@/lib/platform", () => ({
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
 }))
+// Real classifier only recognizes actual backend NoActiveTurn payloads; the
+// steering tests flip this per-case to drive the enqueue fallback.
+vi.mock("@/lib/turn-busy", () => ({
+  isNoActiveTurnRejection: vi.fn(() => false),
+}))
 // virtua renders 0 rows under jsdom — render children directly so the large
 // (searchable + virtualized) model list is exercisable here too.
 vi.mock("virtua", async () => {
@@ -528,5 +533,146 @@ describe("MessageInput collapsed selectors popover", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: settingsLabel })).toBeNull()
     )
+  })
+})
+
+describe("MessageInput native steering (insert into current turn)", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+    vi.clearAllMocks()
+  })
+
+  const MI = enMessages.Folder.chat.messageInput
+
+  async function mountPrompting(
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    renderInput({
+      isPrompting: true,
+      disabled: true,
+      onCancel: vi.fn(),
+      onEnqueue: vi.fn(),
+      ...props,
+    })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  function typeDraft(editor: Editor, text: string) {
+    // insertContent dispatches a real transaction, so the composer's
+    // empty-tracking flips (plain setContent doesn't emit an update).
+    act(() => {
+      editor.commands.insertContent(text)
+    })
+  }
+
+  it("keeps the historical Stop-only form when onSteer is absent", async () => {
+    const editor = await mountPrompting()
+    typeDraft(editor, "draft text")
+    // Stop is there; none of the split-button chrome is.
+    expect(screen.getByTitle(MI.cancel)).toBeInTheDocument()
+    expect(screen.queryByTitle(MI.queueMessage)).toBeNull()
+    expect(screen.queryByLabelText(MI.steerIntoTurn)).toBeNull()
+  })
+
+  it("shows the queue/steer split next to Stop once there is content", async () => {
+    const editor = await mountPrompting({ onSteer: vi.fn() })
+    // Empty draft: nothing to queue or steer — still Stop-only.
+    expect(screen.queryByTitle(MI.queueMessage)).toBeNull()
+
+    typeDraft(editor, "go left")
+    await waitFor(() =>
+      expect(screen.getByTitle(MI.queueMessage)).toBeInTheDocument()
+    )
+    expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    expect(screen.getByTitle(MI.cancel)).toBeInTheDocument()
+  })
+
+  it("steers the draft text and clears the composer on success", async () => {
+    const user = userEvent.setup()
+    let resolveSteer: () => void = () => {}
+    const onSteer = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          resolveSteer = r
+        })
+    )
+    const editor = await mountPrompting({ onSteer })
+    typeDraft(editor, "go left")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    )
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith("go left"))
+    // Unsettled: the draft must survive until the backend confirms.
+    expect(serializeDocToText(editor.state.doc)).toContain("go left")
+
+    await act(async () => {
+      resolveSteer()
+    })
+    // Confirmed: the composer clears (the split collapses back to Stop-only).
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).not.toContain("go left")
+    )
+    await waitFor(() => expect(screen.queryByTitle(MI.queueMessage)).toBeNull())
+  })
+
+  it("falls back to the queue when the turn ends in the race window", async () => {
+    const user = userEvent.setup()
+    const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")
+    vi.mocked(isNoActiveTurnRejection).mockReturnValue(true)
+    const onSteer = vi.fn().mockRejectedValue(new Error("no active turn"))
+    const onEnqueue = vi.fn()
+    const editor = await mountPrompting({ onSteer, onEnqueue })
+    typeDraft(editor, "late note")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    )
+
+    await waitFor(() => expect(onEnqueue).toHaveBeenCalled())
+    const [draft] = onEnqueue.mock.calls[0]
+    expect(draft.blocks).toEqual([{ type: "text", text: "late note" }])
+    // Draft consumed by the queue, not lost and not duplicated.
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).not.toContain("late note")
+    )
+  })
+
+  it("keeps the draft on a non-turn-end failure", async () => {
+    const user = userEvent.setup()
+    const { isNoActiveTurnRejection } = await import("@/lib/turn-busy")
+    vi.mocked(isNoActiveTurnRejection).mockReturnValue(false)
+    const onSteer = vi.fn().mockRejectedValue(new Error("boom"))
+    const onEnqueue = vi.fn()
+    const editor = await mountPrompting({ onSteer, onEnqueue })
+    typeDraft(editor, "keep me")
+    await waitFor(() =>
+      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    )
+
+    await user.click(screen.getByLabelText(MI.steerIntoTurn))
+    await user.click(
+      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
+    )
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalled())
+    // Real failure: nothing queued, draft intact for retry.
+    expect(onEnqueue).not.toHaveBeenCalled()
+    expect(serializeDocToText(editor.state.doc)).toContain("keep me")
   })
 })
