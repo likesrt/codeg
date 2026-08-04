@@ -16,6 +16,7 @@ INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/$REPO/main/scripts/local-s
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
 # GitHub 代理列表（按优先级排列，全部失败则报错）
 GH_PROXIES=(
+  "https://ghdk.ansss.de/"
   "https://ghproxy.net/"
   "https://github.dpik.top/"
   "https://gh-proxy.com/"

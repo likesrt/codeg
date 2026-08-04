@@ -7,7 +7,7 @@ set -euo pipefail
 #       配置 systemd 服务；管理脚本（codeg / codeg-init-tools）仍从本仓库（likesrt/codeg）下载
 # 用法：curl -fsSL https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 #       或：bash local-server-linux-install.sh [--force]
-# 国内服务器如果无法下载本脚本，可使用代理（按优先级：ghproxy.net > github.dpik.top > gh-proxy.com > cdn.gh-proxy.com）：
+# 国内服务器如果无法下载本脚本，可使用代理（按优先级：ghdk.ansss.de > ghproxy.net > github.dpik.top > gh-proxy.com > cdn.gh-proxy.com）：
 #       curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 # 也可通过环境变量 CODEG_PROXY 指定代理前缀（设为 none 强制直连）：
 #       CODEG_PROXY=https://ghproxy.net/ bash local-server-linux-install.sh
@@ -24,6 +24,7 @@ BIN_BASE="https://github.com/$BIN_REPO"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
 # GitHub 代理列表（按优先级排列，全部失败则报错）
 GH_PROXIES=(
+  "https://ghdk.ansss.de/"
   "https://ghproxy.net/"
   "https://github.dpik.top/"
   "https://gh-proxy.com/"

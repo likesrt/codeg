@@ -157,6 +157,7 @@ ask_tool_selection() {
 
 # GitHub 代理列表（按优先级排列，全部失败则报错）
 GITHUB_PROXIES=(
+  "https://ghdk.ansss.de/"
   "https://ghproxy.net/"
   "https://github.dpik.top/"
   "https://gh-proxy.com/"
