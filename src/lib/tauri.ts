@@ -18,6 +18,9 @@ import type {
   AgentSkillContent,
   FolderHistoryEntry,
   FolderDetail,
+  FolderLinkDetail,
+  FolderLinkPlan,
+  FolderLinkRequestItem,
   DbConversationSummary,
   ImportResult,
   OpenedTab,
@@ -956,6 +959,49 @@ export async function gitAddFiles(
 }
 
 // Window management commands
+
+// ─── Workspace folder links (multi-folder workspace) ───
+
+export async function listFolderLinks(
+  folderId: number
+): Promise<FolderLinkDetail[]> {
+  return invoke("list_folder_links", { folderId })
+}
+
+export async function previewFolderLinks(
+  folderId: number,
+  paths: string[]
+): Promise<FolderLinkPlan[]> {
+  return invoke("preview_folder_links", { folderId, paths })
+}
+
+export async function createFolderLinks(
+  folderId: number,
+  items: FolderLinkRequestItem[],
+  gitExclude = true
+): Promise<FolderLinkDetail[]> {
+  return invoke("create_folder_links", { folderId, items, gitExclude })
+}
+
+export async function renameFolderLink(
+  linkId: number,
+  newName: string
+): Promise<FolderLinkDetail> {
+  return invoke("rename_folder_link", { linkId, newName })
+}
+
+export async function repairFolderLink(
+  linkId: number
+): Promise<FolderLinkDetail> {
+  return invoke("repair_folder_link", { linkId })
+}
+
+export async function removeFolderLink(
+  linkId: number,
+  deleteLink = true
+): Promise<void> {
+  return invoke("remove_folder_link", { linkId, deleteLink })
+}
 
 export async function openFolder(path: string): Promise<FolderDetail> {
   return invoke("open_folder", { path })

@@ -324,6 +324,18 @@ let remoteActivationPending = false
 let pendingRemote: TabsChanged | null = null
 let lastSavedPayload: string | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+// Conversation tabs the SERVER is known to hold, as of the last snapshot this
+// client read, applied, or successfully saved. It is the common ancestor of the
+// three-way merge in `applyRemoteSnapshot`: without it, "absent from the
+// snapshot" is ambiguous — a tab another client closed and a tab this client
+// just opened look identical, and adopting the snapshot wholesale silently
+// discards the second. That is not hypothetical: a server-side invalidation
+// bumps the tab version WITHOUT broadcasting when it removes no row (see
+// `delete_conversation_tabs_and_bump`), so a client can sit on a stale version
+// indefinitely and have its next save rejected — which used to erase whatever
+// tab that save was carrying, most visibly the draft that had just bound to a
+// freshly-sent conversation.
+let serverKnownTabKeys = new Set<string>()
 // Last JSON written to TAB_GROUPS_STORAGE_KEY (no-op gate), plus the trailing
 // debounce used while a split divider is being dragged.
 let lastGroupBlob: string | null = null
@@ -365,6 +377,27 @@ function makeConversationTabId(
 
 function makeNewConversationTabId(): string {
   return `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Sync identity of a persisted tab — the canonical tab id, which is exactly the
+ *  (folder, agent, conversation) triple the persisted row is keyed by. A bound
+ *  draft keeps its volatile `new-*` id, so this is deliberately derived from the
+ *  fields rather than read off `tab.id`. Drafts have no sync identity (they are
+ *  device-local and never persisted) → `null`. */
+function tabSyncKey(tab: TabItemInternal): string | null {
+  if (tab.conversationId == null) return null
+  return makeConversationTabId(tab.folderId, tab.agentType, tab.conversationId)
+}
+
+function snapshotSyncKeys(items: OpenedTab[]): Set<string> {
+  const keys = new Set<string>()
+  for (const it of items) {
+    if (it.conversation_id == null) continue
+    keys.add(
+      makeConversationTabId(it.folder_id, it.agent_type, it.conversation_id)
+    )
+  }
+  return keys
 }
 
 function findTabIndexForConversation(
@@ -1848,6 +1881,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         snapshotLoaded = true
         tabsSnapshotLoaded = true
         version = snap.version
+        serverKnownTabKeys = snapshotSyncKeys(snap.items)
         const restored: TabItemInternal[] = snap.items.map((it) => ({
           id:
             it.conversation_id != null
@@ -2020,6 +2054,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             return
           }
           lastSavedPayload = payload
+          // The server now holds exactly what we sent — unless a newer snapshot
+          // landed while this was in flight, in which case that apply already
+          // recorded the fresher truth and must not be walked back.
+          if (res.version === version) {
+            serverKnownTabKeys = snapshotSyncKeys(res.tabs)
+          }
           const current = JSON.stringify(
             buildPersistItems(get().rawTabs, get().activeTabId)
           )
@@ -2162,7 +2202,13 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
 
   handleTabsChanged: (change) => {
     if (change.origin === TAB_ORIGIN) {
-      if (change.version > version) version = change.version
+      // Our own accepted save, echoed back: nothing to apply, but the snapshot
+      // is authoritative — record it as the merge ancestor in case it beats the
+      // save's own resolution (see `runSaveEffect`).
+      if (change.version > version) {
+        version = change.version
+        serverKnownTabKeys = snapshotSyncKeys(change.tabs)
+      }
       return
     }
     if (change.version <= version) return
@@ -2522,6 +2568,7 @@ export function resetTabStore() {
   remoteActivationPending = false
   pendingRemote = null
   lastSavedPayload = null
+  serverKnownTabKeys = new Set()
   lastGroupBlob = null
   childSummaryInFlight.clear()
   childSeedBuffer.clear()
@@ -2561,11 +2608,54 @@ function applyRemoteSnapshot(change: TabsChanged) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
-  const convItems = change.tabs.filter((it) => it.conversation_id != null)
-  const remoteActive = convItems.find((it) => it.is_active)
-  applyingRemote = true
+  const snapshotItems = change.tabs.filter((it) => it.conversation_id != null)
 
   const prev = useTabStore.getState()
+  // ── Three-way merge against `serverKnownTabKeys` (the common ancestor) ──────
+  // A snapshot is the SERVER's set, not a newer truth about ours: the two can
+  // have diverged in both directions since the last sync. Classify per tab
+  // instead of adopting wholesale.
+  const ancestorKeys = serverKnownTabKeys
+  const snapshotKeys = snapshotSyncKeys(snapshotItems)
+  serverKnownTabKeys = snapshotKeys
+  const localKeys = new Set<string>()
+  for (const tb of prev.rawTabs) {
+    const key = tabSyncKey(tb)
+    if (key) localKeys.add(key)
+  }
+  // Present on the server but gone here AND the server already had it at our
+  // last sync → we closed it locally and our save hasn't landed (or was just
+  // rejected). The local close is the newer intent: keep it closed. Anything
+  // else on the server is adopted — including tabs opened on another client.
+  const convItems = snapshotItems.filter((it) => {
+    const key = makeConversationTabId(
+      it.folder_id,
+      it.agent_type,
+      it.conversation_id as number
+    )
+    return localKeys.has(key) || !ancestorKeys.has(key)
+  })
+  // Open here, absent from the snapshot, and never acknowledged by the server →
+  // a local addition the snapshot simply predates (a draft that just bound to a
+  // freshly-created conversation is the important one). Keep it and push it;
+  // dropping it would strand a live, streaming conversation with no tab. A tab
+  // the server DID know and no longer lists was closed elsewhere — that one
+  // still goes away, which is the whole point of the ancestor set.
+  const unsyncedLocal = prev.rawTabs.filter((tb) => {
+    const key = tabSyncKey(tb)
+    if (!key) return false
+    return !snapshotKeys.has(key) && !ancestorKeys.has(key)
+  })
+  // Our set is ahead of the server's in at least one direction, so this apply
+  // must NOT arm the echo guard or seed the no-op baseline — the save effect has
+  // to push the merged set (against the version we just learned) or the
+  // divergence never converges.
+  const diverged =
+    unsyncedLocal.length > 0 || convItems.length !== snapshotItems.length
+
+  const remoteActive = convItems.find((it) => it.is_active)
+  applyingRemote = !diverged
+
   const prevById = new Map(prev.rawTabs.map((tb) => [tb.id, tb]))
   const remoteTabs: TabItemInternal[] = convItems.map((it) => {
     const canonicalId = makeConversationTabId(
@@ -2594,6 +2684,11 @@ function applyRemoteSnapshot(change: TabsChanged) {
       isPinned: it.is_pinned,
       runtimeConversationId: existing?.runtimeConversationId,
       status: existing?.status,
+      // Device-local per-tab fields the payload doesn't carry. Rebuilding the
+      // tab from the snapshot must not blank them (a bound chat tab would lose
+      // the scratch working dir it is connected in).
+      workingDir: existing?.workingDir,
+      isChat: existing?.isChat,
     }
   })
 
@@ -2601,7 +2696,7 @@ function applyRemoteSnapshot(change: TabsChanged) {
   // Keep every device-local draft (one per split group) that's a folderless
   // chat draft or whose real folder still exists. Never yank the user off an
   // in-progress draft.
-  const nextTabs = [...remoteTabs]
+  const nextTabs = [...remoteTabs, ...unsyncedLocal]
   for (const localDraft of prev.rawTabs) {
     if (localDraft.conversationId != null) continue
     if (
@@ -2615,15 +2710,15 @@ function applyRemoteSnapshot(change: TabsChanged) {
   // Never leave the workspace blank: synthesize a draft when empty.
   if (nextTabs.length === 0) {
     if (folders.length === 0) {
-      lastSavedPayload = JSON.stringify([])
+      lastSavedPayload = diverged ? null : JSON.stringify([])
       useTabStore.setState({ rawTabs: [], activeTabId: null })
       recomputeTabs()
       return
     }
     const replacement = makeReplacementDraftTab()
-    lastSavedPayload = JSON.stringify(
-      buildPersistItems([replacement], replacement.id)
-    )
+    lastSavedPayload = diverged
+      ? null
+      : JSON.stringify(buildPersistItems([replacement], replacement.id))
     useTabStore.setState({
       rawTabs: [replacement],
       activeTabId: replacement.id,
@@ -2642,17 +2737,23 @@ function applyRemoteSnapshot(change: TabsChanged) {
     : null
 
   // Focus resolution (focus is mirrored across clients):
-  //   1. Never yank the user off an in-progress local draft.
+  //   1. Never yank the user off local intent the snapshot predates — an
+  //      in-progress draft, or a conversation tab the server has never seen
+  //      (the just-sent conversation this client is watching stream).
   //   2. Otherwise mirror the remote's focused tab when present here.
   //   3. Else keep our focus if it survived, re-picking a neighbor only if it left.
   const activeTab = prev.activeTabId
     ? nextTabs.find((tb) => tb.id === prev.activeTabId)
     : undefined
   const activeStillExists = activeTab != null
-  const activeIsDraft = activeStillExists && activeTab.conversationId == null
+  const activeKey = activeTab ? tabSyncKey(activeTab) : null
+  const activeIsLocalOnly =
+    activeStillExists &&
+    (activeKey == null ||
+      (!snapshotKeys.has(activeKey) && !ancestorKeys.has(activeKey)))
 
   let nextActiveId: string | null
-  if (activeIsDraft) {
+  if (activeIsLocalOnly) {
     nextActiveId = prev.activeTabId
   } else if (remoteActiveId) {
     nextActiveId = remoteActiveId
@@ -2669,8 +2770,12 @@ function applyRemoteSnapshot(change: TabsChanged) {
   }
   // Seed the last-saved payload from the state we're about to commit so the
   // guarded save-effect run is a confirmed no-op AND a passive focus fallback
-  // never propagates to yank another client.
-  lastSavedPayload = JSON.stringify(buildPersistItems(nextTabs, nextActiveId))
+  // never propagates to yank another client. When the merge diverged from the
+  // server there is nothing to seed — clearing the baseline is what lets the
+  // save effect push the difference back.
+  lastSavedPayload = diverged
+    ? null
+    : JSON.stringify(buildPersistItems(nextTabs, nextActiveId))
   useTabStore.setState({ rawTabs: nextTabs, activeTabId: nextActiveId })
   recomputeTabs()
 }

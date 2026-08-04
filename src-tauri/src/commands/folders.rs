@@ -3523,10 +3523,22 @@ fn compute_etag(content: &[u8], metadata: &std::fs::Metadata) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Whether `canonical_target` may be touched by a workspace operation rooted at
+/// `canonical_root`: either it is inside the root, or it is inside a directory
+/// the user explicitly linked into that root (see [`crate::folder_links`]).
+///
+/// Everything else stays rejected — in particular a symlink that merely happens
+/// to sit in the tree, which is what keeps a cloned repo's `secrets -> ~/.ssh`
+/// out of reach of the HTML preview's sub-resource inlining.
+pub(crate) fn is_within_workspace(canonical_root: &Path, canonical_target: &Path) -> bool {
+    canonical_target.starts_with(canonical_root)
+        || crate::folder_links::is_allowed(canonical_root, canonical_target)
+}
+
 fn ensure_path_in_workspace(root: &Path, target: &Path) -> Result<(), AppCommandError> {
     let canonical_root = std::fs::canonicalize(root).map_err(AppCommandError::io)?;
     let canonical_target = std::fs::canonicalize(target).map_err(AppCommandError::io)?;
-    if !canonical_target.starts_with(&canonical_root) {
+    if !is_within_workspace(&canonical_root, &canonical_target) {
         return Err(AppCommandError::invalid_input(
             "Path is outside workspace root",
         ));
@@ -3842,6 +3854,58 @@ pub async fn list_directory_with_files(
     Ok(items)
 }
 
+/// Directories the user linked into `root`, as `(link name, canonical target)`
+/// pairs, restricted to entries that are actually a symlink on disk right now.
+///
+/// Only *authorized* links are returned (see [`crate::folder_links`]): a
+/// symlink that merely happens to sit in the tree — the `secrets -> ~/.ssh` a
+/// cloned repo might ship — is not one of them and stays unfollowed.
+fn authorized_links_in(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(canonical_root) = std::fs::canonicalize(root) else {
+        return Vec::new();
+    };
+    let targets = crate::folder_links::canonical_targets_for(&canonical_root);
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut links = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_symlink() {
+            continue;
+        }
+        let Ok(resolved) = std::fs::canonicalize(entry.path()) else {
+            continue;
+        };
+        if !resolved.is_dir() || !targets.contains(&resolved) {
+            continue;
+        }
+        links.push((entry.file_name().to_string_lossy().to_string(), resolved));
+    }
+    links.sort_by_key(|a| a.0.to_lowercase());
+    links
+}
+
+/// Rewrite every `path` in `nodes` (recursively) to `<prefix>/<path>`. Used when
+/// a subtree built against a different root is grafted into this one.
+fn prefix_tree_paths(nodes: &mut [FileTreeNode], prefix: &str) {
+    for node in nodes {
+        match node {
+            FileTreeNode::File { path, .. } => *path = format!("{prefix}/{path}"),
+            FileTreeNode::Dir { path, children, .. } => {
+                *path = format!("{prefix}/{path}");
+                prefix_tree_paths(children, prefix);
+            }
+        }
+    }
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_file_tree(
     path: String,
@@ -3849,18 +3913,48 @@ pub async fn get_file_tree(
 ) -> Result<Vec<FileTreeNode>, AppCommandError> {
     let root = PathBuf::from(&path);
     let depth = max_depth.unwrap_or(usize::MAX);
+    let mut visited = HashSet::new();
+    build_file_tree(&root, depth, &mut visited)
+}
+
+/// Build the tree under `root`, grafting in the subtree of every directory the
+/// user linked into it.
+///
+/// `visited` holds the canonical roots already expanded on this path, so a
+/// workspace that links a folder which links back can't recurse forever; a link
+/// that would revisit one is left as an ordinary (unexpanded) entry.
+fn build_file_tree(
+    root: &Path,
+    depth: usize,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<Vec<FileTreeNode>, AppCommandError> {
+    if let Ok(canonical_root) = std::fs::canonicalize(root) {
+        visited.insert(canonical_root);
+    }
+
+    // Linked directories are handled separately below: `WalkDir` reports a
+    // symlink's type as "symlink", not "dir", so left in the main walk they
+    // would surface as leaf *files* with no way to expand them.
+    let linked: Vec<(String, PathBuf)> = authorized_links_in(root)
+        .into_iter()
+        .filter(|(_, target)| !visited.contains(target))
+        .collect();
+    let linked_names: HashSet<String> = linked.iter().map(|(name, _)| name.clone()).collect();
 
     // Collect all entries, skipping ignored directories
     let mut dir_children: HashMap<PathBuf, Vec<FileTreeNode>> = HashMap::new();
     let mut dir_order: Vec<PathBuf> = Vec::new();
     let mut dir_paths_by_rel: HashMap<String, PathBuf> = HashMap::new();
 
-    for entry in WalkDir::new(&root)
+    for entry in WalkDir::new(root)
         .max_depth(depth)
         .sort_by_file_name()
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
+            if e.depth() == 1 && linked_names.contains(name.as_ref()) {
+                return false;
+            }
             if e.file_type().is_dir() {
                 !FILE_TREE_IGNORED_DIRS.contains(&name.as_ref())
             } else {
@@ -3868,22 +3962,23 @@ pub async fn get_file_tree(
             }
         })
     {
-        let entry = entry.map_err(|e| {
-            AppCommandError::io_error("Failed to walk file tree").with_detail(e.to_string())
-        })?;
+        // Skip unreadable entries (permission errors, races, a symlink loop
+        // somewhere in the tree) instead of failing the whole tree: one bad
+        // directory should not blank out the file panel.
+        let Ok(entry) = entry else { continue };
         let entry_path = entry.path().to_path_buf();
 
         // Skip the root itself
         if entry_path == root {
-            dir_children.entry(root.clone()).or_default();
-            dir_order.push(root.clone());
+            dir_children.entry(root.to_path_buf()).or_default();
+            dir_order.push(root.to_path_buf());
             continue;
         }
 
-        let parent = entry_path.parent().unwrap_or(&root).to_path_buf();
+        let parent = entry_path.parent().unwrap_or(root).to_path_buf();
         let name = entry.file_name().to_string_lossy().to_string();
         let rel_path = entry_path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .unwrap_or(&entry_path)
             .to_string_lossy()
             .replace('\\', "/");
@@ -3975,7 +4070,56 @@ pub async fn get_file_tree(
         dir_children.insert(dir_path.clone(), sorted);
     }
 
-    Ok(dir_children.remove(&root).unwrap_or_default())
+    let mut nodes = dir_children.remove(root).unwrap_or_default();
+
+    if linked.is_empty() {
+        return Ok(nodes);
+    }
+
+    // Graft each linked directory in as a real `Dir`, with its own subtree
+    // built through the link. `max_depth == 1` (the panel's lazy load) yields
+    // an empty child list, which the frontend already treats as "not loaded
+    // yet" and fills in when the row is expanded.
+    let child_depth = depth.saturating_sub(1);
+    let mut linked_nodes: Vec<FileTreeNode> = Vec::with_capacity(linked.len());
+    for (name, _) in linked {
+        let link_path = root.join(&name);
+        // The recursive call is rooted at the link, so its paths come back
+        // relative to the *linked* directory. Re-anchor them to the workspace
+        // root, or the panel would resolve `inside.txt` against the root
+        // instead of `api/inside.txt`.
+        let prefix = name.replace('\\', "/");
+        let children = if child_depth == 0 {
+            Vec::new()
+        } else {
+            let mut sub = build_file_tree(&link_path, child_depth, visited).unwrap_or_default();
+            prefix_tree_paths(&mut sub, &prefix);
+            sub
+        };
+        linked_nodes.push(FileTreeNode::Dir {
+            name,
+            path: prefix,
+            children,
+        });
+    }
+
+    // Re-establish the "directories first, then files, each alphabetical"
+    // ordering the walk produced before the graft.
+    let split = nodes
+        .iter()
+        .position(|n| matches!(n, FileTreeNode::File { .. }))
+        .unwrap_or(nodes.len());
+    let files = nodes.split_off(split);
+    nodes.extend(linked_nodes);
+    nodes.sort_by(|a, b| {
+        let key = |n: &FileTreeNode| match n {
+            FileTreeNode::Dir { name, .. } | FileTreeNode::File { name, .. } => name.to_lowercase(),
+        };
+        key(a).cmp(&key(b))
+    });
+    nodes.extend(files);
+
+    Ok(nodes)
 }
 
 /// Flat, gitignore-aware listing of every file and directory under `path`, for
@@ -3989,6 +4133,11 @@ pub async fn list_workspace_files(
     path: String,
 ) -> Result<Vec<WorkspaceFileEntry>, AppCommandError> {
     let root = PathBuf::from(&path);
+    // Linked directories are walked separately below, rooted at the link so
+    // their own `.gitignore` applies. Excluded from the main pass because the
+    // walker reports a symlink as a leaf file.
+    let linked = authorized_links_in(&root);
+    let linked_names: HashSet<String> = linked.iter().map(|(name, _)| name.clone()).collect();
 
     // Conservative gitignore parity with the previous client-side pass: respect
     // in-tree `.gitignore`/`.ignore`/`.git/info/exclude`, but not the global
@@ -4005,8 +4154,11 @@ pub async fn list_workspace_files(
         .git_global(false)
         .require_git(false)
         .sort_by_file_name(|a, b| a.cmp(b))
-        .filter_entry(|e| {
+        .filter_entry(move |e| {
             let name = e.file_name().to_string_lossy();
+            if e.depth() == 1 && linked_names.contains(name.as_ref()) {
+                return false;
+            }
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 !FILE_TREE_IGNORED_DIRS.contains(&name.as_ref())
             } else {
@@ -4046,7 +4198,66 @@ pub async fn list_workspace_files(
         });
     }
 
+    for (link_name, target) in linked {
+        entries.push(WorkspaceFileEntry {
+            name: link_name.clone(),
+            path: link_name.clone(),
+            kind: WorkspaceEntryKind::Dir,
+        });
+        // Rooted at the resolved target so the linked project's own ignore
+        // files apply, then re-prefixed with the link name so every path stays
+        // relative to the workspace root and resolves back through the link.
+        entries.extend(list_files_under(&target, &link_name));
+    }
+
     Ok(entries)
+}
+
+/// Flat listing of `root`, with every path prefixed by `prefix/`. Shares the
+/// ignore configuration of [`list_workspace_files`]; nested symlinks are not
+/// followed, so this cannot recurse.
+fn list_files_under(root: &Path, prefix: &str) -> Vec<WorkspaceFileEntry> {
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .parents(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(false)
+        .require_git(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                !FILE_TREE_IGNORED_DIRS.contains(&name.as_ref())
+            } else {
+                name != ".DS_Store"
+            }
+        })
+        .build();
+
+    let mut entries = Vec::new();
+    for result in walker {
+        let Ok(entry) = result else { continue };
+        let entry_path = entry.path();
+        if entry_path == root {
+            continue;
+        }
+        let Ok(rel) = entry_path.strip_prefix(root) else {
+            continue;
+        };
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        entries.push(WorkspaceFileEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: format!("{prefix}/{}", rel.to_string_lossy().replace('\\', "/")),
+            kind: if is_dir {
+                WorkspaceEntryKind::Dir
+            } else {
+                WorkspaceEntryKind::File
+            },
+        });
+    }
+    entries
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -4160,7 +4371,7 @@ pub async fn read_workspace_file_base64(
             std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
         let canonical_target =
             std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
-        if !canonical_target.starts_with(&canonical_root) {
+        if !is_within_workspace(&canonical_root, &canonical_target) {
             return Err(AppCommandError::invalid_input(
                 "Path is outside workspace root",
             ));
@@ -9085,5 +9296,125 @@ mod workspace_confinement_tests {
             .expect("moved link exists");
         assert!(meta.file_type().is_symlink(), "entry stays a symlink");
         assert!(!root.path().join("link.txt").exists(), "old link gone");
+    }
+    #[tokio::test]
+    async fn file_tree_walks_into_an_authorized_link_only() {
+        let root = tempfile::tempdir().expect("root");
+        let linked = tempfile::tempdir().expect("linked");
+        let stray = tempfile::tempdir().expect("stray");
+        std::fs::write(root.path().join("own.txt"), b"x").expect("write");
+        std::fs::write(linked.path().join("inside.txt"), b"x").expect("write");
+        std::fs::create_dir(linked.path().join("src")).expect("mkdir");
+        std::fs::write(linked.path().join("src/deep.ts"), b"x").expect("write");
+        std::fs::write(stray.path().join("secret.txt"), b"x").expect("write");
+        symlink(linked.path(), root.path().join("api")).expect("symlink");
+        symlink(stray.path(), root.path().join("evil")).expect("symlink");
+
+        // Only `api` is registered, mimicking a user-created link; `evil` is the
+        // kind of symlink a cloned repo could ship.
+        let canonical_target = std::fs::canonicalize(linked.path()).expect("canon");
+        crate::folder_links::register(root.path(), &canonical_target);
+
+        let nodes = get_file_tree(root.path().to_string_lossy().into_owned(), None)
+            .await
+            .expect("tree");
+
+        let api = nodes
+            .iter()
+            .find(|n| matches!(n, FileTreeNode::Dir { name, .. } if name == "api"))
+            .expect("authorized link renders as a directory");
+        match api {
+            FileTreeNode::Dir { children, path, .. } => {
+                assert_eq!(path, "api");
+                assert!(
+                    children.iter().any(
+                        |c| matches!(c, FileTreeNode::File { path, .. } if path == "api/inside.txt")
+                    ),
+                    "the linked directory's contents are grafted in: {children:?}"
+                );
+                // Nested paths must be re-anchored too, or the panel would
+                // resolve them against the workspace root instead of the link.
+                let src = children
+                    .iter()
+                    .find(|c| matches!(c, FileTreeNode::Dir { name, .. } if name == "src"))
+                    .expect("nested directory is present");
+                match src {
+                    FileTreeNode::Dir { path, children, .. } => {
+                        assert_eq!(path, "api/src");
+                        assert!(
+                            children.iter().any(|c| matches!(
+                                c,
+                                FileTreeNode::File { path, .. } if path == "api/src/deep.ts"
+                            )),
+                            "deep paths are prefixed once: {children:?}"
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        // The unregistered symlink stays a leaf: it is not followed.
+        assert!(
+            nodes
+                .iter()
+                .any(|n| matches!(n, FileTreeNode::File { name, .. } if name == "evil")),
+            "an unauthorized symlink must not be walked into: {nodes:?}"
+        );
+
+        crate::folder_links::unregister(root.path(), &canonical_target);
+    }
+
+    #[tokio::test]
+    async fn workspace_search_lists_files_inside_an_authorized_link() {
+        let root = tempfile::tempdir().expect("root");
+        let linked = tempfile::tempdir().expect("linked");
+        std::fs::create_dir(linked.path().join("src")).expect("mkdir");
+        std::fs::write(linked.path().join("src/deep.ts"), b"x").expect("write");
+        symlink(linked.path(), root.path().join("api")).expect("symlink");
+        let canonical_target = std::fs::canonicalize(linked.path()).expect("canon");
+        crate::folder_links::register(root.path(), &canonical_target);
+
+        let entries = list_workspace_files(root.path().to_string_lossy().into_owned())
+            .await
+            .expect("list");
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"api"), "link itself is listed: {paths:?}");
+        assert!(
+            paths.contains(&"api/src/deep.ts"),
+            "linked content is reachable by fuzzy search: {paths:?}"
+        );
+
+        crate::folder_links::unregister(root.path(), &canonical_target);
+    }
+
+    #[test]
+    fn workspace_guard_allows_a_registered_link_but_not_a_stray_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        let linked = tempfile::tempdir().expect("linked");
+        let stray = tempfile::tempdir().expect("stray");
+        std::fs::write(linked.path().join("ok.txt"), b"x").expect("write");
+        std::fs::write(stray.path().join("secret.txt"), b"x").expect("write");
+        symlink(linked.path(), root.path().join("api")).expect("symlink");
+        symlink(stray.path(), root.path().join("evil")).expect("symlink");
+
+        let canonical_target = std::fs::canonicalize(linked.path()).expect("canon");
+        crate::folder_links::register(root.path(), &canonical_target);
+
+        assert!(
+            ensure_path_in_workspace(root.path(), &root.path().join("api/ok.txt")).is_ok(),
+            "a file inside a user-authorized link is in the workspace"
+        );
+        assert!(
+            ensure_path_in_workspace(root.path(), &root.path().join("evil/secret.txt")).is_err(),
+            "an unregistered symlink still cannot escape the root"
+        );
+
+        crate::folder_links::unregister(root.path(), &canonical_target);
+        assert!(
+            ensure_path_in_workspace(root.path(), &root.path().join("api/ok.txt")).is_err(),
+            "revoking the link revokes access"
+        );
     }
 }

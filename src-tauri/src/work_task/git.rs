@@ -16,6 +16,24 @@ async fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, AppC
         .map_err(AppCommandError::io)
 }
 
+/// A worktree's own git directory (`<repo>/.git/worktrees/<name>` for a linked
+/// worktree, `<repo>/.git` for the main one). Engine-private markers live here:
+/// nothing under it can show up in `git status` or be committed by the agent.
+pub async fn git_dir(path: &str) -> Result<std::path::PathBuf, AppCommandError> {
+    let out = run_git(path, &["rev-parse", "--absolute-git-dir"]).await?;
+    if !out.status.success() {
+        return Err(git_command_error("rev-parse --absolute-git-dir", &out.stderr));
+    }
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if dir.is_empty() {
+        return Err(AppCommandError::external_command(
+            "git rev-parse --absolute-git-dir returned nothing",
+            path.to_string(),
+        ));
+    }
+    Ok(std::path::PathBuf::from(dir))
+}
+
 /// Resolve a revision to a full sha.
 pub async fn rev_parse(path: &str, rev: &str) -> Result<String, AppCommandError> {
     let out = run_git(path, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")]).await?;

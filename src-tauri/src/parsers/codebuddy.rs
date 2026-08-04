@@ -65,7 +65,7 @@ impl CodeBuddyParser {
 
         let mut first_ts: Option<DateTime<Utc>> = None;
         let mut last_ts: Option<DateTime<Utc>> = None;
-        let mut ai_title: Option<String> = None;
+        let mut titles = CodeBuddyTitles::default();
         let mut first_user_text: Option<String> = None;
         let mut model: Option<String> = None;
         let mut cwd: Option<String> = None;
@@ -102,16 +102,7 @@ impl CodeBuddyParser {
             }
 
             match record_type {
-                "ai-title" => {
-                    if ai_title.is_none() {
-                        ai_title = value
-                            .get("aiTitle")
-                            .and_then(|t| t.as_str())
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(String::from);
-                    }
-                }
+                "custom-title" | "ai-title" | "topic" => titles.feed(record_type, &value),
                 "message" => match value.get("role").and_then(|r| r.as_str()).unwrap_or("") {
                     "user" => {
                         message_count += 1;
@@ -143,7 +134,7 @@ impl CodeBuddyParser {
             agent_type: AgentType::CodeBuddy,
             folder_path: cwd,
             folder_name,
-            title: ai_title.or(first_user_text),
+            title: titles.resolve(first_user_text),
             started_at,
             ended_at: last_ts,
             message_count,
@@ -165,7 +156,7 @@ impl CodeBuddyParser {
         let mut messages: Vec<UnifiedMessage> = Vec::new();
         let mut first_ts: Option<DateTime<Utc>> = None;
         let mut last_ts: Option<DateTime<Utc>> = None;
-        let mut ai_title: Option<String> = None;
+        let mut titles = CodeBuddyTitles::default();
         let mut first_user_text: Option<String> = None;
         let mut model: Option<String> = None;
         let mut cwd: Option<String> = None;
@@ -206,16 +197,7 @@ impl CodeBuddyParser {
             }
 
             match record_type {
-                "ai-title" => {
-                    if ai_title.is_none() {
-                        ai_title = value
-                            .get("aiTitle")
-                            .and_then(|t| t.as_str())
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(String::from);
-                    }
-                }
+                "custom-title" | "ai-title" | "topic" => titles.feed(record_type, &value),
                 "message" => match value.get("role").and_then(|r| r.as_str()).unwrap_or("") {
                     "user" => {
                         message_count += 1;
@@ -338,7 +320,9 @@ impl CodeBuddyParser {
             agent_type: AgentType::CodeBuddy,
             folder_path: cwd,
             folder_name,
-            title: ai_title.or(first_user_text),
+            // Same precedence as `parse_summary` — the two paths MUST agree, or
+            // the auto-title backfill would oscillate between them.
+            title: titles.resolve(first_user_text),
             started_at: first_ts.unwrap_or_else(Utc::now),
             ended_at: last_ts,
             message_count,
@@ -461,6 +445,55 @@ fn record_cwd(value: &Value) -> Option<String> {
         .and_then(|c| c.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+/// CodeBuddy's session title, resolved exactly like its own
+/// `getEffectiveSessionTitle`: the newest non-empty `custom-title` (what
+/// `/rename` writes), else the newest usable `ai-title`, else the newest usable
+/// `topic`, else the first real user message. All three records are appended
+/// (never rewritten) and repeat over a session's life — CodeBuddy scans them
+/// back-to-front — so the LAST value of each kind wins.
+#[derive(Default)]
+struct CodeBuddyTitles {
+    custom: Option<String>,
+    ai: Option<String>,
+    topic: Option<String>,
+}
+
+impl CodeBuddyTitles {
+    /// Feed one record. Non-title records are ignored, so callers can route the
+    /// three types through a single match arm.
+    fn feed(&mut self, record_type: &str, value: &Value) {
+        let (field, slot) = match record_type {
+            "custom-title" => ("customTitle", &mut self.custom),
+            "ai-title" => ("aiTitle", &mut self.ai),
+            "topic" => ("topic", &mut self.topic),
+            _ => return,
+        };
+        let Some(text) = value.get(field).and_then(|t| t.as_str()).map(str::trim) else {
+            return;
+        };
+        // A `custom-title` is user-typed and taken verbatim; only the generated
+        // kinds can carry CodeBuddy's placeholders, which it skips rather than
+        // showing.
+        if text.is_empty() || (record_type != "custom-title" && is_placeholder_title(text)) {
+            return;
+        }
+        *slot = Some(truncate_str(text, 100));
+    }
+
+    fn resolve(self, first_user_text: Option<String>) -> Option<String> {
+        self.custom.or(self.ai).or(self.topic).or(first_user_text)
+    }
+}
+
+/// CodeBuddy's `isGeneratedPlaceholderTitle`: what its titler emits when there
+/// was nothing to summarize. Showing one of these as the session name is worse
+/// than falling through to the first user message.
+fn is_placeholder_title(text: &str) -> bool {
+    text == "(No content)"
+        || text == "/compact"
+        || (text.starts_with("<image_local_path>") && text.ends_with("</image_local_path>"))
 }
 
 /// Record types that carry actual conversation content, as opposed to the
@@ -1067,6 +1100,93 @@ mod tests {
         assert_eq!(usage.input_tokens, 24049 - 12800);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Parse one session through BOTH title paths (list + detail) and assert
+    /// they agree on `expected` — a divergence makes the auto-title backfill
+    /// oscillate between them.
+    fn assert_title(tag: &str, records: &[Value], expected: Option<&str>) {
+        let root = std::env::temp_dir().join(format!("codeg-cb-{tag}-{}", uuid::Uuid::new_v4()));
+        let sid = "sess-title";
+        write_session(&root, "Users-demo-app", sid, records);
+
+        let parser = CodeBuddyParser::with_base_dir(root.clone());
+        let summaries = parser.list_conversations().expect("list");
+        assert_eq!(summaries.len(), 1, "{tag}: one session expected");
+        let listed = summaries[0].title.clone();
+        let detail = parser.get_conversation(sid).expect("detail");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(listed.as_deref(), expected, "{tag}: list title");
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            expected,
+            "{tag}: detail title"
+        );
+    }
+
+    fn cb_user(text: &str) -> Value {
+        json!({"type":"message","role":"user","timestamp":1781821844178i64,"cwd":"/Users/demo/app",
+               "sessionId":"sess-title","content":[{"type":"input_text","text":text}]})
+    }
+
+    #[test]
+    fn title_prefers_rename_over_generated_titles() {
+        // CodeBuddy's `/rename` appends `{"type":"custom-title","customTitle":…}`
+        // and its own `getEffectiveSessionTitle` scans custom → ai → topic, so a
+        // generated title written afterwards never displaces the user's name.
+        assert_title(
+            "title-custom",
+            &[
+                cb_user("first prompt"),
+                json!({"type":"ai-title","timestamp":1781821846000i64,"aiTitle":"stale title","sessionId":"sess-title"}),
+                json!({"type":"custom-title","timestamp":1781821847000i64,"customTitle":"auth-refactor","sessionId":"sess-title"}),
+                json!({"type":"ai-title","timestamp":1781821848000i64,"aiTitle":"fresh title","sessionId":"sess-title"}),
+            ],
+            Some("auth-refactor"),
+        );
+    }
+
+    #[test]
+    fn title_takes_the_newest_generated_value() {
+        // CodeBuddy re-titles a session as it grows, appending a new record each
+        // time. The NEWEST value wins (it used to keep the first one, pinning a
+        // long session to the title of its opening exchange).
+        assert_title(
+            "title-newest",
+            &[
+                cb_user("first prompt"),
+                json!({"type":"ai-title","timestamp":1781821846000i64,"aiTitle":"stale title","sessionId":"sess-title"}),
+                json!({"type":"ai-title","timestamp":1781821848000i64,"aiTitle":"fresh title","sessionId":"sess-title"}),
+            ],
+            Some("fresh title"),
+        );
+    }
+
+    #[test]
+    fn title_skips_placeholders_and_falls_through_to_topic() {
+        assert_title(
+            "title-topic",
+            &[
+                cb_user("first prompt"),
+                json!({"type":"ai-title","timestamp":1781821846000i64,"aiTitle":"(No content)","sessionId":"sess-title"}),
+                json!({"type":"topic","timestamp":1781821847000i64,"topic":"重构鉴权","sessionId":"sess-title"}),
+            ],
+            Some("重构鉴权"),
+        );
+    }
+
+    #[test]
+    fn title_falls_back_to_first_prompt_when_every_generated_value_is_a_placeholder() {
+        assert_title(
+            "title-fallback",
+            &[
+                cb_user("first prompt"),
+                json!({"type":"ai-title","timestamp":1781821846000i64,"aiTitle":"/compact","sessionId":"sess-title"}),
+                json!({"type":"topic","timestamp":1781821847000i64,"topic":"   ","sessionId":"sess-title"}),
+            ],
+            Some("first prompt"),
+        );
     }
 
     #[test]

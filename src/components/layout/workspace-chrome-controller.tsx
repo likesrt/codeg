@@ -2,11 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { openSettingsWindow } from "@/lib/api"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
-import { isDesktop, openFileDialog } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -21,7 +18,7 @@ import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { SearchCommandDialog } from "@/components/conversations/search-command-dialog"
-import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
+import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 
 /**
  * Headless owner of the workspace's global keyboard shortcuts and the two
@@ -32,7 +29,6 @@ import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-di
  * visible bar. Renders no visible chrome — only the dialogs.
  */
 export function WorkspaceChromeController() {
-  const openFolder = useAppWorkspaceStore((s) => s.openFolder)
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const { toggle } = useSidebarContext()
@@ -55,26 +51,10 @@ export function WorkspaceChromeController() {
   const { open: searchOpen, setOpen: setSearchOpen } = useSearchDialog()
   const [browserOpen, setBrowserOpen] = useState(false)
 
-  const handleOpenFolder = useCallback(async () => {
-    // The native Tauri dialog browses the LOCAL filesystem, so when bound to a
-    // remote workspace fall through to the in-app DirectoryBrowserDialog (which
-    // browses the remote host via the proxied `list_directory_entries`).
-    if (isDesktop() && getActiveRemoteConnectionId() === null) {
-      try {
-        const result = await openFileDialog({
-          directory: true,
-          multiple: false,
-        })
-        if (!result) return
-        const selected = Array.isArray(result) ? result[0] : result
-        await openFolder(selected)
-      } catch (err) {
-        console.error("[WorkspaceChromeController] failed to open folder:", err)
-      }
-    } else {
-      setBrowserOpen(true)
-    }
-  }, [openFolder])
+  // One dialog on every platform: it owns directory selection *and* the
+  // follow-up step that links other folders into the new workspace, so the
+  // native picker can't be a separate path that skips half the flow.
+  const handleOpenFolder = useCallback(() => setBrowserOpen(true), [])
 
   const handleOpenSettings = useCallback(() => {
     openSettingsWindow().catch((err) => {
@@ -200,18 +180,7 @@ export function WorkspaceChromeController() {
   return (
     <>
       <SearchCommandDialog open={searchOpen} onOpenChange={setSearchOpen} />
-      <DirectoryBrowserDialog
-        open={browserOpen}
-        onOpenChange={setBrowserOpen}
-        onSelect={(path) => {
-          openFolder(path).catch((err) => {
-            console.error(
-              "[WorkspaceChromeController] failed to open folder:",
-              err
-            )
-          })
-        }}
-      />
+      <WorkspaceFolderDialog open={browserOpen} onOpenChange={setBrowserOpen} />
     </>
   )
 }

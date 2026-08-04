@@ -14,6 +14,7 @@ pub mod feedback;
 #[cfg(feature = "tauri-runtime")]
 pub mod file_io;
 pub mod folder_commands;
+pub mod folder_links;
 pub mod folders;
 pub mod logging;
 pub mod mcp;

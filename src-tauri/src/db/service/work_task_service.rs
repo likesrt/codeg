@@ -35,6 +35,7 @@ pub fn status_str(s: WorkTaskStatus) -> &'static str {
     match s {
         WorkTaskStatus::Todo => "todo",
         WorkTaskStatus::Queued => "queued",
+        WorkTaskStatus::Preparing => "preparing",
         WorkTaskStatus::Running => "running",
         WorkTaskStatus::AwaitingInput => "awaiting_input",
         WorkTaskStatus::Review => "review",
@@ -657,6 +658,7 @@ pub async fn auto_claim_next(
                 .filter(work_task::Column::FolderId.eq(folder_id))
                 .filter(work_task::Column::Status.is_in([
                     WorkTaskStatus::Queued,
+                    WorkTaskStatus::Preparing,
                     WorkTaskStatus::Running,
                     WorkTaskStatus::AwaitingInput,
                     WorkTaskStatus::Merging,
@@ -756,7 +758,86 @@ pub async fn attach_worktree(
     Ok(())
 }
 
-/// queued → running for the given generation; binds conversation + connection.
+/// queued → preparing for the given generation: the task leaves the queue and
+/// starts its setup (worktree, init command, agent spawn). Does NOT bump
+/// `run_seq` — it is the same generation, just past the wait for a slot.
+/// Losing the CAS means a concurrent cancel/claim moved the task on.
+pub async fn begin_setup(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+) -> Result<bool, DbError> {
+    let txn = conn.begin().await?;
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::Status,
+            Expr::value(status_str(WorkTaskStatus::Preparing)),
+        )
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Queued))
+        .filter(work_task::Column::RunSeq.eq(run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(&txn)
+        .await?;
+    if res.rows_affected != 1 {
+        txn.rollback().await?;
+        return Ok(false);
+    }
+    status_changed_event(
+        &txn,
+        id,
+        "engine",
+        Some(WorkTaskStatus::Queued),
+        WorkTaskStatus::Preparing,
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(true)
+}
+
+/// preparing → queued: the reconcile sweep's escape hatch for a setup that no
+/// process owns any more (its launch task died without failing the row). Back
+/// in the queue, the pump simply relaunches it — the same self-healing a stuck
+/// `queued` row gets today.
+pub async fn abandon_setup(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+) -> Result<bool, DbError> {
+    let txn = conn.begin().await?;
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::Status,
+            Expr::value(status_str(WorkTaskStatus::Queued)),
+        )
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Preparing))
+        .filter(work_task::Column::RunSeq.eq(run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(&txn)
+        .await?;
+    if res.rows_affected != 1 {
+        txn.rollback().await?;
+        return Ok(false);
+    }
+    status_changed_event(
+        &txn,
+        id,
+        "engine",
+        Some(WorkTaskStatus::Preparing),
+        WorkTaskStatus::Queued,
+        None,
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(true)
+}
+
+/// preparing → running for the given generation; binds conversation +
+/// connection.
 pub async fn mark_running(
     conn: &DatabaseConnection,
     id: i32,
@@ -782,7 +863,7 @@ pub async fn mark_running(
         .col_expr(work_task::Column::StartedAt, Expr::value(Some(now)))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
-        .filter(work_task::Column::Status.eq(WorkTaskStatus::Queued))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Preparing))
         .filter(work_task::Column::RunSeq.eq(run_seq))
         .filter(work_task::Column::DeletedAt.is_null())
         .exec(&txn)
@@ -795,7 +876,7 @@ pub async fn mark_running(
         &txn,
         id,
         "engine",
-        Some(WorkTaskStatus::Queued),
+        Some(WorkTaskStatus::Preparing),
         WorkTaskStatus::Running,
         None,
     )
@@ -1300,6 +1381,7 @@ pub async fn cancel(conn: &DatabaseConnection, id: i32) -> Result<bool, DbError>
         .filter(work_task::Column::Status.is_in([
             WorkTaskStatus::Todo,
             WorkTaskStatus::Queued,
+            WorkTaskStatus::Preparing,
             WorkTaskStatus::Running,
             WorkTaskStatus::AwaitingInput,
             WorkTaskStatus::Review,
@@ -1373,6 +1455,7 @@ pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64
         conn,
         &[
             WorkTaskStatus::Queued,
+            WorkTaskStatus::Preparing,
             WorkTaskStatus::Running,
             WorkTaskStatus::AwaitingInput,
         ],
@@ -1385,6 +1468,7 @@ pub async fn boot_reconcile_interrupted(conn: &DatabaseConnection) -> Result<u64
             t.id,
             &[
                 WorkTaskStatus::Queued,
+                WorkTaskStatus::Preparing,
                 WorkTaskStatus::Running,
                 WorkTaskStatus::AwaitingInput,
             ],
@@ -1635,6 +1719,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setup_transition_is_generation_guarded_and_reversible() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-setup").await;
+        let t = create(&db.conn, draft(folder_id, "t")).await.unwrap();
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A stale generation loses; the live one wins exactly once.
+        assert!(!begin_setup(&db.conn, t.id, seq + 1).await.unwrap());
+        assert!(begin_setup(&db.conn, t.id, seq).await.unwrap());
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().status,
+            WorkTaskStatus::Preparing
+        );
+        assert!(!begin_setup(&db.conn, t.id, seq).await.unwrap());
+        // Setup is the SAME run as the queue wait — no new generation.
+        assert_eq!(get_model(&db.conn, t.id).await.unwrap().run_seq, seq);
+
+        // The orphan sweep hands it back for a clean relaunch.
+        assert!(!abandon_setup(&db.conn, t.id, seq + 1).await.unwrap());
+        assert!(abandon_setup(&db.conn, t.id, seq).await.unwrap());
+        assert_eq!(
+            get(&db.conn, t.id).await.unwrap().status,
+            WorkTaskStatus::Queued
+        );
+        // todo→queued, queued→preparing, preparing→queued — all on the timeline.
+        let events = list_events(&db.conn, t.id, 100).await.unwrap();
+        assert_eq!(
+            events.iter().filter(|e| e.kind == "status_changed").count(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn preparing_is_cancelable_and_interrupted_by_a_restart() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-preparing").await;
+
+        // Canceled mid-setup (the init command is still installing).
+        let canceled = create(&db.conn, draft(folder_id, "canceled")).await.unwrap();
+        let seq = claim_for_run(&db.conn, canceled.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, canceled.id, seq).await.unwrap());
+        assert!(cancel(&db.conn, canceled.id).await.unwrap());
+        assert_eq!(
+            get(&db.conn, canceled.id).await.unwrap().status,
+            WorkTaskStatus::Canceled
+        );
+
+        // Still setting up when the process died → interrupted, like queued.
+        let cut = create(&db.conn, draft(folder_id, "cut")).await.unwrap();
+        let seq = claim_for_run(&db.conn, cut.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, cut.id, seq).await.unwrap());
+        assert_eq!(boot_reconcile_interrupted(&db.conn).await.unwrap(), 1);
+        let row = get_model(&db.conn, cut.id).await.unwrap();
+        assert_eq!(row.status, WorkTaskStatus::Failed);
+        assert_eq!(row.failure_reason.as_deref(), Some("interrupted"));
+    }
+
+    #[tokio::test]
+    async fn auto_claim_counts_preparing_against_the_budget() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-auto-preparing").await;
+        // The one slot is spent by a task that already left the queue and is
+        // setting up — the scheduler cannot see the engine's in-memory map, so
+        // `preparing` has to count in SQL or the folder over-launches.
+        let busy = create(&db.conn, draft(folder_id, "busy")).await.unwrap();
+        let seq = claim_for_run(&db.conn, busy.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(begin_setup(&db.conn, busy.id, seq).await.unwrap());
+        let next = create(&db.conn, draft(folder_id, "next")).await.unwrap();
+
+        assert_eq!(auto_claim_next(&db.conn, folder_id, 1).await.unwrap(), None);
+        assert_eq!(
+            get(&db.conn, next.id).await.unwrap().status,
+            WorkTaskStatus::Todo
+        );
+    }
+
+    #[tokio::test]
     async fn auto_claim_counts_queued_against_the_budget() {
         let db = fresh_in_memory_db().await;
         let folder_id = seed_folder(&db, "/tmp/wt-auto-budget").await;
@@ -1645,7 +1818,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, running.id, seq, 1, "c1").await.unwrap());
+        assert!(start_running(&db.conn, running.id, seq, 1, "c1").await.unwrap());
         let queued = create(&db.conn, draft(folder_id, "queued")).await.unwrap();
         claim_for_run(&db.conn, queued.id, WorkTaskStatus::Todo, "user")
             .await
@@ -1705,7 +1878,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, t.id, seq, 1, "c1").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq, 1, "c1").await.unwrap());
 
         // Wrong generation → rejected; current one records verdict + summary
         // (+ the agent_verdict event).
@@ -1741,7 +1914,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, t.id, seq, 1, "conn-1").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq, 1, "conn-1").await.unwrap());
 
         // User cancels; a late TurnComplete for the old generation must be a
         // zero-side-effect no-op (the cancel-late-TurnComplete race).
@@ -1781,7 +1954,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, t.id, seq, 1, "conn-1").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq, 1, "conn-1").await.unwrap());
         assert!(settle_review(&db.conn, t.id, seq, Some("done".into()), Some((2, 10, 3)))
             .await
             .unwrap());
@@ -1833,7 +2006,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, t.id, seq, 1, "c").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq, 1, "c").await.unwrap());
         assert!(settle_review(&db.conn, t.id, seq, None, None).await.unwrap());
         let state = WorkTaskMergeState {
             pre_merge_head: "abc".into(),
@@ -1873,14 +2046,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        mark_running(&db.conn, running.id, seq, 1, "c").await.unwrap();
+        start_running(&db.conn, running.id, seq, 1, "c").await.unwrap();
 
         let merging = create(&db.conn, draft(folder_id, "m")).await.unwrap();
         let seq = claim_for_run(&db.conn, merging.id, WorkTaskStatus::Todo, "user")
             .await
             .unwrap()
             .unwrap();
-        mark_running(&db.conn, merging.id, seq, 2, "c2").await.unwrap();
+        start_running(&db.conn, merging.id, seq, 2, "c2").await.unwrap();
         settle_review(&db.conn, merging.id, seq, None, None).await.unwrap();
         begin_merge(
             &db.conn,
@@ -1926,7 +2099,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        mark_running(&db.conn, t.id, seq, 1, "c").await.unwrap();
+        start_running(&db.conn, t.id, seq, 1, "c").await.unwrap();
         assert_eq!(active_launched_count(&db.conn, folder_id).await.unwrap(), 1);
         settle_review(&db.conn, t.id, seq, None, None).await.unwrap();
         assert_eq!(attention_count(&db.conn).await.unwrap(), 1);
@@ -1937,13 +2110,20 @@ mod tests {
         assert_eq!(s.max_concurrent, 2);
         assert!(s.delete_worktree_default);
         assert!(!s.auto_process);
+        assert!(s.stage_prompts.is_empty());
         let mut s2 = s;
         s2.max_concurrent = 0;
         s2.merge_strategy = "merge".into();
+        s2.stage_prompts
+            .insert("merge".into(), "Write the message in Chinese.".into());
         settings_set(&db.conn, folder_id, &s2).await.unwrap();
         let s3 = settings_get(&db.conn, folder_id).await.unwrap();
         assert_eq!(s3.max_concurrent, 0);
         assert_eq!(s3.merge_strategy, "merge");
+        assert_eq!(
+            s3.stage_prompts.get("merge").map(String::as_str),
+            Some("Write the message in Chinese.")
+        );
     }
 
     #[tokio::test]
@@ -2010,13 +2190,26 @@ mod tests {
         assert!(soft_delete(&db.conn, t.id).await.is_err());
     }
 
+    /// Drive a claimed (queued) task all the way to running, the way a launch
+    /// does: out of the queue into setup, then bound to its connection.
+    async fn start_running(
+        conn: &DatabaseConnection,
+        id: i32,
+        run_seq: i32,
+        conversation_id: i32,
+        connection_id: &str,
+    ) -> Result<bool, DbError> {
+        assert!(begin_setup(conn, id, run_seq).await?);
+        mark_running(conn, id, run_seq, conversation_id, connection_id).await
+    }
+
     /// Drive a task to review and return its current run_seq.
     async fn to_review(db: &crate::db::AppDatabase, id: i32) -> i32 {
         let seq = claim_for_run(&db.conn, id, WorkTaskStatus::Todo, "user")
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, id, seq, 1, "c").await.unwrap());
+        assert!(start_running(&db.conn, id, seq, 1, "c").await.unwrap());
         assert!(settle_review(&db.conn, id, seq, None, None).await.unwrap());
         seq
     }
@@ -2056,7 +2249,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(get_model(&db.conn, t.id).await.unwrap().preflight.is_none());
-        assert!(mark_running(&db.conn, t.id, seq2, 1, "c2").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq2, 1, "c2").await.unwrap());
         assert!(settle_review(&db.conn, t.id, seq2, None, None).await.unwrap());
         assert!(!set_preflight(&db.conn, t.id, seq, &light).await.unwrap());
         assert!(get_model(&db.conn, t.id).await.unwrap().preflight.is_none());
@@ -2076,7 +2269,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(mark_running(&db.conn, t.id, seq, 1, "c").await.unwrap());
+        assert!(start_running(&db.conn, t.id, seq, 1, "c").await.unwrap());
         assert!(fail(
             &db.conn,
             t.id,

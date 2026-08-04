@@ -20,6 +20,7 @@ pub mod backgrounds;
 pub mod chat_channel;
 pub mod commands;
 pub mod db;
+pub mod folder_links;
 pub mod git_credential;
 pub mod git_repo;
 pub mod intern;
@@ -65,7 +66,7 @@ mod tauri_app {
         chat_channel as chat_channel_commands, conversations,
         custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        office_tools as office_tools_commands,
+        folder_links, office_tools as office_tools_commands,
         folders, logging as logging_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
@@ -940,6 +941,12 @@ mod tauri_app {
                 folders::update_folder_color,
                 folders::update_folder_alias,
                 folders::update_folder_default_agent,
+                folder_links::list_folder_links,
+                folder_links::preview_folder_links,
+                folder_links::create_folder_links,
+                folder_links::rename_folder_link,
+                folder_links::repair_folder_link,
+                folder_links::remove_folder_link,
                 folders::add_folder_to_history,
                 folders::remove_folder_from_history,
                 folders::create_folder_directory,

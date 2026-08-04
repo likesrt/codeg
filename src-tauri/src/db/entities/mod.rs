@@ -10,6 +10,7 @@ pub mod conversation;
 pub mod custom_agent;
 pub mod folder;
 pub mod folder_command;
+pub mod folder_link;
 pub mod model_provider;
 pub mod opened_tab;
 pub mod prelude;

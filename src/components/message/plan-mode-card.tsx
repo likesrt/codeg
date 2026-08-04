@@ -2,11 +2,12 @@
 
 import { memo } from "react"
 import { useTranslations } from "next-intl"
-import { ListTodoIcon } from "lucide-react"
+import { ChevronDownIcon, ChevronUpIcon, ListTodoIcon } from "lucide-react"
 
 import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
 import { asRecord, extractPlanMarkdown } from "@/lib/plan-parse"
 import { MessageResponse } from "@/components/ai-elements/message"
+import { useCollapsibleOverflow } from "@/hooks/use-collapsible-overflow"
 import { cn } from "@/lib/utils"
 
 /**
@@ -35,6 +36,12 @@ function parseInput(input: string | null): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Plan documents are frequently long enough to bury the rest of the turn, so
+ * the body is clamped to the same height the sibling checklist `<PlanCard>`
+ * scrolls at and gets a "Show more"/"Show less" footer once it's actually
+ * clipped — the same `useCollapsibleOverflow` affordance user messages use.
+ */
 function PlanMarkdownCard({
   markdown,
   label,
@@ -42,15 +49,47 @@ function PlanMarkdownCard({
   markdown: string
   label: string
 }) {
+  const t = useTranslations("Folder.chat.messageList")
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLDivElement>(markdown)
+
+  const clipped = !expanded
+
   return (
     <div className="w-full overflow-hidden rounded-md border border-border/60">
       <div className="flex items-center gap-1.5 border-b border-border/60 bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
         <ListTodoIcon className="size-3.5 shrink-0" />
         {label}
       </div>
-      <div className="prose prose-sm max-w-none px-3.5 py-3 text-sm dark:prose-invert [&_ol]:list-inside [&_ul]:list-inside">
+      <div
+        ref={contentRef}
+        id={contentId}
+        data-testid="plan-mode-card-content"
+        className={cn(
+          "prose prose-sm max-w-none px-3.5 py-3 text-sm dark:prose-invert [&_ol]:list-inside [&_ul]:list-inside",
+          clipped && "max-h-72 overflow-hidden",
+          clipped && isOverflowing && "collapsed-content-fade"
+        )}
+      >
         <MessageResponse>{markdown}</MessageResponse>
       </div>
+      {isOverflowing && (
+        <button
+          type="button"
+          data-testid="plan-mode-card-toggle"
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="flex w-full items-center justify-center gap-1 border-t border-border/60 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+        >
+          {expanded ? t("showLess") : t("showMore")}
+          {expanded ? (
+            <ChevronUpIcon className="size-3.5 shrink-0" />
+          ) : (
+            <ChevronDownIcon className="size-3.5 shrink-0" />
+          )}
+        </button>
+      )}
     </div>
   )
 }

@@ -24,6 +24,7 @@ import type { WorkTask } from "@/lib/types"
 type StatusLabelKey =
   | "statusTodo"
   | "statusQueued"
+  | "statusPreparing"
   | "statusRunning"
   | "statusAwaitingInput"
   | "statusReview"
@@ -38,6 +39,8 @@ export function statusLabelKey(status: WorkTask["status"]): StatusLabelKey {
       return "statusTodo"
     case "queued":
       return "statusQueued"
+    case "preparing":
+      return "statusPreparing"
     case "running":
       return "statusRunning"
     case "awaiting_input":
@@ -70,6 +73,7 @@ export function StatusChip({ task }: { task: WorkTask }) {
       : t(statusLabelKey(task.status))
   switch (task.status) {
     case "queued":
+    case "preparing":
     case "running":
     case "merging":
       return (
@@ -232,6 +236,7 @@ export function TaskCard({
         more.push({ icon: Pencil, label: t("actionEdit"), onClick: onEdit })
         break
       case "queued":
+      case "preparing":
       case "running":
       case "awaiting_input":
         primary = { icon: Ban, label: t("actionCancel"), onClick: onCancel }

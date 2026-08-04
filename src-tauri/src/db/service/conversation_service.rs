@@ -215,6 +215,52 @@ pub async fn refresh_auto_title(
     Ok(res.rows_affected > 0)
 }
 
+/// Adopt an imported conversation's newest activity from its agent-side
+/// transcript: stamp `updated_at` with the session file's own last-activity
+/// time (never `now()` — the scan is not the activity) and re-sync
+/// `message_count`. Returns `true` when a row was written, so the caller can
+/// broadcast a sidebar upsert.
+///
+/// This is the counterpart to [`refresh_auto_title`] for the OTHER half of a
+/// re-import: a session the user kept working on in the agent's own CLI after
+/// importing it into codeg. Its title may be unchanged while its activity is
+/// hours newer, and `updated_at` is what the sidebar's "recently updated"
+/// ordering (and the relative timestamp on each row) reads.
+///
+/// One conditional UPDATE, guarded so it can never do harm:
+/// * `updated_at < activity_at` — strictly forward. A re-import can never move
+///   a conversation backwards or re-order an unchanged one, re-running is a
+///   no-op, and a turn running live in codeg (which stamps `updated_at =
+///   now()`) wins over a transcript tail parsed moments earlier.
+/// * `deleted_at IS NULL` — a soft-deleted conversation stays deleted; agent
+///   activity must not half-resurrect an invisible row.
+/// * `parent_id IS NULL` — delegation children are not sidebar rows and are
+///   maintained by the delegation flow.
+///
+/// Everything else the user owns is left alone: `created_at`, `title` (and its
+/// lock), `pinned_at`, `status`, and folder placement.
+pub async fn refresh_external_activity(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    activity_at: chrono::DateTime<Utc>,
+    message_count: u32,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(activity_at))
+        .col_expr(
+            conversation::Column::MessageCount,
+            Expr::value(message_count as i32),
+        )
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::ParentId.is_null())
+        .filter(conversation::Column::UpdatedAt.lt(activity_at))
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
 /// Pin or unpin a conversation. Sets `pinned_at = now()` when pinning, `NULL`
 /// when unpinning. Only the `pinned_at` column is written — `updated_at` is
 /// deliberately left untouched (SeaORM updates only the `Set` field), because
@@ -1034,6 +1080,106 @@ mod tests {
             summary.updated_at, before,
             "auto-title backfill is metadata, not activity — it must not bump updated_at"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_external_activity_moves_forward_only() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-activity").await;
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("kept".into()),
+            None,
+        )
+        .await
+        .expect("create");
+        let created_at = row.created_at;
+        let before = row.updated_at;
+
+        // The session kept running in the agent's own CLI after import.
+        let later = before + chrono::Duration::hours(2);
+        assert!(
+            refresh_external_activity(&db.conn, row.id, later, 7)
+                .await
+                .expect("newer"),
+            "newer transcript activity must be adopted"
+        );
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.updated_at, later);
+        assert_eq!(summary.message_count, 7);
+        assert_eq!(
+            summary.created_at, created_at,
+            "created_at is the import/creation time and must not move"
+        );
+        assert_eq!(summary.title.as_deref(), Some("kept"));
+
+        // Re-scanning the same (or an older) transcript must not move the row
+        // back or re-order a sidebar sorted by recency.
+        for (at, label) in [(later, "identical"), (before, "older")] {
+            assert!(
+                !refresh_external_activity(&db.conn, row.id, at, 1)
+                    .await
+                    .expect("no-op"),
+                "{label} activity must be a no-op"
+            );
+        }
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.updated_at, later);
+        assert_eq!(summary.message_count, 7, "a no-op must not resync counts");
+    }
+
+    #[tokio::test]
+    async fn refresh_external_activity_skips_deleted_and_child_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-activity-guards").await;
+        let parent = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("parent");
+        let child = create_with_delegation(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-activity".into(),
+                delegation_call_id: "call-activity".into(),
+            }),
+        )
+        .await
+        .expect("child");
+        let deleted = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("deleted");
+        soft_delete(&db.conn, deleted.id)
+            .await
+            .expect("soft delete");
+
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert!(
+            !refresh_external_activity(&db.conn, child.id, later, 9)
+                .await
+                .expect("child"),
+            "a delegation child is not a sidebar row"
+        );
+        assert!(
+            !refresh_external_activity(&db.conn, deleted.id, later, 9)
+                .await
+                .expect("deleted"),
+            "a soft-deleted conversation must never be half-resurrected"
+        );
+
+        for id in [child.id, deleted.id] {
+            let raw = conversation::Entity::find_by_id(id)
+                .one(&db.conn)
+                .await
+                .expect("query")
+                .expect("row present");
+            assert_eq!(raw.message_count, 0, "row {id} untouched");
+        }
     }
 
     #[tokio::test]

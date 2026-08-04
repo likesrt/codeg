@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback } from "react"
-import { PanelRight, Settings, SquareTerminal } from "lucide-react"
+import { ArrowLeft, PanelRight, Settings, SquareTerminal } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { openSettingsWindow } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -18,7 +18,8 @@ import { rightChromeClusterWidth } from "@/lib/window-chrome"
 
 /**
  * Contents of the window's fixed top-RIGHT chrome overlay: terminal + aux-panel
- * toggles + settings. `FolderLayoutShell` pins this at the window's top-right
+ * toggles (conversations) or a back-to-conversations exit (full-page routes),
+ * then settings. `FolderLayoutShell` pins this at the window's top-right
  * corner (to the LEFT of the Windows/Linux caption buttons) so it never moves —
  * or re-mounts — when the aux panel opens or closes. Preserves the old title
  * bar's disabled predicates and active styling. A leading drag filler right-
@@ -31,8 +32,8 @@ export function RightEdgeChrome() {
   const isChatMode = useIsActiveChatMode()
   // Full-page workbench routes (tasks / automations) overlay the workspace the
   // terminal and aux panel live in — toggling them there is invisible, so the
-  // two buttons hide and only the settings gear stays.
-  const { isConversations } = useWorkbenchRoute()
+  // two buttons hide and a back-to-conversations exit takes their slot instead.
+  const { isConversations, openConversations } = useWorkbenchRoute()
   const { isOpen: auxPanelOpen, toggle: toggleAuxPanel } = useAuxPanelContext()
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
   const isMac = useIsMac()
@@ -85,6 +86,21 @@ export function RightEdgeChrome() {
               <PanelRight className="h-3.5 w-3.5" />
             </Button>
           </>
+        )}
+        {/* Full-page routes (tasks / automations) cover the workspace with no
+            other way out of the chrome strip — this is their exit back to the
+            conversation workspace, sitting just left of the settings gear. */}
+        {!isConversations && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 hover:bg-foreground/10 hover:text-foreground/80 dark:hover:bg-foreground/10"
+            onClick={openConversations}
+            title={tTitleBar("backToConversations")}
+            aria-label={tTitleBar("backToConversations")}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </Button>
         )}
         <Button
           variant="ghost"

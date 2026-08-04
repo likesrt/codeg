@@ -431,6 +431,16 @@ export type FolderChange = { kind: "upsert"; folder: FolderDetail }
 
 export const FOLDER_CHANGED_EVENT = "folder://changed"
 
+/** Payload for `folder://links-changed`: a workspace folder's set of linked
+ *  directories was created, renamed, repaired, or removed. Carries only the id
+ *  — listeners re-fetch, so a dropped event self-heals on the next change.
+ *  Mirrors the Rust `FolderLinksChanged`. */
+export interface FolderLinksChanged {
+  folder_id: number
+}
+
+export const FOLDER_LINKS_CHANGED_EVENT = "folder://links-changed"
+
 /** Global side-channel announcing a live-feedback enable/disable (payload is
  *  `FeedbackSettings`). The settings UI runs in a separate window, so the
  *  conversation feedback bar converges on this backend broadcast rather than a
@@ -1250,6 +1260,8 @@ export interface AutomationDraft {
 export type WorkTaskStatus =
   | "todo"
   | "queued"
+  /** Out of the queue, setting up: worktree, init command, agent spawn. */
+  | "preparing"
   | "running"
   | "awaiting_input"
   | "review"
@@ -1368,6 +1380,10 @@ export interface WorkTaskFolderSettings {
   /** Shell line run inside a freshly created worktree before the agent
    *  starts (deps install, env seeding). */
   init_command?: string | null
+  /** Extra instructions appended after the built-in prompt of a launch stage.
+   *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
+   *  plus the reserved `all`, which applies to every stage. */
+  stage_prompts?: Record<string, string> | null
 }
 
 /** Changed file of a task worktree vs its recorded base. */
@@ -2824,6 +2840,64 @@ export interface WorkspaceFileEntry {
   /** Path relative to the workspace root, always forward-slashed. */
   path: string
   kind: "file" | "dir"
+}
+
+/**
+ * A directory the user symlinked into a workspace folder, turning one root into
+ * a multi-folder workspace. `name` is the subdirectory the link occupies inside
+ * the root; `targetPath` is the real directory it points at.
+ */
+export interface FolderLinkDetail {
+  id: number
+  folderId: number
+  name: string
+  targetPath: string
+  status: FolderLinkStatus
+}
+
+/**
+ * Live state of a link, recomputed from disk on every list.
+ * - `ok` — the symlink is there and resolves to `targetPath`
+ * - `missing` — nothing at `<root>/<name>` any more
+ * - `conflicted` — a real directory (or a link elsewhere) took the name
+ * - `broken` — the link is there but its target no longer resolves
+ */
+export type FolderLinkStatus = "ok" | "missing" | "conflicted" | "broken"
+
+/** Why a picked directory cannot be linked. */
+export type FolderLinkRejection =
+  | "not_found"
+  | "not_a_directory"
+  | "same_as_root"
+  | "ancestor_of_root"
+  | "inside_root"
+  | "already_linked"
+  | "name_unavailable"
+
+/**
+ * Dry-run result for one picked directory: the name it would get and why it
+ * would be skipped. Computed server-side so the dialog reflects what is
+ * actually on disk rather than guessing.
+ */
+export interface FolderLinkPlan {
+  targetPath: string
+  /** Name derived from the directory, before disambiguation. */
+  baseName: string
+  /** Name that would be created; empty when `rejection` is set. */
+  name: string
+  /** True when `name` had to differ from `baseName`. */
+  renamed: boolean
+  /** The collision was with a real entry already in the root, not another link. */
+  collidesWithExistingEntry: boolean
+  rejection: FolderLinkRejection | null
+  /** Name of the existing link, when `rejection` is `already_linked`. */
+  existingLinkName: string | null
+}
+
+/** One directory to link, with an optional user-chosen name. */
+export interface FolderLinkRequestItem {
+  path: string
+  name?: string
 }
 
 export interface DirectoryEntry {

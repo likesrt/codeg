@@ -149,6 +149,14 @@ pub struct WorkTaskFolderSettings {
     /// starts (deps install, env seeding). Not re-run on reused worktrees.
     #[serde(default)]
     pub init_command: Option<String>,
+    /// User-authored instructions appended *after* the built-in prompt of a
+    /// launch stage — project conventions or personal preferences the standard
+    /// wording can't cover. Keys are the stage identifiers the engine already
+    /// stamps on its `round` events (`work` / `retry` / `return` / `merge`),
+    /// plus the reserved key `all`, which is appended to every stage. Unknown
+    /// keys are ignored, so a future stage needs no schema change.
+    #[serde(default)]
+    pub stage_prompts: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for WorkTaskFolderSettings {
@@ -165,9 +173,13 @@ impl Default for WorkTaskFolderSettings {
             preflight_command_id: None,
             preflight_command: None,
             init_command: None,
+            stage_prompts: Default::default(),
         }
     }
 }
+
+/// Reserved `stage_prompts` key whose text is appended to every launch stage.
+pub const STAGE_PROMPT_ALL: &str = "all";
 
 fn default_max_concurrent() -> i32 {
     2
@@ -224,4 +236,33 @@ pub struct WorkTaskChangedFile {
     pub file: String,
     pub additions: i32,
     pub deletions: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Settings rows written before stage prompts existed must keep decoding —
+    /// the column is one JSON blob, so a missing key is the migration.
+    #[test]
+    fn legacy_settings_json_decodes_without_stage_prompts() {
+        let legacy = r#"{
+            "default_agent_type": "claude_code",
+            "mode_id": null,
+            "config_values": {},
+            "auto_process": true,
+            "max_concurrent": 3,
+            "merge_strategy": "merge",
+            "delete_worktree_default": false,
+            "init_command": "pnpm install"
+        }"#;
+        let settings: WorkTaskFolderSettings =
+            serde_json::from_str(legacy).expect("legacy settings decode");
+        assert!(settings.stage_prompts.is_empty());
+        assert_eq!(settings.max_concurrent, 3);
+        assert_eq!(settings.merge_strategy, "merge");
+        assert!(settings.auto_process);
+        assert!(!settings.delete_worktree_default);
+        assert_eq!(settings.init_command.as_deref(), Some("pnpm install"));
+    }
 }

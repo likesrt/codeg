@@ -1938,19 +1938,25 @@ export function ConversationDetailPanel() {
     if (!workingDir) return null
     return { workingDir, folderId: activeTab.folderId }
   }, [tabs, activeTabId, folder?.path])
-  const { disconnect: disconnectByKey } = useAcpActions()
+  const { disconnectIfIdle } = useAcpActions()
   const { addTask, updateTask } = useTaskContext()
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   const exportLabels = useExportLabels()
 
-  // Disconnect the old connection immediately when a preview tab is replaced
+  // Release the old connection as soon as a preview tab is replaced (the next
+  // single-click in the sidebar takes its slot) instead of waiting for a sweep.
+  // Idle-gated on purpose: the replaced tab may hold a session that is still
+  // working — often one the user only clicked in to watch — and disconnecting
+  // an owner mid-turn kills the agent CLI, which lands in the transcript as an
+  // interrupted request. Busy owners keep running; the idle sweep reclaims them
+  // once they settle.
   useEffect(() => {
     return onPreviewTabReplaced((replacedTabId) => {
-      disconnectByKey(replacedTabId).catch(() => {})
+      disconnectIfIdle(replacedTabId).catch(() => {})
     })
-  }, [onPreviewTabReplaced, disconnectByKey])
+  }, [onPreviewTabReplaced, disconnectIfIdle])
 
   // Background turn_complete handler: for conversations not open in tabs.
   // Subscribes via the context's primary `acp://event` listener (single

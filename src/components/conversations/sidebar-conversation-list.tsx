@@ -16,16 +16,17 @@ import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import {
-  FolderClosed,
   Bot,
   Check,
   ChevronRight,
   Download,
   ExternalLink,
+  FolderClosed,
   FolderGit2,
   FolderOpen,
   FolderOpenDot,
   FolderRoot,
+  Link2,
   ListChecks,
   Loader2,
   MoreHorizontal,
@@ -54,12 +55,12 @@ import {
   deleteConversation,
   listChildConversations,
 } from "@/lib/api"
-import { isDesktop, openFileDialog, revealItemInDir } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { isDesktop, revealItemInDir } from "@/lib/platform"
 import type {
   AgentType,
   ConversationStatus,
   DbConversationSummary,
+  FolderDetail,
 } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
@@ -110,7 +111,7 @@ import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
-import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
+import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -180,6 +181,7 @@ const FolderHeader = memo(function FolderHeader({
   onNewConversation,
   onImport,
   onManageConversations,
+  onManageLinks,
   onChangeColor,
   onSetAlias,
   onSetDefaultAgent,
@@ -217,6 +219,7 @@ const FolderHeader = memo(function FolderHeader({
   onNewConversation: (folderId: number) => void
   onImport: (folderId: number) => void
   onManageConversations: (folderId: number) => void
+  onManageLinks: (folderId: number) => void
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
   onSetAlias: (folderId: number, alias: string | null) => void
   onSetDefaultAgent: (folderId: number, agentType: AgentType | null) => void
@@ -516,6 +519,10 @@ const FolderHeader = memo(function FolderHeader({
             <ListChecks className="h-4 w-4" />
             {t("folderHeaderMenu.manageConversations")}
           </ContextMenuItem>
+          <ContextMenuItem onSelect={() => onManageLinks(folderId)}>
+            <Link2 className="h-4 w-4" />
+            {t("folderHeaderMenu.manageLinks")}
+          </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <Bot className="h-4 w-4" />
@@ -716,7 +723,6 @@ export function SidebarConversationList({
     (s) => s.removeFolderFromWorkspace
   )
   const reorderFolders = useAppWorkspaceStore((s) => s.reorderFolders)
-  const openFolder = useAppWorkspaceStore((s) => s.openFolder)
   const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
   const refreshing = loading
   const { activeFolder } = useActiveFolder()
@@ -848,6 +854,8 @@ export function SidebarConversationList({
   } | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
+  // Folder whose links are being managed (context menu -> Linked folders).
+  const [linksFolder, setLinksFolder] = useState<FolderDetail | null>(null)
   const [dragging, setDragging] = useState<number | null>(null)
   const [reordering, setReordering] = useState(false)
   const [dragOrder, setDragOrder] = useState<number[] | null>(null)
@@ -1623,6 +1631,14 @@ export function SidebarConversationList({
     [folderIndex]
   )
 
+  const handleManageFolderLinks = useCallback(
+    (folderId: number) => {
+      const folder = allFolders.find((f) => f.id === folderId)
+      if (folder) setLinksFolder(folder)
+    },
+    [allFolders]
+  )
+
   const handleRemoveFolderConfirm = useCallback(async () => {
     if (!removeConfirm) return
     const { folderId, folderName } = removeConfirm
@@ -1978,42 +1994,17 @@ export function SidebarConversationList({
   // Safety net: drop listeners / stop autoscroll if the list unmounts mid-drag.
   useEffect(() => () => teardownDragListeners(), [teardownDragListeners])
 
-  const handleOpenFolderAction = useCallback(async () => {
-    // Native Tauri dialog only when running on local desktop (no active
-    // remote workspace). Inside a remote workspace window the path lives
-    // on the remote host, so we route to the in-app server-side browser
-    // instead — the native dialog would pick a local path the remote
-    // server can't open.
-    if (isDesktop() && getActiveRemoteConnectionId() === null) {
-      try {
-        const result = await openFileDialog({
-          directory: true,
-          multiple: false,
-        })
-        if (!result) return
-        const selected = Array.isArray(result) ? result[0] : result
-        await openFolder(selected)
-      } catch (err) {
-        console.error("[SidebarConversationList] failed to open folder:", err)
-      }
-    } else {
-      setBrowserOpen(true)
-    }
-  }, [openFolder])
+  // One dialog everywhere: it owns directory selection *and* the follow-up
+  // step that links other folders in, so the native picker can't be a separate
+  // path that skips half the flow (it is still offered inside the dialog on
+  // local desktop). Empty deps — `setBrowserOpen` is a stable setter — so the
+  // memoized section header doesn't re-render on every parent render.
+  const handleOpenFolderAction = useCallback(() => setBrowserOpen(true), [])
 
   // Stable trigger for the Clone Repository dialog, passed to the memoized
   // Folders section header. Empty deps (setCloneOpen is a stable setter) so the
   // header doesn't re-render on every parent render.
   const handleOpenCloneDialog = useCallback(() => setCloneOpen(true), [])
-
-  const handleBrowserSelect = useCallback(
-    (path: string) => {
-      openFolder(path).catch((err) => {
-        console.error("[SidebarConversationList] failed to open folder:", err)
-      })
-    },
-    [openFolder]
-  )
 
   const handleProjectBoot = useCallback(() => {
     openProjectBootWindow().catch((err) => {
@@ -2114,6 +2105,7 @@ export function SidebarConversationList({
         onNewConversation={handleNewConversationForFolder}
         onImport={handleImportForFolder}
         onManageConversations={handleManageConversations}
+        onManageLinks={handleManageFolderLinks}
         onChangeColor={handleChangeFolderColor}
         onSetAlias={handleSetFolderAlias}
         onSetDefaultAgent={handleChangeFolderDefaultAgent}
@@ -2523,11 +2515,14 @@ export function SidebarConversationList({
       )}
 
       <CloneDialog open={cloneOpen} onOpenChange={setCloneOpen} />
-      <DirectoryBrowserDialog
-        open={browserOpen}
-        onOpenChange={setBrowserOpen}
-        onSelect={handleBrowserSelect}
-      />
+      <WorkspaceFolderDialog open={browserOpen} onOpenChange={setBrowserOpen} />
+      {linksFolder && (
+        <WorkspaceFolderDialog
+          open
+          onOpenChange={(o) => !o && setLinksFolder(null)}
+          folder={linksFolder}
+        />
+      )}
     </div>
   )
 }

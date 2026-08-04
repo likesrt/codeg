@@ -52,6 +52,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { formatTokenCount } from "@/lib/token-format"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
+import { MessageResponse } from "@/components/ai-elements/message"
 import { AgentIcon } from "@/components/agent-icon"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { StatusChip, statusLabelKey } from "./task-card"
@@ -92,6 +93,24 @@ import type {
 } from "@/lib/types"
 
 const WORK_TASK_CHANGED_EVENT = "task://changed"
+
+/**
+ * Typography for the agent's Markdown result inside the drawer's compact
+ * panel. Streamdown sizes its own elements for the full-width chat column
+ * (h1 at `text-3xl`, 24px above every heading), which is far too loud at the
+ * panel's 12px scale — and a descendant selector outranks the class Streamdown
+ * puts on the element itself, so these win without `!important`. Lists and the
+ * first/last block's collapsed margin already come from `MessageResponse`.
+ * `prose` is deliberately absent: the repo has no typography plugin, so those
+ * classes generate nothing.
+ */
+const RESULT_MARKDOWN =
+  "[&_h1]:text-[0.8125rem] [&_h2]:text-[0.8125rem] [&_h3]:text-xs [&_h4]:text-xs " +
+  "[&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_h4]:font-semibold " +
+  "[&_h1]:mt-3 [&_h2]:mt-3 [&_h3]:mt-2 [&_h4]:mt-2 " +
+  "[&_h1]:mb-1 [&_h2]:mb-1 [&_h3]:mb-1 [&_h4]:mb-1 " +
+  "[&_p]:mt-0 [&_p]:mb-2 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5 " +
+  "[&_blockquote]:my-2 [&_hr]:my-3"
 
 interface TaskDetailSheetProps {
   open: boolean
@@ -310,6 +329,7 @@ export function TaskDetailSheet({
           })
           break
         case "queued":
+        case "preparing":
         case "running":
         case "awaiting_input":
           zoneActions.push({
@@ -461,7 +481,7 @@ export function TaskDetailSheet({
                       on a white drawer. The brief and the result share it —
                       they are the same kind of thing (quoted prose), and the
                       section headings already say whose words they are. */}
-                  <CollapsibleBlock maxPx={192}>
+                  <CollapsibleBlock maxPx={192} fadeClass="from-muted">
                     <div className="whitespace-pre-wrap break-words rounded-xl bg-muted p-3 text-xs leading-relaxed">
                       {promptText}
                     </div>
@@ -474,9 +494,21 @@ export function TaskDetailSheet({
                   <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
                     {t("detailSummary")}
                   </h3>
-                  <p className="whitespace-pre-wrap break-words rounded-xl bg-muted p-3 text-xs leading-relaxed">
-                    {task.result_summary}
-                  </p>
+                  {/* The agent writes its verdict the way it writes anything
+                      else — bullets, `code`, bold — so it goes through the
+                      same renderer as the chat instead of showing its own
+                      source. Capped taller than the brief above: this is the
+                      thing the drawer was opened to read. */}
+                  <CollapsibleBlock maxPx={256} fadeClass="from-muted">
+                    <div
+                      className={cn(
+                        "break-words rounded-xl bg-muted p-3 text-xs leading-relaxed",
+                        RESULT_MARKDOWN
+                      )}
+                    >
+                      <MessageResponse>{task.result_summary}</MessageResponse>
+                    </div>
+                  </CollapsibleBlock>
                 </section>
               ) : null}
 
@@ -926,9 +958,13 @@ function TaskDiffBody({
  */
 function CollapsibleBlock({
   maxPx,
+  fadeClass = "from-background",
   children,
 }: {
   maxPx: number
+  /** Gradient source for the clip fade — it has to match the surface being
+   *  clipped, or the fade reads as a stripe rather than a soft edge. */
+  fadeClass?: string
   children: ReactNode
 }) {
   const t = useTranslations("Tasks")
@@ -962,7 +998,14 @@ function CollapsibleBlock({
         {clipped ? (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent"
+            className={cn(
+              // Rounded to the clipped surface's own corners: a square
+              // gradient would paint its colour into them. Invisible for the
+              // default fade (page colour over the page), load-bearing for a
+              // filled panel.
+              "pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-xl bg-gradient-to-t to-transparent",
+              fadeClass
+            )}
           />
         ) : null}
       </div>
@@ -1072,6 +1115,7 @@ const EVENT_KIND_KEYS = {
 const STATUS_KEYS = new Set([
   "todo",
   "queued",
+  "preparing",
   "running",
   "awaiting_input",
   "review",
@@ -1086,6 +1130,7 @@ function statusDotClass(status: string): string {
   switch (status) {
     case "running":
     case "queued":
+    case "preparing":
       return "bg-primary"
     case "awaiting_input":
     case "review":

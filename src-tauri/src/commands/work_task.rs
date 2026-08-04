@@ -107,7 +107,10 @@ pub async fn work_task_delete_core(
     }
     if matches!(
         task.status,
-        WorkTaskStatus::Queued | WorkTaskStatus::Running | WorkTaskStatus::AwaitingInput
+        WorkTaskStatus::Queued
+            | WorkTaskStatus::Preparing
+            | WorkTaskStatus::Running
+            | WorkTaskStatus::AwaitingInput
     ) {
         engine()?.cancel(id).await.map_err(DbError::Validation)?;
     }

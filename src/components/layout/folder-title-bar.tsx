@@ -2,6 +2,7 @@
 
 import { useCallback } from "react"
 import {
+  ArrowLeft,
   Menu,
   PanelRight,
   Settings,
@@ -50,7 +51,7 @@ export function FolderTitleBar() {
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const { openNewConversationTab, openChatModeTab } = useTabActions()
-  const { openConversations } = useWorkbenchRoute()
+  const { isConversations, openConversations } = useWorkbenchRoute()
   const { isMac } = usePlatform()
   const showMacInset = isMac && isDesktop()
 
@@ -109,7 +110,9 @@ export function FolderTitleBar() {
       {/* Empty middle is a full-height window-drag region. */}
       <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
       {/* Right cluster: terminal + aux + settings — the same controls the
-          desktop RightEdgeChrome shows, now as direct buttons (no ⋯ menu). */}
+          desktop RightEdgeChrome shows, now as direct buttons (no ⋯ menu),
+          plus that overlay's back-to-conversations exit while a full-page route
+          (tasks / automations) covers the workspace. */}
       <div className="flex shrink-0 items-center gap-1 pr-2">
         <Button
           variant="ghost"
@@ -133,6 +136,18 @@ export function FolderTitleBar() {
         >
           <PanelRight className="h-4 w-4" />
         </Button>
+        {!isConversations && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={openConversations}
+            title={tTitleBar("backToConversations")}
+            aria-label={tTitleBar("backToConversations")}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"

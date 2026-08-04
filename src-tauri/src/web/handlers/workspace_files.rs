@@ -91,7 +91,7 @@ fn resolve_relative_path(root: &Path, rel: &str) -> Result<PathBuf, AppCommandEr
 fn ensure_inside_root(root: &Path, target: &Path) -> Result<(), AppCommandError> {
     let canonical_root = std::fs::canonicalize(root).map_err(AppCommandError::io)?;
     let canonical_target = std::fs::canonicalize(target).map_err(AppCommandError::io)?;
-    if !canonical_target.starts_with(&canonical_root) {
+    if !crate::commands::folders::is_within_workspace(&canonical_root, &canonical_target) {
         return Err(AppCommandError::invalid_input(
             "Resolved path escapes workspace root",
         ));
@@ -108,11 +108,27 @@ fn ensure_inside_root(root: &Path, target: &Path) -> Result<(), AppCommandError>
 /// workspace. The earlier post-hoc `canonicalize` check caught the
 /// escape but the side-effect (empty dir at the symlink target) was
 /// already on disk.
-fn ensure_no_symlink_in_chain(root: &Path, target: &Path) -> Result<(), AppCommandError> {
+///
+/// The one symlink that *is* followed is a directory the user explicitly linked
+/// into this root (see [`crate::folder_links`]) — uploading into a linked
+/// project is the point of a multi-folder workspace. The walk continues from
+/// the *resolved* target, so a stray symlink inside the linked project is still
+/// rejected.
+///
+/// Returns the link-free equivalent of `target`. Callers must use that path for
+/// `create_dir_all` and the commit rather than the one they passed in: re-walking
+/// the original would resolve the link a second time, and a link swapped in
+/// between the two walks would place directories somewhere this check never saw.
+fn resolve_upload_chain(root: &Path, target: &Path) -> Result<PathBuf, AppCommandError> {
     let rel = target
         .strip_prefix(root)
         .map_err(|_| AppCommandError::invalid_input("Target path is not under workspace root"))?;
+    let canonical_root = std::fs::canonicalize(root).map_err(AppCommandError::io)?;
     let mut current = root.to_path_buf();
+    // Once a component is missing, everything below it is missing too — there is
+    // nothing left for `create_dir_all` to follow into, so the remaining
+    // segments are appended without stat'ing them.
+    let mut reached_missing = false;
     for component in rel.components() {
         let segment = match component {
             Component::Normal(s) => s,
@@ -124,23 +140,30 @@ fn ensure_no_symlink_in_chain(root: &Path, target: &Path) -> Result<(), AppComma
             }
         };
         current.push(segment);
+        if reached_missing {
+            continue;
+        }
         match std::fs::symlink_metadata(&current) {
             Ok(md) => {
                 if md.file_type().is_symlink() {
-                    return Err(AppCommandError::invalid_input(
-                        "Upload path traverses a symlink; refuse to follow it",
-                    ));
+                    let resolved = std::fs::canonicalize(&current).map_err(AppCommandError::io)?;
+                    if !crate::folder_links::is_allowed(&canonical_root, &resolved) {
+                        return Err(AppCommandError::invalid_input(
+                            "Upload path traverses a symlink; refuse to follow it",
+                        ));
+                    }
+                    // Continue from the real directory so the rest of the chain
+                    // is validated against it rather than through the link.
+                    current = resolved;
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // The remainder of the path doesn't exist yet — nothing
-                // for create_dir_all to follow into, so we're safe.
-                return Ok(());
+                reached_missing = true;
             }
             Err(e) => return Err(AppCommandError::io(e)),
         }
     }
-    Ok(())
+    Ok(current)
 }
 
 /// Strip cross-platform-hostile characters from a single path segment.
@@ -294,25 +317,36 @@ pub async fn upload_workspace_file(
                     relative_path.as_deref().unwrap_or(""),
                     &file_name_hint,
                 )?;
-                let final_abs = resolve_relative_path(&root, &final_rel)?;
+                let mut final_abs = resolve_relative_path(&root, &final_rel)?;
 
                 if let Some(parent) = final_abs.parent() {
-                    // Reject *before* touching the filesystem if any
-                    // existing component along the path is a symlink —
-                    // otherwise `create_dir_all` would follow the link
-                    // and create directories outside the workspace
-                    // before the canonical check below could fire.
-                    ensure_no_symlink_in_chain(&root, parent)?;
-                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                        AppCommandError::io_error("Failed to create upload directory")
-                            .with_detail(e.to_string())
-                    })?;
+                    // Reject *before* touching the filesystem if any existing
+                    // component along the path is a symlink the user did not
+                    // authorize — otherwise `create_dir_all` would follow the
+                    // link and create directories outside the workspace before
+                    // the canonical check below could fire. The resolved parent
+                    // replaces the original: everything downstream then operates
+                    // on real directories, so a link swapped in afterwards can't
+                    // redirect the write.
+                    let resolved_parent = resolve_upload_chain(&root, parent)?;
+                    tokio::fs::create_dir_all(&resolved_parent)
+                        .await
+                        .map_err(|e| {
+                            AppCommandError::io_error("Failed to create upload directory")
+                                .with_detail(e.to_string())
+                        })?;
                     let canonical_parent =
-                        std::fs::canonicalize(parent).map_err(AppCommandError::io)?;
-                    if !canonical_parent.starts_with(&canonical_root) {
+                        std::fs::canonicalize(&resolved_parent).map_err(AppCommandError::io)?;
+                    if !crate::commands::folders::is_within_workspace(
+                        &canonical_root,
+                        &canonical_parent,
+                    ) {
                         return Err(AppCommandError::invalid_input(
                             "Resolved path escapes workspace root",
                         ));
+                    }
+                    if let Some(file_name) = final_abs.file_name() {
+                        final_abs = canonical_parent.join(file_name);
                     }
                 }
 
@@ -1027,7 +1061,7 @@ mod tests {
         // `link` component is a symlink that would carry create_dir_all
         // out of the root.
         let target = root.path().join("link").join("sub");
-        let err = ensure_no_symlink_in_chain(root.path(), &target)
+        let err = resolve_upload_chain(root.path(), &target)
             .expect_err("should reject symlink in chain");
         assert!(
             err.message.contains("symlink"),
@@ -1035,9 +1069,42 @@ mod tests {
             err.message
         );
 
-        // Sanity: no symlink in chain → ok.
+        // Sanity: no symlink in chain → ok, and the path comes back unchanged.
         fs::create_dir(root.path().join("real")).expect("real dir");
         let ok_target = root.path().join("real").join("nested").join("file.txt");
-        assert!(ensure_no_symlink_in_chain(root.path(), &ok_target).is_ok());
+        assert_eq!(
+            resolve_upload_chain(root.path(), &ok_target).expect("no symlinks"),
+            ok_target
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_upload_chain_returns_the_link_free_path_for_an_authorized_link() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("tempdir root");
+        let linked = tempfile::tempdir().expect("tempdir linked");
+        symlink(linked.path(), root.path().join("api")).expect("symlink");
+
+        let canonical_root = std::fs::canonicalize(root.path()).expect("canon root");
+        let canonical_target = std::fs::canonicalize(linked.path()).expect("canon target");
+        crate::folder_links::register(root.path(), &canonical_target);
+
+        // The caller must receive the resolved path: re-walking the original
+        // would resolve `api` a second time, so a link swapped in between the
+        // check and `create_dir_all` could redirect the write.
+        let resolved = resolve_upload_chain(root.path(), &root.path().join("api").join("sub"))
+            .expect("authorized link is followed");
+        assert_eq!(resolved, canonical_target.join("sub"));
+        assert!(!resolved.starts_with(&canonical_root));
+
+        crate::folder_links::unregister(root.path(), &canonical_target);
+
+        // Revoked: the very same path is rejected again.
+        assert!(
+            resolve_upload_chain(root.path(), &root.path().join("api").join("sub")).is_err(),
+            "unlinking must revoke upload access too"
+        );
     }
 }

@@ -600,6 +600,17 @@ fn build_scan_result(
 /// Scan every local agent's sessions and reconcile them against the DB for the
 /// import-picker window. Emits [`IMPORT_SCAN_PROGRESS_EVENT`] once per parser
 /// while the walk runs.
+///
+/// The scan also refreshes the conversations that are ALREADY imported, from
+/// the same parse it just did: a title generated after the first import, and
+/// the transcript's own last-activity time when the user kept working on the
+/// session in the agent's own CLI (see
+/// [`import_service::sync_imported_sessions`]). Without this, a re-scan can
+/// only ever offer the *new* sessions — the picker does not let you re-select
+/// an imported one — so an already-imported conversation would keep the
+/// `updated_at` it had at import time forever, and sit in the wrong place in a
+/// recency-sorted sidebar. Each refreshed row is broadcast so every window and
+/// web client re-sorts live.
 pub async fn scan_importable_sessions_core(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
@@ -629,15 +640,21 @@ pub async fn scan_importable_sessions_core(
         .map_err(crate::db::error::DbError::from)
         .map_err(AppCommandError::from)?;
     let mut imported_index: HashMap<(String, String), bool> = HashMap::new();
-    for row in conv_rows {
-        let Some(external_id) = row.external_id else {
+    for row in &conv_rows {
+        let Some(external_id) = row.external_id.clone() else {
             continue;
         };
         let live = row.deleted_at.is_none();
         let entry = imported_index
-            .entry((row.agent_type, external_id))
+            .entry((row.agent_type.clone(), external_id))
             .or_insert(live);
         *entry = *entry || live;
+    }
+
+    // Refresh the already-imported rows in place before answering, then
+    // broadcast each one so open sidebars re-sort without a refetch.
+    for id in import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await {
+        emit_conversation_upsert(emitter, conn, id).await;
     }
 
     let folder_rows = load_folder_rows(conn).await?;

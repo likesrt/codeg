@@ -229,31 +229,147 @@ pub async fn import_local_conversations(
 enum ImportOutcome {
     /// A new conversation row was inserted.
     Imported,
-    /// An already-imported conversation had its auto-title refreshed; carries
-    /// the row id so the caller can broadcast a sidebar upsert.
+    /// An already-imported conversation was refreshed in place (title and/or
+    /// transcript activity); carries the row id so the caller can broadcast a
+    /// sidebar upsert.
     Updated(i32),
-    /// Already imported, title left unchanged (locked, identical, or the parse
-    /// produced no title).
+    /// Already imported and nothing changed — or the row is one the sidebar
+    /// never shows (soft-deleted, delegation child).
     Skipped,
 }
 
-/// Insert a brand-new conversation, or — when it already exists — refresh its
-/// title from the freshly parsed session file so an AI-generated title that did
-/// not exist at first import is adopted. `refresh_auto_title` is a single
-/// conditional UPDATE that skips locked or unchanged rows and never bumps
-/// `updated_at`, so a re-import neither clobbers a manual rename nor reorders a
-/// recency-sorted sidebar. A missing/empty parsed title leaves the existing
-/// title intact rather than nulling it.
+/// The `conversation.agent_type` column's string form.
+fn agent_type_db_str(agent_type: &AgentType) -> String {
+    serde_json::to_value(agent_type)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Reconcile ONE already-imported conversation against a fresh parse of its
+/// agent-side session file. Returns `true` when a row was written, so the
+/// caller can count it and broadcast a sidebar upsert. Never inserts, never
+/// moves the conversation between folders.
+///
+/// Two independent refreshes, because a re-scan can find either kind of drift
+/// (or both) — a session titled after the fact, and a session the user kept
+/// working on in the agent's own CLI:
+///
+/// * [`conversation_service::refresh_auto_title`] adopts a title that did not
+///   exist at first import. A missing/empty parsed title leaves the existing
+///   one intact rather than nulling it, a locked title is never clobbered, and
+///   it deliberately does not bump `updated_at` (a title is metadata, not
+///   activity).
+/// * [`conversation_service::refresh_external_activity`] adopts the transcript's
+///   own last-activity time into `updated_at` (plus the fresh `message_count`)
+///   when it is strictly newer, so a conversation continued outside codeg sorts
+///   and reads correctly in a recency-ordered sidebar.
+///
+/// Both are single conditional UPDATEs whose guards are re-evaluated by the
+/// database at write time, so a concurrent manual rename or a live turn wins.
+/// The `if` conditions here only mirror those guards in Rust to skip the
+/// round-trip when nothing drifted — a converged conversation (the common case,
+/// and every row on a re-scan) costs ZERO statements, which is what keeps a
+/// whole-machine scan over thousands of imported sessions cheap.
+async fn refresh_existing(
+    conn: &DatabaseConnection,
+    existing: &conversation::Model,
+    summary: &ConversationSummary,
+) -> Result<bool, DbError> {
+    // Rows the sidebar never shows are left completely alone: a soft-deleted
+    // conversation must stay deleted (never resurrected or rewritten), and a
+    // delegation child is not a sidebar row (the upsert broadcast suppresses it
+    // too, which would also desync the `updated` count).
+    if existing.parent_id.is_some() || existing.deleted_at.is_some() {
+        return Ok(false);
+    }
+
+    let mut wrote = false;
+
+    if !existing.title_locked {
+        if let Some(title) = summary
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && existing.title.as_deref() != Some(*t))
+        {
+            wrote |= conversation_service::refresh_auto_title(conn, existing.id, title.to_string())
+                .await?;
+        }
+    }
+
+    if let Some(activity_at) = summary.ended_at.filter(|at| *at > existing.updated_at) {
+        wrote |= conversation_service::refresh_external_activity(
+            conn,
+            existing.id,
+            activity_at,
+            summary.message_count,
+        )
+        .await?;
+    }
+
+    Ok(wrote)
+}
+
+/// Refresh every already-imported session in `items` in place — see
+/// [`refresh_existing`]. Returns the ids actually written so the caller can
+/// broadcast sidebar upserts.
+///
+/// Unlike [`import_one`] this NEVER inserts: a session the user has not
+/// imported yet stays untouched (and unimported) until they pick it. It rides
+/// along with the import-picker scan, which already has to load `rows` — every
+/// conversation carrying an `external_id` — to mark which sessions exist, so
+/// the sync costs one index build plus one UPDATE per row that genuinely
+/// drifted, with no per-session SELECT.
+///
+/// `rows` is matched, not `items`, so historical duplicate rows sharing an
+/// `(agent_type, external_id)` (the pair has no unique index) all converge.
+/// A row error is logged and skipped: a best-effort refresh must never fail the
+/// scan it rides along with.
+pub(crate) async fn sync_imported_sessions(
+    conn: &DatabaseConnection,
+    rows: &[conversation::Model],
+    items: &[(AgentType, ConversationSummary)],
+) -> Vec<i32> {
+    let parsed: std::collections::HashMap<(String, &str), &ConversationSummary> = items
+        .iter()
+        .map(|(at, s)| ((agent_type_db_str(at), s.id.as_str()), s))
+        .collect();
+
+    let mut refreshed = Vec::new();
+    for row in rows {
+        if row.parent_id.is_some() || row.deleted_at.is_some() {
+            continue;
+        }
+        let Some(external_id) = row.external_id.as_deref() else {
+            continue;
+        };
+        let Some(summary) = parsed.get(&(row.agent_type.clone(), external_id)) else {
+            continue;
+        };
+        match refresh_existing(conn, row, summary).await {
+            Ok(true) => refreshed.push(row.id),
+            Ok(false) => {}
+            Err(e) => tracing::error!(
+                "Failed to refresh imported session {} ({}): {}",
+                external_id,
+                row.agent_type,
+                e
+            ),
+        }
+    }
+    refreshed
+}
+
+/// Insert a brand-new conversation, or — when it already exists — refresh it in
+/// place from the freshly parsed session file (see [`refresh_existing`]).
 async fn import_one(
     conn: &DatabaseConnection,
     folder_id: i32,
     agent_type: &AgentType,
     summary: &ConversationSummary,
 ) -> Result<ImportOutcome, DbError> {
-    let at_str = serde_json::to_value(agent_type)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default();
+    let at_str = agent_type_db_str(agent_type);
 
     let exists = conversation::Entity::find()
         .filter(conversation::Column::ExternalId.eq(&summary.id))
@@ -262,26 +378,11 @@ async fn import_one(
         .await?;
 
     if let Some(existing) = exists {
-        // Preserve the original skip for rows the sidebar never shows: a
-        // soft-deleted conversation must stay deleted (never resurrected or
-        // rewritten), and a delegation child is not a sidebar row (the upsert
-        // broadcast suppresses it too, which would also desync the `updated`
-        // count). Only a visible root conversation gets its title refreshed.
-        if existing.parent_id.is_some() || existing.deleted_at.is_some() {
-            return Ok(ImportOutcome::Skipped);
-        }
-        if let Some(title) = summary
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            if conversation_service::refresh_auto_title(conn, existing.id, title.to_string()).await?
-            {
-                return Ok(ImportOutcome::Updated(existing.id));
-            }
-        }
-        return Ok(ImportOutcome::Skipped);
+        return Ok(if refresh_existing(conn, &existing, summary).await? {
+            ImportOutcome::Updated(existing.id)
+        } else {
+            ImportOutcome::Skipped
+        });
     }
 
     let created_at = summary.started_at;
@@ -320,7 +421,7 @@ async fn import_one(
 mod tests {
     use super::*;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
-    use chrono::Utc;
+    use chrono::{DateTime, Duration, Utc};
 
     fn summary(id: &str, title: Option<&str>) -> ConversationSummary {
         ConversationSummary {
@@ -338,6 +439,41 @@ mod tests {
             parent_tool_use_id: None,
             delegation_call_id: None,
         }
+    }
+
+    /// A parse of a session whose transcript ends at `ended_at` — what a
+    /// re-scan sees after the user kept working on it in the agent's own CLI.
+    fn timed_summary(
+        id: &str,
+        title: Option<&str>,
+        ended_at: DateTime<Utc>,
+        message_count: u32,
+    ) -> ConversationSummary {
+        ConversationSummary {
+            started_at: ended_at - Duration::hours(1),
+            ended_at: Some(ended_at),
+            message_count,
+            ..summary(id, title)
+        }
+    }
+
+    async fn find_row(conn: &DatabaseConnection, ext: &str) -> conversation::Model {
+        conversation::Entity::find()
+            .filter(conversation::Column::ExternalId.eq(ext))
+            .one(conn)
+            .await
+            .expect("query")
+            .expect("row exists")
+    }
+
+    /// Every conversation carrying an `external_id` — the row set the import
+    /// scan loads and hands to [`sync_imported_sessions`].
+    async fn external_rows(conn: &DatabaseConnection) -> Vec<conversation::Model> {
+        conversation::Entity::find()
+            .filter(conversation::Column::ExternalId.is_not_null())
+            .all(conn)
+            .await
+            .expect("query")
     }
 
     async fn find_id(conn: &DatabaseConnection, ext: &str) -> i32 {
@@ -506,6 +642,235 @@ mod tests {
             .expect("row still present");
         assert_eq!(row.title.as_deref(), Some("original"), "title untouched");
         assert!(row.deleted_at.is_some(), "must stay soft-deleted");
+    }
+
+    #[tokio::test]
+    async fn reimport_adopts_newer_transcript_activity() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-import-activity").await;
+        let at = AgentType::ClaudeCode;
+
+        let first_end = Utc::now() - Duration::hours(3);
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("ext-1", Some("kept"), first_end, 2),
+        )
+        .await
+        .expect("import");
+        let created_at = find_row(&db.conn, "ext-1").await.created_at;
+        let id = find_id(&db.conn, "ext-1").await;
+
+        // The user resumed the session in the agent's own CLI and sent more
+        // messages; a re-scan must move it to the front of a recency-sorted
+        // sidebar and show the transcript's time, not the scan's.
+        let later = first_end + Duration::hours(1);
+        assert_eq!(
+            import_one(
+                &db.conn,
+                folder,
+                &at,
+                &timed_summary("ext-1", Some("kept"), later, 5)
+            )
+            .await
+            .expect("re-import"),
+            ImportOutcome::Updated(id)
+        );
+
+        let row = find_row(&db.conn, "ext-1").await;
+        assert_eq!(row.updated_at, later, "updated_at follows the transcript");
+        assert_eq!(row.message_count, 5);
+        assert_eq!(
+            row.created_at, created_at,
+            "created_at is the original session start and must not move"
+        );
+        assert_eq!(row.title.as_deref(), Some("kept"));
+    }
+
+    #[tokio::test]
+    async fn reimport_never_moves_updated_at_backwards() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-import-monotonic").await;
+        let at = AgentType::ClaudeCode;
+
+        let end = Utc::now() - Duration::hours(1);
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("ext-1", Some("kept"), end, 4),
+        )
+        .await
+        .expect("import");
+
+        // Re-scanning the same transcript, or one that somehow parses older
+        // (clock skew, a truncated tail), must change nothing at all.
+        for (ended_at, label) in [(end, "identical"), (end - Duration::hours(2), "older")] {
+            assert_eq!(
+                import_one(
+                    &db.conn,
+                    folder,
+                    &at,
+                    &timed_summary("ext-1", Some("kept"), ended_at, 99)
+                )
+                .await
+                .expect("re-import"),
+                ImportOutcome::Skipped,
+                "{label} activity must be a no-op"
+            );
+        }
+
+        let row = find_row(&db.conn, "ext-1").await;
+        assert_eq!(row.updated_at, end);
+        assert_eq!(row.message_count, 4);
+    }
+
+    #[tokio::test]
+    async fn activity_refresh_preserves_pin_status_and_locked_title() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-import-preserve").await;
+        let at = AgentType::ClaudeCode;
+
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("ext-1", Some("first prompt"), Utc::now(), 2),
+        )
+        .await
+        .expect("import");
+        let id = find_id(&db.conn, "ext-1").await;
+        conversation_service::update_title(&db.conn, id, "User Pick".into())
+            .await
+            .expect("rename");
+        conversation_service::update_pin(&db.conn, id, true)
+            .await
+            .expect("pin");
+        conversation_service::update_status(
+            &db.conn,
+            id,
+            conversation::ConversationStatus::Completed,
+        )
+        .await
+        .expect("status");
+
+        let later = Utc::now() + Duration::hours(1);
+        assert_eq!(
+            import_one(
+                &db.conn,
+                folder,
+                &at,
+                &timed_summary("ext-1", Some("AI Summary"), later, 6)
+            )
+            .await
+            .expect("re-import"),
+            ImportOutcome::Updated(id),
+            "activity alone is enough to report an update"
+        );
+
+        let row = find_row(&db.conn, "ext-1").await;
+        assert_eq!(row.updated_at, later);
+        assert_eq!(row.message_count, 6);
+        assert_eq!(row.title.as_deref(), Some("User Pick"), "rename survives");
+        assert!(row.title_locked);
+        assert!(row.pinned_at.is_some(), "pin survives");
+        assert_eq!(
+            row.status,
+            conversation::ConversationStatus::Completed,
+            "codeg's own status survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_imported_sessions_refreshes_in_place_and_never_inserts() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-sync-scan").await;
+        let at = AgentType::ClaudeCode;
+
+        let end = Utc::now() - Duration::hours(2);
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("ext-live", Some("first prompt"), end, 2),
+        )
+        .await
+        .expect("import");
+        let live_id = find_id(&db.conn, "ext-live").await;
+
+        // What a re-scan sees: the imported session grew AND got a title, plus
+        // a session the user has never imported.
+        let later = end + Duration::hours(1);
+        let items = vec![
+            (at, timed_summary("ext-live", Some("AI Summary"), later, 5)),
+            (at, timed_summary("ext-never", Some("untouched"), later, 3)),
+        ];
+        let rows = external_rows(&db.conn).await;
+        assert_eq!(
+            sync_imported_sessions(&db.conn, &rows, &items).await,
+            vec![live_id]
+        );
+
+        let row = find_row(&db.conn, "ext-live").await;
+        assert_eq!(row.updated_at, later);
+        assert_eq!(row.message_count, 5);
+        assert_eq!(row.title.as_deref(), Some("AI Summary"));
+
+        assert!(
+            conversation::Entity::find()
+                .filter(conversation::Column::ExternalId.eq("ext-never"))
+                .one(&db.conn)
+                .await
+                .expect("query")
+                .is_none(),
+            "a session the user never imported must stay unimported"
+        );
+
+        // Idempotent: a second scan over the same transcripts writes nothing.
+        let rows = external_rows(&db.conn).await;
+        assert!(sync_imported_sessions(&db.conn, &rows, &items)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_imported_sessions_skips_deleted_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-sync-deleted").await;
+        let at = AgentType::ClaudeCode;
+
+        let end = Utc::now() - Duration::hours(2);
+        import_one(
+            &db.conn,
+            folder,
+            &at,
+            &timed_summary("ext-1", Some("original"), end, 2),
+        )
+        .await
+        .expect("import");
+        let id = find_id(&db.conn, "ext-1").await;
+        conversation_service::soft_delete(&db.conn, id)
+            .await
+            .expect("soft delete");
+
+        let items = vec![(
+            at,
+            timed_summary("ext-1", Some("AI Summary"), end + Duration::hours(1), 9),
+        )];
+        let rows = external_rows(&db.conn).await;
+        assert!(
+            sync_imported_sessions(&db.conn, &rows, &items)
+                .await
+                .is_empty(),
+            "a deleted conversation must never be half-resurrected by a scan"
+        );
+
+        let row = find_row(&db.conn, "ext-1").await;
+        assert_eq!(row.updated_at, end, "activity untouched");
+        assert_eq!(row.message_count, 2);
+        assert_eq!(row.title.as_deref(), Some("original"));
+        assert!(row.deleted_at.is_some());
     }
 
     #[tokio::test]

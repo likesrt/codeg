@@ -35,6 +35,7 @@ import {
 } from "@/lib/api"
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
 import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
+import { isConnectionBusy } from "@/lib/connection-teardown"
 import {
   getConversationIdByExternalIdFromStore,
   useConversationRuntimeStore,
@@ -2371,6 +2372,16 @@ export interface AcpActionsValue {
     conversationId?: number
   ): Promise<void>
   disconnect(contextKey: string): Promise<void>
+  /**
+   * Release a connection whose SURFACE went away on its own (a preview tab
+   * replaced by the next single-click in the sidebar) — never a user-intent
+   * teardown. Disconnects viewers and idle owners; a busy owner (prompting
+   * turn, or unresolved background tasks) is left running for the idle sweep,
+   * because `acpDisconnect` kills the agent CLI mid-turn and the agent records
+   * that as an interrupted request. Use `disconnect` when the user asked to
+   * stop.
+   */
+  disconnectIfIdle(contextKey: string): Promise<void>
   disconnectAll(): Promise<void>
   sendPrompt(
     contextKey: string,
@@ -4420,15 +4431,25 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           savedPrefs.configValues
         )
 
-        // If disconnect was requested while connect was in flight,
-        // tear down immediately instead of registering the connection.
+        // If disconnect was requested while connect was in flight, tear down
+        // immediately instead of registering the connection — but tear down
+        // ONLY what this connect actually created. The backend dedups by
+        // (agent, cwd, session), so `acpConnect` may have handed back a
+        // connection this client already holds under another contextKey (a
+        // session still running in / behind another tab). Killing that one
+        // would end a turn nobody asked to stop; it stays reachable at its own
+        // key and is reclaimed by the sweeps.
         if (abandonedKeysRef.current.delete(contextKey)) {
-          acpDisconnect(connectionId).catch(() => {})
+          if (!isConnectionOwnedLocally(connectionId)) {
+            acpDisconnect(connectionId).catch(() => {})
+          }
           return
         }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
-          acpDisconnect(connectionId).catch(() => {})
+          if (!isConnectionOwnedLocally(connectionId)) {
+            acpDisconnect(connectionId).catch(() => {})
+          }
           return
         }
 
@@ -4619,6 +4640,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "CONNECTION_REMOVED", contextKey })
     },
     [dispatch, teardownAttachSubscription]
+  )
+
+  // Lifecycle release for a surface that vanished on its own — currently the
+  // preview tab replaced by the next single-click in the sidebar. `disconnect`
+  // stays unconditional because its other callers express user INTENT (agent
+  // switch, restart-to-apply, an explicit close); this one must not destroy
+  // work nobody asked to stop. Same policy as the unmount cleanup
+  // (`shouldDisconnectOnUnmount`): a busy owner keeps running and the idle
+  // sweep reclaims it once its turn / background work settles — it is no
+  // longer in `openTabKeys`, so nothing else keeps it alive.
+  const disconnectIfIdle = useCallback(
+    async (contextKey: string) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      // Owners only: a viewer's disconnect just detaches (it never
+      // acpDisconnects), and leaving one attached would leak its subscription
+      // — the idle sweep skips viewers.
+      if (conn && !conn.isViewer && isConnectionBusy(conn)) return
+      await disconnect(contextKey)
+    },
+    [disconnect]
   )
 
   const reapplyConfig = useCallback(
@@ -4950,6 +4991,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     () => ({
       connect,
       disconnect,
+      disconnectIfIdle,
       disconnectAll,
       sendPrompt,
       setMode,
@@ -4972,6 +5014,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [
       connect,
       disconnect,
+      disconnectIfIdle,
       disconnectAll,
       sendPrompt,
       setMode,

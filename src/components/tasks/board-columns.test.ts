@@ -43,10 +43,12 @@ function task(
 
 describe("columnForStatus", () => {
   it("maps every DB status to its board column per the spec", () => {
-    // 待办 = todo + queued
+    // 待办 = todo + queued (queued is still waiting for a slot)
     expect(columnForStatus("todo")).toBe("todo")
     expect(columnForStatus("queued")).toBe("todo")
-    // 进行中 = running
+    // 进行中 = preparing + running — a preparing task already left the queue
+    // and is doing setup work (worktree, init command, agent spawn).
+    expect(columnForStatus("preparing")).toBe("inProgress")
     expect(columnForStatus("running")).toBe("inProgress")
     // 等你处理 = awaiting_input + review + merging + failed — a merge is an
     // agent turn but the card stays in the review column until it lands.

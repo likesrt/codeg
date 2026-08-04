@@ -179,7 +179,9 @@ describe("DirectoryBrowserDialog", () => {
     fireEvent.click(screen.getByText("work"))
     await screen.findByDisplayValue("/home/me/work")
 
-    fireEvent.click(screen.getByTitle("Go to parent directory"))
+    fireEvent.click(
+      screen.getByRole("button", { name: "Go to parent directory" })
+    )
 
     await screen.findByDisplayValue("/home/me")
     expect(screen.queryByDisplayValue("/home")).toBeNull()

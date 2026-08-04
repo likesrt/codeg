@@ -12,9 +12,9 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react"
-import { revealItemInDir } from "@/lib/platform"
+import { revealItemInDir, subscribe } from "@/lib/platform"
 import ignore from "ignore"
-import { Check, ChevronRight } from "lucide-react"
+import { Check, ChevronRight, Link2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -54,6 +54,7 @@ import {
   gitListAllBranches,
   gitRollbackFile,
   gitStatus,
+  listFolderLinks,
   moveFileTreeEntry,
   readFilePreview,
   openCommitWindow,
@@ -68,13 +69,15 @@ import {
   type FileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import type {
-  FileTreeNode,
-  PasteConflictEntry,
-  PasteConflictResolution,
-  PasteConflictStrategy,
-  GitBranchList,
-  GitStatusEntry,
+import {
+  FOLDER_LINKS_CHANGED_EVENT,
+  type FileTreeNode,
+  type FolderLinksChanged,
+  type PasteConflictEntry,
+  type PasteConflictResolution,
+  type PasteConflictStrategy,
+  type GitBranchList,
+  type GitStatusEntry,
 } from "@/lib/types"
 import {
   FileTree,
@@ -170,6 +173,13 @@ const GITIGNORE_MUTED_CLASS = "text-muted-foreground/55"
  * row's `dropActive`. Stays null on the web, so it never forces a re-render there.
  */
 const DesktopDropDirContext = createContext<string | null>(null)
+
+/**
+ * Top-level directory names that are links into other projects. Supplied via
+ * context rather than threaded through `RenderNode`'s prop list, which is
+ * recursive and already long.
+ */
+const LinkedDirNamesContext = createContext<ReadonlySet<string>>(new Set())
 
 interface FileActionTarget {
   kind: "file" | "dir"
@@ -718,6 +728,10 @@ export function RenderNode({
   // Desktop native drags don't emit DOM dragover, so a directory also lights up
   // when it's the drop zone broadcast from the Tauri DRAG_OVER hit-test.
   const desktopDropDir = useContext(DesktopDropDirContext)
+  const linkedDirNames = useContext(LinkedDirNamesContext)
+  // Links are always direct children of the root, so a top-level row's rel path
+  // *is* the link name.
+  const isLinkedDir = depth === 1 && linkedDirNames.has(node.path)
   const isGitignoreIgnored =
     ancestorGitignoreIgnored || gitignoreIgnoredPaths.has(node.path)
 
@@ -960,6 +974,14 @@ export function RenderNode({
         <FileTreeFolder
           path={node.path}
           name={node.name}
+          suffix={
+            isLinkedDir ? (
+              <Link2
+                className="h-3 w-3 shrink-0 text-muted-foreground"
+                aria-label={t("linkedFolder")}
+              />
+            ) : undefined
+          }
           nameClassName={
             isGitignoreIgnored
               ? GITIGNORE_MUTED_CLASS
@@ -1323,6 +1345,11 @@ export function FileTreeTab() {
   const loadDirectoryChildrenRef = useRef<
     ((dirPath: string) => Promise<void>) | null
   >(null)
+  // `fetchTree` is defined below; effects declared above it reach it through
+  // this ref (naming it directly in their deps would hit the TDZ).
+  const fetchTreeRef = useRef<
+    ((options?: { silent?: boolean }) => Promise<void>) | null
+  >(null)
   const expandedPathsRef = useRef<Set<string>>(new Set([FILE_TREE_ROOT_PATH]))
   const workspaceTreeRef = useRef<FileTreeNode[]>([])
   // The node currently being dragged (set on dragstart, cleared on drop/cancel).
@@ -1352,6 +1379,51 @@ export function FileTreeTab() {
     lazyLoadedChildrenByPathRef.current.clear()
     lazyLoadingDirPathsRef.current.clear()
   }, [folder?.path])
+
+  // Top-level directories that are symlinks the user linked in. Only used to
+  // badge those rows — the backend already renders them as ordinary
+  // directories, so a failed fetch just loses the badge.
+  const [linkedNames, setLinkedNames] = useState<Set<string>>(new Set())
+  const folderId = folder?.id ?? null
+  const refreshLinkedNames = useCallback(async () => {
+    if (folderId === null) {
+      setLinkedNames(new Set())
+      return
+    }
+    try {
+      const links = await listFolderLinks(folderId)
+      setLinkedNames(new Set(links.map((link) => link.name)))
+    } catch {
+      setLinkedNames(new Set())
+    }
+  }, [folderId])
+
+  useEffect(() => {
+    void refreshLinkedNames()
+  }, [refreshLinkedNames])
+
+  // Links can be added from the sidebar menu or another window, so converge on
+  // the backend broadcast rather than only on local mutations.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      const dispose = await subscribe<FolderLinksChanged>(
+        FOLDER_LINKS_CHANGED_EVENT,
+        (payload) => {
+          if (payload.folder_id !== folderId) return
+          void refreshLinkedNames()
+          void fetchTreeRef.current?.({ silent: true })
+        }
+      )
+      if (disposed) dispose()
+      else unlisten = dispose
+    })()
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [folderId, refreshLinkedNames])
 
   // Derive the tree's focus from the externally-active file: opening a file from
   // another surface (search, a file tab) — or clicking one here, which opens it —
@@ -1535,6 +1607,10 @@ export function FileTreeTab() {
   useEffect(() => {
     loadDirectoryChildrenRef.current = loadDirectoryChildren
   }, [loadDirectoryChildren])
+
+  useEffect(() => {
+    fetchTreeRef.current = fetchTree
+  }, [fetchTree])
 
   useEffect(() => {
     expandedPathsRef.current = expandedPaths
@@ -3023,63 +3099,65 @@ export function FileTreeTab() {
               {folder?.path && (
                 <ContextMenu>
                   <ContextMenuTrigger>
-                    <DesktopDropDirContext.Provider value={desktopDropDir}>
-                      <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
-                        {nodes.map((node) => (
-                          <RenderNode
-                            key={node.path}
-                            node={node}
-                            depth={1}
-                            expandedPaths={expandedPaths}
-                            workspacePath={folder.path}
-                            activeSessionTabId={activeSessionTabId}
-                            dnd={treeDndValue}
-                            gitEnabled={gitEnabled}
-                            webMode={webMode}
-                            folderUploadSupported={folderUploadSupported}
-                            gitStatusByPath={gitStatusByPath}
-                            gitChangedDirPaths={gitChangedDirPaths}
-                            untrackedDirPaths={untrackedDirPaths}
-                            gitignoreIgnoredPaths={gitignoreIgnoredPaths}
-                            ancestorGitignoreIgnored={false}
-                            ancestorUntracked={false}
-                            onOpenFilePreview={(path) => {
-                              void openFilePreview(path)
-                            }}
-                            onOpenFileDiff={(path) => {
-                              void openWorkingTreeDiff(path)
-                            }}
-                            onOpenDirDiff={(path) => {
-                              void openWorkingTreeDiff(path, {
-                                mode: "overview",
-                              })
-                            }}
-                            onOpenCommitWindow={handleOpenCommitWindow}
-                            onRequestCompareWithBranch={
-                              handleRequestCompareWithBranch
-                            }
-                            onRequestRollback={handleRequestRollback}
-                            onOpenDirInTerminal={handleOpenDirInTerminal}
-                            onRequestCreate={handleRequestCreate}
-                            onRequestAddToVcs={handleAddToVcs}
-                            onRequestRename={handleRequestRename}
-                            onRequestDelete={handleRequestDelete}
-                            onRequestUpload={handleRequestUpload}
-                            onRequestDownloadFile={(target) =>
-                              void handleRequestDownloadFile(target)
-                            }
-                            onRequestDownloadDir={(target) =>
-                              void handleRequestDownloadDir(target)
-                            }
-                            onRequestCopyEntry={copyFileTreeEntry}
-                            onRequestCutEntry={cutFileTreeEntry}
-                            onRequestPasteEntry={handleRequestPasteEntry}
-                            canPasteEntry={canPasteEntry}
-                            onRefresh={fetchTree}
-                          />
-                        ))}
-                      </RootDropFolder>
-                    </DesktopDropDirContext.Provider>
+<LinkedDirNamesContext.Provider value={linkedNames}>
+                      <DesktopDropDirContext.Provider value={desktopDropDir}>
+                        <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
+                          {nodes.map((node) => (
+                            <RenderNode
+                              key={node.path}
+                              node={node}
+                              depth={1}
+                              expandedPaths={expandedPaths}
+                              workspacePath={folder.path}
+                              activeSessionTabId={activeSessionTabId}
+                              dnd={treeDndValue}
+                              gitEnabled={gitEnabled}
+                              webMode={webMode}
+                              folderUploadSupported={folderUploadSupported}
+                              gitStatusByPath={gitStatusByPath}
+                              gitChangedDirPaths={gitChangedDirPaths}
+                              untrackedDirPaths={untrackedDirPaths}
+                              gitignoreIgnoredPaths={gitignoreIgnoredPaths}
+                              ancestorGitignoreIgnored={false}
+                              ancestorUntracked={false}
+                              onOpenFilePreview={(path) => {
+                                void openFilePreview(path)
+                              }}
+                              onOpenFileDiff={(path) => {
+                                void openWorkingTreeDiff(path)
+                              }}
+                              onOpenDirDiff={(path) => {
+                                void openWorkingTreeDiff(path, {
+                                  mode: "overview",
+                                })
+                              }}
+                              onOpenCommitWindow={handleOpenCommitWindow}
+                              onRequestCompareWithBranch={
+                                handleRequestCompareWithBranch
+                              }
+                              onRequestRollback={handleRequestRollback}
+                              onOpenDirInTerminal={handleOpenDirInTerminal}
+                              onRequestCreate={handleRequestCreate}
+                              onRequestAddToVcs={handleAddToVcs}
+                              onRequestRename={handleRequestRename}
+                              onRequestDelete={handleRequestDelete}
+                              onRequestUpload={handleRequestUpload}
+                              onRequestDownloadFile={(target) =>
+                                void handleRequestDownloadFile(target)
+                              }
+                              onRequestDownloadDir={(target) =>
+                                void handleRequestDownloadDir(target)
+                              }
+                              onRequestCopyEntry={copyFileTreeEntry}
+                              onRequestCutEntry={cutFileTreeEntry}
+                              onRequestPasteEntry={handleRequestPasteEntry}
+                              canPasteEntry={canPasteEntry}
+                              onRefresh={fetchTree}
+                            />
+                          ))}
+                        </RootDropFolder>
+                      </DesktopDropDirContext.Provider>
+                    </LinkedDirNamesContext.Provider>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
                     <ContextMenuSub>

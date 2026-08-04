@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 // Exercise the real Streamdown pipeline for the plan-markdown branch; only the
 // link-safety hook is stubbed (no bearing on plan rendering), mirroring
@@ -33,7 +33,38 @@ function renderCard(props: {
   )
 }
 
+// jsdom does no layout, so scrollHeight/clientHeight both read 0 — already
+// "not overflowing" for the default case. Patch both onto Element.prototype
+// *before* rendering so the clamp's synchronous mount-time measurement (it
+// never waits on the inert ResizeObserver stub in test-setup.ts) sees them.
+function mockScrollMetrics(scrollHeight: number, clientHeight: number) {
+  const descriptors = (["scrollHeight", "clientHeight"] as const).map(
+    (prop) =>
+      [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)] as const
+  )
+  Object.defineProperty(Element.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => scrollHeight,
+  })
+  Object.defineProperty(Element.prototype, "clientHeight", {
+    configurable: true,
+    get: () => clientHeight,
+  })
+  return () => {
+    for (const [prop, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(Element.prototype, prop, descriptor)
+    }
+  }
+}
+
 describe("PlanModeCard", () => {
+  let restoreMetrics: (() => void) | null = null
+
+  afterEach(() => {
+    restoreMetrics?.()
+    restoreMetrics = null
+  })
+
   it("renders a compact marker for EnterPlanMode (no plan body)", () => {
     const { container } = renderCard({ toolName: "enterplanmode", input: "{}" })
     expect(screen.getByText("Entered plan mode")).toBeInTheDocument()
@@ -112,6 +143,48 @@ describe("PlanModeCard", () => {
     // approval.
     renderCard({ toolName: "plan_review", input: null, output: null })
     expect(screen.getByText("Kept in plan mode")).toBeInTheDocument()
+  })
+
+  it("leaves a short plan unclamped, with no toggle", () => {
+    renderCard({
+      toolName: "exitplanmode",
+      input: JSON.stringify({ plan: "# Heading" }),
+    })
+
+    expect(
+      screen.queryByTestId("plan-mode-card-toggle")
+    ).not.toBeInTheDocument()
+    const content = screen.getByTestId("plan-mode-card-content")
+    expect(content).not.toHaveClass("collapsed-content-fade")
+  })
+
+  it("clamps a long plan and toggles it open and closed", () => {
+    restoreMetrics = mockScrollMetrics(900, 288)
+
+    renderCard({
+      toolName: "exitplanmode",
+      input: JSON.stringify({ plan: "# Heading\n- a\n- b\n- c" }),
+    })
+
+    const content = screen.getByTestId("plan-mode-card-content")
+    const toggle = screen.getByTestId("plan-mode-card-toggle")
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(toggle).toHaveTextContent("Show more")
+    expect(toggle).toHaveAttribute("aria-controls", content.id)
+    expect(content).toHaveClass("max-h-72", "collapsed-content-fade")
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(toggle).toHaveTextContent("Show less")
+    expect(screen.getByTestId("plan-mode-card-content")).not.toHaveClass(
+      "max-h-72",
+      "collapsed-content-fade"
+    )
+
+    // Clicking again re-collapses.
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.getByTestId("plan-mode-card-content")).toHaveClass("max-h-72")
   })
 
   it("says the decision is pending while the plan-review call is unsettled", () => {

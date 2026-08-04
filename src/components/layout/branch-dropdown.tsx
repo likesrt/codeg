@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ChevronDown,
-  FolderOpen,
   GitBranch,
   GitCommitHorizontal,
   GitFork,
@@ -51,12 +50,11 @@ import {
   openPushWindow,
   openStashWindow,
 } from "@/lib/api"
-import { isDesktop, openFileDialog, subscribe } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { subscribe } from "@/lib/platform"
 import { RemoteManageDialog } from "@/components/layout/remote-manage-dialog"
 import { ConflictDialog } from "@/components/layout/conflict-dialog"
 import { StashDialog } from "@/components/layout/stash-dialog"
-import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
+import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import { toErrorMessage } from "@/lib/app-error"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import {
@@ -162,7 +160,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const [branchLoading, setBranchLoading] = useState(false)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [worktreeOpen, setWorktreeOpen] = useState(false)
-  const [worktreeBrowserOpen, setWorktreeBrowserOpen] = useState(false)
   const [worktreeBranchName, setWorktreeBranchName] = useState("")
   const [worktreePath, setWorktreePath] = useState("")
   const [manageRemotesOpen, setManageRemotesOpen] = useState(false)
@@ -384,24 +381,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     setWorktreeBranchName(defaultBranch)
     setWorktreePath(`${parentDir}/${folderName}-${currentBranch}-${random}`)
     setWorktreeOpen(true)
-  }
-
-  async function handleBrowseWorktreePath() {
-    // The worktree is created on whatever host runs the git binary — local
-    // for the desktop, remote for a remote workspace. The picker must
-    // therefore browse the matching filesystem, otherwise the user
-    // ends up with a path the wrong side can't resolve.
-    if (isDesktop() && getActiveRemoteConnectionId() === null) {
-      const selected = await openFileDialog({
-        directory: true,
-        multiple: false,
-      })
-      if (selected) {
-        setWorktreePath(Array.isArray(selected) ? selected[0] : selected)
-      }
-    } else {
-      setWorktreeBrowserOpen(true)
-    }
   }
 
   async function handleNewWorktree() {
@@ -787,22 +766,12 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
             </div>
             <div className="space-y-2">
               <Label htmlFor="wt-path">{t("dialogs.worktreePathLabel")}</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="wt-path"
-                  placeholder={t("dialogs.worktreePathPlaceholder")}
-                  value={worktreePath}
-                  onChange={(e) => setWorktreePath(e.target.value)}
-                  className="flex-1"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleBrowseWorktreePath}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                </Button>
-              </div>
+              <DirectoryPathInput
+                id="wt-path"
+                placeholder={t("dialogs.worktreePathPlaceholder")}
+                value={worktreePath}
+                onValueChange={setWorktreePath}
+              />
             </div>
           </div>
           <DialogFooter>
@@ -820,12 +789,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <DirectoryBrowserDialog
-        open={worktreeBrowserOpen}
-        onOpenChange={setWorktreeBrowserOpen}
-        onSelect={(path) => setWorktreePath(path)}
-      />
 
       <RemoteManageDialog
         open={manageRemotesOpen}

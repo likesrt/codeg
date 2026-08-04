@@ -17,8 +17,12 @@ export const BOARD_COLUMN_IDS: BoardColumnId[] = [
 export function columnForStatus(status: WorkTaskStatus): BoardColumnId {
   switch (status) {
     case "todo":
+    // Still waiting for a concurrency slot — nothing is happening yet.
     case "queued":
       return "todo"
+    // Already out of the queue and working (worktree, init command, agent
+    // spawn), just without a session to show yet.
+    case "preparing":
     case "running":
       return "inProgress"
     case "awaiting_input":

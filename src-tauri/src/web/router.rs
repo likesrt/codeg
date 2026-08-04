@@ -204,6 +204,30 @@ pub fn build_router(
             post(handlers::folders::update_folder_default_agent),
         )
         .route(
+            "/list_folder_links",
+            post(handlers::folder_links::list_folder_links),
+        )
+        .route(
+            "/preview_folder_links",
+            post(handlers::folder_links::preview_folder_links),
+        )
+        .route(
+            "/create_folder_links",
+            post(handlers::folder_links::create_folder_links),
+        )
+        .route(
+            "/rename_folder_link",
+            post(handlers::folder_links::rename_folder_link),
+        )
+        .route(
+            "/repair_folder_link",
+            post(handlers::folder_links::repair_folder_link),
+        )
+        .route(
+            "/remove_folder_link",
+            post(handlers::folder_links::remove_folder_link),
+        )
+        .route(
             "/add_folder_to_history",
             post(handlers::folders::add_folder_to_history),
         )

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::MissedTickBehavior;
 
 use crate::acp::manager::ConnectionManager;
@@ -44,7 +44,7 @@ use crate::db::AppDatabase;
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::{
     AgentType, WorkTaskConfig, WorkTaskFolderSettings, WorkTaskMergeState,
-    WorkTaskPreflight,
+    WorkTaskPreflight, STAGE_PROMPT_ALL,
 };
 use crate::web::event_bridge::{
     emit_event, EventEmitter, WorkTaskChange, WORK_TASK_CHANGED_EVENT,
@@ -79,11 +79,20 @@ pub struct TaskEngine {
     /// `"a:<id>"` — namespaced so the three id spaces can't collide). Non-empty
     /// set ⇔ awaiting_input.
     awaiting: Arc<Mutex<HashMap<i32, HashSet<String>>>>,
-    /// Tasks currently being launched (queued in DB but owned by an in-flight
-    /// launch), mapped to their folder so the pump's concurrency accounting
-    /// stays per-folder. Keeps the pump from double-launching and reconcile
-    /// from re-claiming them.
-    launching: Arc<Mutex<HashMap<i32, i32>>>,
+    /// Tasks currently being launched (`queued`, then `preparing` in DB, but
+    /// owned by an in-flight launch), mapped to their folder so the pump's
+    /// concurrency accounting stays per-folder. Keeps the pump from
+    /// double-launching, and is the reconcile sweep's ownership test for
+    /// `preparing` rows. Entries carry an ownership token: a slow launch that
+    /// is still unwinding must not drop the entry a newer launch of the same
+    /// task now depends on.
+    launching: Arc<Mutex<HashMap<i32, LaunchOwner>>>,
+    /// Source of `LaunchOwner` tokens.
+    launch_token: Arc<std::sync::atomic::AtomicU64>,
+    /// Live setup (init command) child processes, by task. A cancel kills the
+    /// process TREE so a long `pnpm install` stops with the task instead of
+    /// running to completion in the background.
+    setup_children: Arc<Mutex<HashMap<i32, SetupChild>>>,
     /// Tasks whose merge/cleanup is executing in THIS process — the reconcile
     /// tick must not run crash recovery against them.
     merging: Arc<Mutex<HashSet<i32>>>,
@@ -138,6 +147,8 @@ pub fn build_task_engine(
         index: Arc::new(Mutex::new(HashMap::new())),
         awaiting: Arc::new(Mutex::new(HashMap::new())),
         launching: Arc::new(Mutex::new(HashMap::new())),
+        launch_token: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        setup_children: Arc::new(Mutex::new(HashMap::new())),
         merging: Arc::new(Mutex::new(HashSet::new())),
         task_locks: Arc::new(Mutex::new(HashMap::new())),
         folder_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -188,10 +199,12 @@ fn acquire_engine_ownership(data_dir: &Path) -> Ownership {
 /// Long-running driver: boot recovery, then a select loop over the event bus +
 /// the reconcile tick. Spawn once per process in each boot path.
 pub async fn run_task_engine(engine: Arc<TaskEngine>) {
-    // Boot recovery: no connections survive a restart, so queued / running /
-    // awaiting_input are interruptions → failed(interrupted); retry is
-    // idempotent (the worktree is reused). merging is exempt — it recovers
-    // from git truth below, never from connection liveness.
+    // Boot recovery: no connections (and no setup child processes) survive a
+    // restart, so queued / preparing / running / awaiting_input are
+    // interruptions → failed(interrupted); retry is idempotent (the worktree is
+    // reused, and an init command that never finished re-runs — see the setup
+    // marker). merging is exempt — it recovers from git truth below, never from
+    // connection liveness.
     match work_task_service::boot_reconcile_interrupted(&engine.db.conn).await {
         Ok(n) if n > 0 => {
             tracing::info!("[work_task] boot reconcile failed {n} interrupted task(s)");
@@ -263,11 +276,22 @@ enum LaunchMode {
 }
 
 impl LaunchMode {
-    /// The task status a launch of this mode expects to find (and keep).
+    /// The task status a launch of this mode expects to find when it starts.
     fn expected_status(&self) -> WorkTaskStatus {
         match self {
             LaunchMode::Merge { .. } => WorkTaskStatus::Merging,
             _ => WorkTaskStatus::Queued,
+        }
+    }
+
+    /// The status the task holds for the REST of the launch, once setup has
+    /// begun — what the cancel gates re-check. A merge generation stays
+    /// `merging` throughout; every other mode moves `queued → preparing` before
+    /// it touches the worktree.
+    fn in_flight_status(&self) -> WorkTaskStatus {
+        match self {
+            LaunchMode::Merge { .. } => WorkTaskStatus::Merging,
+            _ => WorkTaskStatus::Preparing,
         }
     }
 
@@ -413,6 +437,15 @@ impl TaskEngine {
         }
         self.emit_upsert(task_id);
 
+        // Kill a running init command BEFORE waiting on the task lock: the
+        // launch holds that lock for its whole setup, so waiting first would
+        // mean waiting out the very `pnpm install` we are trying to stop. The
+        // run_seq we just canceled scopes the kill to this generation (cancel
+        // does not bump it, so the row still carries it).
+        if let Ok(task) = work_task_service::get_model(&self.db.conn, task_id).await {
+            self.kill_setup_child(task_id, task.run_seq).await;
+        }
+
         // Serialize the teardown with a possibly in-flight launch: the launch
         // holds the task lock across spawn → prompt, and its status gates
         // re-read after each step — so we tear down either before the prompt
@@ -498,7 +531,7 @@ impl TaskEngine {
                 .lock()
                 .await
                 .iter()
-                .filter(|(_, fid)| **fid == folder_id)
+                .filter(|(_, owner)| owner.folder_id == folder_id)
                 .map(|(tid, _)| *tid)
                 .collect();
             let active = match work_task_service::active_launched_count(&self.db.conn, folder_id)
@@ -523,46 +556,107 @@ impl TaskEngine {
                     return;
                 }
             };
-            self.launching.lock().await.insert(next.id, folder_id);
-            self.spawn_launch(next.id, folder_id, launch_mode_for(&next));
+            // Claimed synchronously: this loop iterates immediately, and the
+            // task must already read as in-flight when it does.
+            let token = self.claim_launch_slot(next.id, folder_id).await;
+            self.spawn_launch_owned(next.id, folder_id, launch_mode_for(&next), Some(token));
+        }
+    }
+
+    /// Mark `task_id` as owned by a new launch and return the ownership token.
+    async fn claim_launch_slot(&self, task_id: i32, folder_id: i32) -> u64 {
+        let token = self
+            .launch_token
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.launching
+            .lock()
+            .await
+            .insert(task_id, LaunchOwner { folder_id, token });
+        token
+    }
+
+    /// Give up ownership — but only if the entry is still ours. A launch that
+    /// is slowly unwinding must not drop the slot a NEWER launch of the same
+    /// task now holds, or the reconcile sweep would requeue a live setup and
+    /// the folder's accounting would lose a slot.
+    async fn release_launch_slot(&self, task_id: i32, token: u64) {
+        let mut launching = self.launching.lock().await;
+        if launching.get(&task_id).is_some_and(|o| o.token == token) {
+            launching.remove(&task_id);
         }
     }
 
     fn spawn_launch(self: &Arc<Self>, task_id: i32, folder_id: i32, mode: LaunchMode) {
+        self.spawn_launch_owned(task_id, folder_id, mode, None);
+    }
+
+    /// `token: Some(_)` when the caller already claimed the slot (the pump,
+    /// whose loop must see the task as in-flight the moment it continues);
+    /// `None` to claim it here.
+    fn spawn_launch_owned(
+        self: &Arc<Self>,
+        task_id: i32,
+        folder_id: i32,
+        mode: LaunchMode,
+        token: Option<u64>,
+    ) {
         let engine = self.clone();
         tokio::spawn(async move {
-            engine.launching.lock().await.insert(task_id, folder_id);
-            let result = engine.launch(task_id, mode).await;
-            engine.launching.lock().await.remove(&task_id);
+            let token = match token {
+                Some(token) => token,
+                None => engine.claim_launch_slot(task_id, folder_id).await,
+            };
+            // A merge generation stays `merging` and is NEVER failed: it
+            // recovers from git truth (`recover_merging`, driven by the
+            // reconcile tick) so a half-merge can go back to review.
+            let is_merge = matches!(mode, LaunchMode::Merge { .. });
+            // The generation the launch actually operated on, published as soon
+            // as it has read the row. A setup failure must be attributed to THAT
+            // generation: a cancel + requeue (which bumps run_seq) can land
+            // while a slow setup is still unwinding, and failing the row by its
+            // *current* sequence would kill the fresh run instead.
+            let launched_seq = LaunchSeq::default();
+            let result = engine.launch(task_id, mode, &launched_seq).await;
+            let errored = result.is_err();
             if let Err(e) = result {
                 tracing::info!("[work_task] launch {task_id}: {e}");
-                let task = work_task_service::get_model(&engine.db.conn, task_id).await.ok();
-                let seq = task.as_ref().map(|t| t.run_seq);
-                let failed = work_task_service::fail(
-                    &engine.db.conn,
-                    task_id,
-                    &[WorkTaskStatus::Queued, WorkTaskStatus::Running],
-                    seq,
-                    "setup_error",
-                    Some(e),
-                )
-                .await
-                .unwrap_or(false);
-                if failed {
-                    engine.emit_upsert(task_id);
+                if let (false, Some(seq)) = (is_merge, launched_seq.get()) {
+                    let failed = work_task_service::fail(
+                        &engine.db.conn,
+                        task_id,
+                        &[WorkTaskStatus::Queued, WorkTaskStatus::Preparing],
+                        Some(seq),
+                        "setup_error",
+                        Some(e),
+                    )
+                    .await
+                    .unwrap_or(false);
+                    if failed {
+                        engine.emit_upsert(task_id);
+                    }
                 }
+            }
+            // Released only after the failure is settled: while the entries are
+            // held, the reconcile sweep cannot mistake this row for an orphaned
+            // `preparing`, and a cancel still has a kill slot to write to.
+            engine.release_setup_slot(task_id, launched_seq.get()).await;
+            engine.release_launch_slot(task_id, token).await;
+            if errored {
                 // A slot may have opened up (or this task left the queue) —
                 // keep draining.
-                if let Some(t) = task {
-                    engine.pump_folder(t.folder_id).await;
-                }
+                engine.pump_folder(folder_id).await;
             }
         });
     }
 
     // ── launch ──────────────────────────────────────────────────────────────
 
-    async fn launch(self: &Arc<Self>, task_id: i32, mode: LaunchMode) -> Result<(), String> {
+    async fn launch(
+        self: &Arc<Self>,
+        task_id: i32,
+        mode: LaunchMode,
+        launched_seq: &LaunchSeq,
+    ) -> Result<(), String> {
         let lock = self.task_lock(task_id).await;
         let _guard = lock.lock().await;
 
@@ -573,6 +667,7 @@ impl TaskEngine {
             return Ok(()); // canceled (or otherwise moved on) before we got here
         }
         let run_seq = task.run_seq;
+        launched_seq.set(run_seq);
         let root = get_folder_core(&self.db, task.folder_id)
             .await
             .map_err(|e| e.to_string())?;
@@ -597,6 +692,34 @@ impl TaskEngine {
             return Err("prompt is empty".to_string());
         }
 
+        // Out of the queue: from here the task holds its slot and does real
+        // work (worktree, init command, agent spawn), so the board must stop
+        // calling it "queued". Losing the CAS means a concurrent cancel or a
+        // newer generation took over. A merge generation stays `merging`.
+        if !matches!(mode, LaunchMode::Merge { .. }) {
+            // Reserve the kill slot BEFORE the row can read as `preparing`, and
+            // hold it for the whole phase. A cancel cannot wait for the task
+            // lock (this launch holds it across the entire init command), so it
+            // must always find somewhere to record itself — including during
+            // `ensure_worktree`, which takes seconds on a big repo.
+            // `spawn_launch_owned` releases the slot, including when the CAS
+            // below loses.
+            self.reserve_setup_slot(task_id, run_seq).await;
+            if !work_task_service::begin_setup(&self.db.conn, task_id, run_seq)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                return Ok(());
+            }
+            self.emit_upsert(task_id);
+        }
+
+        // Cancel gate before the expensive part of setup, so a cancel that
+        // landed while we were reading config never reaches `git worktree add`.
+        if !still_expected(&self.db.conn, task_id, run_seq, mode.in_flight_status()).await {
+            return Ok(());
+        }
+
         // Worktree: reuse the recorded one when it still exists (retry/return),
         // else mint a fresh one pinned to the base recorded FIRST (no drift
         // window between reading the branch and creating the worktree). A merge
@@ -606,17 +729,22 @@ impl TaskEngine {
             self.existing_worktree(&task).await?
         } else {
             let wt = self.ensure_worktree(&task, &root).await?;
-            // Freshly created tree → run the folder's init command (deps
-            // install etc.) before the agent ever sees it. A failure is a
-            // setup error: the task must not start half-initialized.
-            if wt.created {
-                let init = settings
-                    .init_command
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|c| !c.is_empty());
-                if let Some(command) = init {
-                    self.run_init_command(task_id, command, &wt.path).await?;
+            // Run the folder's init command (deps install etc.) before the
+            // agent ever sees the tree. Gated on the setup marker, NOT on "the
+            // tree was just created": an init that was killed (cancel) or cut
+            // short (restart) leaves a half-installed tree that must initialize
+            // again. A failure is a setup error — the task must not start
+            // half-initialized.
+            if let Some(command) = settings
+                .init_command
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            {
+                if !setup_marker_present(&wt.path).await {
+                    self.run_init_command(task_id, run_seq, command, &wt.path)
+                        .await?;
+                    write_setup_marker(&wt.path).await;
                 }
             }
             wt
@@ -666,7 +794,7 @@ impl TaskEngine {
             .map_err(|e| e.to_string())?;
 
         // Cancel gate before spawning the CLI.
-        if !still_expected(&self.db.conn, task_id, run_seq, mode.expected_status()).await {
+        if !still_expected(&self.db.conn, task_id, run_seq, mode.in_flight_status()).await {
             return Ok(());
         }
 
@@ -735,7 +863,7 @@ impl TaskEngine {
         };
         emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
 
-        let blocks = compose_prompt(&cfg, &task, &mode, resumed, &self.db.conn).await?;
+        let blocks = compose_prompt(&cfg, &task, &mode, &settings, resumed, &self.db.conn).await?;
 
         // Register for completion correlation BEFORE prompting so a fast
         // TurnComplete can't race ahead of the index entry.
@@ -834,7 +962,6 @@ impl TaskEngine {
                     return Ok(WorktreeRef {
                         folder_id: detail.id,
                         path: detail.path,
-                        created: false,
                     });
                 }
             }
@@ -892,7 +1019,6 @@ impl TaskEngine {
         Ok(WorktreeRef {
             folder_id: wt.id,
             path: wt.path,
-            created: true,
         })
     }
 
@@ -911,15 +1037,20 @@ impl TaskEngine {
         Ok(WorktreeRef {
             folder_id: detail.id,
             path: detail.path,
-            created: false,
         })
     }
 
-    /// Run the folder's worktree init command in a freshly created worktree.
+    /// Run the folder's worktree init command in an uninitialized worktree.
     /// The outcome is always recorded on the timeline; a failure aborts the
     /// launch (setup error) so the agent never starts half-initialized.
-    async fn run_init_command(&self, task_id: i32, command: &str, cwd: &str) -> Result<(), String> {
-        let run = run_shell_capture(command, cwd).await;
+    async fn run_init_command(
+        &self,
+        task_id: i32,
+        run_seq: i32,
+        command: &str,
+        cwd: &str,
+    ) -> Result<(), String> {
+        let run = self.run_setup_shell(task_id, run_seq, command, cwd).await;
         let (exit_code, tail) = match &run {
             Ok((code, tail)) => (*code, tail.clone()),
             Err(e) => (None, e.clone()),
@@ -943,6 +1074,111 @@ impl TaskEngine {
             let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
             Err(format!("worktree init command failed (exit {code}): {tail}"))
         }
+    }
+
+    /// Open the kill slot for a generation entering setup. Held for the whole
+    /// preparing phase so a cancel always has somewhere to record itself, even
+    /// before (or after) a child process exists.
+    async fn reserve_setup_slot(&self, task_id: i32, run_seq: i32) {
+        self.setup_children.lock().await.insert(
+            task_id,
+            SetupChild {
+                kill_requested: false,
+                run_seq,
+                wake: Arc::new(Notify::new()),
+            },
+        );
+    }
+
+    /// Close the slot once the launch is over — but only if it is still this
+    /// generation's, so a slow unwinding launch cannot drop the slot a newer
+    /// one is relying on.
+    async fn release_setup_slot(&self, task_id: i32, run_seq: Option<i32>) {
+        let Some(run_seq) = run_seq else { return };
+        let mut children = self.setup_children.lock().await;
+        if children.get(&task_id).is_some_and(|s| s.run_seq == run_seq) {
+            children.remove(&task_id);
+        }
+    }
+
+    /// `run_shell_capture` for the setup phase: the child is bound to the
+    /// task's kill slot so a cancel kills its process TREE instead of letting a
+    /// multi-minute install run to completion after the user gave up.
+    ///
+    /// Every cancel window is covered, and the kill always happens HERE, in the
+    /// task that owns the child:
+    /// - before the spawn → the slot already says `kill_requested`, so no child
+    ///   is ever started;
+    /// - during the spawn → `notify_one` leaves a permit, so the wait loop's
+    ///   first `notified()` returns immediately and kills;
+    /// - while waiting → the wake fires and we kill, then keep awaiting the
+    ///   child so it is still reaped normally;
+    /// - after the child was reaped → nobody holds its pid any more, so a
+    ///   recycled pid can never be signalled.
+    async fn run_setup_shell(
+        &self,
+        task_id: i32,
+        run_seq: i32,
+        line: &str,
+        cwd: &str,
+    ) -> Result<(Option<i32>, String), String> {
+        let wake = {
+            // The slot is opened by `launch` before setup begins; re-assert it
+            // if it somehow went missing, so the child is never unkillable.
+            let mut children = self.setup_children.lock().await;
+            let slot = children.entry(task_id).or_insert_with(|| SetupChild {
+                kill_requested: false,
+                run_seq,
+                wake: Arc::new(Notify::new()),
+            });
+            if slot.kill_requested {
+                return Err("canceled before the init command started".to_string());
+            }
+            slot.run_seq = run_seq;
+            slot.wake.clone()
+        };
+        let child = shell_command(line, cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = child.id();
+
+        let wait = child.wait_with_output();
+        tokio::pin!(wait);
+        let mut killed = false;
+        let out = loop {
+            tokio::select! {
+                out = &mut wait => break out,
+                // Kill once, then go back to awaiting the child: the process
+                // is only reaped by the `wait` branch, so `pid` is still ours.
+                _ = wake.notified(), if !killed => {
+                    killed = true;
+                    kill_process_tree(pid).await;
+                }
+            }
+        };
+        let out = out.map_err(|e| e.to_string())?;
+        Ok(combine_capture(&out))
+    }
+
+    /// Stop the setup of `task_id`, but only when the slot belongs to
+    /// generation `run_seq` — a stale cancel must not stop a task that was
+    /// already requeued and relaunched. Records the request and wakes the
+    /// runner; the actual kill happens in `run_setup_shell`, which is the only
+    /// place that knows the child is still alive.
+    async fn kill_setup_child(&self, task_id: i32, run_seq: i32) {
+        let wake = {
+            let mut children = self.setup_children.lock().await;
+            match children.get_mut(&task_id) {
+                Some(slot) if slot.run_seq == run_seq => {
+                    slot.kill_requested = true;
+                    slot.wake.clone()
+                }
+                _ => return,
+            }
+        };
+        wake.notify_one();
     }
 
     /// Start preflight: the target folder must exist, be live, and be a
@@ -1375,6 +1611,10 @@ impl TaskEngine {
             Ok(None) => Err("task left review before the merge began".to_string()),
             Ok(Some(_run_seq)) => {
                 self.emit_upsert(task_id);
+                // A merge generation never transitions out of `merging` here,
+                // so the sequence sink stays unused — the failure is handled by
+                // the match below (residue cleanup + back to review).
+                let merge_seq = LaunchSeq::default();
                 match self
                     .launch(
                         task_id,
@@ -1385,6 +1625,7 @@ impl TaskEngine {
                             strategy,
                             message,
                         },
+                        &merge_seq,
                     )
                     .await
                 {
@@ -1643,7 +1884,10 @@ impl TaskEngine {
             .map_err(|e| e.to_string())?;
         if matches!(
             task.status,
-            WorkTaskStatus::Queued | WorkTaskStatus::Running | WorkTaskStatus::AwaitingInput
+            WorkTaskStatus::Queued
+                | WorkTaskStatus::Preparing
+                | WorkTaskStatus::Running
+                | WorkTaskStatus::AwaitingInput
                 | WorkTaskStatus::Merging
         ) {
             return Err("cancel or finish the task before removing its worktree".to_string());
@@ -1844,6 +2088,36 @@ impl TaskEngine {
             }
         }
 
+        // preparing rows that no in-flight launch owns → back to the queue.
+        // `launching` is authoritative here: this process holds the exclusive
+        // engine lock, and the entry outlives the whole launch (including its
+        // failure handling). Without this sweep an orphan would sit in
+        // `preparing` forever — `next_queued` only picks `queued`, so it would
+        // lose the self-healing a stuck `queued` row gets today.
+        let preparing =
+            work_task_service::list_by_status(&self.db.conn, &[WorkTaskStatus::Preparing])
+                .await
+                .unwrap_or_default();
+        if !preparing.is_empty() {
+            let launching: HashSet<i32> = self.launching.lock().await.keys().copied().collect();
+            for task in preparing {
+                if launching.contains(&task.id) {
+                    continue;
+                }
+                match work_task_service::abandon_setup(&self.db.conn, task.id, task.run_seq).await {
+                    Ok(true) => {
+                        tracing::info!(
+                            "[work_task] requeued orphaned setup of task {}",
+                            task.id
+                        );
+                        self.emit_upsert(task.id);
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!("[work_task] abandon setup error: {e}"),
+                }
+            }
+        }
+
         // merging not owned by this process's in-flight merges → git truth.
         // Spawned off-thread: recovery waits on the per-folder git lock, and an
         // in-flight merge on that folder must not stall the event loop here.
@@ -1928,8 +2202,6 @@ impl TaskEngine {
 struct WorktreeRef {
     folder_id: i32,
     path: String,
-    /// The worktree was created by this call (→ run the init command).
-    created: bool,
 }
 
 /// Pick the launch mode for a pump-driven launch from the task's history: a
@@ -1979,11 +2251,13 @@ fn effective_agent_config(
 /// Compose the prompt for a launch mode. Fresh runs replay the task's blocks.
 /// Retry/return compose against the session we actually got: a resumed session
 /// already carries the task context, while a fresh fallback session needs the
-/// full original description again. Every prompt ends with the worktree guard.
+/// full original description again. Every prompt ends with the worktree guard,
+/// then with whatever the folder's settings add for this stage.
 async fn compose_prompt(
     cfg: &WorkTaskConfig,
     task: &crate::db::entities::work_task::Model,
     mode: &LaunchMode,
+    settings: &WorkTaskFolderSettings,
     resumed: bool,
     conn: &sea_orm::DatabaseConnection,
 ) -> Result<Vec<PromptInputBlock>, String> {
@@ -2115,7 +2389,32 @@ async fn compose_prompt(
             ),
         });
     }
+
+    // Whatever the user added in task settings, always last: it refines the
+    // built-in wording above it, and staying at the end keeps `prompt_head`
+    // (the transcript's round marker) on the prompt's own opening text.
+    blocks.extend(stage_prompt_block(settings, mode.round_kind()));
     Ok(blocks)
+}
+
+/// The user's own instructions for a stage: the `all` text (every stage) then
+/// the stage's own, as one trailing block. Empty when neither is configured.
+fn stage_prompt_block(
+    settings: &WorkTaskFolderSettings,
+    stage: &str,
+) -> Option<PromptInputBlock> {
+    let extras: Vec<&str> = [STAGE_PROMPT_ALL, stage]
+        .into_iter()
+        .filter_map(|key| settings.stage_prompts.get(key))
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    if extras.is_empty() {
+        return None;
+    }
+    Some(PromptInputBlock::Text {
+        text: format!("—— Additional instructions ——\n{}", extras.join("\n\n")),
+    })
 }
 
 /// The feedback text of the most recent "return" user action, if any.
@@ -2135,6 +2434,82 @@ async fn latest_return_feedback(
             }
             p.get("feedback")?.as_str().map(String::from)
         })
+}
+
+/// One-shot sink for the generation a launch actually operated on. The launch
+/// fills it as soon as it has read the row; `spawn_launch` reads it afterwards
+/// so a setup failure is attributed to the right generation.
+#[derive(Default)]
+struct LaunchSeq(std::sync::Mutex<Option<i32>>);
+
+impl LaunchSeq {
+    fn set(&self, run_seq: i32) {
+        *self.0.lock().expect("launch seq mutex") = Some(run_seq);
+    }
+
+    fn get(&self) -> Option<i32> {
+        *self.0.lock().expect("launch seq mutex")
+    }
+}
+
+/// Ownership of a task's in-flight launch slot: which folder it counts
+/// against, plus a token so only the launch that took the slot can release it.
+struct LaunchOwner {
+    folder_id: i32,
+    token: u64,
+}
+
+/// A task's setup (init command) kill slot, open for the whole preparing phase.
+///
+/// The slot deliberately does NOT hold the child's pid. Only the task that
+/// spawned the child ever kills it, so a pid can never be signalled after it
+/// has been reaped (and possibly recycled by the OS onto an unrelated
+/// process). A canceller just raises `kill_requested` and rings `wake`.
+struct SetupChild {
+    /// A cancel arrived: refuse to start an init command, and kill a live one.
+    kill_requested: bool,
+    /// Generation that owns the slot — a stale cancel must not stop a newer run.
+    run_seq: i32,
+    /// Rung by the canceller, awaited by whoever is running the child.
+    wake: Arc<Notify>,
+}
+
+/// Marker file (in the worktree's PRIVATE git dir, so it can never show up in
+/// `git status` or be committed) recording that the folder's init command
+/// completed successfully in this worktree.
+const SETUP_MARKER: &str = "codeg-task-init-ok";
+
+async fn setup_marker_present(wt_path: &str) -> bool {
+    match task_git::git_dir(wt_path).await {
+        Ok(dir) => dir.join(SETUP_MARKER).exists(),
+        // Can't resolve the git dir → assume not initialized. Re-running an
+        // init command is wasteful at worst; skipping one is a broken tree.
+        Err(_) => false,
+    }
+}
+
+async fn write_setup_marker(wt_path: &str) {
+    match task_git::git_dir(wt_path).await {
+        Ok(dir) => {
+            if let Err(e) = tokio::fs::write(dir.join(SETUP_MARKER), b"").await {
+                tracing::warn!("[work_task] could not write the setup marker: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("[work_task] could not resolve the worktree git dir: {e}"),
+    }
+}
+
+/// Best-effort kill of a child's whole process tree. Killing only the direct
+/// child is not enough: the init command runs as `sh -c "<line>"`, and the real
+/// work (`pnpm install` and its downloads) happens in descendants that would
+/// otherwise keep running. Deliberately not `kill_on_drop`, which SIGKILLs the
+/// shell first and reparents the descendants out of reach — same rationale as
+/// `commands::office_tools::stream_install_or_kill_tree`.
+async fn kill_process_tree(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
+    if let Err(e) = kill_tree::tokio::kill_tree(pid).await {
+        tracing::warn!("[work_task] kill_tree failed for setup pid {pid}: {e}");
+    }
 }
 
 async fn still_expected(
@@ -2167,6 +2542,16 @@ fn prompt_head(blocks: &[PromptInputBlock]) -> String {
 /// own process. Returns (exit code, trailing output capped to
 /// `PREFLIGHT_TAIL_CHARS`).
 async fn run_shell_capture(line: &str, cwd: &str) -> Result<(Option<i32>, String), String> {
+    let out = shell_command(line, cwd)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(combine_capture(&out))
+}
+
+/// The platform's shell invocation for one command line, ready to `output()` or
+/// `spawn()`. stdin is null so a command waiting on input sees EOF.
+fn shell_command(line: &str, cwd: &str) -> tokio::process::Command {
     #[cfg(not(windows))]
     let mut command = {
         let mut c = crate::process::tokio_command("/bin/sh");
@@ -2181,10 +2566,18 @@ async fn run_shell_capture(line: &str, cwd: &str) -> Result<(Option<i32>, String
         c
     };
     command.current_dir(cwd);
-    let out = command.output().await.map_err(|e| e.to_string())?;
+    command.stdin(std::process::Stdio::null());
+    command
+}
+
+/// (exit code, trailing combined output) of a finished shell capture.
+fn combine_capture(out: &std::process::Output) -> (Option<i32>, String) {
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&out.stderr));
-    Ok((out.status.code(), tail_chars(&combined, PREFLIGHT_TAIL_CHARS)))
+    (
+        out.status.code(),
+        tail_chars(&combined, PREFLIGHT_TAIL_CHARS),
+    )
 }
 
 fn tail_chars(s: &str, n: usize) -> String {
@@ -2270,6 +2663,204 @@ mod tests {
         }];
         assert_eq!(prompt_head(&blocks), "Fix the login flow and add tests.");
         assert_eq!(prompt_head(&[]), "");
+    }
+
+    /// Minimal task row for prompt composition (nothing here touches the DB).
+    fn task_row() -> crate::db::entities::work_task::Model {
+        let now = chrono::Utc::now();
+        crate::db::entities::work_task::Model {
+            id: 7,
+            folder_id: 1,
+            title: "Fix the login flow".to_string(),
+            config: "{}".to_string(),
+            status: WorkTaskStatus::Queued,
+            failure_reason: None,
+            last_error: None,
+            run_seq: 1,
+            sort_order: 0,
+            worktree_folder_id: None,
+            conversation_id: None,
+            connection_id: None,
+            base_branch: Some("main".to_string()),
+            base_sha: None,
+            work_branch: Some("task/7".to_string()),
+            merge_state: None,
+            pending_merge: None,
+            cleanup_state: None,
+            verdict: None,
+            result_summary: None,
+            files_changed: None,
+            additions: None,
+            deletions: None,
+            merge_commit: None,
+            preflight: None,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            settled_at: None,
+            finished_at: None,
+            deleted_at: None,
+        }
+    }
+
+    fn task_config() -> WorkTaskConfig {
+        WorkTaskConfig {
+            prompt_blocks: vec![serde_json::json!({
+                "type": "text",
+                "text": "Fix the login flow and add tests."
+            })],
+            ..Default::default()
+        }
+    }
+
+    fn settings_with(pairs: &[(&str, &str)]) -> WorkTaskFolderSettings {
+        WorkTaskFolderSettings {
+            stage_prompts: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn texts(blocks: &[PromptInputBlock]) -> Vec<String> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                PromptInputBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn merge_mode() -> LaunchMode {
+        LaunchMode::Merge {
+            root_path: "/repo".to_string(),
+            base_branch: "main".to_string(),
+            work_branch: "task/7".to_string(),
+            strategy: "squash".to_string(),
+            message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_prompts_land_after_the_built_in_guard() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let settings = settings_with(&[("all", "Reply in Chinese."), ("work", "Run pnpm test.")]);
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &LaunchMode::Fresh,
+            &settings,
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+
+        let texts = texts(&blocks);
+        // …task blocks…, worktree guard, then the user's own instructions.
+        assert!(texts[texts.len() - 2].starts_with("—— Work task context ——"));
+        let last = texts.last().expect("trailing block");
+        assert!(last.starts_with("—— Additional instructions ——"));
+        // "all" first, then the stage's own text.
+        let all_at = last.find("Reply in Chinese.").expect("all text");
+        let work_at = last.find("Run pnpm test.").expect("stage text");
+        assert!(all_at < work_at);
+        // The round marker still keys off the task's own opening line, so the
+        // transcript's phase dividers are unaffected.
+        assert_eq!(prompt_head(&blocks), "Fix the login flow and add tests.");
+    }
+
+    #[tokio::test]
+    async fn stage_prompts_select_only_their_own_stage() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let settings = settings_with(&[
+            ("all", "EVERY-STAGE"),
+            ("work", "WORK-ONLY"),
+            ("retry", "RETRY-ONLY"),
+            ("return", "RETURN-ONLY"),
+            ("merge", "MERGE-ONLY"),
+        ]);
+        let modes = [
+            (LaunchMode::Fresh, "WORK-ONLY"),
+            (LaunchMode::Retry, "RETRY-ONLY"),
+            (LaunchMode::Return("please fix the copy".to_string()), "RETURN-ONLY"),
+            (merge_mode(), "MERGE-ONLY"),
+        ];
+        for (mode, expected) in modes {
+            let blocks = compose_prompt(
+                &task_config(),
+                &task_row(),
+                &mode,
+                &settings,
+                false,
+                &db.conn,
+            )
+            .await
+            .expect("compose");
+            let joined = texts(&blocks).join("\n");
+            assert!(joined.contains("EVERY-STAGE"), "{expected}: missing all-stage text");
+            assert!(joined.contains(expected), "{expected}: missing own text");
+            for other in ["WORK-ONLY", "RETRY-ONLY", "RETURN-ONLY", "MERGE-ONLY"] {
+                if other != expected {
+                    assert!(!joined.contains(other), "{expected}: leaked {other}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_stage_keeps_its_extra_without_the_guard() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let settings = settings_with(&[("merge", "Write the commit message in Chinese.")]);
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &merge_mode(),
+            &settings,
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+
+        let texts = texts(&blocks);
+        // The merge generation replaces the guard (it forbids exactly what a
+        // merge must do) — the user's extra still trails it.
+        assert!(texts.iter().all(|t| !t.starts_with("—— Work task context ——")));
+        assert!(texts[0].contains("land it onto the base branch"));
+        assert!(texts
+            .last()
+            .expect("trailing block")
+            .contains("Write the commit message in Chinese."));
+    }
+
+    #[tokio::test]
+    async fn blank_stage_prompts_add_nothing() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let bare = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let blank = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &LaunchMode::Fresh,
+            &settings_with(&[("all", "  \n "), ("work", "")]),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        assert_eq!(texts(&bare), texts(&blank));
     }
 
     #[test]

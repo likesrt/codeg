@@ -2,8 +2,8 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle of a work task. The pipeline is
-/// `todo → queued → running ⇄ awaiting_input → review → merging → done`, with
-/// `failed` / `canceled` as side paths. Two hard invariants:
+/// `todo → queued → preparing → running ⇄ awaiting_input → review → merging →
+/// done`, with `failed` / `canceled` as side paths. Two hard invariants:
 /// - `done` ⟺ merged: only the merge landing (or its crash recovery) writes
 ///   `done`, and `done` never rolls back.
 /// - Every transition is a conditional UPDATE (CAS) guarded by the expected
@@ -14,9 +14,15 @@ use serde::{Deserialize, Serialize};
 pub enum WorkTaskStatus {
     #[sea_orm(string_value = "todo")]
     Todo,
-    /// Claimed for execution; waiting for (or undergoing) launch.
+    /// Claimed for execution; waiting for a concurrency slot.
     #[sea_orm(string_value = "queued")]
     Queued,
+    /// Out of the queue and setting up: worktree creation, the folder's init
+    /// command, then spawning the agent CLI. No agent turn has started yet —
+    /// the task holds a slot, can be canceled, and a restart treats it as
+    /// interrupted exactly like `queued`.
+    #[sea_orm(string_value = "preparing")]
+    Preparing,
     #[sea_orm(string_value = "running")]
     Running,
     /// The agent is blocked on a question / permission / plan approval.

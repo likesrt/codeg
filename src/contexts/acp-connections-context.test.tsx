@@ -359,6 +359,190 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
   })
 })
 
+// Single-clicking a sidebar conversation opens a PREVIEW tab; the next
+// single-click replaces it. That release must never end a turn the user only
+// clicked in to watch — an owner's acpDisconnect kills the agent CLI mid-turn,
+// which the agent writes into its transcript as an interrupted request.
+describe("AcpConnectionsProvider preview-tab release (disconnectIfIdle)", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("keeps a PROMPTING owner alive when its preview tab is replaced", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+
+    await act(async () => {
+      await h.actions!.disconnectIfIdle(TAB)
+    })
+
+    expect(h.acpDisconnect).not.toHaveBeenCalled()
+    // Left in the store, still streaming: the idle sweep reclaims it once the
+    // turn settles (the tab is gone, so nothing else keeps it alive).
+    expect(h.store!.getConnection(TAB)?.status).toBe("prompting")
+  })
+
+  it("keeps an owner with outstanding background work alive", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "connected",
+    })
+    // Turn is over, but launched sub-agents / background shells are not:
+    // disconnecting would kill the agent CLI and that work with it.
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "background_activity",
+      session_id: "sess-1",
+      turns: [],
+      outstanding: 1,
+      settled: [],
+      watermark: 0,
+    })
+    expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(1)
+
+    await act(async () => {
+      await h.actions!.disconnectIfIdle(TAB)
+    })
+
+    expect(h.acpDisconnect).not.toHaveBeenCalled()
+  })
+
+  it("disconnects an IDLE owner right away (the reclaim this release exists for)", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "connected",
+    })
+
+    await act(async () => {
+      await h.actions!.disconnectIfIdle(TAB)
+    })
+
+    expect(h.acpDisconnect).toHaveBeenCalledWith("spawned-conn")
+    expect(h.store!.getConnection(TAB)).toBeUndefined()
+  })
+
+  it("detaches a mid-turn VIEWER without killing the owner's agent", async () => {
+    h.acpFindConnectionForConversation.mockResolvedValue({
+      connection_id: "owner-conn",
+      event_seq: 0,
+    })
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    emitAcpEvent(latestAttachHandlers(), {
+      seq: 1,
+      connection_id: "owner-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+
+    await act(async () => {
+      await h.actions!.disconnectIfIdle(TAB)
+    })
+
+    // A viewer never owns the backend process, so busy or not it detaches —
+    // and the idle sweep skips viewers, so leaving one would leak its stream.
+    expect(h.acpDisconnect).not.toHaveBeenCalled()
+    expect(h.store!.getConnection(TAB)).toBeUndefined()
+  })
+})
+
+// The backend dedups connections by (agent, cwd, session), so a connect can
+// hand back a connection this client already holds under another contextKey.
+describe("AcpConnectionsProvider abandoned connect tears down only what it created", () => {
+  const OTHER_TAB = "conv-1-claude_code-99"
+
+  async function connectFirstOwner() {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    h.acpConnect.mockResolvedValue("live-conn")
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    h.acpDisconnect.mockClear()
+  }
+
+  it("spares a REUSED connection the client already owns elsewhere", async () => {
+    await connectFirstOwner()
+    // A second surface resolves to the SAME backend connection (dedup), and is
+    // abandoned before the connect settles — killing it would end the first
+    // tab's running turn.
+    let resolveConnect: (v: string) => void = () => {}
+    h.acpConnect.mockImplementation(
+      () =>
+        new Promise<string>((res) => {
+          resolveConnect = res
+        })
+    )
+    let connectPromise: Promise<void> | undefined
+    await act(async () => {
+      connectPromise = h.actions!.connect(
+        OTHER_TAB,
+        "claude_code",
+        "/tmp/x",
+        "sess-1"
+      )
+    })
+    await act(async () => {
+      await h.actions!.disconnect(OTHER_TAB)
+    })
+    await act(async () => {
+      resolveConnect("live-conn")
+      await connectPromise
+    })
+
+    expect(h.acpDisconnect).not.toHaveBeenCalled()
+    expect(h.store!.getConnection(TAB)?.connectionId).toBe("live-conn")
+  })
+
+  it("still tears down a connection the abandoned connect spawned itself", async () => {
+    await connectFirstOwner()
+    let resolveConnect: (v: string) => void = () => {}
+    h.acpConnect.mockImplementation(
+      () =>
+        new Promise<string>((res) => {
+          resolveConnect = res
+        })
+    )
+    let connectPromise: Promise<void> | undefined
+    await act(async () => {
+      connectPromise = h.actions!.connect(
+        OTHER_TAB,
+        "claude_code",
+        "/tmp/other",
+        "sess-2"
+      )
+    })
+    await act(async () => {
+      await h.actions!.disconnect(OTHER_TAB)
+    })
+    await act(async () => {
+      resolveConnect("fresh-conn")
+      await connectPromise
+    })
+
+    expect(h.acpDisconnect).toHaveBeenCalledWith("fresh-conn")
+  })
+})
+
 describe("AcpConnectionsProvider permission request details", () => {
   it("hydrates a permission request from an existing live tool call input", async () => {
     await mountProvider()

@@ -61,6 +61,9 @@ import type {
   CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
+  FolderLinkDetail,
+  FolderLinkPlan,
+  FolderLinkRequestItem,
   CreateChatConversationResult,
   CreateChatDirResult,
   WorktreeResolution,
@@ -2170,6 +2173,69 @@ export async function gitAddFiles(
 }
 
 // Window management commands
+
+// ─── Workspace folder links (multi-folder workspace) ───
+
+/** Links currently registered for `folderId`, with their live on-disk status. */
+export async function listFolderLinks(
+  folderId: number
+): Promise<FolderLinkDetail[]> {
+  return getTransport().call("list_folder_links", { folderId })
+}
+
+/**
+ * Dry run: what names the picked directories would get and which ones would be
+ * skipped. Resolved server-side against the real filesystem, so the dialog can
+ * show the final names before anything is created.
+ */
+export async function previewFolderLinks(
+  folderId: number,
+  paths: string[]
+): Promise<FolderLinkPlan[]> {
+  return getTransport().call("preview_folder_links", { folderId, paths })
+}
+
+/**
+ * Create the links. Entries that can't be linked are skipped rather than
+ * failing the batch — the result is what actually landed.
+ */
+export async function createFolderLinks(
+  folderId: number,
+  items: FolderLinkRequestItem[],
+  gitExclude = true
+): Promise<FolderLinkDetail[]> {
+  return getTransport().call("create_folder_links", {
+    folderId,
+    items,
+    gitExclude,
+  })
+}
+
+/** Rename a link (moves the symlink; the target is untouched). */
+export async function renameFolderLink(
+  linkId: number,
+  newName: string
+): Promise<FolderLinkDetail> {
+  return getTransport().call("rename_folder_link", { linkId, newName })
+}
+
+/** Recreate the symlink for a link whose on-disk entry went missing. */
+export async function repairFolderLink(
+  linkId: number
+): Promise<FolderLinkDetail> {
+  return getTransport().call("repair_folder_link", { linkId })
+}
+
+/**
+ * Drop a link. With `deleteLink` the symlink is removed from the workspace
+ * root; the directory it pointed at is never touched.
+ */
+export async function removeFolderLink(
+  linkId: number,
+  deleteLink = true
+): Promise<void> {
+  return getTransport().call("remove_folder_link", { linkId, deleteLink })
+}
 
 export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
