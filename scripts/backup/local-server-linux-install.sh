@@ -3,8 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # Codeg Server Linux 一键安装/更新脚本
-# 功能：从上游 xintaofei/codeg 仓库的 GitHub Releases 下载 codeg-server 二进制和 web 资源，
-#       配置 systemd 服务；管理脚本（codeg / codeg-init-tools）仍从本仓库（likesrt/codeg）下载
+# 功能：从 GitHub Releases 下载 codeg-server 二进制和 web 资源，配置 systemd 服务
 # 用法：curl -fsSL https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
 #       或：bash local-server-linux-install.sh [--force]
 # 国内服务器如果无法下载本脚本，可使用代理（按优先级：ghproxy.net > github.dpik.top > gh-proxy.com > cdn.gh-proxy.com）：
@@ -14,13 +13,9 @@ set -euo pipefail
 # ============================================================
 
 # ===== 常量 =====
-# 管理脚本仓库（codeg / codeg-init-tools 从这里下载）
 REPO="likesrt/codeg"
-# 二进制仓库（codeg-server / codeg-mcp / web 从这里下载）
-BIN_REPO="xintaofei/codeg"
-# 版本检测使用上游仓库的 latest release
-GITHUB_API="https://api.github.com/repos/$BIN_REPO/releases/latest"
-BIN_BASE="https://github.com/$BIN_REPO"
+GITHUB_API="https://api.github.com/repos/$REPO/releases"
+GITHUB_BASE="https://github.com/$REPO"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
 # GitHub 代理列表（按优先级排列，全部失败则报错）
 GH_PROXIES=(
@@ -189,9 +184,9 @@ detect_proxy() {
       ;;
   esac
 
-  # 自动检测：分别检测三个域名（api/download 属于二进制仓库，raw 属于脚本仓库）
+  # 自动检测：分别检测三个域名
   log_info "自动检测 GitHub 连通性 ..."
-  if check_url "https://api.github.com/repos/$BIN_REPO/releases/latest"; then
+  if check_url "https://api.github.com/repos/$REPO"; then
     API_NEED_PROXY=0
   else
     API_NEED_PROXY=1
@@ -203,7 +198,7 @@ detect_proxy() {
     RAW_NEED_PROXY=1
   fi
 
-  if check_url "$BIN_BASE/releases"; then
+  if check_url "https://github.com/$REPO/releases"; then
     DOWNLOAD_NEED_PROXY=0
   else
     DOWNLOAD_NEED_PROXY=1
@@ -277,9 +272,9 @@ get_local_version() {
   fi
 }
 
-# 查询上游（xintaofei/codeg）最新 release tag
+# 查询远程最新 release tag
 # 参数：无
-# 返回：echo 输出最新 tag（vX.Y.Z）
+# 返回：echo 输出最新 tag（local-server-linux-YYYYMMDD-HHMM）
 get_remote_version() {
   local tmp
   tmp=$(mktemp)
@@ -288,7 +283,7 @@ get_remote_version() {
     rm -f "$tmp"
     log_error "所有代理均下载失败：$GITHUB_API"
   fi
-  jq -r '.tag_name // empty' "$tmp"
+  jq -r '[.[] | select(.tag_name | startswith("local-server-linux-"))][0].tag_name // empty' "$tmp"
   rm -f "$tmp"
 }
 
@@ -297,45 +292,36 @@ get_remote_version() {
 # 全局临时目录变量，用于 trap 清理（local 变量在 trap 中不可用）
 _CLEANUP_TMP=""
 
-# 下载指定 release 的合并 tarball 并安装二进制和 web 资源
-# 上游 xintaofei/codeg 的 codeg-server-linux-{x64,arm64}.tar.gz 同时包含 codeg-server、codeg-mcp 和 web
+# 下载指定 release 的 assets 并安装二进制和 web 资源
 # 参数：$1 - release tag，$2 - 架构（amd64/arm64）
 # 返回：无。副作用：覆盖安装 codeg-server/codeg-mcp 二进制，解压 web 资源
 download_and_install() {
   local tag="$1"
   local arch="$2"
 
-  # 上游 asset 命名使用 x64/arm64，amd64 需映射为 x64
-  local bin_arch="$arch"
-  [ "$arch" = "amd64" ] && bin_arch="x64"
-
   _CLEANUP_TMP=$(mktemp -d)
   trap 'rm -rf "$_CLEANUP_TMP"' EXIT
 
-  local dl_file="codeg-server-linux-$bin_arch.tar.gz"
-  log_info "下载 $dl_file ..."
-  # 按优先级尝试各代理，全部失败则报错
-  if ! download_with_fallback "$BIN_BASE/releases/download/$tag/$dl_file" "$_CLEANUP_TMP/$dl_file"; then
-    log_error "所有代理均下载失败：$dl_file"
-  fi
+  # 按优先级尝试各代理下载，全部失败则报错
+  local dl_files=(
+    "codeg-server-linux-$arch:codeg-server"
+    "codeg-mcp-linux-$arch:codeg-mcp"
+    "codeg-web.tar.gz:codeg-web.tar.gz"
+  )
 
-  # 下载 sha256 校验文件并验证，防止下载损坏或被篡改
-  if download_with_fallback "$BIN_BASE/releases/download/$tag/$dl_file.sha256" "$_CLEANUP_TMP/$dl_file.sha256"; then
-    local expected actual
-    expected=$(awk '{print $1}' "$_CLEANUP_TMP/$dl_file.sha256")
-    actual=$(sha256sum "$_CLEANUP_TMP/$dl_file" | awk '{print $1}')
-    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-      log_error "sha256 校验失败：$dl_file（期望 $expected，实际 $actual）"
+  for entry in "${dl_files[@]}"; do
+    local dl_file="${entry%%:*}"
+    local dl_name="${entry##*:}"
+    log_info "下载 $dl_file ..."
+
+    # 按优先级尝试各代理，全部失败则报错
+    if ! download_with_fallback "https://github.com/$REPO/releases/download/$tag/$dl_file" "$_CLEANUP_TMP/$dl_name"; then
+      log_error "所有代理均下载失败：$dl_file"
     fi
-    log_info "sha256 校验通过"
-  else
-    log_warn "sha256 文件下载失败，跳过校验"
-  fi
+  done
 
-  # 解压 tarball，内部结构为 codeg-server-linux-$bin_arch/{codeg-server,codeg-mcp,web}
-  tar -C "$_CLEANUP_TMP" -xzf "$_CLEANUP_TMP/$dl_file"
-  local extract_dir="$_CLEANUP_TMP/codeg-server-linux-$bin_arch"
-  chmod +x "$extract_dir/codeg-server" "$extract_dir/codeg-mcp"
+  chmod +x "$_CLEANUP_TMP/codeg-server"
+  chmod +x "$_CLEANUP_TMP/codeg-mcp"
 
   # 安装二进制到 /usr/local/bin/
   mkdir -p "$INSTALL_DIR"
@@ -345,13 +331,13 @@ download_and_install() {
     systemctl stop codeg-server || true
   fi
 
-  cp "$extract_dir/codeg-server" "$INSTALL_DIR/codeg-server"
-  cp "$extract_dir/codeg-mcp" "$INSTALL_DIR/codeg-mcp"
+  cp "$_CLEANUP_TMP/codeg-server" "$INSTALL_DIR/codeg-server"
+  cp "$_CLEANUP_TMP/codeg-mcp" "$INSTALL_DIR/codeg-mcp"
 
-  # 安装 web 资源
-  rm -rf "$WEB_DIR"
+  # 解压 web 资源
   mkdir -p "$WEB_DIR"
-  cp -a "$extract_dir/web/." "$WEB_DIR/"
+  rm -rf "$WEB_DIR"/*
+  tar -C "$WEB_DIR" -xzf "$_CLEANUP_TMP/codeg-web.tar.gz" --strip-components=1
 
   rm -rf "$_CLEANUP_TMP"
   _CLEANUP_TMP=""
@@ -555,7 +541,7 @@ main() {
   remote_version=$(get_remote_version)
 
   if [ -z "$remote_version" ]; then
-    log_error "未找到上游 release，请确认 xintaofei/codeg 已有已发布的版本"
+    log_error "未找到 local-server-linux release，请先在 GitHub Actions 中触发构建"
   fi
 
   log_info "本地版本：${local_version:-未安装}"
