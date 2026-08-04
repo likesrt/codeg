@@ -159,6 +159,25 @@ vi.mock("@/contexts/active-folder-context", () => ({
   useActiveFolder: () => ({ activeFolder: { id: "f1", path: "/repo" } }),
 }))
 
+// The toolbar's git operations pull in the task/alert/credential contexts and
+// the workspace store, none of which this cap-focused suite provides. Stub the
+// hook out — the toolbar itself is inert here.
+vi.mock("@/hooks/use-git-quick-actions", () => ({
+  useGitQuickActions: () => ({
+    running: false,
+    runGitTask: vi.fn(),
+    pull: vi.fn(),
+    fetchAll: vi.fn(),
+    updateBranch: vi.fn(),
+    reportConflict: vi.fn(),
+    openCommitWindow: vi.fn(),
+    openPushWindow: vi.fn(),
+    openStashDialog: vi.fn(),
+    openUnstashWindow: vi.fn(),
+    dialogs: null,
+  }),
+}))
+
 vi.mock("@/contexts/tab-context", () => ({
   useTabStore: (selector: (s: { tabs: []; activeTabId: null }) => unknown) =>
     selector({ tabs: [], activeTabId: null }),

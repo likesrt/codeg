@@ -141,6 +141,11 @@ import type {
   OfficecliInfo,
   OfficecliSkill,
   SkillSyncReport,
+  TokenUsageFacets,
+  TokenUsageFilter,
+  TokenUsageReport,
+  TokenUsageSyncResult,
+  TokenUsageSyncStatus,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -1808,19 +1813,52 @@ export async function gitFetch(
   })
 }
 
-export async function gitPushInfo(path: string): Promise<GitPushInfo> {
-  return getTransport().call("git_push_info", { path })
+/**
+ * Update a branch WITHOUT checking it out. The checked-out branch falls back to
+ * a normal pull (so a conflict can still come back on `conflict`); any other
+ * local branch is fast-forwarded from its upstream, and a remote branch
+ * (`isRemote`, e.g. `origin/main`) only advances its remote-tracking ref.
+ */
+export async function gitUpdateBranch(
+  path: string,
+  branch: string,
+  isRemote: boolean,
+  credentials?: GitCredentials | null
+): Promise<GitPullResult> {
+  return getTransport().call("git_update_branch", {
+    path,
+    branch,
+    isRemote,
+    credentials: credentials ?? null,
+  })
 }
 
+/** `branch` omitted (or null) reports on the checked-out branch. */
+export async function gitPushInfo(
+  path: string,
+  branch?: string | null
+): Promise<GitPushInfo> {
+  return getTransport().call("git_push_info", {
+    path,
+    branch: branch ?? null,
+  })
+}
+
+/**
+ * Push a branch. `branch` omitted (or null) pushes the checked-out one; naming
+ * one pushes it without checking it out (`git push <remote> <branch>`).
+ */
 export async function gitPush(
   path: string,
   remote?: string | null,
   credentials?: GitCredentials | null,
-  folderId?: number | null
+  folderId?: number | null,
+  branch?: string | null
 ): Promise<GitPushResult> {
   return getTransport().call("git_push", {
     path,
     remote: remote ?? null,
+    branch: branch ?? null,
     credentials: credentials ?? null,
     folderId: folderId ?? null,
   })
@@ -1981,19 +2019,27 @@ export async function openStashWindow(folderId: number): Promise<void> {
   window.open(result.path, `stash-${folderId}`)
 }
 
-export async function openPushWindow(folderId: number): Promise<void> {
+/** `branch` preselects the push target; omitted means the checked-out branch. */
+export async function openPushWindow(
+  folderId: number,
+  branch?: string | null
+): Promise<void> {
   const locale = getCurrentEffectiveAppLocale()
   if (isDesktop()) {
     return getShellTransport().call("open_push_window", {
       folderId,
       locale,
       remoteConnectionId: getActiveRemoteConnectionId(),
+      branch: branch ?? null,
     })
   }
   const result = await getTransport().call<{ path: string }>(
     "open_push_window",
-    { folderId, locale }
+    { folderId, locale, branch: branch ?? null }
   )
+  // Reusing the window NAME navigates an already-open push window to the new
+  // URL, so the preselected branch applies there too (the desktop path gets the
+  // same effect from the `push://retarget-branch` event).
   window.open(result.path, `push-${folderId}`)
 }
 
@@ -2616,6 +2662,30 @@ export async function quickMessagesDelete(id: number): Promise<void> {
 
 export async function quickMessagesReorder(ids: number[]): Promise<void> {
   return getTransport().call("quick_messages_reorder", { ids })
+}
+
+// Token usage dashboard
+
+export async function tokenUsageReport(
+  filter: TokenUsageFilter
+): Promise<TokenUsageReport> {
+  return getTransport().call("token_usage_report", { filter })
+}
+
+export async function tokenUsageFacets(): Promise<TokenUsageFacets> {
+  return getTransport().call("token_usage_facets")
+}
+
+export async function tokenUsageStatus(): Promise<TokenUsageSyncStatus> {
+  return getTransport().call("token_usage_status")
+}
+
+/** `full` drops every stored fact and re-parses every transcript — the escape
+ *  hatch for a session file the agent's own CLI grew behind codeg's back. */
+export async function tokenUsageSync(
+  mode: "incremental" | "full" = "incremental"
+): Promise<TokenUsageSyncResult> {
+  return getTransport().call("token_usage_sync", { mode })
 }
 
 // Automations

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
+  ChartNoAxesColumn,
   Crosshair,
   Funnel,
   ListChevronsDownUp,
@@ -435,6 +436,12 @@ export function Sidebar() {
               </span>
             ) : null
           }
+        />
+        <SidebarNavButton
+          icon={ChartNoAxesColumn}
+          label={t("tokenUsage")}
+          active={routeId === "tokenUsage"}
+          onClick={() => setRoute("tokenUsage")}
         />
       </div>
 

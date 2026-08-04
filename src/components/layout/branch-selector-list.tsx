@@ -1,9 +1,15 @@
 "use client"
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
-  Archive,
-  ArchiveRestore,
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import {
   ChevronRight,
   CloudDownload,
   CloudSync,
@@ -16,7 +22,6 @@ import {
   GitCommitHorizontal,
   GitMerge,
   GitPullRequestArrow,
-  Globe,
   Loader2,
   Search,
   Trash2,
@@ -72,6 +77,9 @@ const BUBBLE_WIDTH_PX = 224
 // Slightly over-estimated on purpose so the whole bubble always fits.
 const BUBBLE_ITEM_PX = 34
 const BUBBLE_PAD_PX = 8
+// A group divider (`my-1 h-px`) between action groups — counted separately so a
+// bubble with dividers still clamps inside the list root.
+const BUBBLE_SEPARATOR_PX = 9
 
 const OP_ICONS: Record<string, LucideIcon> = {
   pull: CloudDownload,
@@ -80,9 +88,6 @@ const OP_ICONS: Record<string, LucideIcon> = {
   push: CloudUpload,
   newBranch: GitBranchPlus,
   newWorktree: FolderGit2,
-  stash: Archive,
-  stashPop: ArchiveRestore,
-  manageRemotes: Globe,
   init: GitBranch,
 }
 
@@ -90,20 +95,37 @@ const ACTION_ICONS: Record<BranchLeafAction, LucideIcon> = {
   switch: GitBranch,
   merge: GitMerge,
   rebase: GitPullRequestArrow,
+  pull: CloudDownload,
+  push: CloudUpload,
   delete: Trash2,
   deleteRemote: Trash2,
 }
 
-// The per-branch actions shown in the right-side bubble. Delete is hidden for the
-// remote branch the current local branch tracks (deleting it is nonsensical).
+// The per-branch actions shown in the right-side bubble, in three groups:
+// what this branch does to the CURRENT one (switch/merge/rebase), what it
+// syncs with its remote (pull/push — both in place, no checkout), and the
+// destructive tail. "push" is local-only: publishing `origin/x` is meaningless.
+// Delete is hidden for the remote branch the current local branch tracks
+// (deleting it is nonsensical).
 function leafActions(
   isRemote: boolean,
   isTracking: boolean
 ): BranchLeafAction[] {
-  const actions: BranchLeafAction[] = ["switch", "merge", "rebase"]
+  const actions: BranchLeafAction[] = ["switch", "merge", "rebase", "pull"]
+  if (!isRemote) actions.push("push")
   if (!isTracking) actions.push(isRemote ? "deleteRemote" : "delete")
   return actions
 }
+
+// First action of each group above. A rule ("insert a divider before any group
+// starter that isn't the first row") rather than fixed indices, so a group that
+// drops out entirely — a remote leaf has no "push", a tracked remote no
+// "delete" — never leaves a dangling divider behind.
+const BUBBLE_GROUP_STARTS: ReadonlySet<BranchLeafAction> = new Set([
+  "pull",
+  "delete",
+  "deleteRemote",
+])
 
 interface ActionBubble {
   leafKey: string
@@ -359,6 +381,15 @@ export function BranchSelectorList({
             currentBranch: branch ?? "-",
             branchName: fullName,
           })
+        // Same wording as the top-of-list operation — this just scopes it to
+        // the branch under the cursor instead of the checked-out one.
+        case "pull":
+          return t("pullCode")
+        // NOT `pushCode` ("Push…"): that ellipsis belongs to the top-of-list
+        // entry, which pushes whatever is checked out. This one names its target
+        // by the row it hangs off.
+        case "push":
+          return t("pushBranch")
         case "delete":
         case "deleteRemote":
           return t("deleteBranch")
@@ -384,7 +415,13 @@ export function BranchSelectorList({
     const rowRect = el.getBoundingClientRect()
     const rootRect = root.getBoundingClientRect()
     const actions = leafActions(row.isRemote, row.isTracking)
-    const bubbleHeight = actions.length * BUBBLE_ITEM_PX + BUBBLE_PAD_PX
+    const separatorCount = actions.filter(
+      (action, index) => index > 0 && BUBBLE_GROUP_STARTS.has(action)
+    ).length
+    const bubbleHeight =
+      actions.length * BUBBLE_ITEM_PX +
+      separatorCount * BUBBLE_SEPARATOR_PX +
+      BUBBLE_PAD_PX
     const top = Math.min(
       rowRect.top - rootRect.top,
       Math.max(0, rootRect.height - bubbleHeight)
@@ -730,26 +767,34 @@ export function BranchSelectorList({
             const ActionIcon = ACTION_ICONS[action]
             const destructive = action === "delete" || action === "deleteRemote"
             const bubbleActive = index === bubbleActiveIndex
+            const startsGroup = index > 0 && BUBBLE_GROUP_STARTS.has(action)
             return (
-              <button
-                key={action}
-                type="button"
-                role="menuitem"
-                disabled={loading}
-                onMouseMove={() => setBubbleActiveIndex(index)}
-                onClick={() => selectBubbleAction(index)}
-                className={cn(
-                  "flex w-full select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors",
-                  "disabled:pointer-events-none disabled:opacity-50",
-                  bubbleActive && "bg-accent text-accent-foreground",
-                  destructive && "text-destructive"
+              <Fragment key={action}>
+                {startsGroup && (
+                  <div
+                    role="presentation"
+                    className="mx-1 my-1 h-px bg-border"
+                  />
                 )}
-              >
-                <ActionIcon className="size-3.5 shrink-0 opacity-70" />
-                <span className="min-w-0 flex-1 truncate">
-                  {leafActionLabel(action, bubble.fullName)}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={loading}
+                  onMouseMove={() => setBubbleActiveIndex(index)}
+                  onClick={() => selectBubbleAction(index)}
+                  className={cn(
+                    "flex w-full select-none items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm outline-none transition-colors",
+                    "disabled:pointer-events-none disabled:opacity-50",
+                    bubbleActive && "bg-accent text-accent-foreground",
+                    destructive && "text-destructive"
+                  )}
+                >
+                  <ActionIcon className="size-3.5 shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">
+                    {leafActionLabel(action, bubble.fullName)}
+                  </span>
+                </button>
+              </Fragment>
             )
           })}
         </div>

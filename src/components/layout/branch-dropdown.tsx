@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ChevronDown,
   GitBranch,
@@ -37,8 +37,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   gitInit,
-  gitPull,
-  gitFetch,
   gitNewBranch,
   gitWorktreeAdd,
   gitListAllBranches,
@@ -46,16 +44,9 @@ import {
   gitRebase,
   gitDeleteBranch,
   gitDeleteRemoteBranch,
-  openCommitWindow,
-  openPushWindow,
-  openStashWindow,
 } from "@/lib/api"
 import { subscribe } from "@/lib/platform"
-import { RemoteManageDialog } from "@/components/layout/remote-manage-dialog"
-import { ConflictDialog } from "@/components/layout/conflict-dialog"
-import { StashDialog } from "@/components/layout/stash-dialog"
 import { DirectoryPathInput } from "@/components/shared/directory-path-input"
-import { toErrorMessage } from "@/lib/app-error"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import {
   buildBranchTree,
@@ -68,22 +59,12 @@ import type {
   BranchOperationMeta,
 } from "@/lib/branch-selector-rows"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
-import type { FolderDetail, GitBranchList, GitConflictInfo } from "@/lib/types"
+import { useGitQuickActions } from "@/hooks/use-git-quick-actions"
+import type { FolderDetail, GitBranchList } from "@/lib/types"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useTaskContext } from "@/contexts/task-context"
-import { useAlertContext } from "@/contexts/alert-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
-
-const emitEvent = async (event: string, payload?: unknown) => {
-  try {
-    const { emit } = await import("@tauri-apps/api/event")
-    await emit(event, payload)
-  } catch {
-    /* not in Tauri */
-  }
-}
 
 type ConfirmAction = {
   type: "merge" | "rebase" | "delete" | "forceDelete" | "deleteRemote"
@@ -120,8 +101,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const openWorktreeFolder = useAppWorkspaceStore((s) => s.openWorktreeFolder)
   const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
-  const { addTask, updateTask, removeTask } = useTaskContext()
-  const { pushAlert } = useAlertContext()
   const { withCredentialRetry } = useGitCredential()
   const switchToBranch = useSwitchToBranch()
   // Grabbing the popover's inner scrollbar blurs focus, which WebKit bounces to
@@ -155,17 +134,27 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   })
   const [newBranchOpen, setNewBranchOpen] = useState(false)
   const [newBranchName, setNewBranchName] = useState("")
-  const [loading, setLoading] = useState(false)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [branchLoading, setBranchLoading] = useState(false)
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   const [worktreeOpen, setWorktreeOpen] = useState(false)
   const [worktreeBranchName, setWorktreeBranchName] = useState("")
   const [worktreePath, setWorktreePath] = useState("")
-  const [manageRemotesOpen, setManageRemotesOpen] = useState(false)
-  const [stashDialogOpen, setStashDialogOpen] = useState(false)
-  const [conflictInfo, setConflictInfo] = useState<GitConflictInfo | null>(null)
-  const taskSeq = useRef(0)
+
+  // Task running, credential retry, pull/fetch/window openers and the
+  // conflict/stash dialogs all live in the shared hook, so the aux-panel git
+  // tabs drive the exact same machinery from their own toolbars.
+  const {
+    running: loading,
+    runGitTask,
+    pull: handlePull,
+    fetchAll,
+    updateBranch,
+    openCommitWindow: openCommit,
+    openPushWindow: openPush,
+    reportConflict,
+    dialogs: gitDialogs,
+  } = useGitQuickActions({ folderId, folderPath })
 
   const worktreeBranchSet = useMemo(
     () => new Set(branchList.worktree_branches),
@@ -182,7 +171,12 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   // Operations shown as a searchable block at the top of the popup; the list
   // resolves each id to an icon and dispatches back through `runOperation`.
   // `groupEnd` inserts a separator after that op (non-search) to restore the old
-  // menu's pull/fetch | commit/push | new | stash | remotes blocking.
+  // menu's pull/fetch | commit/push | new blocking. Deliberately short: this chip
+  // sits under the composer and is first of all a BRANCH picker, so the
+  // long-tail operations (stash, unstash, manage remotes) live in the aux
+  // panel's git tabs — the changes tab owns the working-tree ones, the commits
+  // tab owns the remotes. The last entry carries no `groupEnd`: the row builder
+  // already separates the operation block from the branch tree.
   const operations = useMemo<BranchOperationMeta[]>(
     () => [
       { id: "pull", label: t("pullCode") },
@@ -190,10 +184,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       { id: "commit", label: t("openCommitWindow") },
       { id: "push", label: t("pushCode"), groupEnd: true },
       { id: "newBranch", label: t("newBranch") },
-      { id: "newWorktree", label: t("newWorktree"), groupEnd: true },
-      { id: "stash", label: t("stashChanges") },
-      { id: "stashPop", label: t("stashPop"), groupEnd: true },
-      { id: "manageRemotes", label: t("manageRemotes") },
+      { id: "newWorktree", label: t("newWorktree") },
     ],
     [t]
   )
@@ -209,7 +200,12 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       "folder://git-commit-succeeded",
       (payload) => {
         if (payload.folder_id !== folderId) return
+        // Folder-scoped toast id: this component is mounted once per
+        // conversation tile, and the changes tab raises the same toast locally
+        // after a quick commit. Sharing one id makes sonner update a single
+        // toast instead of stacking one per listener.
         toast.success(t("toasts.commitCodeCompleted"), {
+          id: `git-commit-succeeded:${folderId}`,
           description: t("toasts.committedFiles", {
             count: payload.committed_files,
           }),
@@ -262,42 +258,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     }
   }, [folderId, refresh, t])
 
-  async function runGitTask<T>(
-    label: string,
-    action: () => Promise<T>,
-    getSuccessDescription?: (result: T) => string | false | undefined,
-    onError?: (errorMsg: string) => boolean
-  ) {
-    const taskId = `git-${++taskSeq.current}-${Date.now()}`
-    setLoading(true)
-    addTask(taskId, label)
-    updateTask(taskId, { status: "running" })
-    try {
-      const result = await action()
-      const successDescription = getSuccessDescription?.(result)
-      updateTask(taskId, { status: "completed" })
-      refresh()
-      void emitEvent("folder://git-branch-changed", { folder_id: folderId })
-      if (successDescription !== false) {
-        toast.success(
-          t("toasts.taskCompleted", { label }),
-          successDescription ? { description: successDescription } : undefined
-        )
-      }
-    } catch (err) {
-      removeTask(taskId)
-      const errorMsg = toErrorMessage(err)
-      if (onError?.(errorMsg)) {
-        return
-      }
-      const errorTitle = t("toasts.taskFailed", { label })
-      pushAlert("error", errorTitle, errorMsg)
-      toast.error(errorTitle, { description: errorMsg })
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const loadAllBranches = useCallback(async () => {
     if (!folderPath) return
     setBranchLoading(true)
@@ -334,28 +294,6 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       currentBranch: branch,
       isRemote: true,
     })
-  }
-
-  // Pull, invoked by the dropdown's "Pull Code" menu item.
-  function handlePull() {
-    setDropdownOpen(false)
-    void runGitTask(
-      t("tasks.pullCode"),
-      () =>
-        withCredentialRetry((creds) => gitPull(folderPath, creds), {
-          folderPath,
-        }),
-      (result) => {
-        if (result.conflict?.has_conflicts) {
-          setConflictInfo(result.conflict)
-          return false
-        }
-        if (result.updated_files === 0) {
-          return t("toasts.allFilesUpToDate")
-        }
-        return t("toasts.updatedFiles", { count: result.updated_files })
-      }
-    )
   }
 
   async function handleNewBranch() {
@@ -415,7 +353,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
           () => gitMerge(folderPath, branchName),
           (result) => {
             if (result.conflict?.has_conflicts) {
-              setConflictInfo(result.conflict)
+              reportConflict(result.conflict)
               return false
             }
             if (result.merged_commits === 0) {
@@ -431,7 +369,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
           () => gitRebase(folderPath, branchName),
           (result) => {
             if (result.conflict?.has_conflicts) {
-              setConflictInfo(result.conflict)
+              reportConflict(result.conflict)
               return false
             }
             return undefined
@@ -517,7 +455,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   }
 
   // Dispatch a top-of-list operation back to its handler. Every op closes the
-  // popover (some then open a dialog/window); `handlePull` closes it too.
+  // popover (some then open a dialog/window).
   function runOperation(opId: string) {
     setDropdownOpen(false)
     switch (opId) {
@@ -525,29 +463,13 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
         handlePull()
         break
       case "fetch":
-        void runGitTask(t("tasks.fetchInfo"), () =>
-          withCredentialRetry((creds) => gitFetch(folderPath, creds), {
-            folderPath,
-          })
-        )
+        fetchAll()
         break
       case "commit":
-        if (!folderId) return
-        openCommitWindow(folderId).catch((err) => {
-          const title = t("toasts.openCommitWindowFailed")
-          const msg = toErrorMessage(err)
-          pushAlert("error", title, msg)
-          toast.error(title, { description: msg })
-        })
+        openCommit()
         break
       case "push":
-        if (!folderId) return
-        openPushWindow(folderId).catch((err) => {
-          const title = t("toasts.openPushWindowFailed")
-          const msg = toErrorMessage(err)
-          pushAlert("error", title, msg)
-          toast.error(title, { description: msg })
-        })
+        openPush()
         break
       case "newBranch":
         setNewBranchName("")
@@ -556,24 +478,12 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       case "newWorktree":
         handleOpenWorktreeDialog()
         break
-      case "stash":
-        setStashDialogOpen(true)
-        break
-      case "stashPop":
-        if (!folderId) return
-        openStashWindow(folderId).catch((err) => {
-          const msg = toErrorMessage(err)
-          pushAlert("error", t("stashPop"), msg)
-        })
-        break
-      case "manageRemotes":
-        setManageRemotesOpen(true)
-        break
     }
   }
 
   // Dispatch an inline branch action: switch checks out directly (that handler
-  // closes the popover itself), the rest open the shared confirm dialog.
+  // closes the popover itself), update runs straight away (it never touches the
+  // working tree), the rest open the shared confirm dialog.
   function runLeafAction(
     action: BranchLeafAction,
     fullName: string,
@@ -585,6 +495,16 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       return
     }
     setDropdownOpen(false)
+    if (action === "pull") {
+      updateBranch(fullName, isRemote)
+      return
+    }
+    // Push opens the push window preselected for this branch, so the commits
+    // about to be published are reviewable before anything leaves the machine.
+    if (action === "push") {
+      openPush(fullName)
+      return
+    }
     setConfirmAction({ type: action, branchName: fullName })
   }
 
@@ -790,27 +710,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
         </DialogContent>
       </Dialog>
 
-      <RemoteManageDialog
-        open={manageRemotesOpen}
-        onOpenChange={setManageRemotesOpen}
-        folderPath={folderPath}
-        onSaved={() => loadAllBranches()}
-      />
-
-      <ConflictDialog
-        conflictInfo={conflictInfo}
-        folderId={folderId}
-        folderPath={folderPath}
-        onClose={() => setConflictInfo(null)}
-        onResolved={refresh}
-      />
-
-      <StashDialog
-        open={stashDialogOpen}
-        folderPath={folderPath}
-        onClose={() => setStashDialogOpen(false)}
-        onStashed={refresh}
-      />
+      {gitDialogs}
     </>
   )
 }

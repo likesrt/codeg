@@ -10,6 +10,7 @@ pub mod pet;
 pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod system;
+pub mod token_usage;
 pub mod work_task;
 
 pub use agent::AgentType;
@@ -35,6 +36,12 @@ pub use message::{
 };
 pub use quick_message::QuickMessageInfo;
 pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
+pub use token_usage::{
+    TokenUsageBreakdownItem, TokenUsageBucket, TokenUsageConversationItem, TokenUsageFacets,
+    TokenUsageFilter, TokenUsageFolderFacet, TokenUsageHeatCell, TokenUsagePoint,
+    TokenUsageReport, TokenUsageStreak, TokenUsageSyncProgress, TokenUsageSyncResult,
+    TokenUsageSyncStatus, TokenUsageTotals,
+};
 pub use work_task::{
     WorkTaskChangedFile, WorkTaskConfig, WorkTaskDraft, WorkTaskEventInfo, WorkTaskFolderSettings,
     WorkTaskInfo, WorkTaskMergeState, WorkTaskPreflight, WorkTaskStatus,

@@ -413,11 +413,28 @@ pub async fn open_stash_window(
     }))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPushWindowParams {
+    pub folder_id: i32,
+    /// Branch to push; omitted targets the checked-out one.
+    pub branch: Option<String>,
+}
+
 pub async fn open_push_window(
-    Json(params): Json<OpenCommitWindowParams>,
+    Json(params): Json<OpenPushWindowParams>,
 ) -> Result<Json<SettingsNavigationResult>, AppCommandError> {
+    // Branch names carry `/` (and may carry `#`/`?`), so they have to be encoded
+    // before riding a query string.
+    let branch_param = params
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("&branch={}", urlencoding::encode(value)))
+        .unwrap_or_default();
     Ok(Json(SettingsNavigationResult {
-        path: format!("/push?folderId={}", params.folder_id),
+        path: format!("/push?folderId={}{branch_param}", params.folder_id),
     }))
 }
 

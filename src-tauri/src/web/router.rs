@@ -378,6 +378,10 @@ pub fn build_router(
         .route("/git_pull", post(handlers::git::git_pull))
         .route("/git_push", post(handlers::git::git_push))
         .route("/git_fetch", post(handlers::git::git_fetch))
+        .route(
+            "/git_update_branch",
+            post(handlers::git::git_update_branch),
+        )
         .route("/git_commit", post(handlers::git::git_commit))
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
@@ -1220,6 +1224,23 @@ pub fn build_router(
         .route(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
+        )
+        // ─── Token usage dashboard ───
+        .route(
+            "/token_usage_report",
+            post(handlers::token_usage::token_usage_report),
+        )
+        .route(
+            "/token_usage_facets",
+            post(handlers::token_usage::token_usage_facets),
+        )
+        .route(
+            "/token_usage_status",
+            post(handlers::token_usage::token_usage_status),
+        )
+        .route(
+            "/token_usage_sync",
+            post(handlers::token_usage::token_usage_sync),
         )
         // ─── Work tasks ───
         .route("/work_task_list", post(handlers::work_task::work_task_list))

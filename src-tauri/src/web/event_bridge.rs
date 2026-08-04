@@ -338,6 +338,15 @@ pub enum WorkTaskChange {
     Refresh,
 }
 
+/// Progress of a token-usage sync, emitted while the dashboard's materialized
+/// facts are rebuilt from the agents' transcripts. Throttled by the emitter
+/// (see `commands::token_usage`), so a multi-thousand-conversation pass sends
+/// tens of messages rather than thousands. Payload is
+/// [`crate::models::token_usage::TokenUsageSyncProgress`]; the final tick
+/// carries the completed result. Like every other side channel this is
+/// broadcast — clients not showing the dashboard simply ignore it.
+pub const TOKEN_USAGE_SYNC_PROGRESS_EVENT: &str = "token-usage-sync://progress";
+
 /// Unified event emission: serializes the payload exactly once and dispatches
 /// the shared `Arc<Value>` to both the Tauri webview and the web broadcaster.
 pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) {
