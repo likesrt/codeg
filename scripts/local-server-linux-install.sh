@@ -166,6 +166,27 @@ check_url() {
     curl $args --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
 }
 
+# 恢复被 GH 反向代理响应重写的脚本 URL。
+# 部分 HubProxy 会把响应正文中的 raw/github URL 也改写成代理 URL，
+# 如果直接保存并执行，会导致后续请求再次套代理前缀。
+# 参数：$1 - 已下载的脚本文件
+# 返回：无。副作用：原地恢复 canonical GitHub URL
+restore_canonical_urls() {
+  local file="$1"
+  local proxy proxy_host
+  for proxy in "${GH_PROXIES[@]}"; do
+    proxy_host="${proxy%/}"
+    sed -i \
+      -e "s#${proxy_host}/https://raw\\.githubusercontent\\.com/#https://raw.githubusercontent.com/#g" \
+      -e "s#${proxy_host}/raw\\.githubusercontent\\.com/#https://raw.githubusercontent.com/#g" \
+      -e "s#${proxy_host}/https://api\\.github\\.com/#https://api.github.com/#g" \
+      -e "s#${proxy_host}/api\\.github\\.com/#https://api.github.com/#g" \
+      -e "s#${proxy_host}/https://github\\.com/#https://github.com/#g" \
+      -e "s#${proxy_host}/github\\.com/#https://github.com/#g" \
+      "$file"
+  done
+}
+
 # 下载单个 GitHub URL，按当前代理模式取 URL 并下载，失败则按优先级回退
 # 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径
 # 返回：成功返回 0，全部失败返回 1
@@ -212,7 +233,7 @@ download_with_fallback() {
   return 1
 }
 
-# 从 GH_PROXIES 中选第一个能连通的代理，赋值给 PROXY_PREFIX
+# ===== 代理选择 =====
 # 参数：无
 # 返回：无。副作用：设置 PROXY_PREFIX；全部不可达时回退到列表第一项
 pick_first_proxy() {
@@ -550,15 +571,24 @@ EOF
 install_scripts() {
   log_info "安装管理脚本 ..."
 
-  if ! download_with_fallback "$RAW_BASE/local-server-linux-ctl.sh" "$INSTALL_DIR/codeg"; then
+  local tmp
+  tmp=$(mktemp)
+  if ! download_with_fallback "$RAW_BASE/local-server-linux-ctl.sh" "$tmp"; then
+    rm -f "$tmp"
     log_error "所有代理均下载失败：$RAW_BASE/local-server-linux-ctl.sh"
   fi
-  chmod +x "$INSTALL_DIR/codeg"
+  restore_canonical_urls "$tmp"
+  chmod +x "$tmp"
+  mv -f "$tmp" "$INSTALL_DIR/codeg"
 
-  if ! download_with_fallback "$RAW_BASE/local-server-linux-init-tools.sh" "$INSTALL_DIR/codeg-init-tools"; then
+  tmp=$(mktemp)
+  if ! download_with_fallback "$RAW_BASE/local-server-linux-init-tools.sh" "$tmp"; then
+    rm -f "$tmp"
     log_error "所有代理均下载失败：$RAW_BASE/local-server-linux-init-tools.sh"
   fi
-  chmod +x "$INSTALL_DIR/codeg-init-tools"
+  restore_canonical_urls "$tmp"
+  chmod +x "$tmp"
+  mv -f "$tmp" "$INSTALL_DIR/codeg-init-tools"
 
   log_info "管理脚本安装完成"
 }

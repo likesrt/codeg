@@ -259,19 +259,25 @@ normalize_download_url() {
   echo "$url"
 }
 
-# 根据代理前缀构造目标 URL；目标已经带反向代理前缀时原样返回
-# 参数：$1 - 代理前缀，$2 - GitHub URL
-# 返回：echo 输出最终 URL
-build_proxy_url() {
-  local proxy="$1"
-  local url
-  url="$(normalize_download_url "$2")"
-  for known_proxy in "${GH_PROXIES[@]}"; do
-    case "$url" in
-      "$known_proxy"*) echo "$url"; return ;;
-    esac
+# 恢复被 GH 反向代理响应重写的脚本 URL。
+# 部分 HubProxy 会把响应正文中的 raw/github URL 也改写成代理 URL，
+# 如果直接保存并执行，会导致后续请求再次套代理前缀。
+# 参数：$1 - 已下载的脚本文件
+# 返回：无。副作用：原地恢复 canonical GitHub URL
+restore_canonical_urls() {
+  local file="$1"
+  local proxy proxy_host
+  for proxy in "${GH_PROXIES[@]}"; do
+    proxy_host="${proxy%/}"
+    sed -i \
+      -e "s#${proxy_host}/https://raw\\.githubusercontent\\.com/#https://raw.githubusercontent.com/#g" \
+      -e "s#${proxy_host}/raw\\.githubusercontent\\.com/#https://raw.githubusercontent.com/#g" \
+      -e "s#${proxy_host}/https://api\\.github\\.com/#https://api.github.com/#g" \
+      -e "s#${proxy_host}/api\\.github\\.com/#https://api.github.com/#g" \
+      -e "s#${proxy_host}/https://github\\.com/#https://github.com/#g" \
+      -e "s#${proxy_host}/github\\.com/#https://github.com/#g" \
+      "$file"
   done
-  echo "${proxy}${url}"
 }
 
 # 下载单个 GitHub URL，按当前代理模式取 URL 并下载，失败则按优先级回退
@@ -314,11 +320,16 @@ download_with_fallback() {
     local target_url
     target_url="$(build_proxy_url "$proxy" "$url")"
     [ -n "${2:-}" ] && log_info "尝试：$target_url"
-    if dl -fsSL --connect-timeout 10 --max-time 120 "$target_url" "${out_args[@]}"; then
-      [ -n "${2:-}" ] && log_info "下载成功：${url#"https://"}（via ${proxy}）"
-      return 0
+    if ! dl -fsSL --connect-timeout 10 --max-time 120 "$target_url" "${out_args[@]}"; then
+      log_warn "下载失败，尝试下一个源 ..."
+      continue
     fi
-    log_warn "下载失败，尝试下一个源 ..."
+    # 下载响应可能被代理重写 URL；恢复后再安装/执行脚本
+    if [ -n "${2:-}" ]; then
+      restore_canonical_urls "$2"
+      log_info "下载成功：${url#"https://"}（via ${proxy}）"
+    fi
+    return 0
   done
   return 1
 }
