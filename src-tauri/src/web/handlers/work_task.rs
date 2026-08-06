@@ -75,6 +75,29 @@ pub struct FolderParams {
 pub struct ReturnParams {
     pub id: i32,
     pub feedback: String,
+    /// Follow-up intent; absent → `revise` (the historical behaviour).
+    #[serde(default)]
+    pub intent: Option<String>,
+}
+
+/// A restart (retry / requeue) that may carry a note for the next run. `note`
+/// defaults, so a body of just `{ "id": 1 }` still deserializes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartParams {
+    pub id: i32,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// A cancel that may carry the user's reason for stopping the task. Like
+/// `RestartParams`, the note defaults so `{ "id": 1 }` still deserializes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelParams {
+    pub id: i32,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +107,13 @@ pub struct MergeParams {
     /// `None` → the agent writes the commit message itself.
     #[serde(default)]
     pub message: Option<String>,
+    pub delete_worktree: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteParams {
+    pub id: i32,
     pub delete_worktree: bool,
 }
 
@@ -226,9 +256,9 @@ pub async fn work_task_start_all(
 }
 
 pub async fn work_task_retry(
-    Json(params): Json<IdParams>,
+    Json(params): Json<RestartParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_retry_core(params.id)
+    core::work_task_retry_core(params.id, params.note)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
@@ -236,9 +266,9 @@ pub async fn work_task_retry(
 
 pub async fn work_task_requeue(
     Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<IdParams>,
+    Json(params): Json<RestartParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_requeue_core(&state.emitter, &state.db, params.id)
+    core::work_task_requeue_core(&state.emitter, &state.db, params.id, params.note)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
@@ -247,16 +277,16 @@ pub async fn work_task_requeue(
 pub async fn work_task_return(
     Json(params): Json<ReturnParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_return_core(params.id, params.feedback)
+    core::work_task_return_core(params.id, params.feedback, params.intent)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
 }
 
 pub async fn work_task_cancel(
-    Json(params): Json<IdParams>,
+    Json(params): Json<CancelParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_cancel_core(params.id)
+    core::work_task_cancel_core(params.id, params.reason)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
@@ -266,6 +296,15 @@ pub async fn work_task_merge(
     Json(params): Json<MergeParams>,
 ) -> Result<Json<()>, AppCommandError> {
     core::work_task_merge_core(params.id, params.message, params.delete_worktree)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(Json(()))
+}
+
+pub async fn work_task_complete(
+    Json(params): Json<CompleteParams>,
+) -> Result<Json<()>, AppCommandError> {
+    core::work_task_complete_core(params.id, params.delete_worktree)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))

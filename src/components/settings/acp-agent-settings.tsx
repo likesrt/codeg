@@ -34,6 +34,7 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react"
+import { parse as parseTomlDocument } from "smol-toml"
 import { isDesktop, openUrl } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
@@ -1597,6 +1598,13 @@ interface CodexImportantValues {
 
 const CODEX_DEFAULT_MODEL_PROVIDER = "codeg"
 
+/**
+ * Header codex reads to decide whether a provider authenticates through the
+ * "actor authorization" path. Mirrors `OPENAI_ACTOR_AUTHORIZATION_HEADER` in
+ * codex's `model-provider-info` crate.
+ */
+const CODEX_ACTOR_AUTHORIZATION_HEADER = "x-openai-actor-authorization"
+
 const CODEX_AUTH_MODES = [
   "api_key",
   "chatgpt_subscription",
@@ -2526,6 +2534,68 @@ function patchCodexProviderField(
   return `${appended}\n\n${sectionText}`.trim()
 }
 
+/**
+ * Result of reading `[model_providers.<provider>]` out of a config.toml draft.
+ * "table absent" and "document unparsable" are deliberately distinct: an absent
+ * table is a brand-new provider we should seed, a document we cannot parse is
+ * one we must not touch.
+ */
+type CodexProviderTableRead =
+  | { status: "ok"; table: Record<string, unknown> | null }
+  | { status: "unparsable" }
+
+/**
+ * Read-only view of one provider table. Every *write* in this file stays
+ * text-based so user comments and key order survive; only the "is this field
+ * already declared?" question goes through a real parser, because answering it
+ * from text needs full TOML semantics — quoted keys containing dots, escape
+ * decoding, dotted keys and inline tables — that a line scanner cannot supply.
+ */
+function readCodexProviderTable(
+  configTomlText: string,
+  provider: string
+): CodexProviderTableRead {
+  const name = provider.trim()
+  if (!name) return { status: "unparsable" }
+  let parsed: unknown
+  try {
+    parsed = parseTomlDocument(configTomlText)
+  } catch {
+    return { status: "unparsable" }
+  }
+  if (!parsed || typeof parsed !== "object") return { status: "unparsable" }
+  const providers = (parsed as Record<string, unknown>).model_providers
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
+    return { status: "ok", table: null }
+  }
+  const table = (providers as Record<string, unknown>)[name]
+  if (!table || typeof table !== "object" || Array.isArray(table)) {
+    return { status: "ok", table: null }
+  }
+  return { status: "ok", table: table as Record<string, unknown> }
+}
+
+/**
+ * Mirrors the header half of codex's
+ * `ModelProviderInfo::uses_openai_actor_authorization`. The ASCII-only fold
+ * matches its `eq_ignore_ascii_case`.
+ */
+function codexProviderUsesActorAuthorization(
+  table: Record<string, unknown> | null
+): boolean {
+  const headers = table?.http_headers
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return false
+  }
+  return Object.entries(headers as Record<string, unknown>).some(
+    ([name, value]) =>
+      name.replace(/[A-Z]/g, (char) => char.toLowerCase()) ===
+        CODEX_ACTOR_AUTHORIZATION_HEADER &&
+      typeof value === "string" &&
+      value.trim() !== ""
+  )
+}
+
 function ensureCodexProviderDefaults(
   configTomlText: string,
   provider: string
@@ -2555,12 +2625,35 @@ function ensureCodexProviderDefaults(
     "wire_api",
     'wire_api = "responses"'
   )
-  next = patchCodexProviderField(
-    next,
-    CODEX_DEFAULT_MODEL_PROVIDER,
-    "requires_openai_auth",
-    "requires_openai_auth = true"
+  // `requires_openai_auth` is the one managed field a user legitimately owns:
+  // codex defaults it to false, and its `uses_openai_actor_authorization()`
+  // requires `!requires_openai_auth`, so forcing true silently disables the
+  // actor-authorization path. Supply codeg's default only when the provider
+  // does not already declare it — true is right for a provider *we* created
+  // (key in auth.json, no env_key), never for one the user configured.
+  // Read the original text: the three patches above never touch
+  // `requires_openai_auth` or `http_headers`, and the original is what the
+  // user actually authored.
+  const read = readCodexProviderTable(
+    configTomlText,
+    CODEX_DEFAULT_MODEL_PROVIDER
   )
+  const providerTable = read.status === "ok" ? read.table : null
+  const alreadyDeclared =
+    read.status !== "ok" ||
+    (providerTable !== null &&
+      Object.prototype.hasOwnProperty.call(
+        providerTable,
+        "requires_openai_auth"
+      ))
+  if (!alreadyDeclared && !codexProviderUsesActorAuthorization(providerTable)) {
+    next = patchCodexProviderField(
+      next,
+      CODEX_DEFAULT_MODEL_PROVIDER,
+      "requires_openai_auth",
+      "requires_openai_auth = true"
+    )
+  }
   return next
 }
 
@@ -2602,7 +2695,7 @@ function patchCodexAuthJsonText(
   }
 }
 
-function patchCodexConfigTomlText(
+export function patchCodexConfigTomlText(
   configTomlText: string,
   patch: {
     apiBaseUrl?: string

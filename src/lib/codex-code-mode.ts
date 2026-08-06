@@ -47,3 +47,48 @@ export function parseCodexScriptCard(
 
   return { source, title, callCount }
 }
+
+/**
+ * What the parser could establish about one command recovered from a code-mode
+ * script, written on its `ToolUse.meta` under `codeg.codexScript`.
+ *
+ * A script that fans a literal table of commands out through one
+ * `tools.exec_command({cmd, …})` labels each row, and prints that label ahead of
+ * the row's output. When codex then truncates the combined output — it drops
+ * whole lines, from the middle, with no marker — some of those labels go with
+ * it, and the spans they used to separate can no longer be told apart. The
+ * parser splits on the labels that survived and says plainly which commands it
+ * could not place, rather than handing one command's output to another.
+ */
+export interface CodexScriptCallMeta {
+  /** The table row's human name, shown beside the command. */
+  label: string | null
+  /** No surviving label bracketed this command, so nothing is attributable. */
+  outputMissing: boolean
+  /** Commands whose output shares this card because their labels were lost. */
+  sharedWith: string[]
+  /** Codex dropped lines from the output this card was cut out of. */
+  truncated: boolean
+}
+
+export function parseCodexScriptMeta(
+  meta: unknown
+): CodexScriptCallMeta | null {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null
+  const marks = (meta as Record<string, unknown>)["codeg.codexScript"]
+  if (!marks || typeof marks !== "object" || Array.isArray(marks)) return null
+
+  const record = marks as Record<string, unknown>
+  const sharedWith = Array.isArray(record.sharedWith)
+    ? record.sharedWith.filter(
+        (name): name is string => typeof name === "string"
+      )
+    : []
+
+  return {
+    label: typeof record.label === "string" ? record.label : null,
+    outputMissing: record.outputMissing === true,
+    sharedWith,
+    truncated: record.truncated === true,
+  }
+}

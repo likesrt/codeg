@@ -296,8 +296,12 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
           order; `invisible` (visibility, not display — keeps mount/layout/
           scroll) stops it painting, because with a workspace background image
           the route overlay's ws-surface is translucent and the conversation
-          would ghost through it. conversation-tab-hidden kills the subtree's
-          transitions so visibility flips instantly (transition-all ghosts). */}
+          would ghost through it. conversation-tab-hidden hardens that hidden
+          subtree (see globals.css): it kills the subtree's transitions so
+          visibility flips instantly (transition-all ghosts) and re-hides the
+          descendants that declare `visibility: visible` themselves — Monaco's
+          diff panes do, which is why an open git-diff file tab used to show
+          through the tasks / automations / token-usage pages. */}
       <div
         className={cn(
           "h-full min-h-0",
@@ -325,8 +329,11 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                 // Covered by the files-maximized overlay: stop painting so it
                 // can't show through the now-translucent overlay. `invisible`
                 // (visibility:hidden), not display:none, keeps mount + box size
-                // intact so the stick-to-bottom scroll doesn't reset.
-                filesMaximized && "invisible"
+                // intact so the stick-to-bottom scroll doesn't reset;
+                // conversation-tab-hidden is the shared hardening for a hidden
+                // keep-alive subtree (kills its transitions, and re-hides the
+                // descendants that declare `visibility: visible` themselves).
+                filesMaximized && "conversation-tab-hidden invisible"
               )}
               inert={filesMaximized || undefined}
             >
@@ -437,8 +444,11 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   "absolute inset-0 z-30 bg-background ws-transparent-bg",
                 // Covered by the conversation overlay in conversation mode: hide
                 // from paint (keep mount + layout) so it can't show through the
-                // translucent overlay.
-                mode === "conversation" && "invisible"
+                // translucent overlay. conversation-tab-hidden goes with it —
+                // an open git-diff tab lives in this column and Monaco's diff
+                // panes set their own inline `visibility: visible` (see
+                // globals.css), so `invisible` alone leaves them painting.
+                mode === "conversation" && "conversation-tab-hidden invisible"
               )}
               aria-hidden={mode === "conversation"}
             >

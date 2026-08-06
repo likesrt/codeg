@@ -2511,6 +2511,51 @@ fn codex_auth_json_path() -> PathBuf {
     codex_home_dir().join("auth.json")
 }
 
+/// Header codex reads to decide whether a provider authenticates through the
+/// "actor authorization" path. Mirrors `OPENAI_ACTOR_AUTHORIZATION_HEADER` in
+/// codex's `model-provider-info` crate.
+const CODEX_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
+
+/// Mirrors the header half of codex's
+/// `ModelProviderInfo::uses_openai_actor_authorization`. A
+/// `[model_providers.x.http_headers]` sub-table and an inline
+/// `http_headers = { .. }` both parse to `Value::Table`, so one lookup covers
+/// every spelling.
+fn codex_provider_uses_actor_authorization(
+    provider_table: &toml::map::Map<String, toml::Value>,
+) -> bool {
+    provider_table
+        .get("http_headers")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|headers| {
+            headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case(CODEX_ACTOR_AUTHORIZATION_HEADER)
+                    && value.as_str().is_some_and(|value| !value.trim().is_empty())
+            })
+        })
+}
+
+/// Supply codeg's `requires_openai_auth` default without clobbering the user.
+///
+/// Codex defaults the field to `false` and only reads credentials from
+/// `auth.json` when it is `true`, so `true` is correct for a provider codeg
+/// provisioned itself (key in auth.json, no `env_key`) — and wrong for one the
+/// user configured. Worse, codex's `uses_openai_actor_authorization()` requires
+/// `!requires_openai_auth`, so forcing `true` silently disables that auth path.
+/// Write the default only when the field is absent, and never over a provider
+/// that opted into actor authorization.
+fn ensure_codex_provider_auth_default(provider_table: &mut toml::map::Map<String, toml::Value>) {
+    if provider_table.contains_key("requires_openai_auth")
+        || codex_provider_uses_actor_authorization(provider_table)
+    {
+        return;
+    }
+    provider_table.insert(
+        "requires_openai_auth".to_string(),
+        toml::Value::Boolean(true),
+    );
+}
+
 /// OpenCode reads config from `$XDG_CONFIG_HOME/opencode` (falling back to
 /// `~/.config/opencode`) and credentials from `$XDG_DATA_HOME/opencode`
 /// (falling back to `~/.local/share/opencode`) on every platform. codeg must
@@ -3157,10 +3202,7 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
             "wire_api".to_string(),
             toml::Value::String("responses".to_string()),
         );
-        provider_table.insert(
-            "requires_openai_auth".to_string(),
-            toml::Value::Boolean(true),
-        );
+        ensure_codex_provider_auth_default(provider_table);
     }
 
     if env.is_empty() {
@@ -8026,10 +8068,7 @@ fn cascade_update_agent_config(
                     "wire_api".to_string(),
                     toml::Value::String("responses".to_string()),
                 );
-                provider_table.insert(
-                    "requires_openai_auth".to_string(),
-                    toml::Value::Boolean(true),
-                );
+                ensure_codex_provider_auth_default(provider_table);
             }
             match codex_model {
                 CodexModelAction::Set(model) => {
@@ -12497,22 +12536,32 @@ wire_api = "chat"
         env.insert("OPENAI_BASE_URL".to_string(), "https://a".to_string());
         env.insert("OPENAI_API_KEY".to_string(), "k1".to_string());
 
-        // Same inputs → same fingerprint (the native-config read is identical
-        // across all calls in this test, so only the env varies).
-        let fp1 = fingerprint_config(agent, &env);
-        assert_eq!(fp1, fingerprint_config(agent, &env));
+        // `fingerprint_config` folds in the on-disk native config, so this test
+        // must pin CODEX_HOME the way the Grok/Cursor fingerprint tests below
+        // pin theirs. Reading the developer's real ~/.codex would make the
+        // "same inputs → same fingerprint" assertions depend on whether another
+        // test happened to be inside its own `temp_env` CODEX_HOME scope at the
+        // time — temp_env mutates the process environment, and only tests that
+        // take its lock are serialized against each other.
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            // Same inputs → same fingerprint (the native-config read is
+            // identical across all calls in this test, so only the env varies).
+            let fp1 = fingerprint_config(agent, &env);
+            assert_eq!(fp1, fingerprint_config(agent, &env));
 
-        // Changing a real config value changes the fingerprint.
-        let mut env_changed = env.clone();
-        env_changed.insert("OPENAI_API_KEY".to_string(), "k2".to_string());
-        assert_ne!(fp1, fingerprint_config(agent, &env_changed));
+            // Changing a real config value changes the fingerprint.
+            let mut env_changed = env.clone();
+            env_changed.insert("OPENAI_API_KEY".to_string(), "k2".to_string());
+            assert_ne!(fp1, fingerprint_config(agent, &env_changed));
 
-        // The per-launch volatile key is excluded — adding it must NOT change
-        // the fingerprint (otherwise OpenClaw would look stale once a real
-        // session id is assigned and the reset flag drops).
-        let mut env_volatile = env.clone();
-        env_volatile.insert("OPENCLAW_RESET_SESSION".to_string(), "1".to_string());
-        assert_eq!(fp1, fingerprint_config(agent, &env_volatile));
+            // The per-launch volatile key is excluded — adding it must NOT
+            // change the fingerprint (otherwise OpenClaw would look stale once a
+            // real session id is assigned and the reset flag drops).
+            let mut env_volatile = env.clone();
+            env_volatile.insert("OPENCLAW_RESET_SESSION".to_string(), "1".to_string());
+            assert_eq!(fp1, fingerprint_config(agent, &env_volatile));
+        });
     }
 
     #[test]
@@ -12541,6 +12590,216 @@ wire_api = "chat"
             assert_ne!(
                 low_fp, high_fp,
                 "changing default_reasoning_effort must change the fingerprint"
+            );
+        });
+    }
+
+    /// Parse a provider table out of a TOML fragment so the auth-default tests
+    /// read like the config.toml a user would actually write.
+    fn provider_table_of(raw: &str) -> toml::map::Map<String, toml::Value> {
+        raw.parse::<toml::Value>()
+            .expect("fragment must parse")
+            .get("model_providers")
+            .and_then(toml::Value::as_table)
+            .and_then(|providers| providers.get("codeg"))
+            .and_then(toml::Value::as_table)
+            .cloned()
+            .expect("fragment must define model_providers.codeg")
+    }
+
+    fn auth_flag_of(table: &toml::map::Map<String, toml::Value>) -> Option<bool> {
+        table.get("requires_openai_auth").and_then(toml::Value::as_bool)
+    }
+
+    #[test]
+    fn codex_auth_default_is_supplied_only_when_absent() {
+        // codeg provisions its provider with the key in auth.json and no
+        // `env_key`, so a provider WE create needs requires_openai_auth = true.
+        let mut fresh = provider_table_of("[model_providers.codeg]\nbase_url = \"https://x/v1\"\n");
+        ensure_codex_provider_auth_default(&mut fresh);
+        assert_eq!(auth_flag_of(&fresh), Some(true));
+
+        // An explicit false is the user's call and must survive every path —
+        // this is the regression the whole change exists for.
+        let mut explicit_false = provider_table_of(
+            "[model_providers.codeg]\nbase_url = \"https://x/v1\"\nrequires_openai_auth = false\n",
+        );
+        ensure_codex_provider_auth_default(&mut explicit_false);
+        assert_eq!(auth_flag_of(&explicit_false), Some(false));
+
+        // An explicit true is left alone rather than rewritten.
+        let mut explicit_true = provider_table_of(
+            "[model_providers.codeg]\nrequires_openai_auth = true\n",
+        );
+        ensure_codex_provider_auth_default(&mut explicit_true);
+        assert_eq!(auth_flag_of(&explicit_true), Some(true));
+    }
+
+    #[test]
+    fn codex_auth_default_yields_to_actor_authorization() {
+        // codex's uses_openai_actor_authorization() is
+        // `!requires_openai_auth && <non-empty x-openai-actor-authorization>`,
+        // so writing the default here would silently disable that auth path.
+        let mut header_present = provider_table_of(
+            "[model_providers.codeg]\nbase_url = \"https://x/v1\"\n\n\
+             [model_providers.codeg.http_headers]\n\
+             x-openai-actor-authorization = \"local-image-extension\"\n",
+        );
+        ensure_codex_provider_auth_default(&mut header_present);
+        assert_eq!(auth_flag_of(&header_present), None);
+
+        // Header matching is case-insensitive, mirroring eq_ignore_ascii_case.
+        let mut mixed_case = provider_table_of(
+            "[model_providers.codeg.http_headers]\n\
+             X-OpenAI-Actor-Authorization = \"local-image-extension\"\n",
+        );
+        ensure_codex_provider_auth_default(&mut mixed_case);
+        assert_eq!(auth_flag_of(&mixed_case), None);
+
+        // An inline table is the same table to the parser.
+        let mut inline = provider_table_of(
+            "[model_providers.codeg]\n\
+             http_headers = { \"x-openai-actor-authorization\" = \"local-image-extension\" }\n",
+        );
+        ensure_codex_provider_auth_default(&mut inline);
+        assert_eq!(auth_flag_of(&inline), None);
+
+        // An empty header value does not enable the path upstream
+        // (`!value.trim().is_empty()`), so the default still applies.
+        let mut empty_value = provider_table_of(
+            "[model_providers.codeg.http_headers]\nx-openai-actor-authorization = \"  \"\n",
+        );
+        ensure_codex_provider_auth_default(&mut empty_value);
+        assert_eq!(auth_flag_of(&empty_value), Some(true));
+
+        // A header plus an explicit true is a contradictory config, but it is
+        // the user's: never rewrite or remove it.
+        let mut header_and_true = provider_table_of(
+            "[model_providers.codeg]\nrequires_openai_auth = true\n\n\
+             [model_providers.codeg.http_headers]\n\
+             x-openai-actor-authorization = \"local-image-extension\"\n",
+        );
+        ensure_codex_provider_auth_default(&mut header_and_true);
+        assert_eq!(auth_flag_of(&header_and_true), Some(true));
+
+        // A quoted key containing dots is ONE literal key, not an http_headers
+        // sub-table, so it must not suppress the default.
+        let mut literal_dotted_key = provider_table_of(
+            "[model_providers.codeg]\n\
+             \"http_headers.x-openai-actor-authorization\" = \"local-image-extension\"\n",
+        );
+        ensure_codex_provider_auth_default(&mut literal_dotted_key);
+        assert_eq!(auth_flag_of(&literal_dotted_key), Some(true));
+    }
+
+    #[test]
+    fn codex_cascade_preserves_explicit_auth_flag_and_headers() {
+        // Repro path 2 from issue #406: editing a bound model provider's URL /
+        // key / model cascades into ~/.codex/config.toml, which used to
+        // overwrite requires_openai_auth on the way through.
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            let config_path = dir.path().join("config.toml");
+            std::fs::write(
+                &config_path,
+                "model_provider = \"codeg\"\n\n\
+                 [model_providers.codeg]\n\
+                 base_url = \"https://old.example/v1\"\n\
+                 name = \"codeg\"\n\
+                 wire_api = \"responses\"\n\
+                 requires_openai_auth = false\n\n\
+                 [model_providers.codeg.http_headers]\n\
+                 x-openai-actor-authorization = \"local-image-extension\"\n",
+            )
+            .expect("seed config.toml");
+
+            cascade_update_agent_config(
+                AgentType::Codex,
+                "https://new.example/v1",
+                "sk-test",
+                &BTreeMap::new(),
+                &CodexModelAction::Set("gpt-5-codex".to_string()),
+                None,
+            )
+            .expect("cascade must succeed");
+
+            let written = std::fs::read_to_string(&config_path).expect("read back");
+            let table = provider_table_of(&written);
+            assert_eq!(
+                auth_flag_of(&table),
+                Some(false),
+                "an explicit requires_openai_auth = false must survive the cascade"
+            );
+            assert!(
+                codex_provider_uses_actor_authorization(&table),
+                "the actor-authorization header must survive the cascade"
+            );
+            assert_eq!(
+                table.get("base_url").and_then(toml::Value::as_str),
+                Some("https://new.example/v1"),
+                "the cascade must still apply the new base_url"
+            );
+        });
+    }
+
+    #[test]
+    fn codex_cascade_seeds_auth_flag_for_a_fresh_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            cascade_update_agent_config(
+                AgentType::Codex,
+                "https://new.example/v1",
+                "sk-test",
+                &BTreeMap::new(),
+                &CodexModelAction::NoOp,
+                None,
+            )
+            .expect("cascade must succeed");
+
+            let written =
+                std::fs::read_to_string(dir.path().join("config.toml")).expect("read back");
+            assert_eq!(
+                auth_flag_of(&provider_table_of(&written)),
+                Some(true),
+                "a provider codeg creates still gets the default"
+            );
+        });
+    }
+
+    #[test]
+    fn codex_cascade_leaves_a_non_codeg_provider_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            let config_path = dir.path().join("config.toml");
+            std::fs::write(
+                &config_path,
+                "model_provider = \"custom\"\n\n\
+                 [model_providers.custom]\n\
+                 base_url = \"https://old.example/v1\"\n",
+            )
+            .expect("seed config.toml");
+
+            cascade_update_agent_config(
+                AgentType::Codex,
+                "https://new.example/v1",
+                "sk-test",
+                &BTreeMap::new(),
+                &CodexModelAction::NoOp,
+                None,
+            )
+            .expect("cascade must succeed");
+
+            let written = std::fs::read_to_string(&config_path).expect("read back");
+            let parsed = written.parse::<toml::Value>().expect("must parse");
+            let custom = parsed
+                .get("model_providers")
+                .and_then(toml::Value::as_table)
+                .and_then(|providers| providers.get("custom"))
+                .and_then(toml::Value::as_table)
+                .expect("custom provider must survive");
+            assert!(
+                !custom.contains_key("requires_openai_auth"),
+                "only the codeg provider is codeg-managed"
             );
         });
     }

@@ -10,8 +10,8 @@ use crate::models::{
 };
 
 use super::{
-    compute_session_stats, folder_name_from_path, title_from_user_text, truncate_str, AgentParser,
-    ParseError,
+    backfill_turn_durations, compute_session_stats, folder_name_from_path, title_from_user_text,
+    truncate_str, AgentParser, ParseError,
 };
 
 // ---------------------------------------------------------------------------
@@ -331,6 +331,7 @@ impl AgentParser for ClineParser {
         let started_at = turns.first().map(|t| t.timestamp).unwrap_or_else(Utc::now);
         let ended_at = turns.last().map(|t| t.timestamp);
 
+        backfill_turn_durations(&mut turns, &[]);
         let session_stats = compute_session_stats(&turns);
 
         let summary = ConversationSummary {

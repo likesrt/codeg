@@ -185,11 +185,8 @@ import {
 import { cutSelectionToClipboard } from "@/components/chat/composer/clipboard-actions"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
 import type { Editor, JSONContent } from "@tiptap/core"
-import {
-  useReferenceSearch,
-  type ReferenceGroupLabels,
-} from "@/components/chat/composer/use-reference-search"
-import type { MentionUiLabels } from "@/components/chat/composer/suggestion/types"
+import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
+import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import {
   imageAttachmentToPromptBlock,
   type ImageInputAttachment,
@@ -667,26 +664,8 @@ export function MessageInput({
   }, [])
 
   // Localized group headings + panel chrome for the `@` mention panel.
-  const referenceGroupLabels = useMemo<ReferenceGroupLabels>(
-    () => ({
-      file: t("mentionGroupFile"),
-      agent: t("mentionGroupAgent"),
-      session: t("mentionGroupSession"),
-      commit: t("mentionGroupCommit"),
-      skill: t("mentionGroupSkill"),
-    }),
-    [t]
-  )
-  const mentionUiLabels = useMemo<MentionUiLabels>(
-    () => ({
-      empty: t("mentionEmpty"),
-      loading: t("mentionLoading"),
-      listbox: t("mentionListLabel"),
-      more: t("mentionMore"),
-      count: (count: number) => t("mentionCount", { count }),
-    }),
-    [t]
-  )
+  const { groupLabels: referenceGroupLabels, uiLabels: mentionUiLabels } =
+    useComposerMentionLabels()
 
   // Live data sources for the unified `@` mention panel. Pre-warmed only while
   // this composer is the active one (`enabled`). Referentially stable.

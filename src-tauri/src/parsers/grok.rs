@@ -11,9 +11,10 @@ use crate::models::{
     TurnUsage,
 };
 use crate::parsers::{
-    compute_session_stats, folder_name_from_path, infer_context_window_max_tokens,
-    latest_turn_total_usage_tokens, merge_context_window_stats, relocate_orphaned_tool_results,
-    structurize_read_tool_output, title_from_user_text, truncate_str, AgentParser, ParseError,
+    backfill_turn_durations, compute_session_stats, folder_name_from_path,
+    infer_context_window_max_tokens, latest_turn_total_usage_tokens, merge_context_window_stats,
+    relocate_orphaned_tool_results, structurize_read_tool_output, title_from_user_text,
+    truncate_str, AgentParser, ParseError,
 };
 
 /// Cap for a single tool result / tool input preview stored on a turn. Grok's
@@ -186,6 +187,10 @@ impl GrokParser {
                 }
             }
         }
+
+        // Grok times a turn from its own update spans; this reaches only the
+        // turns whose updates carried no usable timestamps.
+        backfill_turn_durations(&mut parsed.turns, &[]);
 
         // Grok sends no ACP `usage_update`, so the live meter stays empty; derive
         // the context ring here instead. Grok reports a cumulative per-turn token
@@ -1509,7 +1514,9 @@ mod tests {
     fn assistant_turn_model_falls_back_to_summary() {
         // No in-stream modelId anywhere → the assistant turn's model is filled
         // from summary.json `current_model_id`, and without `params._meta` no
-        // token/duration stats are fabricated.
+        // token stats are fabricated. The elapsed time is not a fabrication
+        // though — the records are timestamped, so `backfill_turn_durations`
+        // reads the reply's span straight off the prompt→reply clock.
         let updates = concat!(
             r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#, "\n",
             r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}},"timestamp":1783584024}"#, "\n",
@@ -1523,7 +1530,11 @@ mod tests {
         let assistant = detail.turns.last().expect("assistant turn");
         assert_eq!(assistant.model.as_deref(), Some("grok-4.5"));
         assert!(assistant.usage.is_none());
-        assert!(assistant.duration_ms.is_none());
+        assert_eq!(
+            assistant.duration_ms,
+            Some(5_000),
+            "1783584024 - 1783584019"
+        );
     }
 
     #[test]

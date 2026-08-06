@@ -585,6 +585,23 @@ pub(crate) fn emit_folder_upsert(emitter: &EventEmitter, detail: FolderDetail) {
     );
 }
 
+/// Emit a `folder://changed` Deleted so every client drops the folder from its
+/// workspace list in real time. The counterpart of [`emit_folder_upsert`], for
+/// rows that are soft-deleted for good — a work task's worktree folder once the
+/// worktree is gone from disk. Without it the removed worktree keeps rendering
+/// in every sidebar until the next full `fetchFolders` (i.e. a reload).
+///
+/// Only for permanent removal: closing a folder
+/// ([`remove_folder_from_workspace_core`]) leaves the row alive and must not
+/// broadcast this.
+pub(crate) fn emit_folder_deleted(emitter: &EventEmitter, folder_id: i32) {
+    crate::web::event_bridge::emit_event(
+        emitter,
+        crate::web::event_bridge::FOLDER_CHANGED_EVENT,
+        crate::web::event_bridge::FolderChange::Deleted { id: folder_id },
+    );
+}
+
 pub async fn load_folder_history_core(
     db: &AppDatabase,
 ) -> Result<Vec<FolderHistoryEntry>, AppCommandError> {

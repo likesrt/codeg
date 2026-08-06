@@ -71,18 +71,36 @@ describe("groupTasksByColumn", () => {
     expect(shown.done.map((t) => t.id)).toEqual([2])
   })
 
-  it("keeps board order within columns and sorts done before canceled", () => {
+  it("orders every column by updated_at, freshest first", () => {
     const tasks = [
-      task(1, "queued"),
-      task(2, "todo"),
-      task(3, "canceled", { finished_at: "2026-08-01T03:00:00Z" }),
-      task(4, "done", { finished_at: "2026-08-01T01:00:00Z" }),
-      task(5, "done", { finished_at: "2026-08-01T02:00:00Z" }),
+      task(1, "todo", { updated_at: "2026-08-01T01:00:00Z" }),
+      task(2, "queued", { updated_at: "2026-08-01T03:00:00Z" }),
+      task(3, "preparing", { updated_at: "2026-08-01T01:00:00Z" }),
+      task(4, "running", { updated_at: "2026-08-01T04:00:00Z" }),
+      task(5, "review", { updated_at: "2026-08-01T02:00:00Z" }),
+      task(6, "failed", { updated_at: "2026-08-01T05:00:00Z" }),
+      task(7, "done", { updated_at: "2026-08-01T01:00:00Z" }),
+      // Canceled no longer sinks to the bottom — one rule per column.
+      task(8, "canceled", { updated_at: "2026-08-01T06:00:00Z" }),
     ]
     const grouped = groupTasksByColumn(tasks, true)
-    expect(grouped.todo.map((t) => t.id)).toEqual([1, 2])
-    // done first (freshest first), canceled last even though it finished later.
-    expect(grouped.done.map((t) => t.id)).toEqual([5, 4, 3])
+    expect(grouped.todo.map((t) => t.id)).toEqual([2, 1])
+    expect(grouped.inProgress.map((t) => t.id)).toEqual([4, 3])
+    expect(grouped.attention.map((t) => t.id)).toEqual([6, 5])
+    expect(grouped.done.map((t) => t.id)).toEqual([8, 7])
+  })
+
+  it("keeps board order on equal timestamps, so a drag survives the sort", () => {
+    // `reorder` stamps every id it renumbers with the same `updated_at`, so the
+    // pending column ties and the stable sort falls back to the new sort_order.
+    const stamped = "2026-08-02T00:00:00Z"
+    const tasks = [
+      task(3, "todo", { sort_order: 0, updated_at: stamped }),
+      task(1, "todo", { sort_order: 1, updated_at: stamped }),
+      task(2, "queued", { sort_order: 2, updated_at: stamped }),
+    ]
+    const grouped = groupTasksByColumn(tasks, false)
+    expect(grouped.todo.map((t) => t.id)).toEqual([3, 1, 2])
   })
 
   it("hides archived tasks unless the archive toggle is on", () => {

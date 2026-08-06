@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { rampStep, seriesColor } from "./charts"
+import { rampStep } from "./charts"
 
 describe("rampStep", () => {
   it("keeps zero off the ramp so 'no data' never reads as 'a little data'", () => {
@@ -33,17 +33,5 @@ describe("rampStep", () => {
       expect(step!).toBeGreaterThanOrEqual(0)
       expect(step!).toBeLessThanOrEqual(6)
     }
-  })
-})
-
-describe("seriesColor", () => {
-  it("assigns slots by fixed index", () => {
-    expect(seriesColor(0)).toBe("var(--tu-s1)")
-    expect(seriesColor(7)).toBe("var(--tu-s8)")
-  })
-
-  it("does not cycle past the validated slots — the caller folds instead", () => {
-    expect(seriesColor(8)).toBe("var(--muted-foreground)")
-    expect(seriesColor(99)).toBe("var(--muted-foreground)")
   })
 })

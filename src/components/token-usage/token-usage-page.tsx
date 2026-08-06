@@ -16,11 +16,12 @@ import {
   Bot,
   ChartNoAxesColumn,
   Cpu,
+  DatabaseBackup,
   Folder,
+  MoreHorizontal,
   RefreshCw,
   RotateCcw,
   Share2,
-  Sparkles,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -31,14 +32,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
 import {
   tokenUsageFacets,
   tokenUsageReport,
@@ -52,6 +54,7 @@ import { formatTokenCount } from "@/lib/token-format"
 import {
   averagePerActiveDay,
   averagePerConversation,
+  averageTurnsPerConversation,
   buildHeatMatrix,
   cacheHitRate,
   computeDelta,
@@ -59,10 +62,11 @@ import {
   foldBreakdown,
   formatDuration,
   formatTokensPrecise,
+  freshTokens,
+  idleDays,
   localTzOffsetMinutes,
   peakHour,
   peakPoint,
-  RANGE_PRESETS,
   resolveRange,
   shareCardFilename,
   suggestBucket,
@@ -78,18 +82,22 @@ import type {
   TokenUsageSyncStatus,
 } from "@/lib/types"
 import {
+  ACCENT,
   ActivityHeatmap,
-  CompositionBar,
+  INK,
+  INK_FAINT,
+  INK_SOFT,
+  NEUTRAL,
   RankedBars,
+  RingMeter,
   TrendChart,
-  seriesColor,
-  OTHER_VAR,
   type RankedDatum,
 } from "./charts"
 import {
   CustomRangeFields,
   MultiSelectFilter,
   SegmentedFilter,
+  SingleSelectFilter,
 } from "./token-usage-filters"
 import {
   ARCHETYPE_DESC_KEYS,
@@ -97,7 +105,9 @@ import {
   ARCHETYPE_LABEL_KEYS,
   CARD_HEIGHT,
   CARD_WIDTH,
+  resolveShareCardTheme,
   ShareCard,
+  type ShareCardTheme,
 } from "./share-card"
 
 const SYNC_PROGRESS_EVENT = "token-usage-sync://progress"
@@ -119,8 +129,8 @@ function canCopyImages(): boolean {
   )
 }
 
-/** Slices shown before the tail is folded into "Other" — the categorical
- *  palette has eight validated slots and the folded row takes one. */
+/** Rows shown before the tail folds into "Other" — past this a ranked list
+ *  stops being a ranking and starts being a table. */
 const BREAKDOWN_LIMIT = 7
 
 const RANGE_LABEL_KEYS = {
@@ -133,10 +143,24 @@ const RANGE_LABEL_KEYS = {
   custom: "rangeCustom",
 } as const satisfies Record<TokenUsageRangePreset, string>
 
+/** The one-click segments; everything else folds into the "more" pill so the
+ *  toolbar keeps to one calm row. */
+const HOT_RANGE_PRESETS = ["7d", "30d", "90d"] as const
+const MORE_RANGE_PRESETS = ["thisMonth", "thisYear", "all", "custom"] as const
+
 const BUCKET_LABEL_KEYS = {
   day: "bucketDay",
   week: "bucketWeek",
   month: "bucketMonth",
+} as const satisfies Record<TokenUsageBucket, string>
+
+/** Unit nouns for prose ("busiest day"), distinct from the segmented-control
+ *  labels above — zh renders those as 按天/按周/按月, which is ungrammatical
+ *  mid-sentence. */
+const BUCKET_UNIT_KEYS = {
+  day: "bucketUnitDay",
+  week: "bucketUnitWeek",
+  month: "bucketUnitMonth",
 } as const satisfies Record<TokenUsageBucket, string>
 
 const WEEKDAY_KEYS = [
@@ -148,6 +172,8 @@ const WEEKDAY_KEYS = [
   "weekSat",
   "weekSun",
 ] as const
+
+type BreakdownDim = "folder" | "agent" | "model"
 
 /** Page title in the window-chrome strip — same metrics as the Tasks and
  *  Automations routes so all three open with one header rhythm. */
@@ -166,45 +192,27 @@ export function TokenUsagePageTitle() {
   )
 }
 
-function StatTile({
+/** One cell of the connected stats strip under the hero. */
+function StatCell({
   label,
   value,
   hint,
-  delta,
-  deltaLabel,
+  className,
 }: {
   label: string
   value: string
   hint?: string
-  delta?: { ratio: number | null; direction: "up" | "down" | "flat" } | null
-  deltaLabel?: string
+  className?: string
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3">
+    <div className={cn("border-border px-5 py-4", className)}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 font-mono text-xl font-semibold tabular-nums leading-tight">
+      {/* Proportional figures on purpose — tabular digits look loose at this
+          size and nothing needs to align vertically here. */}
+      <div className="mt-1.5 text-xl font-semibold leading-tight tracking-tight">
         {value}
       </div>
-      {delta && delta.direction !== "flat" ? (
-        <div className="mt-1 flex items-center gap-1 text-[0.6875rem]">
-          {delta.direction === "up" ? (
-            <ArrowUpRight
-              className="size-3 text-[var(--tu-s3)]"
-              aria-hidden="true"
-            />
-          ) : (
-            <ArrowDownRight
-              className="size-3 text-[var(--tu-s2)]"
-              aria-hidden="true"
-            />
-          )}
-          <span className="font-mono tabular-nums text-muted-foreground">
-            {delta.ratio === null
-              ? deltaLabel
-              : `${delta.ratio > 0 ? "+" : ""}${Math.round(delta.ratio * 100)}%`}
-          </span>
-        </div>
-      ) : hint ? (
+      {hint ? (
         <div className="mt-1 truncate text-[0.6875rem] text-muted-foreground">
           {hint}
         </div>
@@ -217,37 +225,89 @@ function Panel({
   title,
   hint,
   icon: Icon,
+  actions,
   children,
   className,
 }: {
   title: string
   hint?: string
   icon?: ComponentType<{ className?: string }>
+  /** Right-aligned header slot — e.g. a segmented toggle. */
+  actions?: React.ReactNode
   children: React.ReactNode
   className?: string
 }) {
   return (
+    // flex-col so a child marked flex-1 (the heatmap) can absorb the extra
+    // height a side-by-side grid row hands the card.
     <section
-      className={cn("rounded-xl border border-border bg-card p-4", className)}
+      className={cn(
+        "flex flex-col rounded-xl border border-border bg-card p-4",
+        className
+      )}
     >
-      <header className="mb-3">
-        <h2 className="flex items-center gap-1.5 text-[0.8125rem] font-semibold">
-          {Icon ? (
-            <Icon
-              className="size-3.5 text-muted-foreground"
-              aria-hidden="true"
-            />
+      <header className="mb-3 flex shrink-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-1.5 text-[0.8125rem] font-semibold">
+            {Icon ? (
+              <Icon
+                className="size-3.5 text-muted-foreground"
+                aria-hidden="true"
+              />
+            ) : null}
+            {title}
+          </h2>
+          {hint ? (
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {hint}
+            </p>
           ) : null}
-          {title}
-        </h2>
-        {hint ? (
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {hint}
-          </p>
-        ) : null}
+        </div>
+        {actions}
       </header>
       {children}
     </section>
+  )
+}
+
+/** The neutral "vs previous period" chip beside the hero figure. Spend going
+ *  up is not good or bad, so the badge never wears a status colour. */
+function DeltaBadge({
+  delta,
+  newLabel,
+  title,
+}: {
+  delta: { ratio: number | null; direction: "up" | "down" | "flat" }
+  newLabel: string
+  title: string
+}) {
+  // Flat covers both "unchanged" and "two empty windows" — neither deserves
+  // a chip.
+  if (delta.direction === "flat") return null
+  const Icon = delta.direction === "up" ? ArrowUpRight : ArrowDownRight
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground"
+    >
+      <Icon className="size-3.5" aria-hidden="true" />
+      <span className="font-mono tabular-nums">
+        {delta.ratio === null
+          ? newLabel
+          : `${delta.ratio > 0 ? "+" : ""}${Math.round(delta.ratio * 100)}%`}
+      </span>
+    </span>
+  )
+}
+
+/** First-open placeholder — three quiet pulses where the cards will land. */
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-4" aria-hidden="true">
+      <div className="h-40 animate-pulse rounded-xl border border-border bg-muted/40" />
+      <div className="h-24 animate-pulse rounded-xl border border-border bg-muted/40" />
+      <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
+    </div>
   )
 }
 
@@ -270,6 +330,7 @@ export function TokenUsagePage() {
   const [folderIds, setFolderIds] = useState<string[]>([])
   const [agentTypes, setAgentTypes] = useState<string[]>([])
   const [models, setModels] = useState<string[]>([])
+  const [dim, setDim] = useState<BreakdownDim>("folder")
 
   const [facets, setFacets] = useState<TokenUsageFacets | null>(null)
   const [status, setStatus] = useState<TokenUsageSyncStatus | null>(null)
@@ -279,9 +340,35 @@ export function TokenUsagePage() {
   const [syncing, setSyncing] = useState(false)
   const [progress, setProgress] = useState<TokenUsageSyncProgress | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
+  // The live theme, resolved to literals the moment the dialog opens — the
+  // dialog portals outside the `.tu-viz` scope, so the poster can't read the
+  // custom properties itself.
+  const [shareTheme, setShareTheme] = useState<ShareCardTheme | null>(null)
   const [exporting, setExporting] = useState(false)
+  // Whether any content has scrolled under the toolbar — drives the fade.
+  const [scrolled, setScrolled] = useState(false)
+  // The preview's live scale. Nominally CARD_PREVIEW_SCALE, but it follows the
+  // wrapper's measured width: when the dialog goes vertically scrollable a
+  // classic (non-overlay) scrollbar steals ~15px of content width, and a
+  // fixed-width preview would overflow into a horizontal scrollbar.
+  const [previewScale, setPreviewScale] = useState(CARD_PREVIEW_SCALE)
 
+  const pageRef = useRef<HTMLDivElement | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
+  const previewRoRef = useRef<ResizeObserver | null>(null)
+  // Callback ref so the observer follows the conditionally-mounted wrapper.
+  const previewBoxRef = useCallback((el: HTMLDivElement | null) => {
+    previewRoRef.current?.disconnect()
+    previewRoRef.current = null
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      // clientWidth excludes the wrapper's border, so the scaled card fits
+      // exactly inside it. Never upscale past the nominal preview size.
+      setPreviewScale(Math.min(CARD_PREVIEW_SCALE, el.clientWidth / CARD_WIDTH))
+    })
+    ro.observe(el)
+    previewRoRef.current = ro
+  }, [])
   const reqRef = useRef(0)
   // Frozen at mount so range presets stay anchored to when the page was
   // opened; reading the clock during render is impure. Same idiom as the
@@ -297,9 +384,24 @@ export function TokenUsagePage() {
     [preset, now, custom]
   )
 
-  // The bucket follows the range until the user picks one, after which their
-  // choice sticks — derived, so there is no effect racing the fetch.
-  const effectiveBucket = bucketTouched ? bucket : suggestBucket(range)
+  // The bucket follows the range's suggested default until the user picks one;
+  // switching presets re-arms the suggestion (see changePreset). Derived, so
+  // there is no effect racing the fetch.
+  const effectiveBucket = bucketTouched ? bucket : suggestBucket(preset, range)
+
+  // A preset switch re-applies that preset's natural granularity — a manual
+  // bucket choice only sticks within the range it was made for.
+  const changePreset = useCallback((next: TokenUsageRangePreset) => {
+    setPreset(next)
+    setBucketTouched(false)
+  }, [])
+
+  // Fires on every scroll tick, but the boolean rarely flips — React bails
+  // out on identical state, so this costs nothing while scrolling.
+  const handleContentScroll = useCallback((event: Event) => {
+    const el = event.target as HTMLElement | null
+    setScrolled((el?.scrollTop ?? 0) > 2)
+  }, [])
 
   const load = useCallback(async () => {
     const id = ++reqRef.current
@@ -488,12 +590,23 @@ export function TokenUsagePage() {
     [locale]
   )
 
-  const trendData = useMemo(
-    () =>
-      (report?.series ?? []).map((p) => ({
+  const trendData = useMemo(() => {
+    const isDay = report?.bucket === "day"
+    return (report?.series ?? []).map((p) => {
+      const [y, m, d] = p.bucket_key.split("-")
+      return {
         key: p.bucket_key,
         label: formatBucketLabel(p.bucket_key),
-        value: p.total_tokens,
+        // Day buckets carry their weekday in the tooltip — too long for the
+        // axis endpoints, exactly right when inspecting one bar.
+        tooltipLabel: isDay
+          ? new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
+              locale,
+              { month: "short", day: "numeric", weekday: "short" }
+            )
+          : undefined,
+        cache: p.cache_read_tokens,
+        fresh: Math.max(0, p.total_tokens - p.cache_read_tokens),
         detail: [
           {
             label: t("trendTurns"),
@@ -504,34 +617,99 @@ export function TokenUsagePage() {
             value: p.conversation_count.toLocaleString(locale),
           },
         ],
-      })),
-    [report?.series, formatBucketLabel, t, locale]
+      }
+    })
+  }, [report?.series, report?.bucket, formatBucketLabel, t, locale])
+
+  // Where the tokens went — colours are pinned to the entity (cache reads
+  // always wear the accent, fresh compute the ink scale), then the rows are
+  // sorted by size for display.
+  const compositionRows = useMemo<RankedDatum[]>(() => {
+    if (!totals || totals.total_tokens <= 0) return []
+    const rows = [
+      {
+        key: "cacheRead",
+        label: t("cacheRead"),
+        value: totals.cache_read_tokens,
+        color: ACCENT,
+      },
+      {
+        key: "input",
+        label: t("inputTokens"),
+        value: totals.input_tokens,
+        color: INK,
+      },
+      {
+        key: "cacheWrite",
+        label: t("cacheWrite"),
+        value: totals.cache_creation_tokens,
+        color: INK_SOFT,
+      },
+      {
+        key: "output",
+        label: t("outputTokens"),
+        value: totals.output_tokens,
+        color: INK_FAINT,
+      },
+    ]
+    rows.sort((a, b) => b.value - a.value)
+    return rows.map((r) => ({
+      ...r,
+      share: r.value / totals.total_tokens,
+    }))
+  }, [totals, t])
+
+  const breakdownItems = useMemo(() => {
+    if (!report) return []
+    return dim === "folder"
+      ? report.by_folder
+      : dim === "agent"
+        ? report.by_agent
+        : report.by_model
+  }, [report, dim])
+
+  const breakdownLabel = useCallback(
+    (key: string, fallback: string) => {
+      if (dim === "agent") return getAgentLabel(key as AgentType)
+      if (dim === "model" && key === "__unknown__") return t("unknownModel")
+      return fallback
+    },
+    [dim, t]
   )
 
-  const toRanked = useCallback(
-    (
-      items: TokenUsageReport["by_model"],
-      label: (key: string, fallback: string) => string
-    ): RankedDatum[] => {
-      const { shown, other } = foldBreakdown(items, BREAKDOWN_LIMIT)
-      const rows: RankedDatum[] = shown.map((it) => ({
-        key: it.key,
-        label: label(it.key, it.label),
-        value: it.total_tokens,
-        hint: t("sessionsCount", { count: it.conversation_count }),
-      }))
-      if (other) {
-        rows.push({
-          key: other.key,
-          label: t("otherLabel"),
-          value: other.total_tokens,
-          hint: t("sessionsCount", { count: other.conversation_count }),
-          color: OTHER_VAR,
-        })
-      }
-      return rows
+  const breakdownRows = useMemo<RankedDatum[]>(() => {
+    if (!totals) return []
+    const { shown, other } = foldBreakdown(breakdownItems, BREAKDOWN_LIMIT)
+    const share = (v: number) =>
+      totals.total_tokens > 0 ? v / totals.total_tokens : null
+    const rows: RankedDatum[] = shown.map((it) => ({
+      key: it.key,
+      label: breakdownLabel(it.key, it.label),
+      value: it.total_tokens,
+      share: share(it.total_tokens),
+      hint: t("sessionsCount", { count: it.conversation_count }),
+    }))
+    if (other) {
+      rows.push({
+        key: other.key,
+        label: t("otherLabel"),
+        value: other.total_tokens,
+        share: share(other.total_tokens),
+        hint: t("sessionsCount", { count: other.conversation_count }),
+        color: NEUTRAL,
+      })
+    }
+    return rows
+  }, [breakdownItems, breakdownLabel, totals, t])
+
+  const onBreakdownSelect = useCallback(
+    (key: string) => {
+      if (key === "__other__" || key === "__unknown__") return
+      if (dim === "folder") setFolderIds([key])
+      else if (dim === "agent") setAgentTypes([key])
+      else setModels([key])
     },
-    [t]
+    [dim]
   )
 
   const exportCard = useCallback(
@@ -549,7 +727,10 @@ export function TokenUsagePage() {
           height: CARD_HEIGHT,
           // 2× so the poster stays crisp when a chat app re-encodes it.
           pixelRatio: 2,
-          backgroundColor: "#0b1220",
+          // The resolved theme background — same literal the card paints, so
+          // any pixel the layout leaves uncovered matches instead of flashing
+          // a foreign colour.
+          backgroundColor: shareTheme?.bg,
           cacheBust: true,
           style: { transform: "none", transformOrigin: "top left" },
         })
@@ -583,7 +764,7 @@ export function TokenUsagePage() {
         setExporting(false)
       }
     },
-    [range, now, t]
+    [range, now, t, shareTheme]
   )
 
   const isEmpty =
@@ -592,494 +773,715 @@ export function TokenUsagePage() {
     report.totals.total_tokens === 0 &&
     (status?.fact_rows ?? 0) === 0
 
+  // Nothing has been indexed yet, so the page is one call to action: every
+  // toolbar control slices data that doesn't exist, and the actions folded into
+  // the ⋯ menu are all the empty state's own button (an incremental sync over
+  // an empty fact table IS the full build). Hidden during the very first load
+  // too — we don't know yet which of the two layouts applies, and putting a row
+  // of controls on screen only to retract it a moment later reads worse than
+  // letting it arrive together with the content. An error leaves `report` null
+  // with `loading` false, so the toolbar (the only way to retry) comes back.
+  const showToolbar = !isEmpty && !(loading && report == null)
+
+  const fresh = totals ? freshTokens(totals) : 0
+  const idle = report ? idleDays(report) : null
+  const peak = report ? peakPoint(report.series) : null
+  const busiestHour = report ? peakHour(report.heatmap) : null
+  const delta =
+    totals && report?.previous_totals
+      ? computeDelta(totals.total_tokens, report.previous_totals.total_tokens)
+      : null
+
   return (
-    <TooltipProvider delayDuration={300}>
-      <div className="tu-viz flex h-full min-h-0 flex-col">
-        {/* ─── Toolbar ─── */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 pb-3">
-          <SegmentedFilter
-            ariaLabel={t("rangeLabel")}
-            value={preset}
-            onChange={(v) => setPreset(v)}
-            options={[...RANGE_PRESETS, "custom" as const].map((p) => ({
-              value: p,
-              label: t(RANGE_LABEL_KEYS[p]),
-            }))}
-          />
-          {preset === "custom" && (
-            <CustomRangeFields
-              from={custom.from}
-              to={custom.to}
-              onChange={setCustom}
-            />
-          )}
-          <SegmentedFilter
-            ariaLabel={t("bucketLabel")}
-            value={effectiveBucket}
-            onChange={(v) => {
-              setBucket(v)
-              setBucketTouched(true)
-            }}
-            options={(["day", "week", "month"] as const).map((b) => ({
-              value: b,
-              label: t(BUCKET_LABEL_KEYS[b]),
-            }))}
-          />
+    <div ref={pageRef} className="tu-viz flex h-full min-h-0 flex-col">
+      {/* ─── Toolbar ───
+            Borderless, aligned to the content column, with the same 16px
+            breathing room on every side (the title band above carries its own
+            border). Three zones on one wrapping row: the range (hot presets
+            as segments, the long tail folded into one pill), the dimension
+            filters, and a single overflow menu carrying every data action.
+            Absent entirely on the first-run empty state — see `showToolbar`. */}
+      {showToolbar && (
+        <div className="shrink-0 p-4">
+          <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-2.5 gap-y-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <SegmentedFilter
+                ariaLabel={t("rangeLabel")}
+                value={preset}
+                onChange={changePreset}
+                options={HOT_RANGE_PRESETS.map((p) => ({
+                  value: p,
+                  label: t(RANGE_LABEL_KEYS[p]),
+                }))}
+              />
+              <SingleSelectFilter
+                placeholder={t("moreRanges")}
+                ariaLabel={t("rangeLabel")}
+                options={MORE_RANGE_PRESETS.map((p) => ({
+                  value: p,
+                  label: t(RANGE_LABEL_KEYS[p]),
+                }))}
+                value={
+                  (MORE_RANGE_PRESETS as readonly string[]).includes(preset)
+                    ? preset
+                    : null
+                }
+                onChange={(v) => changePreset(v as TokenUsageRangePreset)}
+              />
+              {preset === "custom" && (
+                <CustomRangeFields
+                  from={custom.from}
+                  to={custom.to}
+                  onChange={setCustom}
+                />
+              )}
+            </div>
 
-          <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+            <div className="h-5 w-px bg-border" aria-hidden="true" />
 
-          <MultiSelectFilter
-            icon={Folder}
-            label={t("folderFilter")}
-            allLabel={t("allFolders")}
-            options={folderOptions}
-            selected={folderIds}
-            onChange={setFolderIds}
-            searchPlaceholder={t("searchPlaceholder")}
-            emptyLabel={t("noMatches")}
-          />
-          <MultiSelectFilter
-            icon={Bot}
-            label={t("agentFilter")}
-            allLabel={t("allAgents")}
-            options={agentOptions}
-            selected={agentTypes}
-            onChange={setAgentTypes}
-            searchPlaceholder={t("searchPlaceholder")}
-            emptyLabel={t("noMatches")}
-          />
-          <MultiSelectFilter
-            icon={Cpu}
-            label={t("modelFilter")}
-            allLabel={t("allModels")}
-            options={modelOptions}
-            selected={models}
-            onChange={setModels}
-            searchPlaceholder={t("searchPlaceholder")}
-            emptyLabel={t("noMatches")}
-          />
-          {hasFilters && (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground"
-              onClick={resetFilters}
-            >
-              <RotateCcw className="size-3.5" />
-              {t("resetFilters")}
-            </Button>
-          )}
-
-          <div className="ml-auto flex items-center gap-2">
-            {status && status.stale_conversations > 0 && !syncing && (
-              <span className="text-xs text-muted-foreground">
-                {t("staleHint", { count: status.stale_conversations })}
-              </span>
-            )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-8 gap-1.5 rounded-full px-3 text-xs"
-                  disabled={syncing}
-                  onClick={() => void runSync("incremental")}
-                >
-                  <RefreshCw
-                    className={cn("size-3.5", syncing && "animate-spin")}
-                  />
-                  {syncing ? t("syncing") : t("refresh")}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {status?.last_synced_at
-                  ? t("lastSynced", {
-                      time: new Date(status.last_synced_at).toLocaleString(
-                        locale
-                      ),
-                    })
-                  : t("lastSyncedNever")}
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <MultiSelectFilter
+                icon={Folder}
+                label={t("folderFilter")}
+                allLabel={t("allFolders")}
+                options={folderOptions}
+                selected={folderIds}
+                onChange={setFolderIds}
+                searchPlaceholder={t("searchPlaceholder")}
+                emptyLabel={t("noMatches")}
+              />
+              <MultiSelectFilter
+                icon={Bot}
+                label={t("agentFilter")}
+                allLabel={t("allAgents")}
+                options={agentOptions}
+                selected={agentTypes}
+                onChange={setAgentTypes}
+                searchPlaceholder={t("searchPlaceholder")}
+                emptyLabel={t("noMatches")}
+              />
+              <MultiSelectFilter
+                icon={Cpu}
+                label={t("modelFilter")}
+                allLabel={t("allModels")}
+                options={modelOptions}
+                selected={models}
+                onChange={setModels}
+                searchPlaceholder={t("searchPlaceholder")}
+                emptyLabel={t("noMatches")}
+              />
+              {hasFilters && (
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="h-8 rounded-full px-3 text-xs text-muted-foreground"
-                  disabled={syncing}
-                  onClick={() => void runSync("full")}
+                  className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground"
+                  onClick={resetFilters}
                 >
-                  {t("rebuild")}
+                  <RotateCcw className="size-3.5" />
+                  {t("resetFilters")}
                 </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-64">
-                {t("rebuildHint")}
-              </TooltipContent>
-            </Tooltip>
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 gap-1.5 rounded-full px-3 text-xs"
-              disabled={!report || report.totals.total_tokens === 0}
-              onClick={() => setShareOpen(true)}
-            >
-              <Share2 className="size-3.5" />
-              {t("share")}
-            </Button>
+              )}
+            </div>
+
+            {/* Stale counts are sync bookkeeping, not persistent user-facing
+                status. Progress and actionable failures are surfaced while the
+                sync runs. */}
+            <div className="ms-auto flex items-center gap-1.5">
+              {/* Every data action lives in one overflow menu; while a sync
+                    runs the trigger itself spins, so the state stays visible
+                    with the buttons folded away. Styled as a filled pill like
+                    the filter triggers — a ghost icon here reads as free space,
+                    so its right edge never looked aligned with the cards below
+                    (and nudging the button out would misalign the hover pill
+                    instead). A resting fill gives the eye a real edge to line
+                    up, and hovering only deepens the tone. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="size-8 rounded-full bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label={t("moreActions")}
+                  >
+                    {syncing ? (
+                      <RefreshCw className="size-4 animate-spin" />
+                    ) : (
+                      <MoreHorizontal className="size-4" />
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72 rounded-xl">
+                  <DropdownMenuItem
+                    disabled={syncing}
+                    onSelect={() => void runSync("incremental")}
+                    className="gap-2.5 rounded-lg"
+                  >
+                    {/* Two-line items pin the icon to the title line
+                        (self-start + half-step nudge to its optical centre) —
+                        centring against the whole block leaves each icon
+                        floating at a different height per item. */}
+                    <RefreshCw
+                      className={cn(
+                        "mt-0.5 size-4 shrink-0 self-start text-muted-foreground",
+                        syncing && "animate-spin"
+                      )}
+                    />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-[0.8125rem] font-medium">
+                        {syncing ? t("syncing") : t("refresh")}
+                      </span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {status?.last_synced_at
+                          ? t("lastSynced", {
+                              time: new Date(
+                                status.last_synced_at
+                              ).toLocaleString(locale),
+                            })
+                          : t("lastSyncedNever")}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={syncing}
+                    onSelect={() => void runSync("full")}
+                    className="gap-2.5 rounded-lg"
+                  >
+                    <DatabaseBackup className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground" />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-[0.8125rem] font-medium">
+                        {t("rebuild")}
+                      </span>
+                      <span className="text-xs leading-relaxed text-muted-foreground">
+                        {t("rebuildHint")}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    disabled={!report || report.totals.total_tokens === 0}
+                    onSelect={() => {
+                      if (pageRef.current) {
+                        setShareTheme(resolveShareCardTheme(pageRef.current))
+                      }
+                      setShareOpen(true)
+                    }}
+                    className="gap-2.5 rounded-lg"
+                  >
+                    <Share2 className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="text-[0.8125rem] font-medium">
+                      {t("share")}
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
+      )}
 
-        {progress && progress.total > 0 && (
-          <div className="shrink-0 space-y-1 border-b border-border px-4 py-2">
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="truncate">
-                {progress.current_title ?? t("syncing")}
-              </span>
-              <span className="ml-2 shrink-0 font-mono tabular-nums">
-                {t("syncProgress", {
-                  done: progress.done,
-                  total: progress.total,
-                })}
-              </span>
-            </div>
-            <Progress value={(progress.done / progress.total) * 100} />
+      {progress && progress.total > 0 && (
+        <div className="shrink-0 space-y-1 border-b border-border px-4 py-2">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="truncate">
+              {progress.current_title ?? t("syncing")}
+            </span>
+            <span className="ml-2 shrink-0 font-mono tabular-nums">
+              {t("syncProgress", {
+                done: progress.done,
+                total: progress.total,
+              })}
+            </span>
           </div>
-        )}
+          <Progress value={(progress.done / progress.total) * 100} />
+        </div>
+      )}
 
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-4 p-4">
-            {error && (
-              <p className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-                {t("loadFailed")}: {error}
-              </p>
+      {isEmpty ? (
+        /* First run. With the toolbar withheld there is nothing above it and
+           nothing to scroll, so the call to action takes the whole canvas —
+           same shape as the Tasks board's empty state — instead of hanging in
+           a dashed box pinned under the title bar. */
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          {error && (
+            <p className="max-w-md rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              {t("loadFailed")}: {error}
+            </p>
+          )}
+          <ChartNoAxesColumn
+            className="size-10 text-muted-foreground/40"
+            aria-hidden="true"
+          />
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium">{t("emptyTitle")}</p>
+            <p className="max-w-sm text-xs text-muted-foreground">
+              {t("emptyHint")}
+            </p>
+          </div>
+          {/* Full, not incremental. On a genuine first run the two do the same
+              work (nothing is stamped yet, so everything is stale), but they
+              part ways in the state where an empty fact table sits behind
+              up-to-date stamps — a first pass that pinned every conversation at
+              zero, a restore, a wipe. There an incremental pass skips
+              everything and this button becomes a no-op, and with the toolbar
+              withheld the ⋯ menu's rebuild entry isn't there to escape with. */}
+          <Button
+            type="button"
+            size="sm"
+            className="gap-1.5"
+            disabled={syncing}
+            onClick={() => void runSync("full")}
+          >
+            <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+            {t("emptyAction")}
+          </Button>
+        </div>
+      ) : (
+        /* Scrolled cards slide under a soft fade below the toolbar — the same
+           clip-fade treatment as collapsed chat messages, faded in only once
+           there is actually something underneath it. */
+        <div className="relative min-h-0 flex-1">
+          <div
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-background to-transparent transition-opacity duration-200",
+              scrolled ? "opacity-100" : "opacity-0"
             )}
+          />
+          <ScrollArea className="h-full" onScroll={handleContentScroll}>
+            {/* Same geometry as the toolbar — outer gutter, then the capped
+                column — so the two columns stay flush at every viewport width.
+                Padding inside the max-width element would instead shave 32px
+                off the cards once the viewport clears the cap. */}
+            <div className="px-4 pb-4">
+              <div className="mx-auto w-full max-w-6xl space-y-4">
+                {error && (
+                  <p className="rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                    {t("loadFailed")}: {error}
+                  </p>
+                )}
 
-            {report?.truncated && (
-              <p className="rounded-xl border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
-                {t("truncatedNotice")}
-              </p>
-            )}
+                {report?.truncated && (
+                  <p className="rounded-xl border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
+                    {t("truncatedNotice")}
+                  </p>
+                )}
 
-            {isEmpty ? (
-              <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border px-6 py-20 text-center">
-                <ChartNoAxesColumn
-                  className="size-8 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <h2 className="text-base font-semibold">{t("emptyTitle")}</h2>
-                <p className="max-w-md text-sm text-muted-foreground">
-                  {t("emptyHint")}
-                </p>
-                <Button
-                  type="button"
-                  className="mt-1 gap-1.5"
-                  disabled={syncing}
-                  onClick={() => void runSync("incremental")}
-                >
-                  <RefreshCw
-                    className={cn("size-4", syncing && "animate-spin")}
-                  />
-                  {t("emptyAction")}
-                </Button>
-              </div>
-            ) : (
-              totals &&
-              report && (
-                <>
-                  {/* Headline */}
-                  {archetype && totals.total_tokens > 0 && (
-                    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-gradient-to-r from-[var(--tu-s1)]/8 to-transparent px-4 py-3">
-                      <span className="text-lg leading-none" aria-hidden="true">
-                        {ARCHETYPE_EMOJI[archetype.id]}
-                      </span>
-                      <span className="text-sm font-semibold">
-                        {t(ARCHETYPE_LABEL_KEYS[archetype.id])}
-                      </span>
-                      <span className="text-sm text-muted-foreground">
-                        {t(ARCHETYPE_DESC_KEYS[archetype.id], archetype.values)}
-                      </span>
-                      <Sparkles
-                        className="ml-auto size-4 text-[var(--tu-s1)]"
-                        aria-hidden="true"
-                      />
-                    </div>
-                  )}
-
-                  {/* Stat tiles */}
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-                    <StatTile
-                      label={t("tileTotal")}
-                      value={formatTokensPrecise(totals.total_tokens)}
-                      delta={
-                        report.previous_totals
-                          ? computeDelta(
-                              totals.total_tokens,
-                              report.previous_totals.total_tokens
-                            )
-                          : null
-                      }
-                      deltaLabel={t("deltaNew")}
-                    />
-                    <StatTile
-                      label={t("tileSessions")}
-                      value={totals.conversation_count.toLocaleString(locale)}
-                      delta={
-                        report.previous_totals
-                          ? computeDelta(
-                              totals.conversation_count,
-                              report.previous_totals.conversation_count
-                            )
-                          : null
-                      }
-                      deltaLabel={t("deltaNew")}
-                    />
-                    <StatTile
-                      label={t("tileTurns")}
-                      value={totals.turn_count.toLocaleString(locale)}
-                      hint={`${t("avgPerSession")} ${formatTokenCount(
-                        Math.round(averagePerConversation(totals))
-                      )}`}
-                    />
-                    <StatTile
-                      label={t("tileCacheRate")}
-                      value={
-                        cache === null ? "—" : `${Math.round(cache * 100)}%`
-                      }
-                      hint={`${t("cacheSavedTitle")} ${formatTokenCount(
-                        totals.cache_read_tokens
-                      )}`}
-                    />
-                    <StatTile
-                      label={t("tileActiveDays")}
-                      value={totals.active_days.toLocaleString(locale)}
-                      hint={`${t("streakLongest")} ${report.streak.longest_days}`}
-                    />
-                    <StatTile
-                      label={t("tileGenTime")}
-                      value={formatDuration(totals.duration_ms)}
-                      hint={`${t("avgPerActiveDay")} ${formatTokenCount(
-                        Math.round(averagePerActiveDay(totals))
-                      )}`}
-                    />
-                  </div>
-
-                  <Panel title={t("trendTitle")} icon={ChartNoAxesColumn}>
-                    <TrendChart
-                      data={trendData}
-                      label={t("trendTitle")}
-                      emptyLabel={t("trendEmpty")}
-                    />
-                    {(() => {
-                      const peak = peakPoint(report.series)
-                      const hour = peakHour(report.heatmap)
-                      if (!peak && hour === null) return null
-                      return (
-                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-                          {peak && (
-                            <span>
-                              {t("peakBucket", {
-                                bucket: t(BUCKET_LABEL_KEYS[report.bucket]),
-                              })}
-                              :{" "}
-                              <span className="font-mono tabular-nums text-foreground">
-                                {formatBucketLabel(peak.bucket_key)} ·{" "}
-                                {formatTokenCount(peak.total_tokens)}
-                              </span>
-                            </span>
+                {loading && !report ? (
+                  <LoadingSkeleton />
+                ) : (
+                  totals &&
+                  report && (
+                    <>
+                      {/* ─── Hero: the one number, and what the cache did ─── */}
+                      <section className="overflow-hidden rounded-xl border border-border bg-card">
+                        {/* Even halves — but only while the cache panel exists,
+                          so a cache-less report doesn't strand the hero figure
+                          in half the card. */}
+                        <div
+                          className={cn(
+                            "grid",
+                            cache !== null && "lg:grid-cols-2"
                           )}
-                          {hour !== null && (
-                            <span>
-                              {t("peakHour")}:{" "}
-                              <span className="font-mono tabular-nums text-foreground">
-                                {String(hour).padStart(2, "0")}:00
+                        >
+                          <div className="flex flex-col p-5">
+                            <div className="text-[0.6875rem] font-medium uppercase tracking-wider text-muted-foreground">
+                              {t("tileTotal")}
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                              <span className="text-5xl font-semibold leading-none tracking-tight">
+                                {formatTokensPrecise(totals.total_tokens)}
                               </span>
-                            </span>
+                              {delta && (
+                                <DeltaBadge
+                                  delta={delta}
+                                  newLabel={t("deltaNew")}
+                                  title={t("vsPrevious")}
+                                />
+                              )}
+                            </div>
+                            {archetype && totals.total_tokens > 0 && (
+                              // The outer wrapper owns the spacing: mt-auto pins
+                              // the strip to the card's bottom edge on wide
+                              // layouts, pt-5 keeps a floor under the hero number
+                              // when there is no slack to distribute.
+                              <div className="mt-auto pt-5">
+                                <div
+                                  className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 rounded-lg px-3 py-2.5 text-[0.8125rem] leading-relaxed"
+                                  style={{
+                                    backgroundColor: "var(--tu-accent-soft)",
+                                  }}
+                                >
+                                  <span aria-hidden="true">
+                                    {ARCHETYPE_EMOJI[archetype.id]}
+                                  </span>
+                                  <span className="font-semibold">
+                                    {t(ARCHETYPE_LABEL_KEYS[archetype.id])}
+                                  </span>
+                                  <span className="text-muted-foreground">
+                                    {t(
+                                      ARCHETYPE_DESC_KEYS[archetype.id],
+                                      archetype.values
+                                    )}
+                                    {archetype.id === "cacheMaster" &&
+                                      totals.cache_read_tokens > 0 &&
+                                      ` ${t("cacheSavedSuffix", {
+                                        saved: formatTokensPrecise(
+                                          totals.cache_read_tokens
+                                        ),
+                                      })}`}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          {cache !== null && (
+                            <div className="flex items-center gap-5 border-t border-border p-5 lg:border-s lg:border-t-0">
+                              <RingMeter
+                                ratio={cache}
+                                valueText={`${Math.round(cache * 100)}%`}
+                                caption={t("cacheHitCaption")}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold">
+                                  {cache >= 0.5
+                                    ? t("cacheHeroTitleHigh")
+                                    : t("cacheHeroTitleLow")}
+                                </div>
+                                <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                                  {t("cacheHeroDesc", {
+                                    cached: formatTokensPrecise(
+                                      totals.cache_read_tokens
+                                    ),
+                                    fresh: formatTokensPrecise(fresh),
+                                  })}
+                                </p>
+                              </div>
+                            </div>
                           )}
                         </div>
-                      )
-                    })()}
-                  </Panel>
+                      </section>
 
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <Panel
-                      title={t("compositionTitle")}
-                      hint={t("compositionHint")}
-                    >
-                      <CompositionBar
-                        segments={[
-                          {
-                            key: "input",
-                            label: t("inputTokens"),
-                            value: totals.input_tokens,
-                          },
-                          {
-                            key: "output",
-                            label: t("outputTokens"),
-                            value: totals.output_tokens,
-                          },
-                          {
-                            key: "cacheWrite",
-                            label: t("cacheWrite"),
-                            value: totals.cache_creation_tokens,
-                          },
-                          {
-                            key: "cacheRead",
-                            label: t("cacheRead"),
-                            value: totals.cache_read_tokens,
-                          },
-                        ]}
-                      />
-                    </Panel>
+                      {/* ─── Stats strip ─── */}
+                      <section className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card lg:grid-cols-4">
+                        {/* `conversation_count` is workspace-scoped on the
+                          server (workspace_conversation_count), so with an
+                          unbounded range it agrees exactly with the status
+                          bar's session counter. */}
+                        <StatCell
+                          label={t("tileSessions")}
+                          value={totals.conversation_count.toLocaleString(
+                            locale
+                          )}
+                          hint={`${t("avgPerSession")} ${formatTokenCount(
+                            Math.round(averagePerConversation(totals))
+                          )}`}
+                        />
+                        <StatCell
+                          className="border-s"
+                          label={t("tileTurns")}
+                          value={totals.turn_count.toLocaleString(locale)}
+                          hint={t("avgTurnsPerSession", {
+                            count:
+                              averageTurnsPerConversation(totals).toFixed(1),
+                          })}
+                        />
+                        <StatCell
+                          className="border-t lg:border-s lg:border-t-0"
+                          label={t("tileActiveDays")}
+                          value={t("daysValue", { count: totals.active_days })}
+                          hint={t("streakLongestDays", {
+                            count: report.streak.longest_days,
+                          })}
+                        />
+                        <StatCell
+                          className="border-s border-t lg:border-t-0"
+                          label={t("tileGenTime")}
+                          value={formatDuration(totals.duration_ms)}
+                          hint={`${t("avgPerActiveDay")} ${formatTokenCount(
+                            Math.round(averagePerActiveDay(totals))
+                          )}`}
+                        />
+                      </section>
 
-                    <Panel title={t("heatmapTitle")} hint={t("heatmapHint")}>
-                      <ActivityHeatmap
-                        matrix={heat.cells}
-                        max={heat.max}
-                        weekdayLabels={weekdayLabels}
-                        legendLess={t("less")}
-                        legendMore={t("more")}
-                        formatTitle={(weekday, hour, value) =>
-                          t("heatmapCell", {
-                            weekday: weekdayLabels[weekday],
-                            hour: String(hour).padStart(2, "0"),
-                            value: formatTokenCount(value),
-                          })
-                        }
-                      />
-                    </Panel>
-                  </div>
-
-                  <div className="grid gap-4 lg:grid-cols-3">
-                    <Panel title={t("byFolderTitle")} icon={Folder}>
-                      <RankedBars
-                        data={toRanked(report.by_folder, (_, label) => label)}
-                        emptyLabel={t("emptyBreakdown")}
-                        onSelect={(key) =>
-                          key !== "__other__" && setFolderIds([key])
-                        }
-                      />
-                    </Panel>
-                    <Panel title={t("byAgentTitle")} icon={Bot}>
-                      <RankedBars
-                        data={toRanked(report.by_agent, (key) =>
-                          getAgentLabel(key as AgentType)
-                        )}
-                        emptyLabel={t("emptyBreakdown")}
-                        onSelect={(key) =>
-                          key !== "__other__" && setAgentTypes([key])
-                        }
-                      />
-                    </Panel>
-                    <Panel title={t("byModelTitle")} icon={Cpu}>
-                      <RankedBars
-                        data={toRanked(report.by_model, (key, label) =>
-                          key === "__unknown__" ? t("unknownModel") : label
-                        )}
-                        emptyLabel={t("emptyBreakdown")}
-                        onSelect={(key) =>
-                          key !== "__other__" &&
-                          key !== "__unknown__" &&
-                          setModels([key])
-                        }
-                      />
-                    </Panel>
-                  </div>
-
-                  <Panel title={t("topSessionsTitle")}>
-                    {report.top_conversations.length === 0 ? (
-                      <p className="py-6 text-center text-sm text-muted-foreground">
-                        {t("topSessionsEmpty")}
-                      </p>
-                    ) : (
-                      <ol className="divide-y divide-border">
-                        {report.top_conversations.map((c, i) => (
-                          <li
-                            key={c.conversation_id}
-                            className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="size-2 shrink-0 rounded-[2px]"
-                              style={{ backgroundColor: seriesColor(i) }}
+                      {/* ─── Trend ─── */}
+                      <Panel
+                        title={t("trendTitle")}
+                        icon={ChartNoAxesColumn}
+                        actions={
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                              <span className="flex items-center gap-1.5">
+                                <span
+                                  aria-hidden="true"
+                                  className="size-2 rounded-[2px]"
+                                  style={{ backgroundColor: ACCENT }}
+                                />
+                                {t("cacheRead")}
+                              </span>
+                              <span className="flex items-center gap-1.5">
+                                <span
+                                  aria-hidden="true"
+                                  className="size-2 rounded-[2px]"
+                                  style={{ backgroundColor: INK }}
+                                />
+                                {t("freshTokens")}
+                              </span>
+                            </div>
+                            <SegmentedFilter
+                              ariaLabel={t("bucketLabel")}
+                              value={effectiveBucket}
+                              onChange={(v) => {
+                                setBucket(v)
+                                setBucketTouched(true)
+                              }}
+                              options={(["day", "week", "month"] as const).map(
+                                (b) => ({
+                                  value: b,
+                                  label: t(BUCKET_LABEL_KEYS[b]),
+                                })
+                              )}
                             />
-                            <span className="min-w-0 flex-1 truncate text-[0.8125rem]">
-                              {c.title || t("untitledSession")}
-                            </span>
-                            <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:block sm:max-w-[10rem]">
-                              {c.folder_label}
-                            </span>
-                            <span className="shrink-0 text-xs text-muted-foreground">
-                              {getAgentLabel(c.agent_type as AgentType)}
-                            </span>
-                            <span className="shrink-0 font-mono text-xs tabular-nums">
-                              {formatTokenCount(c.total_tokens)}
-                            </span>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </Panel>
-                </>
-              )
-            )}
-          </div>
-        </ScrollArea>
+                          </div>
+                        }
+                      >
+                        <TrendChart
+                          data={trendData}
+                          label={t("trendTitle")}
+                          cacheLabel={t("cacheRead")}
+                          freshLabel={t("freshTokens")}
+                          emptyLabel={t("trendEmpty")}
+                        />
+                        {(peak || busiestHour !== null || idle !== null) && (
+                          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
+                            {peak && (
+                              <span>
+                                {t("peakBucket", {
+                                  bucket: t(BUCKET_UNIT_KEYS[report.bucket]),
+                                })}
+                                {": "}
+                                <span className="font-medium text-foreground">
+                                  {formatBucketLabel(peak.bucket_key)} ·{" "}
+                                  {formatTokenCount(peak.total_tokens)}
+                                </span>
+                              </span>
+                            )}
+                            {busiestHour !== null && (
+                              <span>
+                                {t("peakHour")}
+                                {": "}
+                                <span className="font-medium text-foreground">
+                                  {String(busiestHour).padStart(2, "0")}:00
+                                </span>
+                              </span>
+                            )}
+                            {idle !== null && (
+                              <span>
+                                {t("idleDays")}
+                                {": "}
+                                <span className="font-medium text-foreground">
+                                  {t("daysValue", { count: idle })}
+                                </span>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </Panel>
 
-        {/* ─── Share ─── */}
-        <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-          <DialogContent className="max-w-[26rem]">
-            <DialogHeader>
-              <DialogTitle>{t("shareDialogTitle")}</DialogTitle>
-              <DialogDescription>{t("shareDialogHint")}</DialogDescription>
-            </DialogHeader>
-            {report && (
-              // The card is always laid out at its natural size so the export
-              // is identical everywhere; the wrapper only scales the on-screen
-              // preview, and the outer box is sized to the scaled result so it
-              // reserves exactly the space the preview occupies.
+                      {/* ─── Composition + rhythm — stretched to one shared height ─── */}
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        <Panel
+                          title={t("compositionTitle")}
+                          hint={t("compositionHint")}
+                        >
+                          <RankedBars
+                            data={compositionRows}
+                            emptyLabel={t("emptyBreakdown")}
+                          />
+                          {totals.cache_read_tokens > 0 && (
+                            <p className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
+                              {t("compositionNote", {
+                                value: formatTokensPrecise(
+                                  totals.cache_read_tokens
+                                ),
+                              })}
+                            </p>
+                          )}
+                        </Panel>
+
+                        <Panel
+                          title={t("heatmapTitle")}
+                          hint={
+                            busiestHour !== null
+                              ? `${t("heatmapHint")} ${t("heatmapPeakHint", {
+                                  hour: String(busiestHour).padStart(2, "0"),
+                                })}`
+                              : t("heatmapHint")
+                          }
+                        >
+                          <ActivityHeatmap
+                            matrix={heat.cells}
+                            max={heat.max}
+                            weekdayLabels={weekdayLabels}
+                            legendLess={t("less")}
+                            legendMore={t("more")}
+                            formatAria={(weekday, hour, value) =>
+                              t("heatmapCell", {
+                                weekday: weekdayLabels[weekday],
+                                hour: String(hour).padStart(2, "0"),
+                                value: formatTokenCount(value),
+                              })
+                            }
+                          />
+                        </Panel>
+                      </div>
+
+                      {/* ─── Distribution ─── */}
+                      <Panel
+                        title={t("distributionTitle")}
+                        hint={t("distributionHint")}
+                        actions={
+                          <SegmentedFilter
+                            ariaLabel={t("distributionTitle")}
+                            value={dim}
+                            onChange={setDim}
+                            options={[
+                              {
+                                value: "folder" as const,
+                                label: t("byFolderTitle"),
+                              },
+                              {
+                                value: "agent" as const,
+                                label: t("byAgentTitle"),
+                              },
+                              {
+                                value: "model" as const,
+                                label: t("byModelTitle"),
+                              },
+                            ]}
+                          />
+                        }
+                      >
+                        <RankedBars
+                          data={breakdownRows}
+                          showRank
+                          emptyLabel={t("emptyBreakdown")}
+                          onSelect={onBreakdownSelect}
+                        />
+                      </Panel>
+
+                      {/* ─── Top sessions ─── */}
+                      <Panel title={t("topSessionsTitle")}>
+                        {report.top_conversations.length === 0 ? (
+                          <p className="py-6 text-center text-sm text-muted-foreground">
+                            {t("topSessionsEmpty")}
+                          </p>
+                        ) : (
+                          <ol className="divide-y divide-border">
+                            {report.top_conversations.map((c, i) => (
+                              <li
+                                key={c.conversation_id}
+                                className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="w-5 shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
+                                >
+                                  {String(i + 1).padStart(2, "0")}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-[0.8125rem]">
+                                  {c.title || t("untitledSession")}
+                                </span>
+                                <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:block sm:max-w-[10rem]">
+                                  {c.folder_label}
+                                </span>
+                                <span className="shrink-0 text-xs text-muted-foreground">
+                                  {getAgentLabel(c.agent_type as AgentType)}
+                                </span>
+                                <span className="shrink-0 font-mono text-xs tabular-nums">
+                                  {formatTokenCount(c.total_tokens)}
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </Panel>
+                    </>
+                  )
+                )}
+              </div>
+            </div>
+          </ScrollArea>
+        </div>
+      )}
+
+      {/* ─── Share ─── */}
+      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+        {/* Sized so the dialog's 24px padding IS the margin around the card
+            preview — its edges sit flush with the title text instead of
+            floating on leftover slack. An inline style (not an arbitrary
+            max-w-[…] class) because it derives from the CARD_* constants;
+            hardcoding 25.5rem beside them would silently drift. */}
+        <DialogContent
+          style={{ maxWidth: CARD_WIDTH * CARD_PREVIEW_SCALE + 48 }}
+        >
+          <DialogHeader>
+            <DialogTitle>{t("shareDialogTitle")}</DialogTitle>
+            <DialogDescription>{t("shareDialogHint")}</DialogDescription>
+          </DialogHeader>
+          {report && shareTheme && (
+            // The card is always laid out at its natural size so the export
+            // is identical everywhere; the wrapper only scales the on-screen
+            // preview. Its width flexes with the dialog's content box (see
+            // previewBoxRef) and its height tracks the live scale, so the
+            // preview can never overflow horizontally.
+            <div
+              ref={previewBoxRef}
+              className="mx-auto w-full overflow-hidden rounded-xl border border-border"
+              style={{
+                // +2 on both axes: the border is inside the box, and the
+                // scale is derived from clientWidth (which excludes it).
+                maxWidth: CARD_WIDTH * CARD_PREVIEW_SCALE + 2,
+                height: CARD_HEIGHT * previewScale + 2,
+              }}
+            >
               <div
-                className="mx-auto overflow-hidden rounded-xl border border-border"
                 style={{
-                  width: CARD_WIDTH * CARD_PREVIEW_SCALE,
-                  height: CARD_HEIGHT * CARD_PREVIEW_SCALE,
+                  transform: `scale(${previewScale})`,
+                  transformOrigin: "top left",
+                  width: CARD_WIDTH,
+                  height: CARD_HEIGHT,
                 }}
               >
-                <div
-                  style={{
-                    transform: `scale(${CARD_PREVIEW_SCALE})`,
-                    transformOrigin: "top left",
-                    width: CARD_WIDTH,
-                    height: CARD_HEIGHT,
-                  }}
-                >
-                  <ShareCard ref={cardRef} report={report} locale={locale} />
-                </div>
+                <ShareCard
+                  ref={cardRef}
+                  report={report}
+                  locale={locale}
+                  theme={shareTheme}
+                />
               </div>
-            )}
-            <DialogFooter className="sm:justify-center">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={exporting || !canCopyImages()}
-                onClick={() => void exportCard("copy")}
-              >
-                {t("shareCopy")}
-              </Button>
-              <Button
-                type="button"
-                disabled={exporting}
-                onClick={() => void exportCard("save")}
-              >
-                {exporting ? t("shareRendering") : t("shareSave")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-    </TooltipProvider>
+            </div>
+          )}
+          <DialogFooter className="sm:justify-center">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={exporting || !canCopyImages()}
+              onClick={() => void exportCard("copy")}
+            >
+              {t("shareCopy")}
+            </Button>
+            <Button
+              type="button"
+              disabled={exporting}
+              onClick={() => void exportCard("save")}
+            >
+              {exporting ? t("shareRendering") : t("shareSave")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }

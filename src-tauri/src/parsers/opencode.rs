@@ -208,6 +208,9 @@ impl OpenCodeParser {
         super::relocate_orphaned_tool_results(&mut turns);
         super::structurize_read_tool_output(&mut turns);
         super::resolve_patch_line_numbers(&mut turns, summary.folder_path.as_deref());
+        // OpenCode stamps `time.created` / `time.completed` on assistant
+        // messages itself; this only covers ones written with no completion.
+        super::backfill_turn_durations(&mut turns, &[]);
         let context_window_used_tokens = super::latest_turn_total_usage_tokens(&turns);
         let context_window_max_tokens =
             super::infer_context_window_max_tokens(summary.model.as_deref());

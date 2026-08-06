@@ -91,6 +91,16 @@ export interface AppWorkspaceStoreState {
    * user-facing list), every other kind into both lists.
    */
   upsertFolder: (detail: FolderDetail) => void
+  /**
+   * Drop a folder that no longer exists (a removed task worktree) from local
+   * state — both lists plus its branch/HEAD entries. Idempotent: an unknown id
+   * writes nothing, so a duplicate broadcast costs no re-render. The removal is
+   * also stamped so a `fetchFolders` that was already in flight can't put the
+   * folder back (see `removedFolderSeq`). Distinct from
+   * `removeFolderFromWorkspace`, which merely CLOSES a still-existing folder
+   * (and so leaves it in `allFolders` for by-id cwd lookups).
+   */
+  applyFolderRemove: (folderId: number) => void
   openFolder: (path: string) => Promise<FolderDetail>
   openWorktreeFolder: (
     path: string,
@@ -142,6 +152,43 @@ const DELETED_TOMBSTONE_CAP = 512
 // reused, so the tombstone is permanent; the set is FIFO-bounded.
 const deletedIds = new Set<number>()
 
+// Folder removals, as `folder id → the mutation sequence number it landed at`.
+// `fetchFolders` replaces both lists wholesale, so a snapshot that was ALREADY
+// IN FLIGHT when a removal arrived would put the folder straight back on screen;
+// a fetch subtracts exactly the ids removed AFTER it requested its snapshot.
+//
+// Scoped by sequence rather than kept as a permanent tombstone (the way
+// `deletedIds` is for conversations) because folder ids ARE reused: a row is
+// revived by path — `folder_service::add_folder` clears `deleted_at` on the same
+// row — so a task retried after its worktree was cleaned re-creates that exact
+// folder id. A LATER fetch must therefore be trusted verbatim; it may be the
+// only place a revive is ever learned, since the reconnect refetch exists
+// precisely to reconcile events dropped while the socket was down.
+const removedFolderSeq = new Map<number, number>()
+let folderMutationSeq = 0
+
+/** True when `folderId` was removed after a snapshot requested at `seq`. */
+function removedSince(folderId: number, seq: number): boolean {
+  const at = removedFolderSeq.get(folderId)
+  return at !== undefined && at > seq
+}
+
+function forgetRemovedFolder(folderId: number): void {
+  // The folder exists again, so no snapshot should be filtered on its account.
+  removedFolderSeq.delete(folderId)
+}
+
+function rememberRemovedFolder(folderId: number): void {
+  folderMutationSeq += 1
+  removedFolderSeq.set(folderId, folderMutationSeq)
+  if (removedFolderSeq.size > DELETED_TOMBSTONE_CAP) {
+    // FIFO eviction — Map preserves insertion order. Evicting the oldest is
+    // safe: an old entry can only ever fail the `removedSince` test anyway.
+    const oldest = removedFolderSeq.keys().next().value
+    if (oldest !== undefined) removedFolderSeq.delete(oldest)
+  }
+}
+
 export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
   (set, get) => ({
     folders: [],
@@ -160,11 +207,25 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
 
     fetchFolders: async () => {
       set({ foldersLoading: true })
+      // Stamped BEFORE the requests go out: anything removed from here on is
+      // newer than the snapshot they return.
+      const seqAtRequest = folderMutationSeq
       try {
-        const [openList, allList] = await Promise.all([
+        const [openRaw, allRaw] = await Promise.all([
           listOpenFolderDetails(),
           listAllFolderDetails(),
         ])
+        // Both lists are replaced wholesale, so a snapshot that predates a
+        // removal would resurrect the folder. Subtract only what was removed
+        // AFTER this snapshot was requested — an earlier removal is already
+        // reflected in it, and if that row was since revived the snapshot is
+        // the truth (this is how a revive during a disconnect is learned).
+        const live = (list: FolderDetail[]) =>
+          removedFolderSeq.size === 0
+            ? list
+            : list.filter((f) => !removedSince(f.id, seqAtRequest))
+        const openList = live(openRaw)
+        const allList = live(allRaw)
         const branches = new Map(get().branches)
         for (const f of allList) {
           if (!branches.has(f.id)) {
@@ -297,6 +358,9 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     },
 
     upsertFolder: (detail) => {
+      // The folder exists again (a retried task re-creating its worktree revives
+      // the very same row/id) — drop any tombstone so refetches keep it.
+      forgetRemovedFolder(detail.id)
       const upsert = (prev: FolderDetail[]) => {
         const idx = prev.findIndex((f) => f.id === detail.id)
         if (idx >= 0) {
@@ -316,6 +380,29 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
         ...(detail.kind !== "chat" ? { folders: upsert(folders) } : {}),
         allFolders: upsert(allFolders),
       })
+    },
+
+    applyFolderRemove: (folderId) => {
+      rememberRemovedFolder(folderId)
+      const { folders, allFolders, branches, gitHeads } = get()
+      const patch: Partial<AppWorkspaceStoreState> = {}
+      if (folders.some((f) => f.id === folderId)) {
+        patch.folders = folders.filter((f) => f.id !== folderId)
+      }
+      if (allFolders.some((f) => f.id === folderId)) {
+        patch.allFolders = allFolders.filter((f) => f.id !== folderId)
+      }
+      if (branches.has(folderId)) {
+        const next = new Map(branches)
+        next.delete(folderId)
+        patch.branches = next
+      }
+      if (gitHeads.has(folderId)) {
+        const next = new Map(gitHeads)
+        next.delete(folderId)
+        patch.gitHeads = next
+      }
+      if (Object.keys(patch).length > 0) set(patch)
     },
 
     openFolder: async (path) => {
@@ -445,6 +532,8 @@ export function resetAppWorkspaceStore() {
   // today (the backend-identity guard never fires); a real in-place backend switch
   // would need per-store fetch epochs. See `RemoteConnectionGate`.
   deletedIds.clear()
+  removedFolderSeq.clear()
+  folderMutationSeq = 0
   useAppWorkspaceStore.setState(useAppWorkspaceStore.getInitialState(), true)
 }
 

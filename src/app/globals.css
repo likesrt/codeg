@@ -1532,6 +1532,25 @@
   transition-property: none !important;
 }
 
+/* Same class, the OTHER way a kept-mounted subtree keeps painting: `visibility`
+   inherits, so a descendant that declares its own `visibility: visible` opts back
+   in — and Monaco's diff editor declares exactly that. DiffEditorWidget writes an
+   INLINE `visibility: visible` onto its two panes (`.monaco-diff-editor >
+   .editor.original` / `.editor.modified`), flipping them to `hidden` only while
+   the accessible diff viewer (F7) is up. A normal author declaration loses to an
+   inline one, so the panes ignored the wrapper's `invisible`: with a workspace
+   background image on — where the covering surface is transparent, not opaque —
+   an open git-diff file tab painted straight through the full-page route overlays
+   (task board / automations / token usage) and through the conversation overlay in
+   conversation-only mode. A plain file tab has no such inline style and hid
+   correctly, which is why only diffs ghosted. `!important` is the one thing that
+   outranks inline. Re-hiding BOTH panes is safe: the whole subtree is hidden
+   anyway, and the class is dropped in the same commit that restores visibility, so
+   the accessible diff viewer keeps full control whenever the subtree is shown. */
+.conversation-tab-hidden .monaco-diff-editor > .editor {
+  visibility: hidden !important;
+}
+
 .select-none {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -2434,50 +2453,64 @@ div.monaco-diff-editor.side-by-side .editor.modified {
 
 /* ===========================================================================
    Token 用量看板配色（.tu-viz 作用域）
-   刻意不使用主题的 --chart-1..5：那五个槽在多数预设里是同一蓝相的深浅梯度
-   （顺序型 ramp），当分类色用时相邻两个系列几乎分不开。这里改用一套通过
-   色觉障碍校验的固定分类色板（validate_palette.js 六项检查全 PASS：亮度带 /
-   彩度下限 / CVD 相邻对 ΔE 9.1 亮·8.4 暗 / 常视觉 ΔE 22.9 亮·19.8 暗 / 对比度），
-   只借用主题的表面色与文字色，所以看板既能读得清、又不脱离外观预设。
-   亮色模式下 aqua/yellow 两槽对白底不足 3:1 —— 图中所有分类标记一律带可见
-   文字标签（图例 + 直标），不靠颜色单独承载含义。
+
+   看板只说两种颜色的语言：--tu-accent（强调色）＝「由缓存承担的上下文」，
+   --tu-ink 及其淡阶（中性墨色）＝「真正新算的 Token」。趋势堆叠、缓存环、
+   构成条与热力图 ramp 全部由这两个锚派生，所以整页天然跟随外观预设的
+   强调色（emphasis 编码：一个彩色 + 中性灰阶，不再需要多色分类板——
+   所有分档/排行图里身份都由行内文字直标承载，颜色只做量级提示）。
+
+   强调色取 --primary：八个彩色预设下它就是主题色；亮色模式掺 14% 墨色，
+   把 yellow/orange 这类高亮度主色压到对白底 ≥2.5:1 的标记可读区。五个
+   中性预设（neutral/zinc/slate/stone/gray）的 --primary 是无彩度黑/白，
+   会和 --tu-ink 撞在一起 —— 这些预设在下方显式锚定到经典看板蓝。
+
+   顺序 ramp（热力图）用 color-mix 从强调色向表面色/墨色两端展开：与
+   中性色混合保持单一色相，混合比单调 → 亮度单调，两条 sequential 规则
+   由构造保证；card/foreground 明暗互换后同一组公式在暗色下自动反向。
+   真正的「零」不画 ramp，画中性空格加细描边，避免「没有数据」被读成
+   「很小的数据」。
    ========================================================================= */
 .tu-viz {
-  --tu-s1: #2a78d6; /* blue */
-  --tu-s2: #eb6834; /* orange */
-  --tu-s3: #1baf7a; /* aqua */
-  --tu-s4: #eda100; /* yellow */
-  --tu-s5: #e87ba4; /* magenta */
-  --tu-s6: #008300; /* green */
-  --tu-s7: #4a3aa7; /* violet */
-  --tu-s8: #e34948; /* red */
-  /* 顺序型（热力图）：同一蓝相 100→700，浅=接近零。这是 sequential 编码而非
-     ordinal，最浅一档允许贴近表面色（校验器只对 ordinal 要求 2:1）；单调亮度 /
-     相邻 ΔL / 单一色相三项均 PASS。真正的「零」不画这条 ramp，而是画中性空格
-     加细描边，避免「没有数据」被读成「很小的数据」。 */
-  --tu-seq-1: #cde2fb;
-  --tu-seq-2: #9ec5f4;
-  --tu-seq-3: #6da7ec;
-  --tu-seq-4: #3987e5;
-  --tu-seq-5: #256abf;
-  --tu-seq-6: #184f95;
-  --tu-seq-7: #0d366b;
+  --tu-accent: color-mix(in oklab, var(--primary) 86%, var(--foreground));
+  --tu-ink: var(--foreground);
+  /* 墨色淡阶：构成条里「新算」侧的次级行（缓存写入/输出） */
+  --tu-ink-2: color-mix(in oklab, var(--foreground) 55%, var(--card));
+  --tu-ink-3: color-mix(in oklab, var(--foreground) 32%, var(--card));
+  /* 强调色的表面淡染：缓存环的未充满轨道、洞察横幅底色、悬停列高亮 */
+  --tu-accent-soft: color-mix(in oklab, var(--tu-accent) 14%, var(--card));
+  --tu-seq-1: color-mix(in oklab, var(--tu-accent) 13%, var(--card));
+  --tu-seq-2: color-mix(in oklab, var(--tu-accent) 26%, var(--card));
+  --tu-seq-3: color-mix(in oklab, var(--tu-accent) 42%, var(--card));
+  --tu-seq-4: color-mix(in oklab, var(--tu-accent) 60%, var(--card));
+  --tu-seq-5: color-mix(in oklab, var(--tu-accent) 80%, var(--card));
+  --tu-seq-6: var(--tu-accent);
+  --tu-seq-7: color-mix(in oklab, var(--tu-accent) 72%, var(--foreground));
 }
 .dark .tu-viz {
-  --tu-s1: #3987e5;
-  --tu-s2: #d95926;
-  --tu-s3: #199e70;
-  --tu-s4: #c98500;
-  --tu-s5: #d55181;
-  --tu-s6: #008300;
-  --tu-s7: #9085e9;
-  --tu-s8: #e66767;
-  /* 暗色表面上顺序 ramp 反向：浅色=高值，最深一档仍要与背景拉开 */
-  --tu-seq-1: #0d366b;
-  --tu-seq-2: #184f95;
-  --tu-seq-3: #256abf;
-  --tu-seq-4: #3987e5;
-  --tu-seq-5: #6da7ec;
-  --tu-seq-6: #9ec5f4;
-  --tu-seq-7: #cde2fb;
+  /* 暗色下主色本就落在中亮度带，不需要再压深 */
+  --tu-accent: var(--primary);
+}
+/* 中性预设（neutral/zinc/slate/stone/gray）：--primary 是近黑/近白，看板随
+   之走全灰阶——不引入任何外来色相，和这些主题「主按钮就是黑白」的语言一致。
+   accent（=缓存）沿用上面的 primary 派生（近黑/近白）；「新算」墨阶整体下压
+   一档与 accent 拉开；seq ramp 顶部两档在灰阶下会贴在一起，重排为到 accent
+   为止的等距灰梯。公式全部混向 card/foreground，亮暗模式自动反向。
+   （:root:not([data-theme]) 是 inline 脚本失败时的兜底路径，同样中性。） */
+:root:not([data-theme]) .tu-viz,
+[data-theme="neutral"] .tu-viz,
+[data-theme="zinc"] .tu-viz,
+[data-theme="slate"] .tu-viz,
+[data-theme="stone"] .tu-viz,
+[data-theme="gray"] .tu-viz {
+  --tu-ink: color-mix(in oklab, var(--foreground) 52%, var(--card));
+  --tu-ink-2: color-mix(in oklab, var(--foreground) 33%, var(--card));
+  --tu-ink-3: color-mix(in oklab, var(--foreground) 18%, var(--card));
+  --tu-seq-1: color-mix(in oklab, var(--tu-accent) 10%, var(--card));
+  --tu-seq-2: color-mix(in oklab, var(--tu-accent) 22%, var(--card));
+  --tu-seq-3: color-mix(in oklab, var(--tu-accent) 35%, var(--card));
+  --tu-seq-4: color-mix(in oklab, var(--tu-accent) 49%, var(--card));
+  --tu-seq-5: color-mix(in oklab, var(--tu-accent) 64%, var(--card));
+  --tu-seq-6: color-mix(in oklab, var(--tu-accent) 81%, var(--card));
+  --tu-seq-7: var(--tu-accent);
 }

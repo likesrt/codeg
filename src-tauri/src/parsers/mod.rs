@@ -166,10 +166,12 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
     sources
 }
 
+use chrono::{DateTime, Utc};
 use regex::Regex;
 
 use crate::models::{
-    ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, SessionStats, TurnUsage,
+    ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, SessionStats, TurnRole,
+    TurnUsage,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -400,6 +402,67 @@ pub fn fold_reference_links(text: &str) -> String {
 /// once truncated, unterminable — Markdown link.
 pub fn title_from_user_text(text: &str) -> String {
     truncate_str(&fold_reference_links(text), 100)
+}
+
+/// Fill in `duration_ms` for assistant turns whose agent reports no timing of
+/// its own, by *tiling* the conversation timeline: a reply took as long as the
+/// span between the end of the previous activity and its own completion.
+///
+/// Why tiling rather than "elapsed since the prompt": most agents split one
+/// reply into several assistant turns (a thinking block, each tool round, the
+/// final message), and the UI merges those sub-turns back into one card by
+/// **summing** their durations (`mergeAdjacentToolGroups` in
+/// `message-list-view.tsx`), as do `compute_session_stats` and the token
+/// dashboard. Durations must therefore partition the turn, not each restate it
+/// from the same origin; measuring every sub-turn from the prompt made a
+/// 9-minute Codex reply report ~49 minutes.
+///
+/// Each assistant turn's span starts at the latest of: the previous turn's
+/// completion (so the user's thinking time between a reply and their next
+/// prompt is charged to nobody) and any `turn_starts` marker at or before this
+/// turn's end. `turn_starts` is for agents that log an explicit start-of-turn
+/// event (Codex's `task_started` / `turn_context`); it keeps the measurement
+/// anchored even when the prompt itself never made it into the parsed turns.
+///
+/// Turns that already carry a duration from the agent are left untouched — an
+/// agent-reported span always beats an inferred one.
+pub fn backfill_turn_durations(turns: &mut [MessageTurn], turn_starts: &[DateTime<Utc>]) {
+    // End of the previous turn / latest start marker seen so far. `None` until
+    // the first boundary: a transcript that opens mid-reply has nothing to
+    // measure that first turn against, and a guess there would be unbounded.
+    let mut cursor: Option<DateTime<Utc>> = None;
+    let mut next_start = 0usize;
+
+    for turn in turns.iter_mut() {
+        let end = turn.completed_at.unwrap_or(turn.timestamp);
+
+        // Adopt every marker that opened at or before this turn ended. Markers
+        // are chronological, so this walks each one once across the whole scan.
+        while next_start < turn_starts.len() && turn_starts[next_start] <= end {
+            advance_duration_cursor(&mut cursor, turn_starts[next_start]);
+            next_start += 1;
+        }
+
+        if matches!(turn.role, TurnRole::Assistant) && turn.duration_ms.is_none() {
+            if let Some(start) = cursor {
+                let ms = (end - start).num_milliseconds();
+                if ms > 0 {
+                    turn.duration_ms = Some(ms as u64);
+                }
+            }
+        }
+
+        advance_duration_cursor(&mut cursor, end);
+    }
+}
+
+/// Move `cursor` forward to `candidate`, never backward — an out-of-order
+/// record (skewed clocks, a tool result written after the reply that follows
+/// it) must not rewind the boundary and hand the next turn an inflated span.
+fn advance_duration_cursor(cursor: &mut Option<DateTime<Utc>>, candidate: DateTime<Utc>) {
+    if cursor.is_none_or(|current| candidate > current) {
+        *cursor = Some(candidate);
+    }
 }
 
 /// Aggregate turn-level usage and duration into a single `SessionStats`.
@@ -1101,11 +1164,118 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        fold_reference_links, infer_context_window_max_tokens, is_safe_subagent_id,
-        latest_turn_total_usage_tokens, merge_context_window_stats, path_eq_for_matching,
-        title_from_user_text,
+        backfill_turn_durations, fold_reference_links, infer_context_window_max_tokens,
+        is_safe_subagent_id, latest_turn_total_usage_tokens, merge_context_window_stats,
+        path_eq_for_matching, title_from_user_text,
     };
     use crate::models::{MessageTurn, SessionStats, TurnRole, TurnUsage};
+
+    /// A turn that starts and ends at `start_s`/`end_s` seconds past a fixed
+    /// epoch, so a test reads as a small timeline.
+    fn at(role: TurnRole, start_s: i64, end_s: i64) -> MessageTurn {
+        let base = "2026-03-01T10:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .expect("valid base timestamp");
+        MessageTurn {
+            id: format!("t-{start_s}"),
+            role,
+            blocks: Vec::new(),
+            timestamp: base + chrono::Duration::seconds(start_s),
+            usage: None,
+            duration_ms: None,
+            model: None,
+            completed_at: Some(base + chrono::Duration::seconds(end_s)),
+        }
+    }
+
+    fn durations(turns: &[MessageTurn]) -> Vec<Option<u64>> {
+        turns.iter().map(|t| t.duration_ms).collect()
+    }
+
+    #[test]
+    fn backfilled_durations_tile_the_turn_instead_of_restating_it() {
+        // One prompt at t=0 answered by three assistant sub-turns (thinking,
+        // a tool round, the final message). The UI merges these into one card
+        // by summing, so the sum must be the reply's wall time (30s) — the
+        // regression this guards is each sub-turn reporting elapsed-since-
+        // prompt (10 + 25 + 30 = 65s for a 30s reply).
+        let mut turns = vec![
+            at(TurnRole::User, 0, 0),
+            at(TurnRole::Assistant, 3, 10),
+            at(TurnRole::Assistant, 12, 25),
+            at(TurnRole::Assistant, 26, 30),
+        ];
+        backfill_turn_durations(&mut turns, &[]);
+
+        assert_eq!(
+            durations(&turns),
+            vec![None, Some(10_000), Some(15_000), Some(5_000)]
+        );
+        let total: u64 = turns.iter().filter_map(|t| t.duration_ms).sum();
+        assert_eq!(total, 30_000, "sub-turns must partition the 30s reply");
+    }
+
+    #[test]
+    fn backfill_never_charges_a_reply_for_the_user_thinking_time_before_it() {
+        // Reply 1 ends at t=10; the user sits for an hour before prompting
+        // again at t=3610. Reply 2 took 5s, not 3615.
+        let mut turns = vec![
+            at(TurnRole::User, 0, 0),
+            at(TurnRole::Assistant, 3, 10),
+            at(TurnRole::User, 3610, 3610),
+            at(TurnRole::Assistant, 3612, 3615),
+        ];
+        backfill_turn_durations(&mut turns, &[]);
+
+        assert_eq!(
+            durations(&turns),
+            vec![None, Some(10_000), None, Some(5_000)]
+        );
+    }
+
+    #[test]
+    fn backfill_leaves_agent_reported_durations_untouched() {
+        let mut turns = vec![at(TurnRole::User, 0, 0), at(TurnRole::Assistant, 3, 10)];
+        turns[1].duration_ms = Some(4_200);
+        backfill_turn_durations(&mut turns, &[]);
+
+        assert_eq!(turns[1].duration_ms, Some(4_200));
+    }
+
+    #[test]
+    fn a_turn_start_marker_anchors_a_reply_whose_prompt_is_not_a_parsed_turn() {
+        // Codex records `task_started` even when the prompt itself never
+        // surfaces as a user turn (injected/deduped context). Without the
+        // marker, reply 2 would measure from reply 1's end at t=10 and report
+        // an hour; with it, from the marker at t=3600.
+        let base = "2026-03-01T10:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .expect("valid base timestamp");
+        let mut turns = vec![
+            at(TurnRole::User, 0, 0),
+            at(TurnRole::Assistant, 3, 10),
+            at(TurnRole::Assistant, 3612, 3615),
+        ];
+        backfill_turn_durations(&mut turns, &[base + chrono::Duration::seconds(3600)]);
+
+        assert_eq!(durations(&turns), vec![None, Some(10_000), Some(15_000)]);
+    }
+
+    #[test]
+    fn backfill_skips_a_reply_with_no_boundary_and_survives_out_of_order_records() {
+        // A transcript that opens mid-reply has nothing to measure the first
+        // turn against — better a missing chip than an invented span. And a
+        // turn that ends BEFORE the previous one must neither produce a
+        // negative span nor rewind the boundary for the turn after it.
+        let mut turns = vec![
+            at(TurnRole::Assistant, 0, 10),
+            at(TurnRole::Assistant, 4, 6),
+            at(TurnRole::Assistant, 12, 20),
+        ];
+        backfill_turn_durations(&mut turns, &[]);
+
+        assert_eq!(durations(&turns), vec![None, None, Some(10_000)]);
+    }
 
     #[test]
     fn safe_subagent_id_accepts_plain_ids_and_rejects_traversal() {

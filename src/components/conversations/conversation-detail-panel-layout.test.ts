@@ -89,6 +89,41 @@ describe("ConversationDetailPanel new conversation layout", () => {
     expect(rule).toContain("transition-property: none !important")
   })
 
+  // Regression: with a workspace background image on, every covering surface is
+  // TRANSPARENT rather than opaque, so a hidden-but-mounted subtree that still
+  // paints is visible straight through it. `visibility` inherits, but a
+  // descendant can opt back in — Monaco's DiffEditorWidget writes an inline
+  // `visibility: visible` on its two panes — so an open git-diff file tab showed
+  // through the full-page routes (task board / automations / token usage) and
+  // through the conversation overlay in conversation-only mode, while a plain
+  // file tab (no inline visibility) hid correctly.
+  it("re-hides Monaco's diff panes inside a hidden keep-alive subtree", () => {
+    const selector = ".conversation-tab-hidden .monaco-diff-editor > .editor"
+    expect(globalsCssSource).toContain(selector)
+    const rule = globalsCssSource.slice(
+      globalsCssSource.indexOf(selector),
+      globalsCssSource.indexOf(selector) + 120
+    )
+    // Only `!important` outranks Monaco's inline declaration.
+    expect(rule).toContain("visibility: hidden !important")
+  })
+
+  it("marks every hidden keep-alive subtree with the hardening class", () => {
+    // Under a full-page workbench route (desktop + mobile shells).
+    expect(workspaceLayoutSource).toContain(
+      '!isConversations && "conversation-tab-hidden invisible"'
+    )
+    // The FILE column under the conversation overlay — this is the one that
+    // hosts git-diff tabs.
+    expect(workspaceLayoutSource).toContain(
+      'mode === "conversation" && "conversation-tab-hidden invisible"'
+    )
+    // The conversation column under the files-maximized overlay.
+    expect(workspaceLayoutSource).toContain(
+      'filesMaximized && "conversation-tab-hidden invisible"'
+    )
+  })
+
   it("does not render a decorative welcome backdrop", () => {
     expect(welcomeHeroSource).not.toContain("export function WelcomeBackdrop")
     expect(welcomeHeroSource).not.toContain("bg-gradient-to-r")

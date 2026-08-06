@@ -33,8 +33,8 @@ use crate::acp::InternalEventBus;
 use crate::commands::acp::{build_session_runtime_env, verify_agent_installed};
 use crate::commands::conversations::{create_conversation_core, emit_conversation_upsert};
 use crate::commands::folders::{
-    emit_folder_upsert, get_folder_core, git_worktree_add, open_worktree_folder_core,
-    resolve_git_head,
+    emit_folder_deleted, emit_folder_upsert, get_folder_core, git_worktree_add,
+    open_worktree_folder_core, resolve_git_head,
 };
 use crate::db::entities::conversation::{self, ConversationStatus};
 use crate::db::entities::work_task::WorkTaskStatus;
@@ -43,7 +43,7 @@ use crate::db::service::{conversation_service, tab_service, work_task_service};
 use crate::db::AppDatabase;
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::{
-    AgentType, WorkTaskConfig, WorkTaskFolderSettings, WorkTaskMergeState,
+    AgentType, FollowUpIntent, WorkTaskConfig, WorkTaskFolderSettings, WorkTaskMergeState,
     WorkTaskPreflight, STAGE_PROMPT_ALL,
 };
 use crate::web::event_bridge::{
@@ -258,8 +258,11 @@ enum LaunchMode {
     Fresh,
     /// Retry after failure: resume the session if possible and ask to continue.
     Retry,
-    /// Returned from review with feedback.
-    Return(String),
+    /// A follow-up on a reviewed task: the user's text, framed by their intent.
+    Return {
+        intent: FollowUpIntent,
+        feedback: String,
+    },
     /// Merge generation: the agent lands the task onto the base branch itself
     /// (sync base into the worktree, resolve conflicts, merge into base). The
     /// task sits in `merging` for the whole turn; the engine settles from git
@@ -295,14 +298,37 @@ impl LaunchMode {
         }
     }
 
-    /// Timeline `round` label for the prompt this mode composes.
+    /// Timeline `round` label for the prompt this mode composes. Every
+    /// follow-up intent shares the `return` stage: the folder's per-stage
+    /// prompt settings stay four stages wide, and the intent rides the `round`
+    /// event beside this label for the transcript's phase divider.
     fn round_kind(&self) -> &'static str {
         match self {
             LaunchMode::Fresh => "work",
             LaunchMode::Retry => "retry",
-            LaunchMode::Return(_) => "return",
+            LaunchMode::Return { .. } => "return",
             LaunchMode::Merge { .. } => "merge",
         }
+    }
+
+    /// The follow-up intent this launch carries, for the `round` marker.
+    fn round_intent(&self) -> Option<FollowUpIntent> {
+        match self {
+            LaunchMode::Return { intent, .. } => Some(*intent),
+            _ => None,
+        }
+    }
+
+    /// Whether this launch may write to the worktree. A question is answered in
+    /// chat; everything else is work.
+    fn is_read_only(&self) -> bool {
+        matches!(
+            self,
+            LaunchMode::Return {
+                intent: FollowUpIntent::Question,
+                ..
+            }
+        )
     }
 }
 
@@ -371,17 +397,27 @@ impl TaskEngine {
     }
 
     /// Retry a failed task: claim failed → queued (same worktree / session
-    /// reused by the launch), then pump.
-    pub async fn retry(self: &Arc<Self>, task_id: i32) -> Result<(), String> {
+    /// reused by the launch), then pump. An optional note rides the claim's own
+    /// transaction and reaches the retry prompt — a failure usually has a cause
+    /// the user knows and the agent doesn't.
+    pub async fn retry(
+        self: &Arc<Self>,
+        task_id: i32,
+        note: Option<String>,
+    ) -> Result<(), String> {
         let task = work_task_service::get_model(&self.db.conn, task_id)
             .await
             .map_err(|e| e.to_string())?;
         self.preflight_folder(task.folder_id).await?;
-        match work_task_service::claim_for_run(
+        let note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        let action = note
+            .map(|note| serde_json::json!({ "action": "retry", "note": note }));
+        match work_task_service::claim_for_run_with_action(
             &self.db.conn,
             task_id,
             WorkTaskStatus::Failed,
             "user",
+            action,
         )
         .await
         .map_err(|e| e.to_string())?
@@ -395,41 +431,57 @@ impl TaskEngine {
         }
     }
 
-    /// Return a reviewed task to the agent with feedback. Launches directly
-    /// (explicit user action — does not wait behind the queue).
-    pub async fn return_task(self: &Arc<Self>, task_id: i32, feedback: String) -> Result<(), String> {
+    /// Send a reviewed task back to the agent with a follow-up. Launches
+    /// directly (explicit user action — does not wait behind the queue).
+    ///
+    /// The intent picks the wording the agent receives; the feedback itself is
+    /// recorded inside the claim's transaction, so a pump that steals the
+    /// freshly queued generation still finds the instruction.
+    pub async fn return_task(
+        self: &Arc<Self>,
+        task_id: i32,
+        intent: FollowUpIntent,
+        feedback: String,
+    ) -> Result<(), String> {
         let task = work_task_service::get_model(&self.db.conn, task_id)
             .await
             .map_err(|e| e.to_string())?;
         self.preflight_folder(task.folder_id).await?;
-        let Some(_) = work_task_service::claim_for_run(
+        let Some(_) = work_task_service::claim_for_run_with_action(
             &self.db.conn,
             task_id,
             WorkTaskStatus::Review,
             "user",
+            Some(serde_json::json!({
+                "action": "return",
+                "intent": intent.as_str(),
+                "feedback": feedback,
+            })),
         )
         .await
         .map_err(|e| e.to_string())?
         else {
             return Err("task is not in review".to_string());
         };
-        let _ = work_task_service::record_event(
-            &self.db.conn,
-            task_id,
-            "user_action",
-            "user",
-            Some(serde_json::json!({ "action": "return", "feedback": feedback })),
-        )
-        .await;
         self.emit_upsert(task_id);
-        self.spawn_launch(task_id, task.folder_id, LaunchMode::Return(feedback));
+        self.spawn_launch(
+            task_id,
+            task.folder_id,
+            LaunchMode::Return { intent, feedback },
+        );
         Ok(())
     }
 
     /// Cancel a task from any non-terminal state except merging. Worktree is
-    /// kept (the card offers cleanup separately).
-    pub async fn cancel(self: &Arc<Self>, task_id: i32) -> Result<(), String> {
-        let won = work_task_service::cancel(&self.db.conn, task_id)
+    /// kept (the card offers cleanup separately). `reason` is the user's own
+    /// note for the timeline; internal cancels (a conversation the user stopped
+    /// from the chat UI, a delete) pass None.
+    pub async fn cancel(
+        self: &Arc<Self>,
+        task_id: i32,
+        reason: Option<String>,
+    ) -> Result<(), String> {
+        let won = work_task_service::cancel(&self.db.conn, task_id, reason.as_deref())
             .await
             .map_err(|e| e.to_string())?;
         if !won {
@@ -772,7 +824,7 @@ impl TaskEngine {
         // Resume the previous session for retry/return/merge when we have one.
         let resume_session_id = match mode {
             LaunchMode::Fresh => None,
-            LaunchMode::Retry | LaunchMode::Return(_) | LaunchMode::Merge { .. } => {
+            LaunchMode::Retry | LaunchMode::Return { .. } | LaunchMode::Merge { .. } => {
                 match task.conversation_id {
                     Some(conv_id) => conversation::Entity::find_by_id(conv_id)
                         .one(&self.db.conn)
@@ -930,6 +982,7 @@ impl TaskEngine {
                     "engine",
                     Some(serde_json::json!({
                         "kind": mode.round_kind(),
+                        "intent": mode.round_intent().map(FollowUpIntent::as_str),
                         "run_seq": run_seq,
                         "prompt_head": prompt_head,
                     })),
@@ -1308,7 +1361,7 @@ impl TaskEngine {
             "cancelled" => {
                 // The user stopped the agent from the conversation UI — that is
                 // a task cancel, not an agent failure.
-                work_task_service::cancel(&self.db.conn, task_id)
+                work_task_service::cancel(&self.db.conn, task_id, None)
                     .await
                     .unwrap_or(false)
             }
@@ -1523,6 +1576,112 @@ impl TaskEngine {
         let (state, _) = self.manager.get_state_and_emitter(conn_id).await?;
         let text = state.read().await.last_assistant_text.clone();
         text.filter(|t| !t.trim().is_empty())
+    }
+
+    // ── accept without merging ─────────────────────────────────────────────
+
+    /// Accept a reviewed task that produced nothing to land: no merge
+    /// generation, just review → done, optionally taking the worktree with it.
+    ///
+    /// The board only offers this when the recorded diff stat is empty, and
+    /// that stat is a snapshot from when the run settled — so git, not the row,
+    /// decides. The whole decision runs inside the folder's git lock, with the
+    /// CAS in the middle: check, settle and remove form one critical section,
+    /// leaving no window in which the task can gain a commit between the check
+    /// that cleared it and the `branch -D` that would take it away.
+    ///
+    /// Two probes, because neither alone sees everything the removal destroys:
+    /// a commit made on the work branch is invisible to `git status` but shows
+    /// up in the diff against the base, and an untracked file is the reverse.
+    /// Anything either one finds keeps the worktree on disk.
+    pub async fn complete_task(&self, task_id: i32, delete_worktree: bool) -> Result<(), String> {
+        let task = work_task_service::get_model(&self.db.conn, task_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        if task.status != WorkTaskStatus::Review {
+            return Err("task is not in review".to_string());
+        }
+
+        // Held across the check → CAS → removal. Uncontended in the common
+        // case: the merge path holds this only for its dispatch, not for the
+        // generation that follows.
+        let lock = self.folder_lock(task.folder_id).await;
+        let _guard = lock.lock().await;
+
+        if self.has_landable_changes(&task).await? {
+            return Err(
+                "this task changed files after all — merge it instead of completing it".to_string(),
+            );
+        }
+        if !work_task_service::complete_without_merge(&self.db.conn, task_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err("task left review before it could be completed".to_string());
+        }
+        self.emit_upsert(task_id);
+
+        if delete_worktree {
+            if self.worktree_holds_uncommitted(&task).await {
+                let _ = work_task_service::set_cleanup_state(
+                    &self.db.conn,
+                    task_id,
+                    true,
+                    Some(
+                        "the worktree was kept: it still holds uncommitted files. Remove them, \
+                         then retry the cleanup."
+                            .to_string(),
+                    ),
+                )
+                .await;
+            } else {
+                self.remove_worktree_locked(task_id).await;
+            }
+            self.emit_upsert(task_id);
+        }
+        Ok(())
+    }
+
+    /// Whether the task worktree still has anything uncommitted (tracked edits
+    /// or untracked files). A git error reads as "clean": the removal path is
+    /// itself tolerant of a worktree that is already off disk, which is the
+    /// likeliest reason git could not answer here.
+    async fn worktree_holds_uncommitted(
+        &self,
+        task: &crate::db::entities::work_task::Model,
+    ) -> bool {
+        let Some(wt_id) = task.worktree_folder_id else {
+            return false;
+        };
+        let Ok(wt) = get_folder_core(&self.db, wt_id).await else {
+            return false;
+        };
+        task_git::has_changes(&wt.path).await.unwrap_or(false)
+    }
+
+    /// Live git truth for "would a merge still have something to take from this
+    /// task?" — including work committed on the branch after the run settled,
+    /// which `git status` reports as a clean worktree. Mirrors the changed-files
+    /// view the user reviewed (same base fallback), so the board's offer and
+    /// this check cannot disagree. A task whose worktree is already gone has
+    /// nothing to land.
+    async fn has_landable_changes(
+        &self,
+        task: &crate::db::entities::work_task::Model,
+    ) -> Result<bool, String> {
+        let Some(wt_id) = task.worktree_folder_id else {
+            return Ok(false);
+        };
+        let Some(base) = task.base_sha.clone().or_else(|| task.base_branch.clone()) else {
+            return Ok(false);
+        };
+        let wt = get_folder_core(&self.db, wt_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let files = task_git::diff_numstat(&wt.path, &base)
+            .await
+            .map_err(|e| format!("could not read the task's changes: {e}"))?;
+        Ok(!files.is_empty())
     }
 
     // ── merge (two-stage, persisted intent, per-folder git mutex) ───────────
@@ -1947,8 +2106,11 @@ impl TaskEngine {
             }
         };
         let Ok(wt) = get_folder_core(&self.db, wt_id).await else {
-            // Folder row already gone — just detach.
+            // Folder row already gone (a retried cleanup) — just detach, and
+            // still tell clients to drop it: one holding a stale copy would
+            // otherwise keep rendering a worktree no refetch would return.
             let _ = work_task_service::clear_worktree(&self.db.conn, task_id).await;
+            emit_folder_deleted(&self.emitter, wt_id);
             return;
         };
 
@@ -1969,64 +2131,15 @@ impl TaskEngine {
             return;
         }
 
-        // Git succeeded — converge the DB. Conversations first (so they are
-        // never orphaned under a vanishing folder), then tabs, then the folder
-        // row itself.
-        let moved = conversation_service::reparent_folder_conversations(
-            &self.db.conn,
+        converge_worktree_removal(
+            &self.db,
+            &self.emitter,
+            task_id,
             wt_id,
             task.folder_id,
             &wt.path,
         )
-        .await
-        .unwrap_or(0);
-
-        match tab_service::delete_folder_tabs_and_bump(&self.db.conn, wt_id).await {
-            Ok(inv) => {
-                if let Some(tabs) = inv.emit {
-                    emit_event(
-                        &self.emitter,
-                        crate::web::event_bridge::TABS_CHANGED_EVENT,
-                        crate::web::event_bridge::TabsChanged {
-                            version: inv.version,
-                            origin: "server".to_string(),
-                            tabs,
-                        },
-                    );
-                }
-            }
-            Err(e) => tracing::warn!("[work_task] tab cleanup failed for folder {wt_id}: {e}"),
-        }
-
-        if let Ok(Some(row)) = folder::Entity::find_by_id(wt_id).one(&self.db.conn).await {
-            let mut active = row.into_active_model();
-            active.is_open = Set(false);
-            active.deleted_at = Set(Some(chrono::Utc::now()));
-            active.updated_at = Set(chrono::Utc::now());
-            let _ = active.update(&self.db.conn).await;
-        }
-
-        let _ = work_task_service::clear_worktree(&self.db.conn, task_id).await;
-        let _ = work_task_service::record_event(
-            &self.db.conn,
-            task_id,
-            "user_action",
-            "engine",
-            Some(serde_json::json!({ "action": "cleanup", "reparented": moved })),
-        )
         .await;
-
-        // Nudge every client to refetch conversations/folders — the worktree
-        // folder is gone and its conversations moved to the project folder.
-        emit_event(
-            &self.emitter,
-            crate::web::event_bridge::CONVERSATIONS_BULK_CHANGED_EVENT,
-            crate::web::event_bridge::ConversationsBulkChanged {
-                imported: 0,
-                updated: moved as u32,
-                folder_ids: vec![task.folder_id],
-            },
-        );
     }
 
     // ── reconcile ───────────────────────────────────────────────────────────
@@ -2068,7 +2181,7 @@ impl TaskEngine {
                     .unwrap_or(false)
                 }
                 Some(ConversationStatus::Cancelled) => {
-                    work_task_service::cancel(&self.db.conn, task.id)
+                    work_task_service::cancel(&self.db.conn, task.id, None)
                         .await
                         .unwrap_or(false)
                 }
@@ -2204,6 +2317,99 @@ struct WorktreeRef {
     path: String,
 }
 
+/// Converge DB + clients once a task worktree is off disk. Split out of
+/// [`TaskEngine::remove_worktree_locked`] so the ordering contract below is
+/// unit-testable without a real git worktree.
+///
+/// Write order: conversations first (never orphaned under a vanishing folder),
+/// then its tabs, then the folder row. Each step ends in a broadcast, because a
+/// removal no client hears about is a removal no client shows: the sidebar keeps
+/// the dead worktree until the next full `fetchFolders` (i.e. a reload).
+async fn converge_worktree_removal(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    task_id: i32,
+    wt_id: i32,
+    project_folder_id: i32,
+    wt_path: &str,
+) {
+    let moved = conversation_service::reparent_folder_conversations(
+        &db.conn,
+        wt_id,
+        project_folder_id,
+        wt_path,
+    )
+    .await
+    .unwrap_or(0);
+
+    match tab_service::delete_folder_tabs_and_bump(&db.conn, wt_id).await {
+        Ok(inv) => {
+            if let Some(tabs) = inv.emit {
+                emit_event(
+                    emitter,
+                    crate::web::event_bridge::TABS_CHANGED_EVENT,
+                    crate::web::event_bridge::TabsChanged {
+                        version: inv.version,
+                        origin: "server".to_string(),
+                        tabs,
+                    },
+                );
+            }
+        }
+        Err(e) => tracing::warn!("[work_task] tab cleanup failed for folder {wt_id}: {e}"),
+    }
+
+    // Announce the folder drop only when the row really is gone, so a failed
+    // write can't leave clients disagreeing with what a refetch would return.
+    let folder_gone = match folder::Entity::find_by_id(wt_id).one(&db.conn).await {
+        Ok(Some(row)) => {
+            let now = chrono::Utc::now();
+            let mut active = row.into_active_model();
+            active.is_open = Set(false);
+            active.deleted_at = Set(Some(now));
+            active.updated_at = Set(now);
+            match active.update(&db.conn).await {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!("[work_task] worktree folder {wt_id} soft-delete failed: {e}");
+                    false
+                }
+            }
+        }
+        // Already soft-deleted / never there: a client still holding it is stale.
+        Ok(None) => true,
+        Err(e) => {
+            tracing::warn!("[work_task] worktree folder {wt_id} lookup failed: {e}");
+            false
+        }
+    };
+
+    let _ = work_task_service::clear_worktree(&db.conn, task_id).await;
+    let _ = work_task_service::record_event(
+        &db.conn,
+        task_id,
+        "user_action",
+        "engine",
+        Some(serde_json::json!({ "action": "cleanup", "reparented": moved })),
+    )
+    .await;
+
+    // Conversations first: this starts every client's refetch, so the moved
+    // rows have the shortest possible window with no folder to render under.
+    emit_event(
+        emitter,
+        crate::web::event_bridge::CONVERSATIONS_BULK_CHANGED_EVENT,
+        crate::web::event_bridge::ConversationsBulkChanged {
+            imported: 0,
+            updated: moved as u32,
+            folder_ids: vec![project_folder_id],
+        },
+    );
+    if folder_gone {
+        emit_folder_deleted(emitter, wt_id);
+    }
+}
+
 /// Pick the launch mode for a pump-driven launch from the task's history: a
 /// task with a prior conversation continues (retry semantics); a pristine one
 /// starts fresh. Explicit returns launch directly with `LaunchMode::Return`.
@@ -2275,6 +2481,18 @@ async fn compose_prompt(
                 return Err("prompt is empty".to_string());
             }
             blocks.extend(original);
+            // A task can reach a fresh launch carrying a restart note: it was
+            // canceled (or failed during setup) before it ever had a session,
+            // and the user attached a note when re-queueing it. Review feedback
+            // cannot exist here — that needs a session — but match on the kind
+            // rather than assume it.
+            if let Some(Outstanding {
+                kind: OutstandingKind::Restart,
+                text,
+            }) = outstanding_instruction(conn, task.id).await
+            {
+                blocks.push(restart_note_block(&text));
+            }
         }
         LaunchMode::Retry => {
             blocks.push(PromptInputBlock::Text {
@@ -2288,15 +2506,27 @@ async fn compose_prompt(
                 });
                 blocks.extend(original);
             }
-            // Include the latest review feedback (if the interruption happened
-            // after a return) so it is never lost across restarts.
-            if let Some(feedback) = latest_return_feedback(conn, task.id).await {
-                blocks.push(PromptInputBlock::Text {
-                    text: format!("Latest review feedback to address:\n{feedback}"),
+            // Replay whatever instruction the interrupted generation still
+            // owed the user, framed the way they meant it — an unanswered
+            // question must not come back as a work order.
+            if let Some(outstanding) = outstanding_instruction(conn, task.id).await {
+                blocks.push(match outstanding.kind {
+                    OutstandingKind::Restart => restart_note_block(&outstanding.text),
+                    OutstandingKind::Review(FollowUpIntent::Question) => PromptInputBlock::Text {
+                        text: format!(
+                            "The user asked this question before the interruption and never \
+                             got an answer. Answer it, and do not change any files for it:\
+                             \n\n{}",
+                            outstanding.text
+                        ),
+                    },
+                    OutstandingKind::Review(_) => PromptInputBlock::Text {
+                        text: format!("Latest review feedback to address:\n{}", outstanding.text),
+                    },
                 });
             }
         }
-        LaunchMode::Return(feedback) => {
+        LaunchMode::Return { intent, feedback } => {
             if !resumed {
                 // Session resume failed — the fresh session has no context, so
                 // replay the task before the feedback.
@@ -2309,10 +2539,7 @@ async fn compose_prompt(
                 blocks.extend(original);
             }
             blocks.push(PromptInputBlock::Text {
-                text: format!(
-                    "The user reviewed your work on this task and returned it with the \
-                     following feedback. Address it in this same worktree:\n\n{feedback}"
-                ),
+                text: follow_up_text(*intent, feedback),
             });
         }
         LaunchMode::Merge {
@@ -2368,24 +2595,43 @@ async fn compose_prompt(
 
     // The standing worktree guard — a merge generation replaces it with its
     // own instructions (it exists to forbid exactly what a merge must do).
+    //
+    // It is the LAST built-in block, so its licence clause is the last thing
+    // the agent reads: a read-only turn has to swap that clause out, or "commit
+    // to the current branch as you like" would quietly undo the intent's own
+    // "don't touch any file" instruction several blocks earlier.
     if !matches!(mode, LaunchMode::Merge { .. }) {
+        let branch = task
+            .work_branch
+            .as_deref()
+            .map(|b| format!(" (branch `{b}`)"))
+            .unwrap_or_default();
+        let base = task
+            .base_branch
+            .as_deref()
+            .map(|b| format!(" (`{b}`)"))
+            .unwrap_or_default();
+        let licence = if mode.is_read_only() {
+            format!(
+                "This turn is a question, not a work order: answer it in your reply and do NOT \
+                 create, edit, delete or commit any file, and do not merge into, rebase onto, or \
+                 push the base branch{base}. If answering would require a change, describe the \
+                 change instead of making it."
+            )
+        } else {
+            format!(
+                "Commit to the current branch as you like, but do NOT merge into, rebase onto, \
+                 or push the base branch{base} — the user lands the result after review. Finish \
+                 with a short summary of what you did."
+            )
+        };
         blocks.push(PromptInputBlock::Text {
             text: format!(
                 "—— Work task context ——\nYou are working inside a dedicated git worktree for \
-                 this task{}. Commit to the current branch as you like, but do NOT merge into, \
-                 rebase onto, or push the base branch{} — the user lands the result after review. \
-                 Finish with a short summary of what you did.\nIf the `task_progress` and \
-                 `task_complete` tools are available to you, report milestones with \
-                 `task_progress` as you go, and call `task_complete` once right before you \
-                 finish (verdict `success`, `needs_review`, or `blocked`, plus a short summary).",
-                task.work_branch
-                    .as_deref()
-                    .map(|b| format!(" (branch `{b}`)"))
-                    .unwrap_or_default(),
-                task.base_branch
-                    .as_deref()
-                    .map(|b| format!(" (`{b}`)"))
-                    .unwrap_or_default(),
+                 this task{branch}. {licence}\nIf the `task_progress` and `task_complete` tools \
+                 are available to you, report milestones with `task_progress` as you go, and \
+                 call `task_complete` once right before you finish (verdict `success`, \
+                 `needs_review`, or `blocked`, plus a short summary).",
             ),
         });
     }
@@ -2417,23 +2663,145 @@ fn stage_prompt_block(
     })
 }
 
-/// The feedback text of the most recent "return" user action, if any.
-async fn latest_return_feedback(
+/// The prompt text for a follow-up on a reviewed task. The intent decides the
+/// framing, which is the whole point of having intents: the same sentence from
+/// the user means "fix this", "also do this" or "explain this" depending on it,
+/// and an agent told it was *returned* work will start editing either way.
+fn follow_up_text(intent: FollowUpIntent, feedback: &str) -> String {
+    match intent {
+        // Historical wording, kept verbatim: this is what an unlabelled
+        // follow-up composes, so the default path is unchanged.
+        FollowUpIntent::Revise => format!(
+            "The user reviewed your work on this task and returned it with the following \
+             feedback. Address it in this same worktree:\n\n{feedback}"
+        ),
+        FollowUpIntent::Continue => format!(
+            "The user reviewed your work on this task and accepted it as it stands. Keep going \
+             in this same worktree with the following additional work — do not redo or second-\
+             guess what is already there:\n\n{feedback}"
+        ),
+        FollowUpIntent::Question => format!(
+            "The user has a question about your work on this task. Answer it directly in your \
+             reply. This is a question, not a work order: do not create, edit, delete or commit \
+             any file unless the user explicitly asks you to. If answering would require a \
+             change, describe the change instead of making it.\n\n{feedback}"
+        ),
+        FollowUpIntent::Verify => {
+            let base = "The user wants this task checked over before they accept it. Review your \
+                        own work: read the full diff of this worktree against the base branch \
+                        looking for bugs, leftovers, debug code and anything the task asked for \
+                        but you did not do; run the project's own checks or tests; and fix what \
+                        you find. Report what you checked and what you changed.";
+            if feedback.is_empty() {
+                base.to_string()
+            } else {
+                format!("{base}\n\nWhat they want you to pay attention to:\n\n{feedback}")
+            }
+        }
+    }
+}
+
+/// A restart note reaches the agent as context, not as the task itself.
+fn restart_note_block(note: &str) -> PromptInputBlock {
+    PromptInputBlock::Text {
+        text: format!(
+            "The user restarted this task and left this note — take it into account:\n\n{note}"
+        ),
+    }
+}
+
+/// What the user last asked for, and how they meant it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutstandingKind {
+    /// A follow-up on a reviewed task.
+    Review(FollowUpIntent),
+    /// A note attached to a retry or a re-queue.
+    Restart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Outstanding {
+    kind: OutstandingKind,
+    text: String,
+}
+
+/// The user instruction the agent still owes a turn to, if any.
+///
+/// Scans the task's events newest-first and stops at whichever comes first:
+/// - a follow-up `user_action` (return / retry / requeue) → that one is
+///   outstanding;
+/// - a settle into `review` → a generation ran to completion after anything
+///   earlier, so nothing is owed.
+///
+/// It is a barrier, not a filter. Filtering (e.g. "skip questions") would walk
+/// *past* the newest instruction and resurrect an older one the agent already
+/// carried out — replaying "add the tests" long after they were added. And the
+/// review barrier is what stops a note from being re-injected into every
+/// subsequent generation for the rest of the task's life.
+async fn outstanding_instruction(
     conn: &sea_orm::DatabaseConnection,
     task_id: i32,
-) -> Option<String> {
-    let events = work_task_service::list_events(conn, task_id, 500).await.ok()?;
-    events
-        .into_iter()
-        .rev()
-        .filter(|e| e.kind == "user_action")
-        .find_map(|e| {
-            let p = e.payload?;
-            if p.get("action")?.as_str()? != "return" {
-                return None;
+) -> Option<Outstanding> {
+    // Newest-first, and narrowed IN THE QUERY to the two kinds that can settle
+    // the question. Scanning raw events would let a chatty run bury the answer:
+    // `agent_progress` volume is up to the agent, so a few hundred milestones
+    // would push the instruction past any limit. Filtered this way the limit
+    // bounds a log of decisions, which is small.
+    let events = work_task_service::recent_events_of_kinds(
+        conn,
+        task_id,
+        &["user_action", "status_changed"],
+        200,
+    )
+    .await
+    .ok()?;
+    for event in events {
+        match event.kind.as_str() {
+            "status_changed" => {
+                let settled = event
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("to"))
+                    .and_then(|v| v.as_str())
+                    == Some("review");
+                if settled {
+                    return None;
+                }
             }
-            p.get("feedback")?.as_str().map(String::from)
-        })
+            "user_action" => {
+                let payload = match event.payload {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let action = payload.get("action").and_then(|v| v.as_str())?;
+                match action {
+                    "return" => {
+                        let intent = FollowUpIntent::from_wire(
+                            payload.get("intent").and_then(|v| v.as_str()),
+                        )
+                        .unwrap_or_default();
+                        let text = payload.get("feedback").and_then(|v| v.as_str())?;
+                        return Some(Outstanding {
+                            kind: OutstandingKind::Review(intent),
+                            text: text.to_string(),
+                        });
+                    }
+                    "retry" | "requeue" => {
+                        let text = payload.get("note").and_then(|v| v.as_str())?;
+                        return Some(Outstanding {
+                            kind: OutstandingKind::Restart,
+                            text: text.to_string(),
+                        });
+                    }
+                    // Other user actions (delete, …) neither carry nor consume
+                    // an instruction.
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        }
+    }
+    None
 }
 
 /// One-shot sink for the generation a launch actually operated on. The launch
@@ -2744,6 +3112,339 @@ mod tests {
         }
     }
 
+    fn return_mode(intent: FollowUpIntent) -> LaunchMode {
+        LaunchMode::Return {
+            intent,
+            feedback: "please fix the copy".to_string(),
+        }
+    }
+
+    /// Insert a task row so events have something to hang off, then compose.
+    async fn seeded_task(conn: &sea_orm::DatabaseConnection) -> i32 {
+        use sea_orm::{ActiveModelTrait, Set};
+        let now = chrono::Utc::now();
+        let row = crate::db::entities::work_task::ActiveModel {
+            folder_id: Set(1),
+            title: Set("Fix the login flow".to_string()),
+            config: Set("{}".to_string()),
+            status: Set(WorkTaskStatus::Failed),
+            run_seq: Set(1),
+            sort_order: Set(0),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        row.insert(conn).await.expect("insert task").id
+    }
+
+    async fn user_action(conn: &sea_orm::DatabaseConnection, id: i32, payload: serde_json::Value) {
+        work_task_service::record_event(conn, id, "user_action", "user", Some(payload))
+            .await
+            .expect("record user action");
+    }
+
+    async fn settled_into_review(conn: &sea_orm::DatabaseConnection, id: i32) {
+        work_task_service::record_event(
+            conn,
+            id,
+            "status_changed",
+            "engine",
+            Some(serde_json::json!({ "to": "review" })),
+        )
+        .await
+        .expect("record settle");
+    }
+
+    /// Each scenario reframes the SAME user text — that is the whole point of
+    /// having scenarios, and `revise` must stay byte-identical to the wording
+    /// the action had before they existed.
+    #[tokio::test]
+    async fn follow_up_scenarios_reframe_the_same_feedback() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let cases = [
+            (
+                FollowUpIntent::Revise,
+                "The user reviewed your work on this task and returned it with the following \
+                 feedback. Address it in this same worktree:\n\nplease fix the copy",
+            ),
+            (FollowUpIntent::Continue, "accepted it as it stands"),
+            (FollowUpIntent::Question, "This is a question, not a work order"),
+            (FollowUpIntent::Verify, "read the full diff of this worktree"),
+        ];
+        for (intent, expected) in cases {
+            let blocks = compose_prompt(
+                &task_config(),
+                &task_row(),
+                &return_mode(intent),
+                &WorkTaskFolderSettings::default(),
+                true,
+                &db.conn,
+            )
+            .await
+            .expect("compose");
+            let joined = texts(&blocks).join("\n");
+            assert!(
+                joined.contains(expected),
+                "{}: missing its own framing in {joined}",
+                intent.as_str()
+            );
+            assert!(
+                joined.contains("please fix the copy"),
+                "{}: dropped the user's text",
+                intent.as_str()
+            );
+        }
+    }
+
+    /// The standing guard licenses committing, and it is the LAST block the
+    /// agent reads — so a question turn has to replace it, not merely say
+    /// "don't edit" a few blocks earlier.
+    #[tokio::test]
+    async fn a_question_turn_withdraws_the_licence_to_commit() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &return_mode(FollowUpIntent::Question),
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let guard = texts(&blocks)
+            .into_iter()
+            .find(|t| t.starts_with("—— Work task context ——"))
+            .expect("guard block");
+        assert!(!guard.contains("Commit to the current branch as you like"));
+        assert!(guard.contains("do NOT create, edit, delete or commit any file"));
+        // The base-branch rules survive the swap.
+        assert!(guard.contains("push the base branch"));
+
+        // …and a working scenario keeps the original licence.
+        let working = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &return_mode(FollowUpIntent::Revise),
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        assert!(texts(&working)
+            .iter()
+            .any(|t| t.contains("Commit to the current branch as you like")));
+    }
+
+    /// The one scenario that stands alone without user text.
+    #[tokio::test]
+    async fn a_self_check_composes_without_any_user_text() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let blocks = compose_prompt(
+            &task_config(),
+            &task_row(),
+            &LaunchMode::Return {
+                intent: FollowUpIntent::Verify,
+                feedback: String::new(),
+            },
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(joined.contains("read the full diff of this worktree"));
+        assert!(!joined.contains("What they want you to pay attention to"));
+    }
+
+    /// A retry replays what the interrupted generation still owed — and an
+    /// unanswered question must not come back as a work order.
+    #[tokio::test]
+    async fn a_retry_replays_an_unanswered_question_as_a_question() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return", "intent": "question", "feedback": "why the extra table?",
+            }),
+        )
+        .await;
+
+        let mut row = task_row();
+        row.id = id;
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Retry,
+            &WorkTaskFolderSettings::default(),
+            true,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(joined.contains("never got an answer"));
+        assert!(joined.contains("why the extra table?"));
+        assert!(!joined.contains("Latest review feedback to address"));
+    }
+
+    /// The lookup is a barrier, not a filter: skipping past the newest
+    /// instruction would resurrect an older one the agent already carried out.
+    #[tokio::test]
+    async fn a_newer_instruction_hides_an_older_one() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return", "intent": "revise", "feedback": "rename the column",
+            }),
+        )
+        .await;
+        settled_into_review(&db.conn, id).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({
+                "action": "return", "intent": "question", "feedback": "why the extra table?",
+            }),
+        )
+        .await;
+
+        let outstanding = outstanding_instruction(&db.conn, id)
+            .await
+            .expect("an outstanding instruction");
+        assert_eq!(
+            outstanding.kind,
+            OutstandingKind::Review(FollowUpIntent::Question)
+        );
+        assert_eq!(outstanding.text, "why the extra table?");
+    }
+
+    /// A completed turn consumes the instruction it carried, so it stops being
+    /// re-injected into every generation for the rest of the task's life.
+    #[tokio::test]
+    async fn settling_into_review_consumes_the_instruction() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({ "action": "requeue", "note": "install deps first" }),
+        )
+        .await;
+        assert!(outstanding_instruction(&db.conn, id).await.is_some());
+
+        settled_into_review(&db.conn, id).await;
+        assert!(outstanding_instruction(&db.conn, id).await.is_none());
+    }
+
+    /// A task canceled before it ever had a session comes back through `Fresh`,
+    /// so the note the user attached has to reach that arm too.
+    #[tokio::test]
+    async fn a_restart_note_reaches_a_fresh_launch() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({ "action": "requeue", "note": "target the v2 API this time" }),
+        )
+        .await;
+
+        let mut row = task_row();
+        row.id = id;
+        let blocks = compose_prompt(
+            &task_config(),
+            &row,
+            &LaunchMode::Fresh,
+            &WorkTaskFolderSettings::default(),
+            false,
+            &db.conn,
+        )
+        .await
+        .expect("compose");
+        let joined = texts(&blocks).join("\n");
+        assert!(joined.contains("target the v2 API this time"));
+        assert!(joined.contains("The user restarted this task"));
+        // The task's own brief still opens the prompt, so the transcript's
+        // phase divider keeps matching on it.
+        assert_eq!(prompt_head(&blocks), "Fix the login flow and add tests.");
+    }
+
+    /// Two ways a busy task could hide its own instruction: `list_events`
+    /// returns the OLDEST rows within its limit, and an agent's progress
+    /// milestones are unbounded in number, so scanning raw events would bury
+    /// the instruction under them.
+    #[tokio::test]
+    async fn a_chatty_run_cannot_bury_the_latest_instruction() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        user_action(
+            &db.conn,
+            id,
+            serde_json::json!({ "action": "retry", "note": "the DB was locked" }),
+        )
+        .await;
+        for _ in 0..520 {
+            work_task_service::record_event(&db.conn, id, "agent_progress", "agent", None)
+                .await
+                .expect("filler event");
+        }
+
+        let outstanding = outstanding_instruction(&db.conn, id)
+            .await
+            .expect("found under the filler");
+        assert_eq!(outstanding.kind, OutstandingKind::Restart);
+        assert_eq!(outstanding.text, "the DB was locked");
+    }
+
+    /// A follow-up recorded by `claim_for_run_with_action` must be readable the
+    /// moment the claim commits — a pump can launch the generation right after.
+    #[tokio::test]
+    async fn a_claim_carries_its_instruction_atomically() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let id = seeded_task(&db.conn).await;
+        let seq = work_task_service::claim_for_run_with_action(
+            &db.conn,
+            id,
+            WorkTaskStatus::Failed,
+            "user",
+            Some(serde_json::json!({ "action": "retry", "note": "install deps first" })),
+        )
+        .await
+        .expect("claim")
+        .expect("claim won");
+        assert_eq!(seq, 2);
+
+        let outstanding = outstanding_instruction(&db.conn, id)
+            .await
+            .expect("instruction visible right after the claim");
+        assert_eq!(outstanding.text, "install deps first");
+
+        // A LOST claim must not leave an instruction behind for some later
+        // generation to pick up.
+        let lost = work_task_service::claim_for_run_with_action(
+            &db.conn,
+            id,
+            WorkTaskStatus::Failed,
+            "user",
+            Some(serde_json::json!({ "action": "retry", "note": "orphan" })),
+        )
+        .await
+        .expect("claim");
+        assert!(lost.is_none());
+        assert_eq!(
+            outstanding_instruction(&db.conn, id).await.unwrap().text,
+            "install deps first"
+        );
+    }
+
     #[tokio::test]
     async fn stage_prompts_land_after_the_built_in_guard() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
@@ -2786,7 +3487,12 @@ mod tests {
         let modes = [
             (LaunchMode::Fresh, "WORK-ONLY"),
             (LaunchMode::Retry, "RETRY-ONLY"),
-            (LaunchMode::Return("please fix the copy".to_string()), "RETURN-ONLY"),
+            (return_mode(FollowUpIntent::Revise), "RETURN-ONLY"),
+            // Every scenario shares the `return` stage, so the settings dialog
+            // stays four stages wide however many scenarios exist.
+            (return_mode(FollowUpIntent::Continue), "RETURN-ONLY"),
+            (return_mode(FollowUpIntent::Question), "RETURN-ONLY"),
+            (return_mode(FollowUpIntent::Verify), "RETURN-ONLY"),
             (merge_mode(), "MERGE-ONLY"),
         ];
         for (mode, expected) in modes {
@@ -2861,6 +3567,117 @@ mod tests {
         .await
         .expect("compose");
         assert_eq!(texts(&bare), texts(&blank));
+    }
+
+    /// The worktree is off disk; everything below is what the clients see.
+    /// Without the `folder://changed` delete the removed worktree keeps
+    /// rendering in every sidebar until the next full `fetchFolders`.
+    #[tokio::test]
+    async fn worktree_removal_announces_the_dropped_folder() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+        use crate::web::event_bridge::WebEventBroadcaster;
+
+        let db = fresh_in_memory_db().await;
+        let root_id = seed_folder(&db, "/tmp/repo").await;
+        let wt = open_worktree_folder_core(&db, "/tmp/repo-task-1".to_string(), root_id)
+            .await
+            .expect("worktree folder");
+        let conv = conversation_service::create(&db.conn, wt.id, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("conversation");
+        let task = work_task_service::create(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id: root_id,
+                title: "fix login".to_string(),
+                config: serde_json::json!({
+                    "display_text": "fix login",
+                    "prompt_blocks": [{ "type": "text", "text": "fix login" }],
+                }),
+            },
+        )
+        .await
+        .expect("task");
+        work_task_service::attach_worktree(&db.conn, task.id, wt.id, "main", "abc", "task/1")
+            .await
+            .expect("attach");
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        converge_worktree_removal(&db, &emitter, task.id, wt.id, root_id, &wt.path).await;
+
+        // The folder row is gone from every list a client can fetch…
+        assert!(
+            crate::db::service::folder_service::get_folder_by_id(&db.conn, wt.id)
+                .await
+                .expect("lookup")
+                .is_none()
+        );
+        // …its conversation moved to the project folder (stamped with where it ran)…
+        let moved = conversation_service::get_by_id(&db.conn, conv.id)
+            .await
+            .expect("conversation row");
+        assert_eq!(moved.folder_id, root_id);
+        assert_eq!(moved.origin_cwd.as_deref(), Some("/tmp/repo-task-1"));
+        // …and the task no longer points at it.
+        let after = work_task_service::get_model(&db.conn, task.id)
+            .await
+            .expect("task row");
+        assert_eq!(after.worktree_folder_id, None);
+
+        // Conversations first (that refetch is what re-places the moved rows),
+        // then the folder drop.
+        let bulk = rx.try_recv().expect("bulk change should broadcast");
+        assert_eq!(
+            bulk.channel,
+            crate::web::event_bridge::CONVERSATIONS_BULK_CHANGED_EVENT
+        );
+        let dropped = rx.try_recv().expect("folder delete should broadcast");
+        assert_eq!(
+            dropped.channel,
+            crate::web::event_bridge::FOLDER_CHANGED_EVENT
+        );
+        assert_eq!(dropped.payload["kind"], "deleted");
+        assert_eq!(dropped.payload["id"], wt.id);
+    }
+
+    /// A retried cleanup finds the row already soft-deleted. It must still
+    /// announce the drop — a client that missed the first broadcast is the
+    /// reason the user retried.
+    #[tokio::test]
+    async fn worktree_removal_re_announces_an_already_deleted_folder() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+        use crate::web::event_bridge::WebEventBroadcaster;
+
+        let db = fresh_in_memory_db().await;
+        let root_id = seed_folder(&db, "/tmp/repo2").await;
+        let task = work_task_service::create(
+            &db.conn,
+            crate::models::WorkTaskDraft {
+                folder_id: root_id,
+                title: "fix login".to_string(),
+                config: serde_json::json!({
+                    "display_text": "fix login",
+                    "prompt_blocks": [{ "type": "text", "text": "fix login" }],
+                }),
+            },
+        )
+        .await
+        .expect("task");
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        // Folder id 9999 never existed — the "already gone" branch.
+        converge_worktree_removal(&db, &emitter, task.id, 9999, root_id, "/tmp/repo2-task-1").await;
+
+        let _bulk = rx.try_recv().expect("bulk change should broadcast");
+        let dropped = rx.try_recv().expect("folder delete should broadcast");
+        assert_eq!(dropped.payload["kind"], "deleted");
+        assert_eq!(dropped.payload["id"], 9999);
     }
 
     #[test]

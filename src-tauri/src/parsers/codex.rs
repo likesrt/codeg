@@ -13,7 +13,7 @@ use crate::parsers::codex_code_mode::{
     extract_chunk_ids, extract_shell_session_ids, is_code_mode_call, parse_code_mode_script,
     script_card_input,
     split_code_mode_output, with_note, CodeModeCall, CodeModeOutput, CodeModeScript, ScriptStatus,
-    CODEX_SCRIPT_TOOL_NAME,
+    Separator, CODEX_SCRIPT_TOOL_NAME,
 };
 use crate::parsers::{
     folder_name_from_path, title_from_user_text, truncate_str, AgentParser, ParseError,
@@ -486,10 +486,37 @@ const TOTAL_OUTPUT_LINES: &str = "Total output lines: ";
 /// agree — declared, present, and calls — and every line has to be a complete
 /// exec envelope, which is also what tells this blob apart from a single
 /// command's stdout that merely got truncated (the far more common banner).
-fn uncollapse_truncated_chunks(parsed: &CodeModeOutput, calls: usize) -> Option<Vec<String>> {
+fn uncollapse_truncated_chunks(blob: Option<&TruncatedBlob>, calls: usize) -> Option<Vec<String>> {
     if calls == 0 {
         return None;
     }
+    let blob = blob?;
+    if blob.body.len() != blob.declared || blob.declared != calls {
+        return None;
+    }
+    blob.body
+        .iter()
+        .all(|line| unwrap_exec_chunk_envelope(line).is_some())
+        .then(|| blob.body.iter().map(|line| line.to_string()).collect())
+}
+
+/// The line count a collapsed blob declares, and the lines it actually kept.
+///
+/// Reading it costs a pass over the whole blob, and three of the paths below
+/// want it, so `unwrap_code_mode_script` reads it once and hands it down.
+struct TruncatedBlob<'a> {
+    declared: usize,
+    body: Vec<&'a str>,
+}
+
+impl TruncatedBlob<'_> {
+    /// Codex dropped lines from the middle to fit the cap.
+    fn truncated(&self) -> bool {
+        self.declared > self.body.len()
+    }
+}
+
+fn truncated_blob(parsed: &CodeModeOutput) -> Option<TruncatedBlob<'_>> {
     let [collapsed] = parsed.chunks.as_slice() else {
         return None;
     };
@@ -506,13 +533,195 @@ fn uncollapse_truncated_chunks(parsed: &CodeModeOutput, calls: usize) -> Option<
     if !lines.next()?.is_empty() {
         return None;
     }
-    let body: Vec<String> = lines.map(str::to_string).collect();
-    if body.len() != declared || declared != calls {
+    Some(TruncatedBlob {
+        declared,
+        body: lines.collect(),
+    })
+}
+
+/// One call's share of a collapsed blob that was split on the separator lines
+/// the script printed.
+struct SeparatorSlot {
+    /// The lines this call owns. `None` means it printed nothing between its
+    /// separator and the next — which is not the same as having no separator,
+    /// hence `placed`.
+    text: Option<String>,
+    /// Whether a span of the blob could be attributed to this call at all. False
+    /// when truncation removed its separator, leaving nothing to cut on.
+    placed: bool,
+    /// Calls whose separators were truncated away, leaving their output inside
+    /// this slot with no boundary to cut on. Empty in the normal case.
+    shares_with: Vec<usize>,
+}
+
+/// At least this many separators have to be found, so a split rests on at least
+/// one proven boundary. One anchor divides nothing — it would hand the whole
+/// blob to the first call and leave the rest empty.
+const MIN_ANCHORS: usize = 2;
+
+/// The blob split on the separator lines the script printed before each result,
+/// or `None` when it cannot be read that way.
+///
+/// This is the only handle left once codex re-renders a long `text()` stream as
+/// one truncated blob: 89% of collapsed blobs are missing lines, so the counts
+/// `uncollapse_truncated_chunks` compares never agree. But scripts of this shape
+/// label their results — ``text(`===== ${k} =====\n${r.output}`)`` — and the
+/// labels come from the same literal table the commands do. So the separator
+/// each call printed can be *predicted* from the source and then looked up in
+/// the output, which is a far stronger check than counting: a wrong prediction
+/// does not match and the split is simply refused.
+///
+/// Truncation cannot reorder — it only deletes — so lines between two surviving
+/// separators belong to the earlier one and nothing else. When the separator
+/// *between* them was dropped, the span covers several calls with no way to
+/// tell where each begins; that span stays whole, attributed to the call it
+/// provably starts with, and the calls sharing it are named in `shares_with`
+/// rather than silently given someone else's output.
+///
+/// One residual, deliberately accepted: a matched line is only *probably* the
+/// separator the script printed. A command whose own stdout contains a line
+/// identical to another row's separator — printing this very transcript, say —
+/// would be cut there, and the tail of its output would be filed under that
+/// row. Uniqueness makes this impossible whenever every separator survived (a
+/// look-alike would be a second match and reject the candidate), so the risk
+/// only exists in the truncated case, and only when the look-alike stands in
+/// for a separator that is genuinely gone. Refusing truncated blobs would avoid
+/// it at the cost of the case this exists for — 89% of collapsed blobs are
+/// missing lines — so the split is kept and the labels are what it rests on.
+fn split_by_separators(
+    blob: Option<&TruncatedBlob>,
+    calls: &[CodeModeCall],
+    separators: &[Separator],
+) -> Option<Vec<SeparatorSlot>> {
+    if calls.len() < 2 || separators.is_empty() {
         return None;
     }
-    body.iter()
-        .all(|line| unwrap_exec_chunk_envelope(line).is_some())
-        .then_some(body)
+    let body = &blob?.body;
+
+    let labels: Option<Vec<&str>> = calls.iter().map(|c| c.label.as_deref()).collect();
+    let by_index = |offset: usize| (0..calls.len()).map(|i| (i + offset).to_string()).collect();
+    // `---RESULT ${i+1}---` is as common as a label in this corpus, and costs
+    // nothing to try: the output either contains the line or it does not.
+    let candidates: Vec<Vec<String>> = labels
+        .map(|names| names.iter().map(|n| n.to_string()).collect())
+        .into_iter()
+        .chain([by_index(0), by_index(1)])
+        .collect();
+
+    let index = index_body_lines(body);
+    let mut best: Option<Vec<Option<usize>>> = None;
+    for separator in separators {
+        for values in &candidates {
+            let Some(found) = locate_anchors(&index, separator, values) else {
+                continue;
+            };
+            let hits = found.iter().flatten().count();
+            if hits < MIN_ANCHORS {
+                continue;
+            }
+            if best
+                .as_ref()
+                .is_none_or(|b| hits > b.iter().flatten().count())
+            {
+                best = Some(found);
+            }
+        }
+    }
+
+    Some(slots_from_anchors(body, &best?))
+}
+
+/// Every line of the blob, trimmed of trailing whitespace, mapped to where it
+/// sits — or to `None` when it occurs more than once.
+///
+/// Built once and read by every candidate, which is what keeps the split from
+/// costing a pass over the blob per command: a run of separators is looked up,
+/// not searched for.
+fn index_body_lines<'a>(body: &[&'a str]) -> HashMap<&'a str, Option<usize>> {
+    let mut index = HashMap::with_capacity(body.len());
+    for (at, line) in body.iter().enumerate() {
+        index
+            .entry(line.trim_end())
+            .and_modify(|seen| *seen = None)
+            .or_insert(Some(at));
+    }
+    index
+}
+
+/// Where each value's separator line sits in the blob, or `None` for the ones
+/// truncation removed. Refuses the whole candidate when a line repeats or the
+/// lines run backwards — either means the match is not the separator run.
+fn locate_anchors(
+    index: &HashMap<&str, Option<usize>>,
+    separator: &Separator,
+    values: &[String],
+) -> Option<Vec<Option<usize>>> {
+    let mut found = Vec::with_capacity(values.len());
+    let mut previous = None;
+
+    for value in values {
+        let anchor = separator.anchor(value);
+        let hit = match index.get(anchor.trim_end()) {
+            // The line occurs twice, so it is not a boundary to cut on. Only a
+            // line some value actually predicts can refuse a candidate; an
+            // ordinary output line repeating is nobody's separator.
+            Some(None) => return None,
+            Some(Some(at)) => Some(*at),
+            None => None,
+        };
+        if let Some(at) = hit {
+            if previous.is_some_and(|before| at <= before) {
+                return None;
+            }
+            previous = Some(at);
+        }
+        found.push(hit);
+    }
+
+    Some(found)
+}
+
+fn slots_from_anchors(body: &[&str], found: &[Option<usize>]) -> Vec<SeparatorSlot> {
+    // A call whose separator survived owns the lines after it. The first call
+    // owns the head of the blob even without one: deletion never moves a line,
+    // so nothing can precede the first call's output.
+    let mut owners: Vec<(usize, Option<usize>)> = Vec::new();
+    if found.first().is_some_and(Option::is_none) {
+        owners.push((0, None));
+    }
+    owners.extend(
+        found
+            .iter()
+            .enumerate()
+            .filter_map(|(call, at)| at.map(|at| (call, Some(at)))),
+    );
+
+    let mut slots: Vec<SeparatorSlot> = (0..found.len())
+        .map(|_| SeparatorSlot {
+            text: None,
+            placed: false,
+            shares_with: Vec::new(),
+        })
+        .collect();
+
+    for (position, (call, anchor)) in owners.iter().enumerate() {
+        let start = anchor.map_or(0, |at| at + 1);
+        let (end, next_call) = match owners.get(position + 1) {
+            // The next owner's separator line is not part of this slot.
+            Some((next_call, Some(at))) => (*at, *next_call),
+            _ => (body.len(), found.len()),
+        };
+        let mut text = body.get(start..end).unwrap_or_default().join("\n");
+        let kept = text.trim_end().len();
+        text.truncate(kept);
+        slots[*call] = SeparatorSlot {
+            text: (!text.is_empty()).then_some(text),
+            placed: true,
+            shares_with: (call + 1..next_call).collect(),
+        };
+    }
+
+    slots
 }
 
 /// `text` trimmed with every run of digits collapsed to `#`, so `---RESULT 1---`
@@ -629,7 +838,12 @@ fn unwrap_code_mode_script(
     // A collapsed blob stands in for the chunks it was rendered from, when the
     // counts prove which is which. Nothing changes when it does not: the
     // fallback is `parsed.chunks` itself, banner and all.
-    let uncollapsed = uncollapse_truncated_chunks(parsed, calls.len());
+    // Every path that reads it bails on the call count first, so a script that
+    // recovered nothing does not pay to have its blob split into lines.
+    let blob = (!calls.is_empty())
+        .then(|| truncated_blob(parsed))
+        .flatten();
+    let uncollapsed = uncollapse_truncated_chunks(blob.as_ref(), calls.len());
     let chunks: &[String] = uncollapsed.as_deref().unwrap_or(&parsed.chunks);
 
     if calls.len() == 1 {
@@ -644,7 +858,7 @@ fn unwrap_code_mode_script(
                 sessions,
                 poll_origins,
             )),
-            meta: None,
+            meta: codex_script_meta(call.label.as_deref(), false, &[], false),
         }];
         register_shell_sessions(call, call_id, &joined, sessions);
         let results = vec![result_block(
@@ -679,7 +893,7 @@ fn unwrap_code_mode_script(
                     sessions,
                     poll_origins,
                 )),
-                meta: None,
+                meta: codex_script_meta(call.label.as_deref(), false, &[], false),
             });
             // Announcements are read from the chunks as written: unwrapping an
             // envelope drops the `session_id` that names the session.
@@ -690,6 +904,58 @@ fn unwrap_code_mode_script(
                 .collect::<Vec<_>>()
                 .join("\n");
             results.push(result_block(Some(id), non_empty(shown), note));
+        }
+        return (Some(uses), results);
+    }
+
+    // The chunks did not divide, but the script may have labelled its results
+    // on their way out. Only reachable for a collapsed blob — anything with real
+    // chunks was already handled above.
+    if let Some(slots) = split_by_separators(blob.as_ref(), calls, &script.separators) {
+        let truncated = blob.as_ref().is_some_and(TruncatedBlob::truncated);
+        let last = calls.len() - 1;
+        let mut uses = Vec::with_capacity(calls.len());
+        let mut results = Vec::with_capacity(calls.len());
+        for (index, (call, slot)) in calls.iter().zip(&slots).enumerate() {
+            let id = format!("{call_id}#{index}");
+            let note = if index == last {
+                parsed.note.as_deref()
+            } else {
+                None
+            };
+            let shared: Vec<String> = slot
+                .shares_with
+                .iter()
+                .filter_map(|other| calls.get(*other))
+                .map(call_display_name)
+                .collect();
+            uses.push(ContentBlock::ToolUse {
+                tool_use_id: Some(id.clone()),
+                tool_name: call.tool_name.clone(),
+                input_preview: Some(shell_session_input_preview(
+                    call,
+                    &id,
+                    sessions,
+                    poll_origins,
+                )),
+                meta: codex_script_meta(
+                    call.label.as_deref(),
+                    // A command that ran and printed nothing is not a command
+                    // whose output went missing; only the second is worth a
+                    // notice, and saying it of the first would be false.
+                    !slot.placed,
+                    &shared,
+                    truncated,
+                ),
+            });
+            if let Some(text) = &slot.text {
+                register_shell_sessions(call, &id, text, sessions);
+            }
+            let shown = slot
+                .text
+                .clone()
+                .and_then(|text| non_empty(exec_chunk_display(call, text)));
+            results.push(result_block(Some(id), shown, note));
         }
         return (Some(uses), results);
     }
@@ -706,6 +972,41 @@ fn unwrap_code_mode_script(
             parsed.note.as_deref(),
         )],
     )
+}
+
+/// What the renderer needs to know about a call recovered from a code-mode
+/// script, as facts rather than prose: the backend states them, the frontend
+/// words them in the reader's language.
+fn codex_script_meta(
+    label: Option<&str>,
+    output_missing: bool,
+    shares_with: &[String],
+    truncated: bool,
+) -> Option<serde_json::Value> {
+    let mut marks = serde_json::Map::new();
+    if let Some(label) = label {
+        marks.insert("label".to_string(), label.into());
+    }
+    if output_missing {
+        marks.insert("outputMissing".to_string(), true.into());
+    }
+    if !shares_with.is_empty() {
+        marks.insert("sharedWith".to_string(), shares_with.into());
+    }
+    if truncated {
+        marks.insert("truncated".to_string(), true.into());
+    }
+    (!marks.is_empty()).then(|| serde_json::json!({ "codeg.codexScript": marks }))
+}
+
+/// How to name a call when telling the reader whose output shares a card.
+fn call_display_name(call: &CodeModeCall) -> String {
+    call.label.clone().unwrap_or_else(|| {
+        truncate_str(
+            call.input_preview.lines().next().unwrap_or_default().trim(),
+            60,
+        )
+    })
 }
 
 /// A code-mode script whose output was `Script running with cell ID N`: the
@@ -1564,11 +1865,38 @@ impl CodexParser {
         // persisted the `/goal` text as the opening `user_message`, which arrives
         // BEFORE the goal — there the flag stays false and nothing is synthesized.
         let mut goal_opens_session = false;
-        let mut last_turn_context_ts: Option<DateTime<Utc>> = None;
+        // Start-of-turn markers, chronological, fed to
+        // `backfill_turn_durations` so the first reply of a turn is measured
+        // from when codex began working — not from the previous turn's end,
+        // which would charge it the user's thinking time.
+        //
+        // Two lists because the two events are not equally trustworthy.
+        // `task_started` fires exactly once per turn. `turn_context` normally
+        // follows it within milliseconds, but newer codex re-emits it MID-turn
+        // (it carries a `turn_id` and is rewritten when the turn's config
+        // changes) — 6 of 495 records across the local rollout corpus. Since a
+        // marker only ever moves the boundary forward, a mid-turn one would
+        // truncate the reply that follows it and silently drop that slice from
+        // the turn's total. So `turn_context` is used only as a fallback, for
+        // rollouts old enough to predate `task_started`.
+        let mut task_start_markers: Vec<DateTime<Utc>> = Vec::new();
+        let mut turn_context_markers: Vec<DateTime<Utc>> = Vec::new();
         let mut context_window_used_tokens: Option<u64> = None;
         let mut context_window_max_tokens: Option<u64> = None;
         let mut latest_total_usage: Option<TurnUsage> = None;
         let mut latest_total_tokens: Option<u64> = None;
+        // Cumulative `total_token_usage` as of the previous `token_count`, so
+        // each event can be reduced to what its own round-trip added.
+        let mut previous_total_usage: Option<TurnUsage> = None;
+        // Previous `last_token_usage`, used only by the no-total fallback to
+        // recognize a restated event.
+        let mut previous_last_usage: Option<TurnUsage> = None;
+        // Round-trip spend recorded before any assistant message existed to
+        // carry it; flushed onto the first one that appears.
+        let mut pending_round_usage: Option<TurnUsage> = None;
+        // Everything every round-trip reported, kept independently of which
+        // message ended up carrying it — see `reconcile_turn_usage`.
+        let mut recorded_round_usage = TurnUsage::default();
 
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
@@ -1701,7 +2029,9 @@ impl CodexParser {
                             .and_then(|m| m.as_str())
                             .map(|s| s.to_string());
                     }
-                    last_turn_context_ts = parse_codex_timestamp(&value);
+                    if let Some(ts) = parse_codex_timestamp(&value) {
+                        push_turn_start(&mut turn_context_markers, ts);
+                    }
                 }
                 "event_msg" => {
                     if let Some(payload) = value.get("payload") {
@@ -1724,9 +2054,18 @@ impl CodexParser {
                         }
 
                         match payload_type {
-                            "task_started" if context_window_max_tokens.is_none() => {
-                                context_window_max_tokens =
-                                    payload.get("model_context_window").and_then(|v| v.as_u64());
+                            "task_started" => {
+                                if context_window_max_tokens.is_none() {
+                                    context_window_max_tokens = payload
+                                        .get("model_context_window")
+                                        .and_then(|v| v.as_u64());
+                                }
+                                // The one marker codex writes exactly once per
+                                // turn; it precedes `turn_context` and the
+                                // prompt.
+                                if let Some(ts) = parse_codex_timestamp(&value) {
+                                    push_turn_start(&mut task_start_markers, ts);
+                                }
                             }
                             "user_message" => {
                                 active_agent_count = 0;
@@ -2012,40 +2351,103 @@ impl CodexParser {
                                     }
 
                                     if !info.is_null() {
-                                        if let Some(usage) = info
-                                            .get("last_token_usage")
-                                            .and_then(extract_turn_usage_from_codex_usage)
-                                        {
-                                            // Attach to the last assistant message
-                                            if let Some(last_msg) = messages
+                                        // What this round-trip spent. Preferred
+                                        // as the rise in the session's own
+                                        // cumulative counter; `last_token_usage`
+                                        // is the fallback for transcripts that
+                                        // report no total, and there a repeat of
+                                        // the previous event is dropped since it
+                                        // restates one call rather than adding
+                                        // another.
+                                        let round = match info.get("total_token_usage") {
+                                            Some(total_payload) => {
+                                                let total = codex_usage_counters(total_payload);
+                                                let round = codex_round_usage(
+                                                    previous_total_usage.as_ref(),
+                                                    &total,
+                                                );
+                                                previous_total_usage = Some(total);
+                                                round
+                                            }
+                                            None => match info.get("last_token_usage") {
+                                                Some(last_payload) => {
+                                                    let last = codex_usage_counters(last_payload);
+                                                    let repeated = previous_last_usage
+                                                        .as_ref()
+                                                        .is_some_and(|prev| prev == &last);
+                                                    previous_last_usage = Some(last.clone());
+                                                    if repeated {
+                                                        TurnUsage::default()
+                                                    } else {
+                                                        // Carry this round into the
+                                                        // cumulative baseline too.
+                                                        // A transcript that mixes
+                                                        // both shapes would
+                                                        // otherwise count it twice:
+                                                        // once here, and again
+                                                        // inside the next
+                                                        // total-bearing event's
+                                                        // delta, which is measured
+                                                        // from a baseline that
+                                                        // never learned about it.
+                                                        let base = previous_total_usage
+                                                            .clone()
+                                                            .unwrap_or_default();
+                                                        previous_total_usage =
+                                                            Some(codex_usage_add(&base, &last));
+                                                        last
+                                                    }
+                                                }
+                                                None => TurnUsage::default(),
+                                            },
+                                        };
+
+                                        if !codex_usage_is_zero(&round) {
+                                            recorded_round_usage =
+                                                codex_usage_add(&recorded_round_usage, &round);
+                                            // Every round of a turn belongs to
+                                            // the assistant message it worked
+                                            // for, so they accumulate onto it
+                                            // rather than the first one winning
+                                            // and the rest being dropped. A
+                                            // round that ran before any
+                                            // assistant message (the model went
+                                            // straight to a tool call) waits
+                                            // here for one to arrive — 3 % of
+                                            // all recorded spend, previously
+                                            // discarded outright.
+                                            pending_round_usage = Some(match pending_round_usage {
+                                                Some(ref pending) => {
+                                                    codex_usage_add(pending, &round)
+                                                }
+                                                None => round,
+                                            });
+                                        }
+                                        if let (Some(pending), Some(last_msg)) = (
+                                            pending_round_usage.clone(),
+                                            messages
                                                 .iter_mut()
                                                 .rev()
-                                                .find(|m| matches!(m.role, MessageRole::Assistant))
-                                            {
-                                                if last_msg.usage.is_none() {
-                                                    last_msg.usage = Some(usage);
+                                                .find(|m| matches!(m.role, MessageRole::Assistant)),
+                                        ) {
+                                            last_msg.usage = Some(match last_msg.usage {
+                                                Some(ref existing) => {
+                                                    codex_usage_add(existing, &pending)
                                                 }
-                                            }
+                                                None => pending,
+                                            });
+                                            pending_round_usage = None;
                                         }
                                     }
                                 }
-                                // Compute duration from turn_context to token_count
-                                if let (Some(start_ts), Some(end_ts)) =
-                                    (last_turn_context_ts, parse_codex_timestamp(&value))
-                                {
-                                    let duration = (end_ts - start_ts).num_milliseconds();
-                                    if duration > 0 {
-                                        if let Some(last_msg) = messages
-                                            .iter_mut()
-                                            .rev()
-                                            .find(|m| matches!(m.role, MessageRole::Assistant))
-                                        {
-                                            if last_msg.duration_ms.is_none() {
-                                                last_msg.duration_ms = Some(duration as u64);
-                                            }
-                                        }
-                                    }
-                                }
+                                // Durations are NOT derived here. `token_count`
+                                // fires once per model request, so measuring
+                                // turn_context → token_count restated the whole
+                                // elapsed turn on every sub-turn; the UI sums
+                                // sub-turns into one card, which multiplied a
+                                // reply's reported time several-fold. See
+                                // `backfill_turn_durations`, applied after
+                                // grouping, which partitions the turn instead.
                             }
                             _ => {}
                         }
@@ -2845,9 +3247,18 @@ impl CodexParser {
 
         fold_shell_session_polls(&mut messages, &poll_origins);
         let mut turns = group_into_turns(messages);
+        reconcile_turn_usage(&mut turns, &recorded_round_usage);
         super::relocate_orphaned_tool_results(&mut turns);
         super::structurize_read_tool_output(&mut turns);
         super::resolve_patch_line_numbers(&mut turns, cwd.as_deref());
+        // After relocation every turn's `completed_at` is final — tile the
+        // timeline into per-reply durations before stats aggregate them.
+        let turn_starts = if task_start_markers.is_empty() {
+            &turn_context_markers
+        } else {
+            &task_start_markers
+        };
+        super::backfill_turn_durations(&mut turns, turn_starts);
         let mut session_stats = super::compute_session_stats(&turns);
         session_stats =
             merge_codex_total_usage_stats(session_stats, latest_total_usage, latest_total_tokens);
@@ -2944,6 +3355,142 @@ fn extract_turn_usage_from_codex_usage(usage: &serde_json::Value) -> Option<Turn
     })
 }
 
+/// A codex usage payload read as raw counters, keeping zeros.
+///
+/// [`extract_turn_usage_from_codex_usage`] answers "is there anything to show",
+/// so it collapses an all-zero payload to `None`. The running-total arithmetic
+/// below needs the opposite: a cumulative counter that legitimately still reads
+/// zero is a real datapoint, not an absent one.
+fn codex_usage_counters(usage: &serde_json::Value) -> TurnUsage {
+    let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_read = field("cached_input_tokens");
+    TurnUsage {
+        // Codex reports `input_tokens` *inclusive* of the cached prefix, so the
+        // cached part is split out rather than counted twice.
+        input_tokens: field("input_tokens").saturating_sub(cache_read),
+        output_tokens: field("output_tokens"),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: cache_read,
+    }
+}
+
+fn codex_usage_is_zero(usage: &TurnUsage) -> bool {
+    usage.input_tokens == 0
+        && usage.output_tokens == 0
+        && usage.cache_creation_input_tokens == 0
+        && usage.cache_read_input_tokens == 0
+}
+
+fn codex_usage_add(base: &TurnUsage, extra: &TurnUsage) -> TurnUsage {
+    TurnUsage {
+        input_tokens: base.input_tokens.saturating_add(extra.input_tokens),
+        output_tokens: base.output_tokens.saturating_add(extra.output_tokens),
+        cache_creation_input_tokens: base
+            .cache_creation_input_tokens
+            .saturating_add(extra.cache_creation_input_tokens),
+        cache_read_input_tokens: base
+            .cache_read_input_tokens
+            .saturating_add(extra.cache_read_input_tokens),
+    }
+}
+
+/// What one model round-trip added, as the rise in the session's cumulative
+/// counter.
+///
+/// Codex emits a `token_count` event after **every** model call — including the
+/// tool-calling rounds inside a turn — and each one restates
+/// `total_token_usage` for the whole session. Differencing that counter is what
+/// makes the accounting exact: it cannot double-count a `token_count` that is
+/// emitted twice for the same call (7 380 of 31 846 events in a real session
+/// tree are such repeats), and it cannot lose a round whose event went
+/// unrecorded, because the next event's total absorbs it.
+///
+/// A total that moves *backwards* means the counter restarted (a fresh context
+/// after compaction), so the new value is the round's own spend.
+fn codex_round_usage(previous_total: Option<&TurnUsage>, total: &TurnUsage) -> TurnUsage {
+    let grand = |u: &TurnUsage| {
+        u.input_tokens
+            .saturating_add(u.output_tokens)
+            .saturating_add(u.cache_creation_input_tokens)
+            .saturating_add(u.cache_read_input_tokens)
+    };
+    // No baseline, or the counter restarted below it: the whole figure is this
+    // round's own spend. Differencing per field instead would clamp every field
+    // to zero and silently drop the rest of the session.
+    let Some(previous) = previous_total.filter(|prev| grand(prev) <= grand(total)) else {
+        return total.clone();
+    };
+    TurnUsage {
+        input_tokens: total.input_tokens.saturating_sub(previous.input_tokens),
+        output_tokens: total.output_tokens.saturating_sub(previous.output_tokens),
+        cache_creation_input_tokens: total
+            .cache_creation_input_tokens
+            .saturating_sub(previous.cache_creation_input_tokens),
+        cache_read_input_tokens: total
+            .cache_read_input_tokens
+            .saturating_sub(previous.cache_read_input_tokens),
+    }
+}
+
+/// Make the turns account for every token the transcript reported.
+///
+/// Round-trip usage is attached to the assistant message that was current when
+/// the `token_count` arrived, which is right whenever that message survives —
+/// but presentation is allowed to drop or fold messages (a tool call absorbed
+/// into a capsule, a duplicate agent message collapsed away), and a message
+/// that disappears takes its usage with it. Across a real session tree that
+/// silently lost 7 % of Codex spend, concentrated in exactly the sessions that
+/// worked hardest.
+///
+/// So the recorded rounds are also summed independently, and any shortfall is
+/// put back on the last turn that can hold it. The invariant this establishes
+/// is worth stating plainly: **the per-turn usage of a Codex session always
+/// sums to what its own counter reported**, whatever the renderer did to the
+/// turns in between.
+///
+/// A surplus is left alone. It would mean the turns claim more than the
+/// transcript ever reported, which no path here can produce, and inventing a
+/// correction for an impossible state would only hide the bug that caused it.
+fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
+    if codex_usage_is_zero(recorded) {
+        return;
+    }
+    let attributed = turns
+        .iter()
+        .filter_map(|t| t.usage.as_ref())
+        .fold(TurnUsage::default(), |acc, u| codex_usage_add(&acc, u));
+
+    let missing = TurnUsage {
+        input_tokens: recorded.input_tokens.saturating_sub(attributed.input_tokens),
+        output_tokens: recorded
+            .output_tokens
+            .saturating_sub(attributed.output_tokens),
+        cache_creation_input_tokens: recorded
+            .cache_creation_input_tokens
+            .saturating_sub(attributed.cache_creation_input_tokens),
+        cache_read_input_tokens: recorded
+            .cache_read_input_tokens
+            .saturating_sub(attributed.cache_read_input_tokens),
+    };
+    if codex_usage_is_zero(&missing) {
+        return;
+    }
+
+    // Prefer a turn that already reports usage — it is one the transcript
+    // itself tied to a model call, so the recovered tokens land beside spend
+    // that really happened rather than on an unrelated bubble.
+    let target = turns
+        .iter()
+        .rposition(|t| t.usage.is_some())
+        .or_else(|| turns.iter().rposition(|t| matches!(t.role, TurnRole::Assistant)));
+    if let Some(turn) = target.and_then(|i| turns.get_mut(i)) {
+        turn.usage = Some(match turn.usage {
+            Some(ref existing) => codex_usage_add(existing, &missing),
+            None => missing,
+        });
+    }
+}
+
 fn extract_context_window_used_tokens_from_token_count_info(
     info: &serde_json::Value,
 ) -> Option<u64> {
@@ -3023,6 +3570,18 @@ fn parse_codex_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
         .get("timestamp")
         .and_then(|t| t.as_str())
         .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+}
+
+/// Append a start-of-turn marker to one of the two marker lists (see their
+/// declaration for why `task_started` and `turn_context` are kept apart).
+///
+/// An out-of-order arrival (skewed clocks in a rollout) is dropped rather than
+/// inserted: the backfill scans the list once, in order.
+fn push_turn_start(turn_starts: &mut Vec<DateTime<Utc>>, ts: DateTime<Utc>) {
+    match turn_starts.last() {
+        Some(last) if ts <= *last => {}
+        _ => turn_starts.push(ts),
+    }
 }
 
 /// Emit any buffered streaming `agent_reasoning` sections as a single Thinking
@@ -3365,6 +3924,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
 
 #[cfg(test)]
 mod tests {
+
     use std::collections::HashMap;
 
     use super::extract_codex_title_candidate;
@@ -3665,13 +4225,290 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    /// Sum the per-turn usage a parse produced — what the usage dashboard
+    /// materializes and what the session panel adds up.
+    fn turn_usage_total(detail: &crate::models::ConversationDetail) -> u64 {
+        detail
+            .turns
+            .iter()
+            .filter_map(|t| t.usage.as_ref())
+            .map(|u| {
+                u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+                    + u.cache_read_input_tokens
+            })
+            .sum()
+    }
+
+    fn parse_rollout(label: &str, content: &str, session_id: &str) -> crate::models::ConversationDetail {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-{label}-{nanos}.jsonl"));
+        fs::write(&path, content).expect("write test jsonl");
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, session_id)
+            .expect("parse detail ok");
+        let _ = fs::remove_file(path);
+        detail
+    }
+
+    #[test]
+    fn every_model_round_trip_of_a_turn_is_counted() {
+        // Codex emits a `token_count` after each model call, so one turn that
+        // calls tools four times reports four times. Only the first was kept
+        // (`if last_msg.usage.is_none()`), which lost most of a working turn's
+        // spend — measured at 61 % of all Codex tokens in a real session tree.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"rounds-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"working\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":20224,\"cached_input_tokens\":0,\"output_tokens\":458},\"last_token_usage\":{\"input_tokens\":20224,\"cached_input_tokens\":0,\"output_tokens\":458}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:13Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":51186,\"cached_input_tokens\":18000,\"output_tokens\":886},\"last_token_usage\":{\"input_tokens\":30962,\"cached_input_tokens\":18000,\"output_tokens\":428}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:29Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":92652,\"cached_input_tokens\":45000,\"output_tokens\":1420},\"last_token_usage\":{\"input_tokens\":41466,\"cached_input_tokens\":27000,\"output_tokens\":534}}}}\n"
+        );
+        let detail = parse_rollout("rounds", content, "rounds-1");
+
+        // The session's own cumulative counter is the ground truth, and the
+        // per-turn rows now reconstruct it exactly.
+        assert_eq!(turn_usage_total(&detail), 92_652 + 1_420);
+        let stats = detail.session_stats.expect("session stats");
+        let total = stats.total_usage.expect("total usage");
+        assert_eq!(
+            total.input_tokens + total.output_tokens + total.cache_read_input_tokens,
+            92_652 + 1_420
+        );
+    }
+
+    #[test]
+    fn a_restated_token_count_is_not_counted_twice() {
+        // Codex sometimes reports the same call twice (7 380 of 31 846 events
+        // in a real tree). Differencing the cumulative counter makes the repeat
+        // contribute nothing, where summing `last_token_usage` would inflate it.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"repeat-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"hi\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":50},\"last_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":50}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":50},\"last_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":50}}}}\n"
+        );
+        let detail = parse_rollout("repeat", content, "repeat-1");
+        assert_eq!(turn_usage_total(&detail), 1_050);
+    }
+
+    #[test]
+    fn a_round_that_ran_before_any_assistant_message_is_not_lost() {
+        // When the model opens a turn by calling a tool, its first round-trips
+        // finish before it ever speaks. Those had no assistant message to
+        // attach to and were dropped outright — 3 % of all recorded spend.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"early-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"go\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":800,\"cached_input_tokens\":0,\"output_tokens\":40},\"last_token_usage\":{\"input_tokens\":800,\"cached_input_tokens\":0,\"output_tokens\":40}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"done\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":1900,\"cached_input_tokens\":0,\"output_tokens\":110},\"last_token_usage\":{\"input_tokens\":1100,\"cached_input_tokens\":0,\"output_tokens\":70}}}}\n"
+        );
+        let detail = parse_rollout("early", content, "early-1");
+        assert_eq!(turn_usage_total(&detail), 1_900 + 110);
+    }
+
+    #[test]
+    fn a_transcript_without_cumulative_totals_still_counts_each_call_once() {
+        // Fallback path: no `total_token_usage` to difference, so a `token_count`
+        // that merely restates the previous one is recognized by its payload.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"nototal-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"hi\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":500,\"cached_input_tokens\":100,\"output_tokens\":25}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":500,\"cached_input_tokens\":100,\"output_tokens\":25}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":700,\"cached_input_tokens\":200,\"output_tokens\":30}}}}\n"
+        );
+        let detail = parse_rollout("nototal", content, "nototal-1");
+        assert_eq!(turn_usage_total(&detail), 525 + 730);
+    }
+
+    #[test]
+    fn a_transcript_that_mixes_both_shapes_counts_each_round_exactly_once() {
+        // A no-total event contributes its own `last_token_usage`, so the
+        // cumulative baseline has to learn about it. Otherwise the next
+        // total-bearing event differences against a stale figure and bills that
+        // round a second time.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"mixed-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"hi\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":0,\"output_tokens\":0},\"last_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":50,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:04Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":180,\"cached_input_tokens\":0,\"output_tokens\":0},\"last_token_usage\":{\"input_tokens\":30,\"cached_input_tokens\":0,\"output_tokens\":0}}}}\n"
+        );
+        let detail = parse_rollout("mixed", content, "mixed-1");
+        // 100 + 50 + (180 - 150) — the session's own counter says 180 total.
+        assert_eq!(turn_usage_total(&detail), 180);
+    }
+
+    #[test]
+    fn a_rollout_with_no_assistant_message_still_reports_its_spend() {
+        // A turn that only ran tools and was interrupted leaves `token_count`
+        // events with no assistant turn to carry them, so `reconcile_turn_usage`
+        // has no target. The tokens are not lost: the session-level total is
+        // populated, and that is the fallback `facts_from_detail` records as a
+        // single fact row (covered by `a_session_level_total_is_recorded_when_
+        // no_turn_reports_usage` in commands::token_usage).
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"toolonly-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"go\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":900,\"cached_input_tokens\":100,\"output_tokens\":40},\"last_token_usage\":{\"input_tokens\":900,\"cached_input_tokens\":100,\"output_tokens\":40}}}}\n"
+        );
+        let detail = parse_rollout("toolonly", content, "toolonly-1");
+        assert!(
+            !detail.turns.iter().any(|t| matches!(t.role, TurnRole::Assistant)),
+            "precondition: this rollout has no assistant turn"
+        );
+        let total = detail
+            .session_stats
+            .as_ref()
+            .and_then(|s| s.total_usage.as_ref())
+            .expect("session-level total must survive as the fallback fact source");
+        assert_eq!(
+            total.input_tokens + total.output_tokens + total.cache_read_input_tokens,
+            940
+        );
+    }
+
+    #[test]
+    fn a_counter_that_restarts_after_compaction_does_not_wrap_to_zero() {
+        // A cumulative counter that moves backwards means a fresh context, so
+        // the new value is that round's own spend rather than a negative delta
+        // silently clamped away.
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"compact-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"hi\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":90000,\"cached_input_tokens\":0,\"output_tokens\":2000}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":5000,\"cached_input_tokens\":0,\"output_tokens\":100}}}}\n"
+        );
+        let detail = parse_rollout("compact", content, "compact-1");
+        assert_eq!(turn_usage_total(&detail), 92_000 + 5_100);
+    }
+
+    #[test]
+    fn parse_detail_durations_partition_a_multi_message_turn() {
+        // Regression: durations came from `turn_context → token_count`, and
+        // codex fires `token_count` once per model request — so every reply in
+        // a turn restated the elapsed time SINCE THE PROMPT. The UI merges a
+        // turn's replies into one card by summing their durations, so a 30s
+        // turn reported 10+22+30 = 62s (on a real 4-prompt rollout: 26 minutes
+        // of work shown as 109). Each reply must instead carry only its own
+        // slice, and the slices must add up to the turn.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-spans-{nanos}.jsonl"));
+
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"spans-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.200Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"go\"}}\n",
+            // Reply 1 at +10s, then two more model requests inside the SAME turn.
+            "{\"timestamp\":\"2026-03-01T10:00:10.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"one\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:11.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":2,\"total_tokens\":12}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:22.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"two\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:23.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":2,\"total_tokens\":12}}}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:30.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"three\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:30.400Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":2,\"total_tokens\":12}}}}\n",
+            // A second prompt arrives 10 minutes later; that idle gap belongs
+            // to nobody, so its reply must report 4s and not 10m4s.
+            "{\"timestamp\":\"2026-03-01T10:10:30.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:10:30.100Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:10:30.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"again\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:10:34.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"four\"}}\n"
+        );
+        fs::write(&path, content).expect("write test jsonl");
+
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "spans-1")
+            .expect("parse detail ok");
+
+        let assistant_durations: Vec<Option<u64>> = detail
+            .turns
+            .iter()
+            .filter(|t| matches!(t.role, TurnRole::Assistant))
+            .map(|t| t.duration_ms)
+            .collect();
+        assert_eq!(
+            assistant_durations,
+            vec![
+                Some(10_000), // prompt → "one"
+                Some(12_000), // "one" → "two"
+                Some(8_000),  // "two" → "three"
+                Some(4_000),  // second prompt → "four"
+            ]
+        );
+
+        // Turn 1's replies sum to its wall clock, and the session total is the
+        // two turns' work — never the idle stretch between them.
+        let turn_one: u64 = assistant_durations[..3].iter().flatten().sum();
+        assert_eq!(turn_one, 30_000);
+        let stats = detail.session_stats.expect("session stats");
+        assert_eq!(stats.total_duration_ms, 34_000);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_mid_turn_turn_context_does_not_truncate_the_reply_after_it() {
+        // Newer codex re-emits `turn_context` in the MIDDLE of a turn — it
+        // carries a `turn_id` and is rewritten when the turn's config changes
+        // (6 of 495 records across the local rollout corpus). A start marker
+        // only ever moves the boundary forward, so treating that one as a turn
+        // start would charge the following reply just the time since it and
+        // silently drop the rest of the span from the turn's total. Only
+        // `task_started` — exactly one per turn — anchors the measurement;
+        // `turn_context` is a fallback for rollouts that predate it.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-midctx-{nanos}.jsonl"));
+
+        let content = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"midctx-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.200Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:00.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"go\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:10.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"one\"}}\n",
+            // Re-emitted mid-turn, 1s before the next reply. If this counted as
+            // a turn start, "two" would report 1s instead of its real 20s.
+            "{\"timestamp\":\"2026-03-01T10:00:29.300Z\",\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t-1\",\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:30.300Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"two\"}}\n"
+        );
+        fs::write(&path, content).expect("write test jsonl");
+
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "midctx-1")
+            .expect("parse detail ok");
+
+        let assistant_durations: Vec<Option<u64>> = detail
+            .turns
+            .iter()
+            .filter(|t| matches!(t.role, TurnRole::Assistant))
+            .map(|t| t.duration_ms)
+            .collect();
+        assert_eq!(assistant_durations, vec![Some(10_000), Some(20_000)]);
+        // Still tiles: 10s + 20s is the whole prompt→last-reply span.
+        let total: u64 = assistant_durations.iter().flatten().sum();
+        assert_eq!(total, 30_000);
+
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn parse_detail_completion_time_uses_agent_message_timestamp_not_added_turn_span() {
-        // Regression: in Codex `duration_ms` is computed from the
-        // turn_context → token_count span, while `timestamp` on the
-        // assistant `UnifiedMessage` is the agent_message event time
-        // (already near turn end). Adding them double-counts the entire
-        // turn span. completed_at must reflect the agent_message arrival.
+        // Regression: `duration_ms` is a *span* and `timestamp` on the
+        // assistant `UnifiedMessage` is the agent_message event time (already
+        // at the end of that span, not its start), so adding the two
+        // double-counts. completed_at must reflect the agent_message arrival.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
@@ -6710,5 +7547,234 @@ mod tests {
         assert_eq!(input["session_command"], "cargo watch");
     }
 
+    // ── separator split ──────────────────────────────────────────────────
 
+    /// The script from the reported session: a literal table of labelled
+    /// commands fanned out through one `tools.exec_command({cmd, …})`.
+    fn labelled_fanout(labels: &[&str]) -> String {
+        let rows: Vec<String> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| format!("  [\"{label}\", \"echo {i}\"],\n"))
+            .collect();
+        format!(
+            "const cmds = [\n{}];\nconst out = await Promise.all(cmds.map(async ([k,cmd]) => [k, await tools.exec_command({{cmd, workdir:\"/repo\", yield_time_ms:10000}})]));\nfor (const [k,r] of out) text(`===== ${{k}} =====\\n${{r.output}}`);\n",
+            rows.concat()
+        )
+    }
+
+    /// What codex renders when a labelled fan-out's `text()` stream is too
+    /// long: one blob, the separators still in it, behind a banner declaring
+    /// how many lines it started with.
+    fn labelled_blob(declared: usize, sections: &[(&str, &str)]) -> String {
+        let body: Vec<String> = sections
+            .iter()
+            .map(|(label, out)| format!("===== {label} =====\n{out}"))
+            .collect();
+        format!(
+            "Warning: truncated output (original token count: 23243)\nTotal output lines: {declared}\n\n{}",
+            body.join("\n")
+        )
+    }
+
+    fn code_mode_detail(script: &str, blob: String, id: &str) -> crate::models::ConversationDetail {
+        let lines = code_mode_rollout(
+            script,
+            serde_json::json!([
+                {"type": "input_text", "text": "Script completed\nWall time 0.3 seconds\nOutput:\n"},
+                {"type": "input_text", "text": blob},
+            ]),
+        );
+        let path = write_temp_rollout(id, &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, id)
+            .expect("parse ok");
+        let _ = fs::remove_file(path);
+        detail
+    }
+
+    fn tool_metas(detail: &crate::models::ConversationDetail) -> Vec<serde_json::Value> {
+        detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { meta, .. } => Some(
+                    meta.clone()
+                        .and_then(|m| m.get("codeg.codexScript").cloned())
+                        .unwrap_or(serde_json::Value::Null),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_labelled_fanout_splits_a_collapsed_blob_per_command() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["query-entry", "formula-service", "factor-full"]),
+            labelled_blob(6, &[
+                ("query-entry", "one"),
+                ("formula-service", "two"),
+                ("factor-full", "three"),
+            ]),
+            "code-mode-labelled",
+        );
+
+        assert_eq!(
+            tool_uses(&detail),
+            vec![
+                ("call_1#0".into(), "exec_command".into(), Some("echo 0".into())),
+                ("call_1#1".into(), "exec_command".into(), Some("echo 1".into())),
+                ("call_1#2".into(), "exec_command".into(), Some("echo 2".into())),
+            ]
+        );
+        assert_eq!(
+            tool_results(&detail),
+            vec![
+                ("call_1#0".into(), Some("one".into()), false),
+                ("call_1#1".into(), Some("two".into()), false),
+                ("call_1#2".into(), Some("three".into()), false),
+            ]
+        );
+        let metas = tool_metas(&detail);
+        assert_eq!(metas[0]["label"], "query-entry");
+        assert_eq!(metas[2]["label"], "factor-full");
+        assert!(metas.iter().all(|m| m.get("outputMissing").is_none()));
+    }
+
+    /// The reported card: truncation ate two separators, so the span after
+    /// `formula-service` holds three commands' output with no boundary. The
+    /// commands it provably brackets still get their own output; the ones whose
+    /// separator is gone say so instead of being handed someone else's.
+    #[test]
+    fn a_truncated_separator_leaves_its_command_without_output() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["query-entry", "formula-service", "vo", "formula-splice", "factor-full"]),
+            labelled_blob(20, &[
+                ("query-entry", "first"),
+                ("formula-service", "second\nvo-output\nsplice-output"),
+                ("factor-full", "last"),
+            ]),
+            "code-mode-labelled-partial",
+        );
+
+        assert_eq!(
+            tool_results(&detail),
+            vec![
+                ("call_1#0".into(), Some("first".into()), false),
+                ("call_1#1".into(), Some("second\nvo-output\nsplice-output".into()), false),
+                ("call_1#2".into(), None, false),
+                ("call_1#3".into(), None, false),
+                ("call_1#4".into(), Some("last".into()), false),
+            ]
+        );
+
+        let metas = tool_metas(&detail);
+        assert_eq!(metas[1]["sharedWith"], serde_json::json!(["vo", "formula-splice"]));
+        assert_eq!(metas[2]["outputMissing"], true);
+        assert_eq!(metas[3]["outputMissing"], true);
+        assert!(metas[0].get("sharedWith").is_none());
+        assert!(metas[4].get("sharedWith").is_none());
+        assert!(metas.iter().all(|m| m["truncated"] == true));
+    }
+
+    /// A command that printed the separator itself makes the line ambiguous;
+    /// the whole candidate is refused rather than cutting on the wrong one.
+    #[test]
+    fn a_repeated_separator_line_keeps_the_script_card() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["alpha", "beta"]),
+            labelled_blob(8, &[
+                ("alpha", "one\n===== beta ====="),
+                ("beta", "two"),
+            ]),
+            "code-mode-labelled-dup",
+        );
+
+        let uses = tool_uses(&detail);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].1, CODEX_SCRIPT_TOOL_NAME);
+    }
+
+    /// Only a line some separator actually predicts can make a candidate
+    /// ambiguous. Two commands printing the same ordinary line is the normal
+    /// case — `index_body_lines` marks it repeated, but nothing looks it up.
+    #[test]
+    fn a_repeated_output_line_still_splits() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["alpha", "beta", "gamma"]),
+            labelled_blob(8, &[
+                ("alpha", "shared line\none"),
+                ("beta", "shared line\ntwo"),
+                ("gamma", "three"),
+            ]),
+            "code-mode-labelled-repeat",
+        );
+
+        assert_eq!(
+            tool_results(&detail),
+            vec![
+                ("call_1#0".into(), Some("shared line\none".into()), false),
+                ("call_1#1".into(), Some("shared line\ntwo".into()), false),
+                ("call_1#2".into(), Some("three".into()), false),
+            ]
+        );
+        // Every line the banner declared is present, so nothing went missing.
+        let metas = tool_metas(&detail);
+        assert!(metas.iter().all(|m| m.get("truncated").is_none()));
+        assert!(metas.iter().all(|m| m.get("outputMissing").is_none()));
+    }
+
+    /// One separator divides nothing: it would hand the whole blob to the first
+    /// command and leave the rest blank.
+    #[test]
+    fn a_single_surviving_separator_keeps_the_script_card() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["alpha", "beta", "gamma"]),
+            labelled_blob(9, &[("beta", "two")]),
+            "code-mode-labelled-one",
+        );
+
+        let uses = tool_uses(&detail);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].1, CODEX_SCRIPT_TOOL_NAME);
+    }
+
+    /// Separators in the wrong order are not this script's separator run.
+    #[test]
+    fn separators_out_of_order_keep_the_script_card() {
+        let detail = code_mode_detail(
+            &labelled_fanout(&["alpha", "beta", "gamma"]),
+            labelled_blob(9, &[("gamma", "three"), ("beta", "two"), ("alpha", "one")]),
+            "code-mode-labelled-unordered",
+        );
+
+        let uses = tool_uses(&detail);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].1, CODEX_SCRIPT_TOOL_NAME);
+    }
+
+    /// Scripts that number their results instead of naming them split the same
+    /// way — the hole is the loop index.
+    #[test]
+    fn numbered_separators_split_a_collapsed_blob() {
+        let script = concat!(
+            "const cmds = [[\"echo one\", 20000], [\"echo two\", 20000]];\n",
+            "const rs = await Promise.all(cmds.map(([cmd,max]) => tools.exec_command({cmd, max_output_tokens:max})));\n",
+            "rs.forEach((r,i)=>text(`---RESULT ${i+1}---\\n${r.output}`));\n",
+        );
+        let blob = "Warning: truncated output (original token count: 900)\nTotal output lines: 7\n\n---RESULT 1---\none\n---RESULT 2---\ntwo".to_string();
+        let detail = code_mode_detail(script, blob, "code-mode-numbered");
+
+        assert_eq!(
+            tool_results(&detail),
+            vec![
+                ("call_1#0".into(), Some("one".into()), false),
+                ("call_1#1".into(), Some("two".into()), false),
+            ]
+        );
+        // No table label to show, so the chip has nothing to say.
+        assert!(tool_metas(&detail).iter().all(|m| m.get("label").is_none()));
+    }
 }

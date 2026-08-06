@@ -266,3 +266,70 @@ pub async fn remove_worktree_and_branch(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run a git command in `dir`, supplying identity via env so the test does
+    /// not depend on (or mutate) the developer's global git config.
+    fn git_run(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Why removing a task worktree has to consult BOTH probes: each is blind
+    /// to exactly what the other sees. `remove_worktree_and_branch` runs
+    /// `worktree remove --force` + `branch -D`, so anything either probe would
+    /// have found is destroyed silently if only one of them is asked.
+    #[tokio::test]
+    async fn status_and_base_diff_have_opposite_blind_spots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_str().expect("utf-8 path");
+        git_run(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(path, "HEAD").await.expect("base sha");
+
+        // Settled state: nothing on top of the base, by either measure.
+        assert!(!has_changes(path).await.expect("status"));
+        assert!(diff_numstat(path, &base).await.expect("diff").is_empty());
+
+        // Work committed on the branch afterwards leaves a spotless worktree…
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").expect("write");
+        git_run(dir.path(), &["commit", "-qam", "later work"]);
+        assert!(
+            !has_changes(path).await.expect("status"),
+            "a commit leaves no trace in `git status` — status alone would clear a branch for deletion"
+        );
+        // …but it is exactly what a merge would have taken.
+        let files = diff_numstat(path, &base).await.expect("diff");
+        assert_eq!(files.len(), 1, "the base diff still holds the commit");
+        assert_eq!(files[0].file, "a.txt");
+
+        // The mirror image: an untracked file never reaches a diff against the
+        // base, so the base diff alone would clear a worktree for deletion.
+        git_run(dir.path(), &["reset", "-q", "--hard", &base]);
+        std::fs::write(dir.path().join("scratch.txt"), "junk\n").expect("write");
+        assert!(
+            diff_numstat(path, &base).await.expect("diff").is_empty(),
+            "untracked files are invisible to the base diff"
+        );
+        assert!(has_changes(path).await.expect("status"));
+    }
+}

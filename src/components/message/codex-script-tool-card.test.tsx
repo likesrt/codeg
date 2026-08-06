@@ -128,4 +128,87 @@ describe("codex code-mode cards", () => {
     expect(document.body.textContent).toContain(" M src/main.rs")
     expect(document.body.textContent).not.toContain("await tools.")
   })
+
+  /**
+   * A script that fans a literal table of commands out through one
+   * `tools.exec_command({cmd, …})` becomes one card per row. Codex truncates a
+   * long combined output by deleting whole lines from the middle, taking some
+   * of the row labels with it, so the parser marks what it could not place.
+   */
+  function fanoutPart(
+    index: number,
+    marks: Record<string, unknown>,
+    output?: string
+  ): AdaptedContentPart {
+    return {
+      type: "tool-call",
+      toolCallId: `call_1#${index}`,
+      toolName: "exec_command",
+      input: `echo ${index}`,
+      state: "output-available",
+      output,
+      meta: { "codeg.codexScript": marks },
+    }
+  }
+
+  it("labels a fanned-out command with its table row name", () => {
+    renderParts([
+      fanoutPart(0, { label: "query-entry", truncated: true }, "line one"),
+    ])
+
+    expect(screen.getByText("query-entry")).toBeInTheDocument()
+    expect(screen.getByText("echo 0")).toBeInTheDocument()
+    expect(document.body.textContent).toContain("line one")
+    // Its own output survived intact, so it is only told the blob was trimmed.
+    expect(document.body.textContent).toContain("truncated")
+    expect(document.body.textContent).not.toContain("none of the output")
+  })
+
+  it("says so when truncation left a command with no attributable output", () => {
+    renderParts([
+      fanoutPart(2, { label: "vo", outputMissing: true, truncated: true }),
+    ])
+
+    expect(screen.getByText("vo")).toBeInTheDocument()
+    expect(document.body.textContent).toContain(
+      "dropped this command's separator"
+    )
+  })
+
+  it("names the commands whose output shares a card", () => {
+    renderParts([
+      fanoutPart(
+        1,
+        {
+          label: "formula-service",
+          sharedWith: ["vo", "formula-splice"],
+          truncated: true,
+        },
+        "mixed output"
+      ),
+    ])
+
+    expect(document.body.textContent).toContain(
+      "Also contains the output of vo, formula-splice"
+    )
+    // The shared-boundary notice already reports the truncation.
+    expect(document.body.textContent).not.toContain("dropped this command")
+  })
+
+  it("leaves ordinary cards untouched", () => {
+    renderParts([
+      {
+        type: "tool-call",
+        toolCallId: "call_9",
+        toolName: "exec_command",
+        input: "git status",
+        state: "output-available",
+        output: "clean",
+        meta: { "codeg.delegation": { status: "done" } },
+      },
+    ])
+
+    expect(document.body.textContent).not.toContain("truncated")
+    expect(document.body.textContent).not.toContain("Also contains")
+  })
 })

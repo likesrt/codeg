@@ -218,8 +218,8 @@ pub const FOLDER_CHANGED_EVENT: &str = "folder://changed";
 
 /// Payload for [`FOLDER_CHANGED_EVENT`]. The full [`FolderDetail`] rides on the
 /// event so clients apply it without a re-fetch (matching
-/// [`ConversationChange::Upsert`]). `folder` is boxed to keep the enum small and
-/// to leave room for a future `Deleted { id }` variant.
+/// [`ConversationChange::Upsert`]). `folder` is boxed to keep the enum small
+/// next to the id-only `Deleted`.
 ///
 /// [`FolderDetail`]: crate::models::FolderDetail
 #[derive(Debug, Clone, Serialize)]
@@ -229,6 +229,15 @@ pub enum FolderChange {
     Upsert {
         folder: Box<crate::models::FolderDetail>,
     },
+    /// Drop by id: the folder row is soft-deleted and will never come back
+    /// (today: a work task's worktree folder, once the worktree is off disk).
+    /// The mirror image of `Upsert` — without it a vanished worktree keeps
+    /// rendering in every client's sidebar until the next full `fetchFolders`.
+    ///
+    /// Deliberately NOT emitted when a folder is merely closed
+    /// (`remove_folder_from_workspace`): that row stays alive in
+    /// `list_all_folder_details` for by-id cwd lookups.
+    Deleted { id: i32 },
 }
 
 /// Per-agent progress of the import picker's local-session scan. Emitted by
@@ -633,5 +642,28 @@ mod tests {
         assert_eq!(p["folder"]["id"], 42);
         assert_eq!(p["folder"]["parent_id"], 7);
         assert_eq!(p["folder"]["kind"], "regular");
+    }
+
+    #[test]
+    fn emit_event_broadcasts_folder_change_deleted() {
+        // A removed task worktree rides the SAME channel as its creation, so a
+        // client that learned about the folder from an upsert also hears it go.
+        // Wire shape is id-only: `{ "kind": "deleted", "id": 42 }`.
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_event(
+            &emitter,
+            FOLDER_CHANGED_EVENT,
+            FolderChange::Deleted { id: 42 },
+        );
+
+        let evt = rx.try_recv().expect("folder delete should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, FOLDER_CHANGED_EVENT);
+        assert_eq!(p["kind"], "deleted");
+        assert_eq!(p["id"], 42);
+        assert!(p["folder"].is_null(), "delete carries no folder detail");
     }
 }

@@ -1266,6 +1266,7 @@ mod tauri_app {
                 work_task_commands::work_task_return,
                 work_task_commands::work_task_cancel,
                 work_task_commands::work_task_merge,
+                work_task_commands::work_task_complete,
                 work_task_commands::work_task_archive,
                 work_task_commands::work_task_cleanup,
                 work_task_commands::work_task_diff,

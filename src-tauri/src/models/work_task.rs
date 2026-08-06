@@ -181,6 +181,62 @@ impl Default for WorkTaskFolderSettings {
 /// Reserved `stage_prompts` key whose text is appended to every launch stage.
 pub const STAGE_PROMPT_ALL: &str = "all";
 
+/// What the user means by a follow-up on a reviewed task. The board offers one
+/// neutral "follow up" action; the intent picks the wording the agent actually
+/// receives, because "have another look at this" and "why did you do it that
+/// way?" call for opposite behaviour from the same text box.
+///
+/// Deliberately NOT a stored column: an intent only ever shapes one prompt, so
+/// it lives in the launch mode and on the `user_action` / `round` timeline
+/// events. `round_kind()` stays `"return"` for every intent, so the folder's
+/// per-stage prompt settings keep their four stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowUpIntent {
+    /// Review feedback to act on — the historical "return" behaviour, and the
+    /// default so an unlabelled follow-up keeps composing exactly as before.
+    #[default]
+    Revise,
+    /// The work so far stands; extend it.
+    Continue,
+    /// A question about the work. Answering must not touch the worktree.
+    Question,
+    /// Re-check the work before acceptance. Complete on its own, so it is the
+    /// one intent that may be sent without any text.
+    Verify,
+}
+
+impl FollowUpIntent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FollowUpIntent::Revise => "revise",
+            FollowUpIntent::Continue => "continue",
+            FollowUpIntent::Question => "question",
+            FollowUpIntent::Verify => "verify",
+        }
+    }
+
+    /// Whether this intent is a complete instruction without user text.
+    pub fn allows_empty(self) -> bool {
+        matches!(self, FollowUpIntent::Verify)
+    }
+
+    /// Decode a wire value. Absent → `Revise` (older clients, and the value the
+    /// historical behaviour corresponds to); an unrecognized string is an error
+    /// rather than a silent fallback, so a typo surfaces instead of quietly
+    /// composing the wrong prompt.
+    pub fn from_wire(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None => Ok(FollowUpIntent::Revise),
+            Some("revise") => Ok(FollowUpIntent::Revise),
+            Some("continue") => Ok(FollowUpIntent::Continue),
+            Some("question") => Ok(FollowUpIntent::Question),
+            Some("verify") => Ok(FollowUpIntent::Verify),
+            Some(other) => Err(format!("unknown follow-up intent: {other}")),
+        }
+    }
+}
+
 fn default_max_concurrent() -> i32 {
     2
 }

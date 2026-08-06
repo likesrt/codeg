@@ -56,6 +56,7 @@ import { parseCodexCommandEnvelope } from "@/lib/codex-command-action"
 import {
   CODEX_SCRIPT_TOOL_NAME,
   parseCodexScriptCard,
+  parseCodexScriptMeta,
   type CodexScriptCard,
 } from "@/lib/codex-code-mode"
 import {
@@ -2339,16 +2340,45 @@ const ToolCallPart = memo(function ToolCallPart({
         : null,
     [toolNameLower, part.output, part.errorText]
   )
+  // One command out of a code-mode script: the row label it was written under,
+  // and whether truncation cost this card its output (see `parseCodexScriptMeta`).
+  const codexScript = useMemo(
+    () => parseCodexScriptMeta(part.meta),
+    [part.meta]
+  )
   const titleSuffix = useMemo(() => {
     const hasStats =
       lineChangeStats &&
       (lineChangeStats.additions > 0 || lineChangeStats.deletions > 0)
-    if (!hasStats && !wallTime && !backgroundLaunch && !announcedSessionId) {
+    if (
+      !hasStats &&
+      !wallTime &&
+      !backgroundLaunch &&
+      !announcedSessionId &&
+      !codexScript?.label
+    ) {
       return null
     }
 
     return (
       <span className="flex items-center gap-1.5 text-xs font-medium">
+        {codexScript?.label && (
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {codexScript.label}
+          </span>
+        )}
+        {/*
+         * The two notices below the header already say truncation happened, so
+         * only cards without one need telling that the output they DO show was
+         * cut out of a blob codex had trimmed.
+         */}
+        {codexScript?.truncated &&
+          !codexScript.outputMissing &&
+          codexScript.sharedWith.length === 0 && (
+            <span className="text-muted-foreground/60 font-normal">
+              {t("codexScript.truncated")}
+            </span>
+          )}
         {announcedSessionId && (
           <span className="text-muted-foreground/60 font-normal">
             {t("shellSession", { id: announcedSessionId })}
@@ -2382,7 +2412,14 @@ const ToolCallPart = memo(function ToolCallPart({
         )}
       </span>
     )
-  }, [lineChangeStats, wallTime, backgroundLaunch, announcedSessionId, t])
+  }, [
+    lineChangeStats,
+    wallTime,
+    backgroundLaunch,
+    announcedSessionId,
+    codexScript,
+    t,
+  ])
 
   const icon = useMemo(
     () => getToolIcon(normalizedToolName, part.input),
@@ -2712,6 +2749,25 @@ const ToolCallPart = memo(function ToolCallPart({
             input={part.input}
             output={part.output}
           />
+        )}
+        {/*
+         * Codex truncates a script's combined output by deleting whole lines,
+         * so the label that separated this command's output from the next one
+         * may be gone. Say which commands ended up sharing a card, and which
+         * ones nothing could be attributed to, instead of letting either read
+         * as this command's own result.
+         */}
+        {codexScript?.sharedWith.length ? (
+          <div className="text-[11px] text-muted-foreground">
+            {t("codexScript.sharedWith", {
+              commands: codexScript.sharedWith.join(", "),
+            })}
+          </div>
+        ) : null}
+        {codexScript?.outputMissing && (
+          <div className="text-[11px] text-muted-foreground">
+            {t("codexScript.outputMissing")}
+          </div>
         )}
         {toolNameLower === "task" && part.output ? (
           <div className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">

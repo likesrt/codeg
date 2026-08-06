@@ -12,10 +12,10 @@ use crate::models::{
     ConversationSummary, MessageRole, MessageTurn, TurnRole, TurnUsage, UnifiedMessage,
 };
 use crate::parsers::{
-    compute_session_stats, folder_name_from_path, infer_context_window_max_tokens,
-    is_safe_subagent_id, merge_context_window_stats, relocate_orphaned_tool_results,
-    resolve_patch_line_numbers, structurize_read_tool_output, title_from_user_text, truncate_str,
-    AgentParser, ParseError,
+    backfill_turn_durations, compute_session_stats, folder_name_from_path,
+    infer_context_window_max_tokens, is_safe_subagent_id, merge_context_window_stats,
+    relocate_orphaned_tool_results, resolve_patch_line_numbers, structurize_read_tool_output,
+    title_from_user_text, truncate_str, AgentParser, ParseError,
 };
 
 /// Resolve Kimi Code's data home, honoring `KIMI_CODE_HOME`, else `~/.kimi-code`
@@ -184,6 +184,7 @@ impl KimiCodeParser {
         relocate_orphaned_tool_results(&mut turns);
         structurize_read_tool_output(&mut turns);
         resolve_patch_line_numbers(&mut turns, cwd.as_deref());
+        backfill_turn_durations(&mut turns, &[]);
 
         let model = read_session_log_model(session_dir).or_else(|| parsed.model_alias.clone());
         // Context-window occupancy is the LATEST step's snapshot, never the

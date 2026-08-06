@@ -172,8 +172,13 @@ impl PromptLedger {
         false
     }
 
-    #[cfg(test)]
-    fn record_text(&self, text: &str) {
+    /// Fingerprint a bare string. Used for `_session/steering` injections,
+    /// which reach the agent outside `session/prompt` yet still land in the
+    /// transcript as a user record that [`group_into_turns`] reads as the
+    /// start of a turn — one the wire is already rendering, so it must
+    /// classify foreground like any prompt (see the `Steer` arm in
+    /// `connection.rs`).
+    pub(crate) fn record_text(&self, text: &str) {
         self.record_prompt_blocks(&[crate::acp::types::PromptInputBlock::Text {
             text: text.to_string(),
         }]);
@@ -1043,6 +1048,10 @@ impl WatchState {
         crate::parsers::relocate_orphaned_tool_results(&mut turns);
         crate::parsers::structurize_read_tool_output(&mut turns);
         crate::parsers::resolve_patch_line_numbers(&mut turns, Some(cwd));
+        // Same last step as the detail parse, so an overlay turn carries the
+        // same elapsed time the reply will show once it settles. An episode
+        // that opens mid-reply simply has no boundary for its first turn.
+        crate::parsers::backfill_turn_durations(&mut turns, &[]);
         for (idx, mut turn) in turns.into_iter().enumerate() {
             turn.id = format!("bg-{}-{}", episode.start_offset, idx);
             let hash = hash_turn(&turn);
@@ -1591,6 +1600,73 @@ mod tests {
             unpack(tick_now(&mut ws, &ledger).unwrap());
         assert_eq!(outstanding, 0);
         assert_eq!(settled.len(), 1);
+    }
+
+    /// A `_session/steering` injection reaches the agent outside
+    /// `session/prompt`, but the CLI still writes it to the transcript as a
+    /// user record — which starts a new turn as far as `group_into_turns` is
+    /// concerned. Since claude-agent-acp #958 the owning prompt stays in
+    /// flight across the steered work, so every update of that turn is
+    /// already streaming over the wire; surfacing it as overlay activity too
+    /// double-renders it and shuffles the transcript as the upserts land
+    /// (observed live before the `Steer` arm fingerprinted its text).
+    #[test]
+    fn steered_message_classifies_foreground_like_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        ledger.record_text("build a test page");
+
+        let mut ws = WatchState::new();
+        ws.session_id = Some("s1".into());
+        ws.epoch = Some(epoch("2020-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        // The foreground prompt and its first reply.
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u1", "build a test page"),
+                &assistant_text("a1", "working"),
+            ],
+        );
+        let event = tick_prompting(&mut ws, &ledger);
+        assert!(
+            event.is_none() || unpack(event.unwrap()).0.is_empty(),
+            "the codeg-sent prompt classifies foreground"
+        );
+
+        // Mid-turn steer: the connection is STILL prompting, and the arm
+        // fingerprinted the injected text when the adapter answered
+        // `injected`.
+        ledger.record_text("make it cyberpunk");
+        write_lines(
+            &path,
+            &[
+                &user_prompt_array("u2", "make it cyberpunk"),
+                &assistant_text("a2", "restyling"),
+            ],
+        );
+        let event = tick_prompting(&mut ws, &ledger);
+        assert!(
+            event.is_none() || unpack(event.unwrap()).0.is_empty(),
+            "a steered turn is wire-rendered — it must not surface as overlay activity"
+        );
+
+        // The fingerprint was consumed exactly once: an autonomous re-fire of
+        // the same text later is still background and must surface.
+        write_lines(
+            &path,
+            &[
+                &cron_prompt("make it cyberpunk"),
+                &assistant_text("a3", "again"),
+            ],
+        );
+        let (turns, ..) = unpack(tick_now(&mut ws, &ledger).expect("turns event"));
+        assert!(
+            !turns.is_empty(),
+            "same-text refire must surface — the steer's entry was consumed, not left standing"
+        );
     }
 
     /// The Critical arm-gap regression: a brand-new session's file (and its

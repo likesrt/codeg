@@ -60,6 +60,11 @@ pub struct CodeModeCall {
     /// declaration this scanner reads is only its first value. Attribution of a
     /// background session depends on that proof; the card preview does not.
     pub args_inline: bool,
+    /// The human label the script gave this call, when it came from a table
+    /// fan-out (`["query-entry", "nl -ba …"]`). Display only — it is also what
+    /// the model prints as a separator, which is how the output gets split
+    /// back apart (see `separator_anchors`).
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +93,31 @@ pub struct CodeModeScript {
     /// iterable has to be the bare binding and the index has to be the loop's
     /// own counter.
     pub text_run: Option<usize>,
+    /// Separator lines the script prints before each result, in source order.
+    /// These are what lets a collapsed output blob be split back apart — see
+    /// `Separator`.
+    pub separators: Vec<Separator>,
+}
+
+/// The line a script prints ahead of each result, with the hole left open:
+/// ``text(`===== ${k} =====\n${r.output}`)`` yields prefix `"===== "` and
+/// suffix `" ====="`.
+///
+/// Unlike everything else this module proves, a separator is a *prediction*:
+/// filling the hole with a row's label gives a string that either appears in
+/// the output on its own line or does not. The output is what confirms it, so a
+/// wrong guess costs nothing — it simply fails to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Separator {
+    pub prefix: String,
+    pub suffix: String,
+}
+
+impl Separator {
+    /// The line this separator produces for `value`.
+    pub fn anchor(&self, value: &str) -> String {
+        format!("{}{value}{}", self.prefix, self.suffix)
+    }
 }
 
 /// Terminal state reported by the code-mode output envelope's first line.
@@ -160,6 +190,20 @@ struct ToolCallSite {
 pub fn parse_code_mode_script(src: &str) -> CodeModeScript {
     let sites = find_tool_call_sites(src);
 
+    // A call site inside `TABLE.map(…)` runs once per row, so recovering it as
+    // ONE call is wrong even when its arguments happen to resolve. The table is
+    // the proof of how many times it ran, so this takes precedence.
+    if let Some(calls) = expand_table_fanout(src, &sites) {
+        let summary = best_effort_summary(src, &calls, &sites);
+        return CodeModeScript {
+            calls: Some(calls),
+            summary,
+            call_sites: sites.len(),
+            text_run: find_text_run(src),
+            separators: find_separators(src),
+        };
+    }
+
     let mut calls = Vec::with_capacity(sites.len());
     let mut resolved = !sites.is_empty();
     for site in &sites {
@@ -178,7 +222,663 @@ pub fn parse_code_mode_script(src: &str) -> CodeModeScript {
         summary,
         call_sites: sites.len(),
         text_run: find_text_run(src),
+        separators: find_separators(src),
     }
+}
+
+/// At most this many distinct separator shapes are carried forward. A script
+/// that prints under more headings than this is not the shape being recovered.
+const MAX_SEPARATORS: usize = 4;
+
+/// Every distinct separator line the script's template literals can produce.
+fn find_separators(src: &str) -> Vec<Separator> {
+    let b = src.as_bytes();
+    let mut found: Vec<Separator> = Vec::new();
+    let mut i = 0usize;
+
+    while i < b.len() && found.len() < MAX_SEPARATORS {
+        match b[i] {
+            b'"' | b'\'' => {
+                i = scan_string(b, i);
+                continue;
+            }
+            b'`' => {
+                let end = scan_string(b, i);
+                let inner = src.get(i + 1..end.saturating_sub(1)).unwrap_or_default();
+                if let Some(separator) = separator_from_template(inner) {
+                    if !found.contains(&separator) {
+                        found.push(separator);
+                    }
+                }
+                i = end;
+                continue;
+            }
+            b'/' if matches!(b.get(i + 1), Some(b'/') | Some(b'*')) => {
+                i = skip_ws_and_comments(b, i);
+                continue;
+            }
+            _ => i += 1,
+        }
+    }
+
+    found
+}
+
+/// The first line of a template literal that reads as `<text>${hole}<text>`.
+fn separator_from_template(inner: &str) -> Option<Separator> {
+    for line in template_lines(inner) {
+        let Some(open) = line.find("${") else { continue };
+        let Some(close) = scan_balanced(line.as_bytes(), open + 1) else {
+            continue;
+        };
+        let (prefix, suffix) = (line.get(..open)?, line.get(close..)?);
+        // A second hole makes the line unpredictable, and an escape would have
+        // to be decoded to compare against real output. Neither is worth
+        // guessing at: both simply lose this candidate.
+        if suffix.contains("${")
+            || [prefix, suffix]
+                .iter()
+                .any(|part| part.contains('\\') || part.contains('`'))
+        {
+            continue;
+        }
+        // A bare `${x}` line matches every line of output.
+        if prefix.trim().is_empty() && suffix.trim().is_empty() {
+            continue;
+        }
+        return Some(Separator {
+            prefix: prefix.to_string(),
+            suffix: suffix.to_string(),
+        });
+    }
+
+    None
+}
+
+/// Template source split on line breaks, whether written as a real newline or
+/// as the `\n` escape (both occur, often in the same corpus).
+fn template_lines(inner: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut rest = inner;
+
+    loop {
+        let real = rest.find('\n');
+        let escaped = rest.find("\\n");
+        let (at, width) = match (real, escaped) {
+            (Some(r), Some(e)) if r < e => (r, 1),
+            (Some(_), Some(e)) => (e, 2),
+            (Some(r), None) => (r, 1),
+            (None, Some(e)) => (e, 2),
+            (None, None) => {
+                lines.push(rest);
+                return lines;
+            }
+        };
+        lines.push(&rest[..at]);
+        rest = &rest[at + width..];
+    }
+}
+
+// ── table fan-out ────────────────────────────────────────────────────────
+
+/// `const cmds = [` — the literal table a fan-out script maps over.
+static TABLE_BINDING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\[").expect("static regex")
+});
+
+/// A row's bindings, named by the `.map()` callback's parameter pattern.
+enum RowPattern {
+    /// `([label, cmd, budget]) => …`, the shape almost every fan-out uses.
+    Positional(Vec<Option<String>>),
+    /// `({cmd, workdir}) => …` / `({cmd: c}) => …`
+    Named(Vec<(String, String)>),
+    /// `(row) => …`
+    Whole(String),
+}
+
+impl RowPattern {
+    fn bind<'a>(&'a self, row: &'a Value) -> Option<Vec<(&'a str, &'a Value)>> {
+        match self {
+            RowPattern::Positional(names) => {
+                let items = row.as_array()?;
+                let mut bound = Vec::new();
+                for (index, name) in names.iter().enumerate() {
+                    let Some(name) = name else { continue };
+                    bound.push((name.as_str(), items.get(index)?));
+                }
+                Some(bound)
+            }
+            RowPattern::Named(pairs) => {
+                let object = row.as_object()?;
+                pairs
+                    .iter()
+                    .map(|(property, binding)| Some((binding.as_str(), object.get(property)?)))
+                    .collect()
+            }
+            RowPattern::Whole(name) => Some(vec![(name.as_str(), row)]),
+        }
+    }
+
+    /// Every name the callback binds, so a later declaration cannot quietly
+    /// shadow one of them (see `is_fresh_declarator`).
+    fn names(&self) -> Vec<&str> {
+        match self {
+            RowPattern::Positional(names) => {
+                names.iter().flatten().map(String::as_str).collect()
+            }
+            RowPattern::Named(pairs) => pairs.iter().map(|(_, bind)| bind.as_str()).collect(),
+            RowPattern::Whole(name) => vec![name.as_str()],
+        }
+    }
+}
+
+/// One field of the call's argument object, as written at the call site.
+enum ArgValue {
+    Literal(Value),
+    /// `{cmd}` or `{max_output_tokens: budget}` — supplied per row.
+    Binding(String),
+}
+
+/// The calls a `TABLE.map(row => tools.<name>({…}))` fan-out really made: one
+/// per table row, with the row's literals substituted into the arguments.
+///
+/// This is the single most common shape codex writes that the plain scanner
+/// cannot read — 818 of the scripts in the newest 400 rollouts — because the
+/// arguments are shorthand (`{cmd, workdir}`) destructured from the row, and
+/// `LiteralParser::object` correctly refuses to guess what `cmd` holds. The
+/// table supplies exactly that missing value, and it supplies it as a literal.
+///
+/// Like `find_text_run`, this is a whitelist: the script has to BE the shape
+/// this proof understands. The load-bearing clause is `span_is_inert` — between
+/// the parameter binding and the call, nothing may execute, so the parameters
+/// still hold their row's values when the call happens. A denylist of ways to
+/// rebind them is not a proof; JavaScript has no end of them.
+///
+/// Measured on the newest 400 rollouts: 769 of the 818 candidates pass, and all
+/// 49 rejections are correct (30 parameter shapes out of grammar, 18 with a
+/// call between the binding and the tool call, 1 with an assignment).
+fn expand_table_fanout(src: &str, sites: &[ToolCallSite]) -> Option<Vec<CodeModeCall>> {
+    let [site] = sites else {
+        return None;
+    };
+    let b = src.as_bytes();
+
+    for binding in TABLE_BINDING.captures_iter(src) {
+        let (Some(name), Some(whole)) = (binding.get(1), binding.get(0)) else {
+            continue;
+        };
+        // The `[` is the last byte the regex matched.
+        let table_at = whole.end() - 1;
+        let Some(table_end) = scan_balanced(b, table_at) else {
+            continue;
+        };
+        // A table is only walked after it is declared.
+        let Some((walk_at, map_at)) = find_map_call(src, name.as_str(), table_end) else {
+            continue;
+        };
+        let Some(map_end) = scan_parens(b, map_at) else {
+            continue;
+        };
+        // The call has to be the one this map makes.
+        if site.args_at <= map_at || site.args_at >= map_end {
+            continue;
+        }
+        // Nothing may touch the table between its literal and the walk, or
+        // during it: `cmds.reverse()` before `.map()` hands the callback the
+        // rows in the opposite order, and the expansion below would still
+        // report them as written. Naming the table is the only way to reach it,
+        // so refusing every other mention of it is the whole check.
+        if mentions_identifier(src, table_end..walk_at, name.as_str())
+            || mentions_identifier(src, map_at..map_end, name.as_str())
+        {
+            continue;
+        }
+        let Some(Value::Array(rows)) = src
+            .get(table_at..table_end)
+            .and_then(js_literal_to_json)
+            .filter(|value| value.is_array())
+        else {
+            continue;
+        };
+        if rows.len() < 2 {
+            continue;
+        }
+        let Some((pattern, body_at)) = callback_parameter(src, map_at + 1) else {
+            continue;
+        };
+        if !span_is_inert(src, body_at..site.args_at - 1, &pattern.names()) {
+            continue;
+        }
+        let Some(template) = parse_args_template(src, site.args_at) else {
+            continue;
+        };
+        return expand_rows(&site.tool_name, &rows, &pattern, &template);
+    }
+
+    None
+}
+
+/// Where the first `<name>.map(` at or after `from` starts, and the index of
+/// its `(`.
+fn find_map_call(src: &str, name: &str, from: usize) -> Option<(usize, usize)> {
+    let b = src.as_bytes();
+    let mut i = from;
+
+    while let Some(hit) = src.get(i..).and_then(|rest| rest.find(name)) {
+        let at = i + hit;
+        i = at + name.len();
+        if preceded_by_ident(b, at) || b.get(i).is_some_and(|c| is_ident_byte(*c)) {
+            continue;
+        }
+        let dot = skip_ws_and_comments(b, i);
+        if b.get(dot) != Some(&b'.') {
+            continue;
+        }
+        let method = skip_ws_and_comments(b, dot + 1);
+        if !src.get(method..).is_some_and(|rest| rest.starts_with("map")) {
+            continue;
+        }
+        let after = method + "map".len();
+        if b.get(after).is_some_and(|c| is_ident_byte(*c)) {
+            continue;
+        }
+        let paren = skip_ws_and_comments(b, after);
+        if b.get(paren) == Some(&b'(') {
+            return Some((at, paren));
+        }
+    }
+
+    None
+}
+
+/// Whether `name` appears as a standalone identifier anywhere in `range`.
+///
+/// Quoted strings and comments do not count — only code can reach a binding.
+/// A template literal is both: its text is inert but its `${…}` holes are code,
+/// and these scripts are full of templates (`` `===== ${k} =====` ``), so the
+/// holes are searched and the text around them is not. Skipping the template
+/// whole — which is what the ordinary string scanner does — would let
+/// `` `${cmds.reverse()}` `` through.
+fn mentions_identifier(src: &str, range: Range<usize>, name: &str) -> bool {
+    let b = src.as_bytes();
+    let mut i = range.start;
+
+    while i < range.end {
+        match b[i] {
+            b'"' | b'\'' => {
+                i = scan_string(b, i);
+                continue;
+            }
+            // A template's `${…}` holes are code, but every scanner that could
+            // find them — `scan_string`, `scan_balanced` — counts brackets
+            // without knowing regex literals, so a hole like
+            // `${/[}]/.test("}") && cmds.reverse()}` closes early and its tail
+            // is mistaken for template text. Rather than grow a JavaScript
+            // parser to settle where the holes end, stop distinguishing: from
+            // here on, any occurrence of the name counts, wherever it sits.
+            // Over-reporting only ever costs a fan-out its expansion.
+            b'`' => return mentions_anywhere(src, i..range.end, name),
+            b'/' if matches!(b.get(i + 1), Some(b'/') | Some(b'*')) => {
+                i = skip_ws_and_comments(b, i);
+                continue;
+            }
+            _ => {}
+        }
+        if is_identifier_at(src, i, name) {
+            return true;
+        }
+        i += 1;
+    }
+
+    false
+}
+
+/// `name` as a standalone token anywhere in `range`, with no regard for what
+/// is code and what is text.
+fn mentions_anywhere(src: &str, range: Range<usize>, name: &str) -> bool {
+    (range.start..range.end.min(src.len())).any(|i| is_identifier_at(src, i, name))
+}
+
+fn is_identifier_at(src: &str, at: usize, name: &str) -> bool {
+    let b = src.as_bytes();
+    src.get(at..).is_some_and(|rest| rest.starts_with(name))
+        && !preceded_by_ident(b, at)
+        && !b.get(at + name.len()).is_some_and(|c| is_ident_byte(*c))
+}
+
+/// The callback's row parameter and the index just past its `=>`.
+fn callback_parameter(src: &str, at: usize) -> Option<(RowPattern, usize)> {
+    let b = src.as_bytes();
+    let mut i = skip_ws_and_comments(b, at);
+
+    if src.get(i..).is_some_and(|rest| rest.starts_with("async"))
+        && !b.get(i + "async".len()).is_some_and(|c| is_ident_byte(*c))
+    {
+        i = skip_ws_and_comments(b, i + "async".len());
+    }
+
+    let parenthesised = b.get(i) == Some(&b'(');
+    if parenthesised {
+        i = skip_ws_and_comments(b, i + 1);
+    }
+
+    let pattern = match *b.get(i)? {
+        b'[' => {
+            let end = scan_balanced(b, i)?;
+            let names = positional_names(src.get(i + 1..end - 1)?)?;
+            i = end;
+            RowPattern::Positional(names)
+        }
+        b'{' => {
+            let end = scan_balanced(b, i)?;
+            let names = named_bindings(src.get(i + 1..end - 1)?)?;
+            i = end;
+            RowPattern::Named(names)
+        }
+        c if is_ident_start(c) => {
+            let start = i;
+            while i < b.len() && is_ident_byte(b[i]) {
+                i += 1;
+            }
+            RowPattern::Whole(src.get(start..i)?.to_string())
+        }
+        _ => return None,
+    };
+
+    if parenthesised {
+        i = skip_ws_and_comments(b, i);
+        // `.map((row, i) => …)` — the index parameter is inert, so it is
+        // allowed but not bound.
+        if b.get(i) == Some(&b',') {
+            i = skip_ws_and_comments(b, i + 1);
+            while i < b.len() && is_ident_byte(b[i]) {
+                i += 1;
+            }
+            i = skip_ws_and_comments(b, i);
+        }
+        if b.get(i) != Some(&b')') {
+            return None;
+        }
+        i += 1;
+    }
+
+    i = skip_ws_and_comments(b, i);
+    if !src.get(i..).is_some_and(|rest| rest.starts_with("=>")) {
+        return None;
+    }
+    Some((pattern, i + "=>".len()))
+}
+
+/// `[label, cmd, budget]` → the bindings, `None` for a skipped position
+/// (`[, cmd]`). Anything richer than a plain name — a default, a rest element,
+/// a nested pattern — is out of grammar.
+fn positional_names(inner: &str) -> Option<Vec<Option<String>>> {
+    inner
+        .split(',')
+        .map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return Some(None);
+            }
+            is_plain_ident(part).then(|| Some(part.to_string()))
+        })
+        .collect()
+}
+
+/// `{cmd, workdir}` / `{cmd: c}` → `(property, binding)` pairs.
+fn named_bindings(inner: &str) -> Option<Vec<(String, String)>> {
+    inner
+        .split(',')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| match part.split_once(':') {
+            Some((property, binding)) => {
+                let (property, binding) = (property.trim(), binding.trim());
+                (is_plain_ident(property) && is_plain_ident(binding))
+                    .then(|| (property.to_string(), binding.to_string()))
+            }
+            None => {
+                let name = part.trim();
+                is_plain_ident(name).then(|| (name.to_string(), name.to_string()))
+            }
+        })
+        .collect()
+}
+
+fn is_plain_ident(text: &str) -> bool {
+    let mut bytes = text.bytes();
+    bytes.next().is_some_and(is_ident_start) && bytes.all(is_ident_byte)
+}
+
+/// Whether nothing between the callback's `=>` and its `tools.*` call can
+/// rebind a parameter — the proof that the parameters still hold this row's
+/// literals when the call happens.
+///
+/// Rejecting `(` outright is what makes this a proof rather than a guess: every
+/// way JavaScript has of changing a binding from a distance — a helper, a
+/// setter, `Object.assign`, a tagged template, a deferred callback — has to
+/// invoke something, and invoking needs a paren. What is left (identifiers,
+/// array and object construction, `await`, `return`, property reads, literals)
+/// cannot assign. The rest that can are handled directly: assignment, `++`,
+/// `--`, and a declaration that shadows one of the parameters.
+///
+/// Template literals are rejected outright rather than scanned. A `${…}` hole
+/// is code — an earlier round of this parser was broken exactly there — but
+/// scanning a template's literal TEXT as code is not safe either: a `//` in a
+/// URL or a `/*` in a glob would start comment skipping and swallow whatever
+/// followed, holes included. Refusing them is the only reading that is sound
+/// both ways, and no script in the sampled corpus builds a template here.
+///
+/// A `,` at the top level ends the callback and starts `Array.map`'s second
+/// argument, where a call runs ONCE rather than per row. Commas nested inside
+/// the brackets of `[k, await tools.…]` are the normal shape and are fine.
+fn span_is_inert(src: &str, span: Range<usize>, bound: &[&str]) -> bool {
+    let b = src.as_bytes();
+    let mut i = span.start;
+    let mut depth = 0usize;
+
+    while i < span.end {
+        match b[i] {
+            // A quoted string is inert text. A template is not.
+            b'"' | b'\'' => {
+                i = scan_string(b, i);
+                continue;
+            }
+            b'`' => return false,
+            b'/' if matches!(b.get(i + 1), Some(b'/') | Some(b'*')) => {
+                i = skip_ws_and_comments(b, i);
+                continue;
+            }
+            // Anything else starting with `/` is division or a regex literal.
+            // A regex always opens with a bare `/` — `//` is a comment and `/*`
+            // cannot be a valid pattern — so refusing it here is what keeps its
+            // body from being read as code: `/[//]/` would otherwise start a
+            // line comment and swallow the statement after it, and `/\[/` would
+            // leave the bracket depth below permanently raised.
+            b'/' => return false,
+            b'(' => return false,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => return false,
+            b'+' if b.get(i + 1) == Some(&b'+') => return false,
+            b'-' if b.get(i + 1) == Some(&b'-') => return false,
+            b'=' => {
+                // `=>`, `==`, `===` and the comparison operators are not
+                // assignments; `+=` and friends are, and fail the declarator
+                // test below.
+                if matches!(b.get(i + 1), Some(b'=') | Some(b'>')) {
+                    i += 2;
+                    continue;
+                }
+                if i > span.start && matches!(b[i - 1], b'=' | b'!' | b'<' | b'>') {
+                    i += 1;
+                    continue;
+                }
+                if !is_fresh_declarator(src, i, bound) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    true
+}
+
+/// Whether the `=` at `eq_at` is the one in `const|let|var <name> =` AND
+/// `<name>` is not one of the callback's parameters.
+///
+/// The second half is what makes it safe: `{ let cmd = "…"; tools.exec_command({cmd}) }`
+/// is a declaration by every syntactic measure, but it shadows the row's `cmd`,
+/// so the call runs with a value the table never held.
+fn is_fresh_declarator(src: &str, eq_at: usize, bound: &[&str]) -> bool {
+    let b = src.as_bytes();
+    let mut i = eq_at;
+
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let name_end = i;
+    while i > 0 && is_ident_byte(b[i - 1]) {
+        i -= 1;
+    }
+    if i == name_end {
+        return false;
+    }
+    let Some(name) = src.get(i..name_end) else {
+        return false;
+    };
+    if bound.contains(&name) {
+        return false;
+    }
+    while i > 0 && b[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    let keyword_end = i;
+    while i > 0 && is_ident_byte(b[i - 1]) {
+        i -= 1;
+    }
+    matches!(src.get(i..keyword_end), Some("const" | "let" | "var"))
+}
+
+/// The call's argument object with each field left as written: a literal, or
+/// the name of a row binding to substitute.
+fn parse_args_template(src: &str, args_at: usize) -> Option<Vec<(String, ArgValue)>> {
+    let b = src.as_bytes();
+    let start = skip_ws_and_comments(b, args_at);
+    if b.get(start) != Some(&b'{') {
+        return None;
+    }
+    let end = scan_balanced(b, start)?;
+    // Same rule as `resolve_call_args`: the literal has to BE the whole
+    // argument, or something else is what actually ran.
+    if b.get(skip_ws_and_comments(b, end)) != Some(&b')') {
+        return None;
+    }
+
+    let mut parser = LiteralParser {
+        src,
+        b,
+        i: start + 1,
+    };
+    let mut fields = Vec::new();
+
+    loop {
+        parser.skip();
+        match parser.peek()? {
+            b'}' => return Some(fields),
+            b',' => {
+                parser.i += 1;
+                continue;
+            }
+            // spread (`...rest`) needs evaluation
+            b'.' => return None,
+            _ => {}
+        }
+        let key = parser.key()?;
+        parser.skip();
+        match parser.peek()? {
+            b':' => {
+                parser.i += 1;
+                parser.skip();
+                let value = match parser.peek()? {
+                    c if is_ident_start(c) => {
+                        let start = parser.i;
+                        while parser.i < b.len() && is_ident_byte(b[parser.i]) {
+                            parser.i += 1;
+                        }
+                        match src.get(start..parser.i)? {
+                            "true" => ArgValue::Literal(Value::Bool(true)),
+                            "false" => ArgValue::Literal(Value::Bool(false)),
+                            "null" | "undefined" => ArgValue::Literal(Value::Null),
+                            ident => ArgValue::Binding(ident.to_string()),
+                        }
+                    }
+                    _ => ArgValue::Literal(parser.value()?),
+                };
+                fields.push((key, value));
+            }
+            // Shorthand (`{cmd, workdir}`) — the value is the binding of the
+            // same name, which is exactly what a row supplies.
+            b',' | b'}' => {
+                let value = ArgValue::Binding(key.clone());
+                fields.push((key, value));
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn expand_rows(
+    tool_name: &str,
+    rows: &[Value],
+    pattern: &RowPattern,
+    template: &[(String, ArgValue)],
+) -> Option<Vec<CodeModeCall>> {
+    let mut calls = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let bindings = pattern.bind(row)?;
+        let lookup = |name: &str| {
+            bindings
+                .iter()
+                .find(|(bound, _)| *bound == name)
+                .map(|(_, value)| *value)
+        };
+        let mut args = Map::new();
+        for (key, value) in template {
+            let resolved = match value {
+                ArgValue::Literal(literal) => literal.clone(),
+                ArgValue::Binding(name) => lookup(name)?.clone(),
+            };
+            args.insert(key.clone(), resolved);
+        }
+        let input_preview = call_input_preview(tool_name, &Value::Object(args))?;
+        calls.push(CodeModeCall {
+            tool_name: tool_name.to_string(),
+            input_preview: input_preview.clone(),
+            // Substituted arguments were not written at the call site, so they
+            // do not carry the proof `register_shell_sessions` requires.
+            args_inline: false,
+            label: row_label(row, &input_preview),
+        });
+    }
+
+    Some(calls)
+}
+
+/// The row's human name: its first string that is not the command itself.
+/// `["query-entry", "nl -ba …"]` → `query-entry`; `["rg …", 20000]` → none.
+fn row_label(row: &Value, command: &str) -> Option<String> {
+    let strings: Box<dyn Iterator<Item = &Value>> = match row {
+        Value::Array(items) => Box::new(items.iter()),
+        Value::Object(fields) => Box::new(fields.values()),
+        _ => return None,
+    };
+    strings
+        .filter_map(Value::as_str)
+        .find(|text| !text.is_empty() && *text != command)
+        .map(str::to_string)
 }
 
 /// `const results = await Promise.all(` — the binding every parallel script
@@ -879,6 +1579,7 @@ fn resolve_call(src: &str, site: &ToolCallSite) -> Option<CodeModeCall> {
         tool_name: site.tool_name.clone(),
         input_preview,
         args_inline,
+        label: None,
     })
 }
 
@@ -2197,5 +2898,399 @@ mod tests {
         assert_eq!(json["source"], "const a = 1");
         assert_eq!(json["title"], "ls");
         assert_eq!(json["call_count"], 3);
+    }
+
+    // ── table fan-out ────────────────────────────────────────────────────
+
+    /// A script whose calls could not be recovered keeps its script card.
+    fn keeps_script_card(src: &str) -> bool {
+        parse_code_mode_script(src).calls.is_none()
+    }
+
+    /// The shape from the reported session: five commands in a literal table,
+    /// mapped through one `tools.exec_command({cmd, …})` with shorthand args.
+    const FANOUT: &str = concat!(
+        "const cmds = [\n",
+        "  [\"query-entry\", \"nl -ba Util.java | sed -n '1160,1345p'\"],\n",
+        "  [\"formula-service\", \"rg -n \\\"getAll.*Formula\\\" src | head -220\"],\n",
+        "  [\"vo\", \"rg -n \\\"class InfoVO\\\" src\"],\n",
+        "];\n",
+        "const out = await Promise.all(cmds.map(async ([k,cmd]) => [k, await tools.exec_command({cmd, workdir:\"/repo\", yield_time_ms:10000, max_output_tokens:25000})]));\n",
+        "for (const [k,r] of out) text(`===== ${k} =====\\n${r.output}`);\n",
+    );
+
+    #[test]
+    fn a_table_fanout_expands_into_one_call_per_row() {
+        let got = calls(FANOUT);
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|c| c.tool_name == "exec_command"));
+        assert_eq!(got[0].input_preview, "nl -ba Util.java | sed -n '1160,1345p'");
+        assert_eq!(
+            got[1].input_preview,
+            "rg -n \"getAll.*Formula\" src | head -220"
+        );
+        assert_eq!(got[2].input_preview, "rg -n \"class InfoVO\" src");
+    }
+
+    #[test]
+    fn a_table_fanout_carries_each_row_label() {
+        let got = calls(FANOUT);
+        let labels: Vec<_> = got.iter().map(|c| c.label.as_deref()).collect();
+        assert_eq!(
+            labels,
+            vec![Some("query-entry"), Some("formula-service"), Some("vo")]
+        );
+    }
+
+    /// Substituted arguments were not written at the call site, so they must
+    /// not be treated as proof of what ran — `register_shell_sessions` reads
+    /// this flag to decide whether a background session may be attributed.
+    #[test]
+    fn expanded_calls_never_claim_inline_arguments() {
+        assert!(calls(FANOUT).iter().all(|c| !c.args_inline));
+    }
+
+    #[test]
+    fn a_row_whose_only_string_is_the_command_has_no_label() {
+        let src = concat!(
+            "const cmds = [[\"ls -la\", 20000], [\"pwd\", 20000]];\n",
+            "const rs = await Promise.all(cmds.map(([cmd,max]) => tools.exec_command({cmd, max_output_tokens:max})));\n",
+            "rs.forEach((r,i)=>text(`---RESULT ${i+1}---\\n${r.output}`));\n",
+        );
+        let got = calls(src);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].input_preview, "ls -la");
+        assert_eq!(got[0].label, None);
+    }
+
+    #[test]
+    fn a_block_body_reaching_the_call_through_a_declarator_expands() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const r = await tools.exec_command({cmd, workdir:\"/repo\"});\n",
+            "  return `===== ${name} =====\\n${r.output}`;\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        let got = calls(src);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].input_preview, "echo two");
+        assert_eq!(got[1].label.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn object_rows_bind_by_property_name() {
+        let src = concat!(
+            "const jobs = [{name:\"a\", cmd:\"echo one\"}, {name:\"b\", cmd:\"echo two\"}];\n",
+            "const rs = await Promise.all(jobs.map(({cmd, name}) => tools.exec_command({cmd, workdir:\"/repo\"})));\n",
+            "rs.forEach(text);\n",
+        );
+        let got = calls(src);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].input_preview, "echo one");
+        assert_eq!(got[0].label.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_map_index_parameter_is_allowed() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd], i) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert_eq!(calls(src).len(), 2);
+    }
+
+    /// Everything below is a way the parameters could stop holding their row's
+    /// values before the call happens. None of them may expand.
+    #[test]
+    fn a_call_between_the_binding_and_the_tool_call_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const fixed = rewrite(cmd);\n",
+            "  return await tools.exec_command({cmd: fixed});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    #[test]
+    fn an_assignment_between_the_binding_and_the_tool_call_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  cmd += \" | head -5\";\n",
+            "  return await tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    #[test]
+    fn an_increment_between_the_binding_and_the_tool_call_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[1, \"echo one\"], [2, \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([n, cmd]) => {\n",
+            "  ++n;\n",
+            "  return await tools.exec_command({cmd, n});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// A `${…}` hole is code. Skipping template literals the way the string
+    /// scanners do would let this one through.
+    #[test]
+    fn a_reassigning_template_hole_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const tag = `${cmd = \"rm -rf /\"}`;\n",
+            "  return await tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// A template's literal text is not code, but the comment scanner cannot
+    /// tell: the `//` of a URL would start a line comment and swallow the rest
+    /// of the line — the `${cmd = …}` included.
+    #[test]
+    fn a_template_hiding_a_reassignment_behind_a_url_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const u = `https://x ${cmd = \"rm -rf /\"}`;\n",
+            "  return await tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// `let cmd = …` is a declaration by every syntactic measure, and shadows
+    /// the row's `cmd` all the same.
+    #[test]
+    fn a_declaration_shadowing_a_parameter_keeps_the_script_card() {
+        for keyword in ["const", "let", "var"] {
+            let src = format!(
+                concat!(
+                    "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+                    "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {{\n",
+                    "  {keyword} cmd = \"rm -rf /\";\n",
+                    "  return await tools.exec_command({{cmd}});\n",
+                    "}}));\n",
+                    "rs.forEach(text);\n",
+                ),
+                keyword = keyword
+            );
+            assert!(keeps_script_card(&src), "{keyword}");
+        }
+    }
+
+    /// A declaration that shadows nothing is still fine.
+    #[test]
+    fn a_declaration_of_a_fresh_name_still_expands() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const label = name;\n",
+            "  return await tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert_eq!(calls(src).len(), 2);
+    }
+
+    /// `Array.map`'s second argument is `thisArg`: it is evaluated ONCE, not
+    /// per row. Expanding it per row would invent commands that never ran, so
+    /// it stays the single call it is.
+    #[test]
+    fn a_call_in_the_maps_second_argument_is_not_expanded_per_row() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = cmds.map(([name, cmd]) => name, tools.exec_command({cmd: \"echo once\"}));\n",
+            "rs.forEach(text);\n",
+        );
+        let got = calls(src);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].input_preview, "echo once");
+    }
+
+    /// A regex body is not code, and must not be read as any. `//` inside a
+    /// character class would otherwise open a line comment and swallow the
+    /// statement behind it.
+    #[test]
+    fn a_regex_hiding_a_reassignment_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const re = /[//]/; cmd = \"rm -rf /\";\n",
+            "  return await tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// An unbalanced bracket inside a regex would leave the depth counter
+    /// raised, hiding the `,` that ends the callback.
+    #[test]
+    fn a_regex_bracket_does_not_hide_the_maps_second_argument() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = cmds.map(([name, cmd]) => /\\[/, tools.exec_command({cmd: \"echo once\"}));\n",
+            "rs.forEach(text);\n",
+        );
+        let got = calls(src);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].input_preview, "echo once");
+    }
+
+    /// A `${…}` hole is code wherever it appears, including in the template a
+    /// script builds while walking the table.
+    #[test]
+    fn a_template_hole_reordering_the_table_keeps_the_script_card() {
+        let before = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "text(`${cmds.reverse()}`);\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(before));
+
+        let during = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const r = await tools.exec_command({cmd});\n",
+            "  return `${cmds.reverse()}${r.output}`;\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(during));
+
+        // A regex inside the hole closes `scan_balanced` early, so the tail of
+        // the hole reads as template text. The name still has to be found.
+        let hidden = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "text(`${/[}]/.test(\"}\") && cmds.reverse()}`);\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(hidden));
+    }
+
+    /// The templates these scripts actually write name the row bindings, not
+    /// the table, and must keep working.
+    #[test]
+    fn a_template_naming_the_row_bindings_still_expands() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(async ([name, cmd]) => {\n",
+            "  const r = await tools.exec_command({cmd});\n",
+            "  return `===== ${name} =====\\n${r.output}`;\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert_eq!(calls(src).len(), 2);
+    }
+
+    /// The rows the callback sees are not the rows as written once something
+    /// has reordered them.
+    #[test]
+    fn a_table_reordered_before_the_walk_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "cmds.reverse();\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// Reaching the table from inside the callback can reorder it mid-walk.
+    #[test]
+    fn a_table_touched_inside_the_walk_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => {\n",
+            "  cmds.reverse();\n",
+            "  return tools.exec_command({cmd});\n",
+            "}));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// Reading the table AFTER the walk is how these scripts label their
+    /// output, and cannot affect what the walk saw.
+    #[test]
+    fn reading_the_table_after_the_walk_still_expands() {
+        let src = concat!(
+            "const specs = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(specs.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach((r, i) => text(`===== ${specs[i][0]} =====\\n${r.output}`));\n",
+        );
+        assert_eq!(calls(src).len(), 2);
+    }
+
+    #[test]
+    fn a_table_that_is_not_all_literals_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", base + \"/one\"], [\"b\", base + \"/two\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// `tools.exec_command({cmd} && job)` runs `job`, not the literal.
+    #[test]
+    fn arguments_that_are_not_the_whole_argument_keep_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd} && job)));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    #[test]
+    fn a_map_over_something_other_than_the_table_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(other.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    /// A single row is a single call; the plain scanner already covers the
+    /// shapes it can, and one row proves nothing about repetition.
+    #[test]
+    fn a_one_row_table_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
+    }
+
+    #[test]
+    fn a_second_tool_call_site_keeps_the_script_card() {
+        let src = concat!(
+            "const cmds = [[\"a\", \"echo one\"], [\"b\", \"echo two\"]];\n",
+            "const rs = await Promise.all(cmds.map(([name, cmd]) => tools.exec_command({cmd})));\n",
+            "await tools.exec_command({cmd: \"git status\"});\n",
+            "rs.forEach(text);\n",
+        );
+        assert!(keeps_script_card(src));
     }
 }

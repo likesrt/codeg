@@ -104,17 +104,36 @@ export function resolveRange(
 }
 
 /**
- * The bucket width that keeps a range readable: days up to ~3 months, weeks up
- * to ~2 years, months beyond. Only ever used to pick a *default* — the control
- * stays user-settable.
+ * The bucket width that keeps a range readable. Named presets map directly —
+ * 90 daily bars is a picket fence, so 90d reads in weeks and a year in
+ * months. Custom falls back to the span: days to ~3 months, weeks to a year,
+ * months beyond. Only ever used to pick a *default* — the control stays
+ * user-settable.
  */
-export function suggestBucket(range: ResolvedRange): TokenUsageBucket {
+export function suggestBucket(
+  preset: TokenUsageRangePreset,
+  range: ResolvedRange
+): TokenUsageBucket {
+  switch (preset) {
+    case "7d":
+    case "30d":
+    case "thisMonth":
+      return "day"
+    case "90d":
+      return "week"
+    case "thisYear":
+      return "month"
+    case "all":
+      return "week"
+    case "custom":
+      break
+  }
   if (!range.start || !range.end) return "week"
   const days =
     (new Date(range.end).getTime() - new Date(range.start).getTime()) /
     86_400_000
   if (days <= 92) return "day"
-  if (days <= 730) return "week"
+  if (days <= 366) return "week"
   return "month"
 }
 
@@ -230,6 +249,53 @@ export function cacheHitRate(totals: TokenUsageTotals): number | null {
 export function averagePerConversation(totals: TokenUsageTotals): number {
   if (totals.conversation_count <= 0) return 0
   return totals.total_tokens / totals.conversation_count
+}
+
+export function averageTurnsPerConversation(totals: TokenUsageTotals): number {
+  if (totals.conversation_count <= 0) return 0
+  return totals.turn_count / totals.conversation_count
+}
+
+/** Tokens that were actually computed this period — everything the cache did
+ *  NOT serve: fresh input, cache writes, and output. */
+export function freshTokens(totals: TokenUsageTotals): number {
+  return Math.max(0, totals.total_tokens - totals.cache_read_tokens)
+}
+
+/**
+ * Calendar days inside the report's range with no recorded usage at all.
+ *
+ * The span is counted in *local calendar days*, matching how the backend
+ * counts `active_days` — never as elapsed milliseconds / 86.4M. That matters
+ * because an unbounded request comes back clamped to the data: `range_start`
+ * is the first activity *instant* (mid-day, not midnight) and `range_end` is
+ * one tick past the last, so a ms division would undercount the span by up to
+ * two days. `null` when the span is unknowable (no bounds and no activity).
+ */
+export function idleDays(report: TokenUsageReport): number | null {
+  const startIso = report.range_start ?? report.first_activity_at
+  const endIso = report.range_end ?? report.last_activity_at
+  if (!startIso || !endIso) return null
+  let endMs = Date.parse(endIso)
+  // `range_end` is exclusive — step back one tick to the last instant that
+  // was actually counted. The `last_activity_at` fallback is already
+  // inclusive.
+  if (report.range_end) endMs -= 1
+  const start = new Date(startIso)
+  const end = new Date(endMs)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null
+  const startDay = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    start.getDate()
+  )
+  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate())
+  // Local midnights differ by a whole day count ±1h of DST; rounding
+  // absorbs the hour.
+  const days =
+    Math.round((endDay.getTime() - startDay.getTime()) / 86_400_000) + 1
+  if (!Number.isFinite(days) || days <= 0) return null
+  return Math.max(0, days - report.totals.active_days)
 }
 
 export function averagePerActiveDay(totals: TokenUsageTotals): number {

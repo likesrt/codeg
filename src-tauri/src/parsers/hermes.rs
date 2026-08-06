@@ -200,6 +200,7 @@ impl HermesParser {
         super::relocate_orphaned_tool_results(&mut turns);
         super::structurize_read_tool_output(&mut turns);
         super::resolve_patch_line_numbers(&mut turns, summary.folder_path.as_deref());
+        super::backfill_turn_durations(&mut turns, &[]);
 
         let session_stats = self
             .build_session_stats(&conn, conversation_id, summary.model.as_deref())

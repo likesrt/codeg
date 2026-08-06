@@ -17,12 +17,9 @@ import {
   ComposerInvocationsPopup,
   useComposerInvocations,
 } from "@/components/automations/composer-invocations"
-import {
-  useReferenceSearch,
-  type ReferenceGroupLabels,
-} from "@/components/chat/composer/use-reference-search"
+import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
+import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import { docToPromptBlocks } from "@/components/chat/composer/to-prompt-blocks"
-import type { MentionUiLabels } from "@/components/chat/composer/suggestion/types"
 import {
   AgentConfigSection,
   effectiveSelections,
@@ -125,7 +122,6 @@ function TaskEditorBody({
   onCancel: () => void
 }) {
   const t = useTranslations("Tasks")
-  const tComposer = useTranslations("Folder.chat.messageInput")
   const folders = useAppWorkspaceStore((s) => s.folders)
   // Tasks bind to project roots only (never worktrees / chat scratch dirs).
   const projectFolders = useMemo(
@@ -216,26 +212,8 @@ function TaskEditorBody({
     [folders, folderId]
   )
 
-  const referenceGroupLabels = useMemo<ReferenceGroupLabels>(
-    () => ({
-      file: tComposer("mentionGroupFile"),
-      agent: tComposer("mentionGroupAgent"),
-      session: tComposer("mentionGroupSession"),
-      commit: tComposer("mentionGroupCommit"),
-      skill: tComposer("mentionGroupSkill"),
-    }),
-    [tComposer]
-  )
-  const mentionUiLabels = useMemo<MentionUiLabels>(
-    () => ({
-      empty: tComposer("mentionEmpty"),
-      loading: tComposer("mentionLoading"),
-      listbox: tComposer("mentionListLabel"),
-      more: tComposer("mentionMore"),
-      count: (count: number) => tComposer("mentionCount", { count }),
-    }),
-    [tComposer]
-  )
+  const { groupLabels: referenceGroupLabels, uiLabels: mentionUiLabels } =
+    useComposerMentionLabels()
   const referenceSearch = useReferenceSearch({
     defaultPath: folderPath,
     enabled: true,

@@ -36,7 +36,6 @@ import {
 } from "lucide-react"
 import {
   workTaskArchive,
-  workTaskCancel,
   getFolderConversation,
   workTaskChangedFiles,
   workTaskCleanup,
@@ -49,13 +48,26 @@ import {
   workTaskStart,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  canSubmitFollowUp,
+  DEFAULT_FOLLOW_UP_INTENT,
+  followUpComposerTarget,
+  followUpScenario,
+  FOLLOW_UP_SCENARIOS,
+  type FollowUpIntent,
+} from "@/lib/task-follow-up"
 import { formatTokenCount } from "@/lib/token-format"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { AgentIcon } from "@/components/agent-icon"
+import type { RichComposerHandle } from "@/components/chat/composer/rich-composer"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { hasNothingToMerge } from "./task-acceptance"
 import { StatusChip, statusLabelKey } from "./task-card"
+import { TaskFollowUpComposer } from "./task-follow-up-composer"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -77,13 +89,19 @@ import {
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Sheet,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import type {
   AgentType,
@@ -121,6 +139,12 @@ interface TaskDetailSheetProps {
   /** Opens the page-owned read-only live session viewer. */
   onViewSession: (task: WorkTask) => void
   onMerge: (task: WorkTask) => void
+  /** Replaces merge when the task changed nothing (see `hasNothingToMerge`). */
+  onComplete: (task: WorkTask) => void
+  /** Opens the page-owned cancel dialog, which records the user's reason.
+   *  Both "cancel" and a reviewed task's "abandon" go through it — same
+   *  backend transition, same thing worth writing down. */
+  onCancel: (task: WorkTask) => void
   onEdit: (task: WorkTask) => void
 }
 
@@ -134,6 +158,9 @@ interface ZoneAction {
   /** Pushed to the right edge and rendered ghost: an escape hatch (abandon),
    *  not a step forward. */
   trailing?: boolean
+  /** Set on the buttons that only open/close the composer below, so the button
+   *  announces the disclosure it drives instead of a state change. */
+  expanded?: boolean
 }
 
 /**
@@ -149,17 +176,31 @@ export function TaskDetailSheet({
   folderName,
   onViewSession,
   onMerge,
+  onComplete,
+  onCancel,
   onEdit,
 }: TaskDetailSheetProps) {
   const t = useTranslations("Tasks")
+  // Backs the follow-up composer's `@` references and `/` command probe. The
+  // whole list, not the opened one: a task's worktree folder is normally not
+  // among the folders the user has open.
+  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  const { shortcuts } = useShortcutSettings()
   const [events, setEvents] = useState<WorkTaskEvent[]>([])
   const [files, setFiles] = useState<WorkTaskChangedFile[]>([])
-  const [returnOpen, setReturnOpen] = useState(false)
-  const [returnText, setReturnText] = useState("")
+  // The composer under the action row, opened by whichever action wants it: a
+  // follow-up on a reviewed task, an optional note on a failed / canceled one.
+  // Either way it carries its own send — the button above only unfolds it.
+  const [composerOpen, setComposerOpen] = useState(false)
+  const [composerText, setComposerText] = useState("")
+  const composerRef = useRef<RichComposerHandle>(null)
+  const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
+  /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
+  const submittingRef = useRef(false)
   const reqRef = useRef(0)
 
   const taskId = task?.id ?? null
@@ -227,8 +268,9 @@ export function TaskDetailSheet({
 
     setEvents([])
     setFiles([])
-    setReturnOpen(false)
-    setReturnText("")
+    setComposerOpen(false)
+    setComposerText("")
+    setIntent(DEFAULT_FOLLOW_UP_INTENT)
     void reload()
     let unsub: (() => void) | undefined
     let cancelled = false
@@ -259,6 +301,18 @@ export function TaskDetailSheet({
     }
   }, [])
 
+  /// A restart that consumed the note closes the box with it, so the text
+  /// cannot be silently attached to a second restart the user did not mean.
+  const runRestart = useCallback(
+    (fn: () => Promise<unknown>) =>
+      run(async () => {
+        await fn()
+        setComposerOpen(false)
+        setComposerText("")
+      }),
+    [run]
+  )
+
   // Snapshot first (it carries the model the run actually used); otherwise the
   // resolved agent's display name, so a task that simply follows the folder's
   // defaults still names its agent beside the icon.
@@ -277,6 +331,13 @@ export function TaskDetailSheet({
   // Conversation truth first; a task that overrides the folder default carries
   // its own agent, and before the detail lands that override is all we have.
   const agentType = convAgentType ?? task.config?.agent_type ?? null
+  // The same resolution, plus a folder default and the worktree path, for the
+  // composer's commands / skills / file references.
+  const composerTarget = followUpComposerTarget({
+    task,
+    conversationAgentType: convAgentType,
+    folders: allFolders,
+  })
 
   // The user-authored brief, as typed (the agent receives the block form).
   const promptText = task.config?.display_text?.trim() || null
@@ -291,23 +352,51 @@ export function TaskDetailSheet({
   // anything, so they sit in the bottom bar instead.
   const zoneActions: ZoneAction[] = []
   const isReview = task.status === "review" && !archived
+  const isRestart =
+    !archived && (task.status === "failed" || task.status === "canceled")
+  // A note for a restart (failed / canceled): both stopped for a reason the
+  // user usually knows and the agent doesn't. The restart button itself opens
+  // the box and the box sends — the same shape as "follow up", instead of a
+  // separate "add a note" button that did nothing on its own and left the user
+  // to go back up to the primary.
+  //
+  // Read from the editor when the button fires, never from the render's state:
+  // `composerText` trails the document by however long React takes to commit
+  // the keystroke, so a restart triggered right after typing would carry the
+  // previous value. Same rule as the follow-up send below.
+  const composerNote = (): string | null => {
+    if (!composerOpen) return null
+    return (composerRef.current?.getText() ?? composerText).trim() || null
+  }
   if (isReview) {
-    zoneActions.push({
-      icon: GitMerge,
-      label: t("actionMerge"),
-      filled: true,
-      onClick: () => onMerge(task),
-    })
+    // A task that changed nothing has no merge to offer — accepting it IS the
+    // primary action (same swap the board card makes).
+    zoneActions.push(
+      hasNothingToMerge(task)
+        ? {
+            icon: CircleCheck,
+            label: t("actionComplete"),
+            filled: true,
+            onClick: () => onComplete(task),
+          }
+        : {
+            icon: GitMerge,
+            label: t("actionMerge"),
+            filled: true,
+            onClick: () => onMerge(task),
+          }
+    )
     zoneActions.push({
       icon: Undo2,
-      label: t("actionReturn"),
-      onClick: () => setReturnOpen((v) => !v),
+      label: t("actionFollowUp"),
+      expanded: composerOpen,
+      onClick: () => setComposerOpen((v) => !v),
     })
     zoneActions.push({
       icon: Ban,
       label: t("actionAbandon"),
       trailing: true,
-      onClick: () => run(() => workTaskCancel(task.id)),
+      onClick: () => onCancel(task),
     })
   } else {
     const archive = (label: string, filled?: boolean): ZoneAction => ({
@@ -336,17 +425,20 @@ export function TaskDetailSheet({
             icon: Ban,
             label: t("actionCancel"),
             filled: true,
-            onClick: () => run(() => workTaskCancel(task.id)),
+            onClick: () => onCancel(task),
           })
           break
         case "merging":
           break
+        // The two restarts open the note box rather than firing: the send
+        // button inside it is what actually restarts (see `submitRestart`).
         case "failed":
           zoneActions.push({
             icon: RotateCw,
             label: t("actionRetry"),
             filled: true,
-            onClick: () => run(() => workTaskRetry(task.id)),
+            expanded: composerOpen,
+            onClick: () => setComposerOpen((v) => !v),
           })
           zoneActions.push(archive(t("actionArchive")))
           break
@@ -358,7 +450,8 @@ export function TaskDetailSheet({
             icon: RotateCw,
             label: t("actionRequeue"),
             filled: true,
-            onClick: () => run(() => workTaskRequeue(task.id)),
+            expanded: composerOpen,
+            onClick: () => setComposerOpen((v) => !v),
           })
           zoneActions.push(archive(t("actionArchive")))
           break
@@ -367,15 +460,61 @@ export function TaskDetailSheet({
   }
 
   const hasTrailingAction = zoneActions.some((a) => a.trailing)
+  const scenario = followUpScenario(intent)
+  const composerPlaceholder = isReview
+    ? t(scenario.placeholderKey)
+    : task.status === "failed"
+      ? t("followUpPlaceholderRetry")
+      : t("followUpPlaceholderRequeue")
 
-  const submitReturn = () =>
+  const submitFollowUp = () =>
     run(async () => {
-      const feedback = returnText.trim()
-      if (!feedback) return
-      await workTaskReturn(task.id, feedback)
-      setReturnOpen(false)
-      setReturnText("")
+      // Straight from the editor: reference badges serialize to their inline
+      // token here, and this can't lag a keystroke behind the state.
+      const feedback = (composerRef.current?.getText() ?? composerText).trim()
+      if (!canSubmitFollowUp(intent, feedback)) return
+      // A ref, not `busy`: the send key is read out of a ref inside the
+      // editor's own keydown handler, so a second Enter can arrive before
+      // React has re-rendered with `busy` set. The backend's CAS would reject
+      // the loser anyway — this keeps it from surfacing as an error toast for
+      // a keypress the user is entitled to repeat.
+      if (submittingRef.current) return
+      submittingRef.current = true
+      try {
+        await workTaskReturn(task.id, feedback, intent)
+      } finally {
+        submittingRef.current = false
+      }
+      setComposerOpen(false)
+      setComposerText("")
+      setIntent(DEFAULT_FOLLOW_UP_INTENT)
     })
+
+  /// The restart's own send. The note is optional — an empty box restarts the
+  /// task exactly the way the button used to on its own. Gated on the status
+  /// still being restartable: the row is live while the box is open, so a task
+  /// the engine picked back up must not be re-queued by a late click.
+  const submitRestart = () => {
+    if (!isRestart) return
+    // The same ref latch the follow-up send takes, and for the same reason: the
+    // box now sends, so the send key reaches this out of the editor's own
+    // keydown handler and a second Enter can arrive before React has
+    // re-rendered with `busy` set. The backend's CAS rejects the loser, but the
+    // user would see an error toast for a keypress they are entitled to repeat.
+    if (submittingRef.current) return
+    submittingRef.current = true
+    return runRestart(async () => {
+      try {
+        if (task.status === "failed") {
+          await workTaskRetry(task.id, composerNote())
+        } else {
+          await workTaskRequeue(task.id, composerNote())
+        }
+      } finally {
+        submittingRef.current = false
+      }
+    })
+  }
 
   return (
     <>
@@ -458,16 +597,30 @@ export function TaskDetailSheet({
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-5 py-4">
+              {/* A failure can carry anything from one line to a whole stack
+                  trace, and unbounded it pushed the brief, the result and the
+                  action panel off the first screen. Capped like the brief and
+                  the result below. The fade has to match the surface being
+                  clipped, and this one is `bg-destructive/10` over the sheet's
+                  own `bg-popover` — fading FROM that same translucent token
+                  would stack a second 10% on top and read as a dark band, so
+                  the equivalent opaque colour is mixed explicitly (both are
+                  theme vars, so it tracks the palette and dark mode). */}
               {task.last_error ? (
-                <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-xs text-destructive">
-                  <CircleAlert
-                    className="mt-0.5 size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span className="min-w-0 whitespace-pre-wrap break-words">
-                    {task.last_error}
-                  </span>
-                </div>
+                <CollapsibleBlock
+                  maxPx={160}
+                  fadeClass="from-[color-mix(in_oklab,var(--destructive)_10%,var(--popover))]"
+                >
+                  <div className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-xs text-destructive">
+                    <CircleAlert
+                      className="mt-0.5 size-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 whitespace-pre-wrap break-words">
+                      {task.last_error}
+                    </span>
+                  </div>
+                </CollapsibleBlock>
               ) : null}
 
               {/* The original task brief — always above the agent's result. */}
@@ -592,6 +745,7 @@ export function TaskDetailSheet({
                               : "outline"
                         }
                         disabled={busy}
+                        aria-expanded={action.expanded}
                         className={cn(
                           "h-8 gap-1.5",
                           // The primary claims the row unless an escape hatch
@@ -609,24 +763,88 @@ export function TaskDetailSheet({
                     ))}
                   </div>
 
-                  {returnOpen ? (
-                    <div className="flex flex-col gap-1.5">
-                      <Textarea
-                        className="bg-background"
-                        value={returnText}
-                        onChange={(e) => setReturnText(e.target.value)}
-                        placeholder={t("returnPlaceholder")}
-                        rows={3}
+                  {composerOpen && (isReview || isRestart) ? (
+                    <div className="flex flex-col gap-2">
+                      {/* The real composer, not a textarea: this is the step
+                          where naming a file or firing a command matters most.
+                          The submit is handed over whole rather than wrapped in
+                          a guard that reads render state: the editor calls it
+                          out of a ref that a passive effect refreshes, so
+                          anything read here could be a render behind the
+                          keystroke that triggered it — each submit validates
+                          the live document itself. */}
+                      <TaskFollowUpComposer
+                        editorRef={composerRef}
+                        agentType={composerTarget.agentType}
+                        folderPath={composerTarget.folderPath}
+                        defaultText={composerText}
+                        placeholder={composerPlaceholder}
+                        ariaLabel={
+                          isReview ? t("actionFollowUp") : t("actionAddNote")
+                        }
                         autoFocus
+                        submitShortcut={shortcuts.send_message}
+                        newlineShortcut={shortcuts.newline_in_message}
+                        onChange={setComposerText}
+                        onSubmit={() => {
+                          void (isReview ? submitFollowUp() : submitRestart())
+                        }}
                       />
-                      <div className="flex justify-end">
+                      {/* One footer for every case: the scenario picker on the
+                          left (reviewed tasks only — a restart's purpose is
+                          already fixed by the button that opened this box) and
+                          the send on the right. A restart sends from here too,
+                          so the button above is purely the disclosure. */}
+                      <div className="flex items-center gap-2">
+                        {isReview ? (
+                          <Select
+                            value={intent}
+                            onValueChange={(v) =>
+                              setIntent(v as FollowUpIntent)
+                            }
+                          >
+                            {/* The glyph rides inside SelectItem, which wraps
+                                its children in ItemText — so the trigger
+                                mirrors icon and label together, no separate
+                                trigger glyph needed. No radius override: the
+                                trigger keeps the pill the design system gives
+                                every control, so it matches the send button
+                                beside it instead of reading as a stray box. */}
+                            <SelectTrigger
+                              size="sm"
+                              className="w-auto min-w-0 max-w-[14rem] bg-background text-xs"
+                              aria-label={t("actionFollowUp")}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {FOLLOW_UP_SCENARIOS.map((option) => (
+                                <SelectItem
+                                  key={option.intent}
+                                  value={option.intent}
+                                >
+                                  <option.icon
+                                    className="size-3.5 text-muted-foreground"
+                                    aria-hidden="true"
+                                  />
+                                  {t(option.labelKey)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
+                        <div className="flex-1" />
                         <Button
                           type="button"
                           size="sm"
-                          disabled={busy || !returnText.trim()}
-                          onClick={submitReturn}
+                          disabled={
+                            busy ||
+                            (isReview &&
+                              !canSubmitFollowUp(intent, composerText))
+                          }
+                          onClick={isReview ? submitFollowUp : submitRestart}
                         >
-                          {t("returnSubmit")}
+                          {t("followUpSubmit")}
                         </Button>
                       </div>
                     </div>

@@ -203,6 +203,123 @@ pub async fn fetch_facts(
     Ok(rows)
 }
 
+/// Count the sessions the workspace list would show for this window — the
+/// number the status bar's session counter also reports when the window is
+/// unbounded.
+///
+/// The fold's own distinct-id count tells a different story: it includes
+/// delegation children the sidebar hides, and it misses every session that
+/// never recorded usage — empty sessions, agents that store no token counts,
+/// transcripts the agent's own retention already deleted. Side by side those
+/// two stories read as a bug ("1 050 sessions" in the status bar, "829" on the
+/// dashboard), so the headline uses this count instead.
+///
+/// Two disjoint groups sum to the answer, both restricted to the workspace
+/// list's visibility rules (live row, not a loop run, top level, live folder):
+///
+///  * sessions with at least one usage fact inside the window, and
+///  * sessions with **no facts at all** whose own activity stamp falls inside
+///    it. "No facts at all" (not "no facts in range") keeps the groups
+///    disjoint — a session whose usage lies outside the window is genuinely
+///    absent from that window, not half-present.
+///
+/// A model filter disables the factless group: a session with no usage rows
+/// cannot name a model.
+pub async fn workspace_conversation_count(
+    conn: &DatabaseConnection,
+    q: &FactQuery,
+) -> Result<u64, DbError> {
+    use sea_orm::sea_query::{Expr, Query};
+
+    if q.is_empty_selection() {
+        return Ok(0);
+    }
+
+    // Live folders up front, intersected with the filter — same shape as
+    // `conversation_service::list_all`, and it spares both branches a join.
+    let live_folders: Vec<i32> = folder::Entity::find()
+        .filter(folder::Column::DeletedAt.is_null())
+        .select_only()
+        .column(folder::Column::Id)
+        .into_tuple()
+        .all(conn)
+        .await?;
+    let allowed: Vec<i32> = match &q.folder_ids {
+        Some(ids) => ids
+            .iter()
+            .copied()
+            .filter(|id| live_folders.contains(id))
+            .collect(),
+        None => live_folders,
+    };
+    if allowed.is_empty() {
+        return Ok(0);
+    }
+
+    let mut with_usage = token_usage_turn::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            token_usage_turn::Relation::Conversation.def(),
+        )
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::Kind.ne(conversation::ConversationKind::Loop))
+        .filter(conversation::Column::ParentId.is_null())
+        .filter(conversation::Column::FolderId.is_in(allowed.clone()));
+    if let Some(start) = q.start {
+        with_usage = with_usage.filter(token_usage_turn::Column::OccurredAt.gte(start));
+    }
+    if let Some(end) = q.end {
+        with_usage = with_usage.filter(token_usage_turn::Column::OccurredAt.lt(end));
+    }
+    if let Some(ref agents) = q.agent_types {
+        with_usage = with_usage.filter(conversation::Column::AgentType.is_in(agents.clone()));
+    }
+    if let Some(ref models) = q.models {
+        with_usage = with_usage.filter(token_usage_turn::Column::Model.is_in(models.clone()));
+    }
+    let usage_count = with_usage
+        .select_only()
+        .column(token_usage_turn::Column::ConversationId)
+        .distinct()
+        .into_tuple::<i32>()
+        .all(conn)
+        .await?
+        .len() as u64;
+
+    if q.models.is_some() {
+        return Ok(usage_count);
+    }
+
+    let mut factless = conversation::Entity::find()
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::Kind.ne(conversation::ConversationKind::Loop))
+        .filter(conversation::Column::ParentId.is_null())
+        .filter(conversation::Column::FolderId.is_in(allowed))
+        .filter(
+            Expr::col((conversation::Entity, conversation::Column::Id)).not_in_subquery(
+                Query::select()
+                    .column(token_usage_turn::Column::ConversationId)
+                    .from(token_usage_turn::Entity)
+                    .to_owned(),
+            ),
+        );
+    // `updated_at` is the only activity signal a factless session has; for the
+    // unbounded window (the case the status bar is compared against) the
+    // predicate vanishes entirely.
+    if let Some(start) = q.start {
+        factless = factless.filter(conversation::Column::UpdatedAt.gte(start));
+    }
+    if let Some(end) = q.end {
+        factless = factless.filter(conversation::Column::UpdatedAt.lt(end));
+    }
+    if let Some(ref agents) = q.agent_types {
+        factless = factless.filter(conversation::Column::AgentType.is_in(agents.clone()));
+    }
+    let factless_count = factless.count(conn).await?;
+
+    Ok(usage_count + factless_count)
+}
+
 /// Replace every fact row of one conversation and stamp its sync state.
 ///
 /// Delete-then-insert (rather than a diff) is deliberate: a parser upgrade can
@@ -386,6 +503,39 @@ pub async fn mark_stale_for_reparse(
     Ok(())
 }
 
+/// Accept a transcript that is gone for good: keep the recorded facts, advance
+/// the stamp so no future pass revisits the conversation.
+///
+/// The counterpart to [`mark_stale_for_reparse`]. A source that reads as empty
+/// is indistinguishable from one that will never read again, and this table
+/// carries no attempt counter — a first miss and a thousandth look identical.
+/// So "keep retrying" is not caution, it is an unbounded loop: every pass
+/// re-walks the agent's whole transcript tree, fails the same way, and says so
+/// again. Settling ends it.
+///
+/// Only `source_updated_at` moves. `turn_count`, `total_tokens` and `synced_at`
+/// are left exactly as the last successful parse wrote them, because nothing
+/// was re-derived — the numbers on screen are still that parse's numbers and
+/// should not claim to be newer. The conversation comes back into scope only if
+/// something moves its `updated_at` (a re-import, fresh activity) or a full
+/// rebuild sweeps it up.
+pub async fn settle_lost_source(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    source_updated_at: DateTime<Utc>,
+) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    token_usage_sync::Entity::update_many()
+        .col_expr(
+            token_usage_sync::Column::SourceUpdatedAt,
+            Expr::value(source_updated_at),
+        )
+        .filter(token_usage_sync::Column::ConversationId.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 // There is deliberately no `clear_all` here. A "rebuild everything" is a
 // re-parse of every conversation (see `should_reparse` in
 // `commands::token_usage`), not a wipe: swapping each conversation's rows
@@ -475,7 +625,7 @@ pub async fn facet_folders(
         .into_iter()
         .filter_map(|r| by_id.get(&r.folder_id).cloned().map(|f| (f, r.tokens.unwrap_or(0))))
         .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|b| std::cmp::Reverse(b.1));
     Ok(out)
 }
 
@@ -489,7 +639,7 @@ pub async fn facet_agents(conn: &DatabaseConnection) -> Result<Vec<String>, DbEr
         .all(conn)
         .await?;
     let mut rows = rows;
-    rows.sort_by(|a, b| b.tokens.unwrap_or(0).cmp(&a.tokens.unwrap_or(0)));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.tokens.unwrap_or(0)));
     Ok(rows.into_iter().map(|r| r.agent_type).collect())
 }
 
@@ -503,7 +653,7 @@ pub async fn facet_models(conn: &DatabaseConnection) -> Result<Vec<String>, DbEr
         .all(conn)
         .await?;
     let mut rows = rows;
-    rows.sort_by(|a, b| b.tokens.unwrap_or(0).cmp(&a.tokens.unwrap_or(0)));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.tokens.unwrap_or(0)));
     Ok(rows.into_iter().filter_map(|r| r.model).collect())
 }
 
@@ -1163,5 +1313,156 @@ mod tests {
 
         aliased.alias = Some("Codeg".into());
         assert_eq!(folder_display_label(&aliased), "Codeg");
+    }
+
+    /// Pin a conversation's `updated_at` so the factless branch's activity
+    /// window is deterministic (creation stamps it "now").
+    async fn set_updated_at(db: &crate::db::AppDatabase, id: i32, when: DateTime<Utc>) {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel};
+        let row = conversation::Entity::find_by_id(id)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row");
+        let mut active = row.into_active_model();
+        active.updated_at = Set(when);
+        active.update(&db.conn).await.expect("update");
+    }
+
+    #[tokio::test]
+    async fn workspace_count_reconciles_with_the_session_list() {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel};
+
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/tu-n").await;
+
+        // A session with usage, and an empty one the fact table never sees.
+        let with_facts = seed_conversation(&db, folder, AgentType::ClaudeCode).await;
+        replace_conversation_facts(
+            &db.conn,
+            with_facts,
+            at("2026-08-01T12:00:00Z"),
+            &[fact("t1", "2026-08-01T10:00:00Z", 100, 20)],
+        )
+        .await
+        .expect("write facts");
+        let empty = seed_conversation(&db, folder, AgentType::Codex).await;
+        set_updated_at(&db, empty, at("2026-07-10T09:00:00Z")).await;
+
+        // A delegation child with usage: its tokens count, the session does
+        // not — the sidebar list it reconciles against hides children.
+        let child = seed_conversation(&db, folder, AgentType::ClaudeCode).await;
+        let mut active = conversation::Entity::find_by_id(child)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .into_active_model();
+        active.parent_id = Set(Some(with_facts));
+        active.kind = Set(conversation::ConversationKind::Delegate);
+        active.update(&db.conn).await.expect("mark child");
+        replace_conversation_facts(
+            &db.conn,
+            child,
+            at("2026-08-01T12:00:00Z"),
+            &[fact("t2", "2026-08-01T11:00:00Z", 50, 10)],
+        )
+        .await
+        .expect("write child facts");
+
+        // Unbounded window: the workspace list's two top-level sessions.
+        let all = workspace_conversation_count(&db.conn, &FactQuery::default())
+            .await
+            .expect("count");
+        assert_eq!(all, 2);
+
+        // A window holding only the usage turn: the empty session's activity
+        // stamp (July) is outside it.
+        let august = FactQuery {
+            start: Some(at("2026-08-01T00:00:00Z")),
+            end: Some(at("2026-08-02T00:00:00Z")),
+            ..Default::default()
+        };
+        assert_eq!(
+            workspace_conversation_count(&db.conn, &august)
+                .await
+                .expect("count"),
+            1
+        );
+
+        // A window holding only the empty session's activity.
+        let july = FactQuery {
+            start: Some(at("2026-07-01T00:00:00Z")),
+            end: Some(at("2026-08-01T00:00:00Z")),
+            ..Default::default()
+        };
+        assert_eq!(
+            workspace_conversation_count(&db.conn, &july)
+                .await
+                .expect("count"),
+            1
+        );
+
+        // A model filter can only speak for recorded usage, so the factless
+        // branch drops out entirely.
+        let by_model = FactQuery {
+            models: Some(vec!["claude-opus-5".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            workspace_conversation_count(&db.conn, &by_model)
+                .await
+                .expect("count"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_count_ignores_soft_deleted_and_filters_by_agent() {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel};
+
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/tu-o").await;
+
+        let kept = seed_conversation(&db, folder, AgentType::ClaudeCode).await;
+        replace_conversation_facts(
+            &db.conn,
+            kept,
+            at("2026-08-01T12:00:00Z"),
+            &[fact("t1", "2026-08-01T10:00:00Z", 100, 20)],
+        )
+        .await
+        .expect("write facts");
+
+        // Soft-deleted sessions keep their facts (tokens were spent) but are
+        // not sessions the workspace shows.
+        let deleted = seed_conversation(&db, folder, AgentType::Codex).await;
+        let mut active = conversation::Entity::find_by_id(deleted)
+            .one(&db.conn)
+            .await
+            .expect("query")
+            .expect("row")
+            .into_active_model();
+        active.deleted_at = Set(Some(at("2026-08-02T00:00:00Z")));
+        active.update(&db.conn).await.expect("soft delete");
+
+        assert_eq!(
+            workspace_conversation_count(&db.conn, &FactQuery::default())
+                .await
+                .expect("count"),
+            1
+        );
+
+        // Agent filter applies to both branches.
+        let codex_only = FactQuery {
+            agent_types: Some(vec!["codex".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            workspace_conversation_count(&db.conn, &codex_only)
+                .await
+                .expect("count"),
+            0
+        );
     }
 }

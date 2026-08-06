@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils"
 import { ReferenceIcon } from "../badges/reference-badge"
 import type { ReferenceAttrs, ReferenceKind } from "../types"
 import type { MentionRenderState } from "./mention-suggestion"
-import { placeMentionPopup } from "./popup-position"
+import { placeAnchoredPopup } from "./popup-position"
 import type {
   ReferenceSearch,
   SuggestionGroup,
@@ -229,7 +229,7 @@ export const SuggestionPopup = forwardRef<
       const rect = panel.getBoundingClientRect()
       const caret = state.getClientRect?.() ?? null
       setPos(
-        placeMentionPopup(
+        placeAnchoredPopup(
           caret
             ? { left: caret.left, top: caret.top, bottom: caret.bottom }
             : null,
@@ -312,6 +312,14 @@ export const SuggestionPopup = forwardRef<
         // Hidden until the first measure positions it (avoids a flash at 0,0).
         visibility: pos ? "visible" : "hidden",
         zIndex: 50,
+        // The panel portals to `body`, and a modal Radix layer (a Dialog or
+        // Sheet hosting the composer) sets `pointer-events: none` on `body` —
+        // only the layer itself is re-enabled. Without this the panel is
+        // click-dead there and the press lands on the document instead, which
+        // the layer reads as an outside press and closes itself. Radix's
+        // outside test walks the REACT tree, so a press that does reach the
+        // panel is correctly seen as inside the host.
+        pointerEvents: "auto",
       }}
       data-placement={pos?.placement}
     >

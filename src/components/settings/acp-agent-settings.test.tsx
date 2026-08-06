@@ -14,9 +14,11 @@ import {
   getAgentChecks,
   inferGrokMode,
   materializeClaudeHardeningFlags,
+  patchCodexConfigTomlText,
   patchImportantConfigText,
   setClaudeEnvFlagInConfigText,
 } from "./acp-agent-settings"
+import { parse as parseTomlDocument } from "smol-toml"
 import type {
   AcpAgentInfo,
   AdapterInfo,
@@ -1205,5 +1207,192 @@ describe("materializeClaudeHardeningFlags — save-time toggle defaults", () => 
     )
     expect(configText).toBe(invalid)
     expect(envText).toBe("EXISTING=1")
+  })
+})
+
+describe("patchCodexConfigTomlText — codeg's requires_openai_auth default", () => {
+  /** Read `model_providers.codeg.requires_openai_auth` back out of a result. */
+  function authFlagOf(configTomlText: string): boolean | undefined {
+    const parsed = parseTomlDocument(configTomlText) as {
+      model_providers?: Record<string, { requires_openai_auth?: unknown }>
+    }
+    const value = parsed.model_providers?.codeg?.requires_openai_auth
+    return typeof value === "boolean" ? value : undefined
+  }
+
+  // The three structured controls that reach ensureCodexProviderDefaults. Each
+  // must behave identically — the bug in issue #406 fired through all of them.
+  const ENTRY_POINTS: Array<{
+    label: string
+    patch: Parameters<typeof patchCodexConfigTomlText>[1]
+  }> = [
+    { label: "API base URL", patch: { apiBaseUrl: "https://new.example/v1" } },
+    { label: "WebSocket toggle", patch: { supportsWebsockets: true } },
+    { label: "model provider", patch: { modelProvider: "codeg" } },
+  ]
+
+  const BOUND_PROVIDER = [
+    'model_provider = "codeg"',
+    "",
+    "[model_providers.codeg]",
+    'base_url = "https://old.example/v1"',
+    'name = "codeg"',
+    'wire_api = "responses"',
+  ].join("\n")
+
+  for (const { label, patch } of ENTRY_POINTS) {
+    describe(`via the ${label} control`, () => {
+      it("keeps an explicit false", () => {
+        const toml = `${BOUND_PROVIDER}\nrequires_openai_auth = false\n`
+        expect(authFlagOf(patchCodexConfigTomlText(toml, patch))).toBe(false)
+      })
+
+      it("keeps an explicit true", () => {
+        const toml = `${BOUND_PROVIDER}\nrequires_openai_auth = true\n`
+        expect(authFlagOf(patchCodexConfigTomlText(toml, patch))).toBe(true)
+      })
+
+      it("supplies the default when the field is absent", () => {
+        expect(
+          authFlagOf(patchCodexConfigTomlText(BOUND_PROVIDER, patch))
+        ).toBe(true)
+      })
+
+      it("seeds a brand-new provider from an empty config", () => {
+        expect(authFlagOf(patchCodexConfigTomlText("", patch))).toBe(true)
+      })
+
+      it("stands down for a provider using actor authorization", () => {
+        const toml = [
+          BOUND_PROVIDER,
+          "",
+          "[model_providers.codeg.http_headers]",
+          'x-openai-actor-authorization = "local-image-extension"',
+        ].join("\n")
+        expect(
+          authFlagOf(patchCodexConfigTomlText(toml, patch))
+        ).toBeUndefined()
+      })
+    })
+  }
+
+  const ENTRY = ENTRY_POINTS[0].patch
+
+  it("preserves user comments around the managed provider", () => {
+    const toml = [
+      "# my hand-written codex config",
+      'model_provider = "codeg"',
+      "",
+      "[model_providers.codeg]",
+      'base_url = "https://old.example/v1"',
+      "# keep the actor-authorization arrangement intact",
+      "requires_openai_auth = false",
+    ].join("\n")
+    const result = patchCodexConfigTomlText(toml, ENTRY)
+    expect(result).toContain("# my hand-written codex config")
+    expect(result).toContain(
+      "# keep the actor-authorization arrangement intact"
+    )
+    expect(authFlagOf(result)).toBe(false)
+  })
+
+  it("matches the actor-authorization header case-insensitively", () => {
+    const toml = [
+      BOUND_PROVIDER,
+      "",
+      "[model_providers.codeg.http_headers]",
+      'X-OpenAI-Actor-Authorization = "local-image-extension"',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBeUndefined()
+  })
+
+  it("reads the header out of an inline table too", () => {
+    const toml = [
+      'model_provider = "codeg"',
+      "",
+      "[model_providers.codeg]",
+      'base_url = "https://old.example/v1"',
+      'http_headers = { "x-openai-actor-authorization" = "local-image-extension" }',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBeUndefined()
+  })
+
+  // Asserted on the text, not the parse: the text writers predate this change
+  // and cannot patch a provider spelled with root-level dotted keys — they
+  // append a `[model_providers.codeg]` section that redefines the same table.
+  // That limitation is pre-existing and out of scope here; what matters is
+  // that the header is still recognized, so no auth default is added.
+  it("reads the header out of a root-level dotted key too", () => {
+    const toml = [
+      'model_provider = "codeg"',
+      'model_providers.codeg.base_url = "https://old.example/v1"',
+      'model_providers.codeg.http_headers."x-openai-actor-authorization" = "local-image-extension"',
+    ].join("\n")
+    expect(patchCodexConfigTomlText(toml, ENTRY)).not.toContain(
+      "requires_openai_auth"
+    )
+  })
+
+  // Upstream's predicate is `!value.trim().is_empty()`, so a blank header does
+  // NOT enable actor authorization and the default still applies.
+  it("ignores an actor-authorization header with a blank value", () => {
+    const toml = [
+      BOUND_PROVIDER,
+      "",
+      "[model_providers.codeg.http_headers]",
+      'x-openai-actor-authorization = "   "',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBe(true)
+  })
+
+  it("never rewrites an explicit true that sits beside the header", () => {
+    const toml = [
+      BOUND_PROVIDER,
+      "requires_openai_auth = true",
+      "",
+      "[model_providers.codeg.http_headers]",
+      'x-openai-actor-authorization = "local-image-extension"',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBe(true)
+  })
+
+  it("ignores another provider's actor-authorization header", () => {
+    const toml = [
+      BOUND_PROVIDER,
+      "",
+      "[model_providers.other.http_headers]",
+      'x-openai-actor-authorization = "local-image-extension"',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBe(true)
+  })
+
+  // Regression (review round 1): `"http_headers.x-..." = "v"` is ONE literal
+  // key, not an http_headers sub-table. Mistaking it for the nested path would
+  // suppress the default and break codeg's own auth.json-based auth.
+  it("does not mistake a quoted dotted key for the header table", () => {
+    const toml = [
+      BOUND_PROVIDER,
+      '"http_headers.x-openai-actor-authorization" = "local-image-extension"',
+    ].join("\n")
+    expect(authFlagOf(patchCodexConfigTomlText(toml, ENTRY))).toBe(true)
+  })
+
+  // Regression (review round 2): an escaped key still declares the field, so
+  // writing the default would produce a duplicate-key TOML the backend rejects.
+  it("recognizes a field declared through an escaped quoted key", () => {
+    const toml = [BOUND_PROVIDER, '"requires\\u005fopenai_auth" = false'].join(
+      "\n"
+    )
+    const result = patchCodexConfigTomlText(toml, ENTRY)
+    expect(authFlagOf(result)).toBe(false)
+    expect(() => parseTomlDocument(result)).not.toThrow()
+  })
+
+  // A draft can be mid-edit in the raw editor. We cannot tell what is declared,
+  // so we touch nothing — the backend refuses to persist invalid TOML anyway.
+  it("leaves an unparsable draft's auth field alone", () => {
+    const toml = [BOUND_PROVIDER, 'base_url = "unterminated'].join("\n")
+    const result = patchCodexConfigTomlText(toml, ENTRY)
+    expect(result).not.toContain("requires_openai_auth")
   })
 })

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { Fragment, useCallback, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { formatTokenCount } from "@/lib/token-format"
@@ -14,56 +14,80 @@ import { formatTokensPrecise } from "@/lib/token-usage"
  * project's own geometry (thin bars, 4px rounded data-ends, a 2px surface gap
  * between stacked segments) instead of a library's defaults.
  *
- * Colour comes from the `.tu-viz` scope in globals.css — a CVD-validated
- * categorical palette for identity, a single-hue ramp for magnitude. Slots are
- * assigned by fixed index and never cycled: past the eighth series the caller
- * folds the tail into one "other" slice (see `foldBreakdown`).
+ * Colour comes from the `.tu-viz` scope in globals.css and speaks exactly two
+ * languages: the theme accent (`--tu-accent`) means "context served from the
+ * prompt cache", the neutral ink scale (`--tu-ink*`) means "freshly computed
+ * tokens". Identity in every list is carried by inline text labels, so colour
+ * is a magnitude cue, never the sole encoding.
  */
 
-/** Categorical slots, in the validated order. Index 8 is reserved for "other",
- *  which is deliberately neutral so a fold never impersonates a real series. */
-export const SERIES_VARS = [
-  "var(--tu-s1)",
-  "var(--tu-s2)",
-  "var(--tu-s3)",
-  "var(--tu-s4)",
-  "var(--tu-s5)",
-  "var(--tu-s6)",
-  "var(--tu-s7)",
-  "var(--tu-s8)",
-] as const
-
-export const OTHER_VAR = "var(--muted-foreground)"
-
-export function seriesColor(index: number): string {
-  return SERIES_VARS[index] ?? OTHER_VAR
-}
+export const ACCENT = "var(--tu-accent)"
+export const INK = "var(--tu-ink)"
+export const INK_SOFT = "var(--tu-ink-2)"
+export const INK_FAINT = "var(--tu-ink-3)"
+export const NEUTRAL = "var(--muted-foreground)"
 
 // ─── Trend ──────────────────────────────────────────────────────────────
 
 export interface TrendDatum {
   key: string
   label: string
-  value: number
+  /** Tooltip heading override — e.g. the date with its weekday, which would
+   *  be too long for the axis endpoint labels. */
+  tooltipLabel?: string
+  /** Context read back from the prompt cache — drawn in the theme accent. */
+  cache: number
+  /** Freshly computed tokens (input + output + cache writes) — drawn in ink. */
+  fresh: number
   /** Extra lines for the tooltip, already formatted and translated. */
   detail: { label: string; value: string }[]
 }
 
-const TREND_HEIGHT = 216
-const TREND_PAD_TOP = 12
+const TREND_HEIGHT = 224
+const TREND_PAD_TOP = 14
 const TREND_PAD_BOTTOM = 22
 const GRID_LINES = 4
+/** Mark-spec cap — a bar never fills its slot even on short ranges. */
+const MAX_BAR_WIDTH = 24
+
+/** A rect with only its top corners rounded: the data-end of a stack is round,
+ *  the baseline (and any segment seam) stays square. */
+function roundedTopPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+): string {
+  const rr = Math.max(0, Math.min(r, w / 2, h))
+  return [
+    `M${x},${y + h}`,
+    `V${y + rr}`,
+    `Q${x},${y} ${x + rr},${y}`,
+    `H${x + w - rr}`,
+    `Q${x + w},${y} ${x + w},${y + rr}`,
+    `V${y + h}`,
+    "Z",
+  ].join(" ")
+}
 
 /**
- * Bucketed spend over time — one bar per bucket, one measure, one axis.
+ * Bucketed spend over time — one stacked bar per bucket: cache reads in the
+ * accent with the freshly-computed remainder capping it in ink.
  *
  * Bars (not a line) because the buckets are discrete accumulations, and because
  * a range with quiet days should read as gaps rather than as a line
  * interpolating through zero.
+ *
+ * The marks are memoized apart from the hover state: a pointer move repaints
+ * only the highlight column and the tooltip, never the (up to a few hundred)
+ * bar paths.
  */
 export function TrendChart({
   data,
   label,
+  cacheLabel,
+  freshLabel,
   emptyLabel,
   className,
 }: {
@@ -71,6 +95,8 @@ export function TrendChart({
   /** Accessible name for the plot — what the chart shows, not what it says
    *  when it is empty. */
   label: string
+  cacheLabel: string
+  freshLabel: string
   emptyLabel: string
   className?: string
 }) {
@@ -78,16 +104,81 @@ export function TrendChart({
   const [hover, setHover] = useState<number | null>(null)
 
   const max = useMemo(
-    () => data.reduce((m, d) => Math.max(m, d.value), 0),
+    () => data.reduce((m, d) => Math.max(m, d.cache + d.fresh), 0),
     [data]
   )
   const plotHeight = TREND_HEIGHT - TREND_PAD_TOP - TREND_PAD_BOTTOM
+  const slot = data.length > 0 && width > 0 ? width / data.length : 0
+
+  const marks = useMemo(() => {
+    if (slot <= 0 || max <= 0) return null
+    // Bars keep a 2px surface gap from each other; below ~3px of drawable
+    // width the gap would eat the bar, so it collapses first.
+    const gap = slot > 5 ? 2 : 0
+    const barWidth = Math.min(MAX_BAR_WIDTH, Math.max(1, slot - gap))
+    const radius = Math.min(4, barWidth / 2)
+    const baseline = TREND_PAD_TOP + plotHeight
+    return (
+      <g>
+        {data.map((d, i) => {
+          const total = d.cache + d.fresh
+          if (total <= 0) return null
+          const totalH = Math.max(2, (total / max) * plotHeight)
+          const x = i * slot + (slot - barWidth) / 2
+          const freshH = (d.fresh / total) * totalH
+          const cacheH = totalH - freshH
+          // The 2px surface seam between segments only when both are tall
+          // enough to survive it; it is carved out of the fresh cap so the
+          // stack's total height stays honest.
+          const seam = freshH >= 4 && cacheH >= 2 ? 2 : 0
+          const parts: React.ReactNode[] = []
+          if (cacheH > 0.5) {
+            parts.push(
+              freshH > 0.5 ? (
+                <rect
+                  key="c"
+                  x={x}
+                  y={baseline - cacheH}
+                  width={barWidth}
+                  height={cacheH}
+                  fill={ACCENT}
+                />
+              ) : (
+                <path
+                  key="c"
+                  d={roundedTopPath(
+                    x,
+                    baseline - cacheH,
+                    barWidth,
+                    cacheH,
+                    radius
+                  )}
+                  fill={ACCENT}
+                />
+              )
+            )
+          }
+          if (freshH > 0.5) {
+            const h = Math.max(1, freshH - seam)
+            parts.push(
+              <path
+                key="f"
+                d={roundedTopPath(x, baseline - totalH, barWidth, h, radius)}
+                fill={INK}
+              />
+            )
+          }
+          return <g key={d.key}>{parts}</g>
+        })}
+      </g>
+    )
+  }, [data, slot, max, plotHeight])
 
   if (data.length === 0) {
     return (
       <div
         className={cn(
-          "flex h-[216px] items-center justify-center text-sm text-muted-foreground",
+          "flex h-[224px] items-center justify-center text-sm text-muted-foreground",
           className
         )}
       >
@@ -95,13 +186,6 @@ export function TrendChart({
       </div>
     )
   }
-
-  // Bars keep a 2px surface gap from each other; below ~3px of drawable width
-  // the gap would eat the bar, so it collapses first.
-  const slot = width > 0 ? width / data.length : 0
-  const gap = slot > 5 ? 2 : 0
-  const barWidth = Math.max(1, slot - gap)
-  const radius = Math.min(4, barWidth / 2)
 
   const hovered = hover !== null ? data[hover] : null
 
@@ -117,12 +201,11 @@ export function TrendChart({
           onMouseLeave={() => setHover(null)}
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect()
-            const x = e.clientX - rect.left
-            const index = Math.floor(x / slot)
+            const index = Math.floor((e.clientX - rect.left) / slot)
             setHover(index >= 0 && index < data.length ? index : null)
           }}
         >
-          {/* Recessive grid: four lines, no axis rules, no tick marks. */}
+          {/* Recessive grid: four hairlines, no axis rules, no tick marks. */}
           {Array.from({ length: GRID_LINES + 1 }, (_, i) => {
             const y = TREND_PAD_TOP + (plotHeight * i) / GRID_LINES
             return (
@@ -139,39 +222,20 @@ export function TrendChart({
             )
           })}
 
-          {data.map((d, i) => {
-            const height =
-              max > 0 && d.value > 0
-                ? Math.max(2, (d.value / max) * plotHeight)
-                : 0
-            const x = i * slot + gap / 2
-            const y = TREND_PAD_TOP + plotHeight - height
-            return (
-              <g key={d.key}>
-                {/* Full-height hit target: a 2px-tall bar is impossible to
-                    hover, so the pointer lands on the column, not the mark. */}
-                <rect
-                  x={i * slot}
-                  y={TREND_PAD_TOP}
-                  width={slot}
-                  height={plotHeight}
-                  fill="transparent"
-                />
-                {height > 0 && (
-                  <rect
-                    x={x}
-                    y={y}
-                    width={barWidth}
-                    height={height}
-                    rx={radius}
-                    ry={radius}
-                    fill="var(--tu-s1)"
-                    opacity={hover === null || hover === i ? 1 : 0.45}
-                  />
-                )}
-              </g>
-            )
-          })}
+          {/* Hover highlight sits behind the marks so the column reads as a
+              backdrop, not as data. */}
+          {hover !== null && (
+            <rect
+              x={hover * slot}
+              y={TREND_PAD_TOP}
+              width={slot}
+              height={plotHeight}
+              fill="var(--tu-accent-soft)"
+              opacity={0.6}
+            />
+          )}
+
+          {marks}
 
           {/* Endpoint labels only — a tick under every bucket would collide at
               any realistic bucket count, and the tooltip carries the rest. */}
@@ -194,7 +258,7 @@ export function TrendChart({
           )}
           <text
             x={0}
-            y={TREND_PAD_TOP - 3}
+            y={TREND_PAD_TOP - 4}
             className="fill-muted-foreground text-[0.6875rem]"
           >
             {formatTokenCount(max)}
@@ -204,97 +268,131 @@ export function TrendChart({
 
       {hover !== null && hovered && (
         <div
-          className="pointer-events-none absolute top-0 z-10 min-w-[9rem] rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-md"
+          className="pointer-events-none absolute top-0 z-10 min-w-[10rem] rounded-lg border border-border bg-popover px-2.5 py-2 text-xs shadow-md"
           style={{
-            // Clamp so the card never hangs off either edge.
-            left: Math.min(
-              Math.max(0, (hover + 0.5) * slot - 72),
-              Math.max(0, width - 150)
-            ),
+            transform: `translateX(${Math.min(
+              Math.max(0, (hover + 0.5) * slot - 80),
+              Math.max(0, width - 168)
+            )}px)`,
           }}
         >
-          <div className="font-medium text-popover-foreground">
-            {hovered.label}
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="font-medium text-popover-foreground">
+              {hovered.tooltipLabel ?? hovered.label}
+            </span>
+            <span className="font-mono text-[0.8125rem] text-popover-foreground">
+              {formatTokensPrecise(hovered.cache + hovered.fresh)}
+            </span>
           </div>
-          <div className="mt-1 font-mono text-[0.8125rem] text-popover-foreground">
-            {formatTokensPrecise(hovered.value)}
-          </div>
-          {hovered.detail.map((d) => (
-            <div
-              key={d.label}
-              className="mt-0.5 flex justify-between gap-3 text-muted-foreground"
-            >
-              <span>{d.label}</span>
-              <span className="font-mono">{d.value}</span>
+          <div className="mt-1.5 space-y-0.5">
+            <div className="flex items-center justify-between gap-3 text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="size-2 rounded-[2px]"
+                  style={{ backgroundColor: ACCENT }}
+                />
+                {cacheLabel}
+              </span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCount(hovered.cache)}
+              </span>
             </div>
-          ))}
+            <div className="flex items-center justify-between gap-3 text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="size-2 rounded-[2px]"
+                  style={{ backgroundColor: INK }}
+                />
+                {freshLabel}
+              </span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCount(hovered.fresh)}
+              </span>
+            </div>
+            {hovered.detail.map((d) => (
+              <div
+                key={d.label}
+                className="flex justify-between gap-3 text-muted-foreground"
+              >
+                <span>{d.label}</span>
+                <span className="font-mono tabular-nums">{d.value}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-// ─── Composition ────────────────────────────────────────────────────────
-
-export interface CompositionSegment {
-  key: string
-  label: string
-  value: number
-}
+// ─── Ring meter ─────────────────────────────────────────────────────────
 
 /**
- * One 100%-stacked bar for the input/output/cache split, with a fully labeled
- * legend underneath.
+ * A radial meter for one ratio against its whole — the cache hit rate.
  *
- * The legend is not optional decoration: on a light surface two of these slots
- * sit below 3:1 against white, so identity has to be carried by visible text —
- * which the legend rows do, value and share included.
+ * A meter, not a two-slice pie: the unfilled track is a lighter step of the
+ * same accent ramp, so the fill reads as "how much of the ring", never as a
+ * second data series.
  */
-export function CompositionBar({
-  segments,
+export function RingMeter({
+  ratio,
+  valueText,
+  caption,
+  size = 116,
+  thickness = 11,
   className,
 }: {
-  segments: CompositionSegment[]
+  /** 0–1, already clamped by the caller's data; re-clamped here defensively. */
+  ratio: number
+  valueText: string
+  caption: string
+  size?: number
+  thickness?: number
   className?: string
 }) {
-  const total = segments.reduce((s, seg) => s + seg.value, 0)
+  const clamped = Math.min(1, Math.max(0, ratio))
+  const r = (size - thickness) / 2
+  const circumference = 2 * Math.PI * r
   return (
-    <div className={cn("space-y-3", className)}>
-      <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full">
-        {total > 0 ? (
-          segments.map((seg, i) =>
-            seg.value > 0 ? (
-              <div
-                key={seg.key}
-                className="h-full first:rounded-l-full last:rounded-r-full"
-                style={{
-                  width: `${(seg.value / total) * 100}%`,
-                  backgroundColor: seriesColor(i),
-                }}
-              />
-            ) : null
-          )
-        ) : (
-          <div className="h-full w-full rounded-full bg-muted" />
+    <div
+      className={cn("relative shrink-0", className)}
+      style={{ width: size, height: size }}
+      role="img"
+      aria-label={`${caption} ${valueText}`}
+    >
+      <svg width={size} height={size} className="-rotate-90" aria-hidden="true">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="var(--tu-accent-soft)"
+          strokeWidth={thickness}
+        />
+        {clamped > 0 && (
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke={ACCENT}
+            strokeWidth={thickness}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - clamped)}
+          />
         )}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-[1.375rem] font-semibold leading-none tracking-tight">
+          {valueText}
+        </span>
+        <span className="mt-1 text-[0.625rem] leading-none text-muted-foreground">
+          {caption}
+        </span>
       </div>
-      <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-4">
-        {segments.map((seg, i) => (
-          <li key={seg.key} className="flex items-center gap-1.5 text-xs">
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-[2px]"
-              style={{ backgroundColor: seriesColor(i) }}
-            />
-            <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              {seg.label}
-            </span>
-            <span className="shrink-0 font-mono tabular-nums">
-              {formatTokenCount(seg.value)}
-            </span>
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
@@ -305,26 +403,34 @@ export interface RankedDatum {
   key: string
   label: string
   value: number
-  /** Rendered right of the value — e.g. a session count. */
+  /** 0–1 share of the framing total, printed as the right-hand percent column.
+   *  `null` hides the column for lists where a share reads as noise. */
+  share: number | null
+  /** Rendered dimmed between the label and the value — e.g. a session count. */
   hint?: string
-  /** Overrides the slot colour (used for the folded "other" row). */
+  /** Overrides the accent fill (used for the ink scale and the "other" fold). */
   color?: string
 }
 
 /**
  * A ranked horizontal-bar list — the form for "which of these is biggest".
  *
- * Every row is directly labeled with its name and value, so the bars are a
- * magnitude cue rather than the only way to read the chart.
+ * Every row is directly labeled with its name, value and share, so the bars
+ * are a magnitude cue rather than the only way to read the chart. All rows
+ * default to the single accent hue: identity lives in the text, and one hue
+ * keeps the list from impersonating a categorical encoding.
  */
 export function RankedBars({
   data,
   emptyLabel,
+  showRank = false,
   onSelect,
   className,
 }: {
   data: RankedDatum[]
   emptyLabel: string
+  /** Prefix rows with 01/02/… — the reference treatment for top-N lists. */
+  showRank?: boolean
   onSelect?: (key: string) => void
   className?: string
 }) {
@@ -345,28 +451,46 @@ export function RankedBars({
     <ul className={cn("space-y-2.5", className)}>
       {data.map((d, i) => {
         const pct = max > 0 ? (d.value / max) * 100 : 0
+        const fill = d.color ?? ACCENT
         const row = (
           <>
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span
-                  aria-hidden="true"
-                  className="size-2 shrink-0 rounded-[2px]"
-                  style={{ backgroundColor: d.color ?? seriesColor(i) }}
-                />
+            <div className="flex items-baseline gap-3">
+              <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                {showRank && (
+                  <span
+                    aria-hidden="true"
+                    className="w-5 shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70"
+                  >
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                )}
                 <span className="truncate text-[0.8125rem]">{d.label}</span>
               </span>
-              <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                {d.hint ? `${d.hint} · ` : ""}
+              {d.hint ? (
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                  {d.hint}
+                </span>
+              ) : null}
+              <span className="shrink-0 font-mono text-xs tabular-nums">
                 {formatTokenCount(d.value)}
               </span>
+              {d.share !== null && (
+                <span className="w-10 shrink-0 text-right font-mono text-[0.6875rem] tabular-nums text-muted-foreground">
+                  {`${(d.share * 100).toFixed(1)}%`}
+                </span>
+              )}
             </div>
-            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                "mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted/70",
+                showRank && "ms-7 w-auto"
+              )}
+            >
               <div
                 className="h-full rounded-full"
                 style={{
                   width: `${Math.max(pct, d.value > 0 ? 1.5 : 0)}%`,
-                  backgroundColor: d.color ?? seriesColor(i),
+                  backgroundColor: fill,
                 }}
               />
             </div>
@@ -419,11 +543,32 @@ export function rampStep(value: number, max: number): number | null {
   return Math.min(RAMP_VARS.length, Math.max(1, step)) - 1
 }
 
+/** Hour ticks over the 24-column grid; the last one right-aligns to the edge. */
+const HOUR_TICKS = [0, 6, 12, 18] as const
+
+/** 24 columns is past Tailwind's named grid-cols scale; an inline template
+ *  keeps it exact instead of relying on a JIT utility a purge could miss. */
+const HEAT_GRID_TEMPLATE = {
+  gridTemplateColumns: "repeat(24, minmax(0, 1fr))",
+} as const
+
+interface HeatHover {
+  weekday: number
+  hour: number
+  value: number
+  /** Cell box relative to the component wrapper, physical pixels. */
+  x: number
+  y: number
+  w: number
+  h: number
+  containerW: number
+}
+
 export function ActivityHeatmap({
   matrix,
   max,
   weekdayLabels,
-  formatTitle,
+  formatAria,
   legendLess,
   legendMore,
   className,
@@ -431,41 +576,91 @@ export function ActivityHeatmap({
   matrix: number[][]
   max: number
   weekdayLabels: string[]
-  formatTitle: (weekday: number, hour: number, value: number) => string
+  /** Full-sentence cell description for assistive tech — the visual tooltip
+   *  is composed from the weekday/hour parts directly. */
+  formatAria: (weekday: number, hour: number, value: number) => string
   legendLess: string
   legendMore: string
   className?: string
 }) {
-  return (
-    <div className={cn("space-y-2", className)}>
-      <div className="flex gap-1.5">
-        <div className="flex shrink-0 flex-col justify-around py-[1px] text-[0.625rem] leading-none text-muted-foreground">
-          {weekdayLabels.map((label, i) => (
-            // Every other row labeled: seven stacked 10px labels in ~120px of
-            // height collide, and the alternating rail still reads as a week.
-            <span key={i} className="h-[calc(100%/7)] pr-0.5">
-              {i % 2 === 0 ? label : ""}
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [hover, setHover] = useState<HeatHover | null>(null)
+
+  const onEnterCell = useCallback(
+    (
+      e: React.MouseEvent<HTMLDivElement>,
+      weekday: number,
+      hour: number,
+      value: number
+    ) => {
+      const wrap = wrapRef.current
+      if (!wrap) return
+      const cell = e.currentTarget.getBoundingClientRect()
+      const box = wrap.getBoundingClientRect()
+      setHover({
+        weekday,
+        hour,
+        value,
+        x: cell.left - box.left,
+        y: cell.top - box.top,
+        w: cell.width,
+        h: cell.height,
+        containerW: box.width,
+      })
+    },
+    []
+  )
+  const clearHover = useCallback(() => setHover(null), [])
+
+  // The 168 cells never change on hover — the highlight ring and tooltip are
+  // overlays, so pointer traffic re-renders two small divs, not the grid.
+  const grid = useMemo(
+    () => (
+      <div
+        className="grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] gap-x-1.5 gap-y-[2px]"
+        // Explicit rows so the seven weekday tracks split any stretch equally
+        // (the panel next to this one dictates the shared card height).
+        style={{ gridTemplateRows: "auto repeat(7, minmax(0, 1fr))" }}
+        onMouseLeave={clearHover}
+      >
+        {/* Hour rail: sparse ticks — 24 labels would collide at any width. */}
+        <div />
+        <div
+          className="mb-0.5 grid text-[0.625rem] leading-none text-muted-foreground"
+          style={HEAT_GRID_TEMPLATE}
+        >
+          {HOUR_TICKS.map((h) => (
+            <span key={h} style={{ gridColumn: `${h + 1} / span 2` }}>
+              {h}
             </span>
           ))}
+          <span className="text-right" style={{ gridColumn: "23 / span 2" }}>
+            23
+          </span>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
-          {matrix.map((row, weekday) => (
+        {matrix.map((row, weekday) => (
+          <Fragment key={weekday}>
+            {/* Every other row labeled: seven stacked 10px labels collide, and
+                the alternating rail still reads as a week. */}
+            <span className="flex items-center pr-0.5 text-[0.625rem] leading-none text-muted-foreground">
+              {weekday % 2 === 0 ? weekdayLabels[weekday] : ""}
+            </span>
+            {/* Cells stretch both ways: at least 16px tall, growing with the
+                row track when the neighbouring panel makes the card taller. */}
             <div
-              key={weekday}
-              className="grid gap-[2px]"
-              // 24 columns is past Tailwind's named grid-cols scale; an inline
-              // template keeps it exact instead of relying on a JIT-generated
-              // utility that a purge could miss.
-              style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}
+              className="grid h-full min-h-4 gap-[2px]"
+              style={HEAT_GRID_TEMPLATE}
             >
               {row.map((value, hour) => {
                 const step = rampStep(value, max)
                 return (
                   <div
                     key={hour}
-                    title={formatTitle(weekday, hour, value)}
+                    role="img"
+                    aria-label={formatAria(weekday, hour, value)}
+                    onMouseEnter={(e) => onEnterCell(e, weekday, hour, value)}
                     className={cn(
-                      "aspect-square w-full rounded-[2px]",
+                      "h-full w-full rounded-[2px]",
                       step === null &&
                         "bg-muted/40 ring-1 ring-inset ring-border/50"
                     )}
@@ -478,10 +673,24 @@ export function ActivityHeatmap({
                 )
               })}
             </div>
-          ))}
-        </div>
+          </Fragment>
+        ))}
       </div>
-      <div className="flex items-center justify-end gap-1.5 text-[0.625rem] text-muted-foreground">
+    ),
+    [matrix, max, weekdayLabels, formatAria, onEnterCell, clearHover]
+  )
+
+  return (
+    // Flex + gap, NOT space-y: Tailwind v4's space-y puts margin-bottom on
+    // :not(:last-child), so the absolutely-positioned hover overlays becoming
+    // the last children would hand the legend a sudden bottom margin and grow
+    // the whole card on hover. Out-of-flow children are invisible to flex gap.
+    <div
+      ref={wrapRef}
+      className={cn("relative flex min-h-0 flex-1 flex-col gap-2", className)}
+    >
+      {grid}
+      <div className="flex shrink-0 items-center justify-end gap-1.5 text-[0.625rem] text-muted-foreground">
         <span>{legendLess}</span>
         <span className="size-2.5 rounded-[2px] bg-muted/40 ring-1 ring-inset ring-border/50" />
         {RAMP_VARS.map((v) => (
@@ -493,61 +702,41 @@ export function ActivityHeatmap({
         ))}
         <span>{legendMore}</span>
       </div>
+
+      {hover && (
+        <>
+          {/* Hovered-cell ring — an overlay, so the grid itself never
+              re-renders on pointer moves. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute rounded-[3px] ring-2 ring-foreground/35"
+            style={{
+              left: hover.x - 1,
+              top: hover.y - 1,
+              width: hover.w + 2,
+              height: hover.h + 2,
+            }}
+          />
+          <div
+            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs shadow-md"
+            style={{
+              left: Math.min(
+                Math.max(hover.x + hover.w / 2, 56),
+                Math.max(56, hover.containerW - 56)
+              ),
+              top: hover.y - 6,
+            }}
+          >
+            <div className="font-medium text-popover-foreground">
+              {weekdayLabels[hover.weekday]}{" "}
+              {String(hover.hour).padStart(2, "0")}:00
+            </div>
+            <div className="mt-0.5 text-end font-mono tabular-nums text-muted-foreground">
+              {formatTokenCount(hover.value)}
+            </div>
+          </div>
+        </>
+      )}
     </div>
-  )
-}
-
-// ─── Sparkline ──────────────────────────────────────────────────────────
-
-/**
- * The compact trend used on the share card. An area (not bars) because at
- * poster scale the shape is what carries, and a filled silhouette survives the
- * downscale that thin bars would not.
- */
-export function Sparkline({
-  values,
-  width,
-  height,
-  color = "var(--tu-s1)",
-  className,
-}: {
-  values: number[]
-  width: number
-  height: number
-  color?: string
-  className?: string
-}) {
-  if (values.length === 0 || width <= 0 || height <= 0) return null
-  const max = Math.max(...values, 1)
-  const step = values.length > 1 ? width / (values.length - 1) : width
-  const points = values.map((v, i) => {
-    const x = values.length > 1 ? i * step : width / 2
-    // 1px inset top and bottom so the stroke is never clipped by the viewBox.
-    const y = height - 1 - (v / max) * (height - 2)
-    return [x, y] as const
-  })
-  const line = points
-    .map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`)
-    .join(" ")
-  const area = `${line} L${width},${height} L0,${height} Z`
-
-  return (
-    <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      className={className}
-      aria-hidden="true"
-    >
-      <path d={area} fill={color} opacity={0.18} />
-      <path
-        d={line}
-        fill="none"
-        stroke={color}
-        strokeWidth={2}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-    </svg>
   )
 }

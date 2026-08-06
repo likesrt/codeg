@@ -1,3 +1,4 @@
+import { parseTimestamp } from "@/components/conversations/sidebar-conversation-grouping"
 import type { WorkTask, WorkTaskStatus } from "@/lib/types"
 
 /** The four board columns (DB statuses are exact; the UI aggregates them). */
@@ -40,10 +41,17 @@ export function columnForStatus(status: WorkTaskStatus): BoardColumnId {
 }
 
 /**
- * Bucket tasks into the four columns, preserving list order (backend returns
- * board order: sort_order, id). Canceled tasks are dropped unless
+ * Bucket tasks into the four columns. Canceled tasks are dropped unless
  * `showCanceled`, archived ones unless `showArchived` (archived is always
- * terminal); done tasks sort before canceled within the Done column.
+ * terminal).
+ *
+ * Every column reads freshest-first: `updated_at` descending, so whatever just
+ * moved sits at the top of its column. The sort is stable and the backend hands
+ * rows over in board order (sort_order, id), so equal timestamps keep that
+ * order — which is exactly what preserves a pending-column drag: `reorder`
+ * stamps the whole column with one `updated_at`, the rows tie, and the fallback
+ * is their freshly written sort_order. sort_order still drives the launch queue
+ * (`next_queued` / "start all"); it just no longer drives the display.
  */
 export function groupTasksByColumn(
   tasks: WorkTask[],
@@ -61,12 +69,10 @@ export function groupTasksByColumn(
     if (task.archived_at != null && !showArchived) continue
     grouped[columnForStatus(task.status)].push(task)
   }
-  grouped.done.sort((a, b) => {
-    const aCanceled = a.status === "canceled" ? 1 : 0
-    const bCanceled = b.status === "canceled" ? 1 : 0
-    if (aCanceled !== bCanceled) return aCanceled - bCanceled
-    // Freshest completion first within each group.
-    return (b.finished_at ?? "").localeCompare(a.finished_at ?? "")
-  })
+  for (const column of BOARD_COLUMN_IDS) {
+    grouped[column].sort(
+      (a, b) => parseTimestamp(b.updated_at) - parseTimestamp(a.updated_at)
+    )
+  }
   return grouped
 }

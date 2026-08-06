@@ -2002,8 +2002,10 @@ fn build_grok_set_model_params(
 /// into the RUNNING turn. Untyped like `session/resume` — an extension method
 /// the schema has no typed request for. Always opts into the 0.64.0
 /// `promptRequired` idle contract; codeg only enables native steering for
-/// adapters proven to honor it (see [`synthesize_native_steering`]), but the
-/// caller still handles every outcome in case the proof was wrong.
+/// adapters proven to honor it AND to keep the owning prompt in flight across
+/// the steered work (claude-agent-acp 0.65.0 / #958 — see
+/// [`synthesize_native_steering`] and `registry::steering_prompt_required_min_version`),
+/// but the caller still handles every outcome in case the proof was wrong.
 async fn send_steer_request(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -6569,7 +6571,33 @@ async fn run_conversation_loop<'a>(
                                     // commands, not session updates. A dead
                                     // receiver is fine — the reply is then
                                     // moot (teardown), nothing to unwind.
-                                    let _ = reply.send(send_steer_request(&cx, &sid, &text).await);
+                                    let outcome = send_steer_request(&cx, &sid, &text).await;
+                                    // A steered message still lands in the
+                                    // agent's OWN transcript as a user record,
+                                    // which `group_into_turns` reads as the
+                                    // start of a turn. Fingerprint it so the
+                                    // background watcher classifies that turn
+                                    // as wire-rendered foreground: the owning
+                                    // prompt stays in flight across the steered
+                                    // work (claude-agent-acp #958), so all of
+                                    // it already streams into the live turn —
+                                    // surfacing it as overlay activity too
+                                    // renders it twice and reorders the
+                                    // transcript as the upserts land.
+                                    //
+                                    // `Injected` ONLY: `PromptRequired` leaves
+                                    // the content unconsumed (the caller
+                                    // resends it as a real prompt, which
+                                    // fingerprints itself, and a stale entry
+                                    // would swallow a same-text out-of-turn
+                                    // refire for the whole ledger TTL), and a
+                                    // `StartedNewTurn` genuinely runs detached
+                                    // — the overlay is the only place its work
+                                    // can surface at all.
+                                    if matches!(outcome, Ok(SteerOutcome::Injected)) {
+                                        prompt_ledger.record_text(&text);
+                                    }
+                                    let _ = reply.send(outcome);
                                 }
                                 Some(ConnectionCommand::Cancel) => {
                                     // Send CancelNotification to agent to stop the current turn
@@ -6681,6 +6709,20 @@ async fn run_conversation_loop<'a>(
                                     }
                                     disconnect_requested = true;
                                     break;
+                                }
+                                Some(ConnectionCommand::Prompt { .. }) => {
+                                    // Tripwire, not a user-facing case. The
+                                    // `turn_in_flight` gate in `send_prompt_inner`
+                                    // rejects a second prompt BEFORE it is ever
+                                    // enqueued, so a `Prompt` reaching this mid-turn
+                                    // command handler means an ungated sender slipped
+                                    // past the gate (a broken invariant) — surface it
+                                    // at `warn` instead of letting the `_ => {}` below
+                                    // swallow it silently.
+                                    tracing::warn!(
+                                        connection_id = %conn_id,
+                                        "[ACP] in-turn Prompt DROPPED — the turn_in_flight gate should have rejected this"
+                                    );
                                 }
                                 _ => {}
                             }
@@ -7851,8 +7893,12 @@ fn is_claude_api_retry_message(message: &serde_json::Value) -> bool {
     matches!(message_type, Some("system")) && matches!(message_subtype, Some("api_retry"))
 }
 
+/// The JSON-RPC method claude-agent-acp uses to mirror raw SDK messages. Named
+/// so `is_known_ext_method` and the mapper can't drift apart.
+const CLAUDE_SDK_EXT_METHOD: &str = "_claude/sdkMessage";
+
 fn map_claude_sdk_ext_notification(notification: &UntypedMessage) -> Option<AcpEvent> {
-    if notification.method() != "_claude/sdkMessage" {
+    if notification.method() != CLAUDE_SDK_EXT_METHOD {
         return None;
     }
 
@@ -7974,20 +8020,69 @@ fn grok_ext_notification_is_turn_output(dispatch: &Dispatch, agent_type: AgentTy
     }
 }
 
+/// Whether codeg has a mapper for this ext-notification method.
+///
+/// Used ONLY to keep the unrecognized-method log quiet about methods we do know
+/// and merely declined to map this time. That distinction is the whole point:
+/// `_claude/sdkMessage` arrives for every SDK message and only maps when the
+/// payload is an API retry, so logging every unmapped one would put a line on a
+/// per-message hot path — the shape that once grew a server's log file to 217GB.
+///
+/// Forgetting to list a newly-mapped method here fails in the SAFE direction —
+/// its unmapped payloads just get logged (noise, still visible). The dangerous
+/// direction is the reverse: listing a method no mapper claims would silence
+/// exactly the gap this log exists to expose.
+fn is_known_ext_method(method: &str) -> bool {
+    method == CLAUDE_SDK_EXT_METHOD || GROK_EXT_UPDATE_METHODS.contains(&method)
+}
+
+/// Last stop for a dispatch the typed `session/update` pipeline didn't claim.
+///
+/// Every exit here DROPS the message, which is the pre-existing behavior and
+/// stays that way — the change is that a drop is no longer invisible. All lines
+/// are `debug!`: an agent is free to speak methods codeg doesn't implement, and
+/// a per-message `warn!` on a chatty agent is how log storms start.
 async fn maybe_emit_ext_notification(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
     dispatch: Dispatch,
 ) {
-    let Dispatch::Notification(notification) = dispatch else {
-        return;
+    let notification = match dispatch {
+        Dispatch::Notification(notification) => notification,
+        // An agent calling a client method codeg doesn't implement. The
+        // responder is dropped without a reply (as before), so the agent's
+        // request goes unanswered — worth seeing when triaging a stalled turn.
+        Dispatch::Request(request, _responder) => {
+            tracing::debug!(
+                method = %request.method(),
+                "[ACP] dropping unhandled agent request (no reply will be sent)"
+            );
+            return;
+        }
+        // A response is normally consumed by the caller waiting on it, so one
+        // surfacing here is unexpected rather than routine. (It still carries a
+        // `ResponseRouter`, so "unroutable" would overstate it — the point is
+        // only that nothing on this path wants it.)
+        Dispatch::Response(..) => {
+            tracing::debug!("[ACP] dropping unexpected response dispatch");
+            return;
+        }
     };
 
     if let Some(event) = map_claude_sdk_ext_notification(&notification)
         .or_else(|| map_grok_ext_notification(&notification, agent_type))
     {
         emit_with_state(state, emitter, event).await;
+    } else if !is_known_ext_method(notification.method()) {
+        // The gap #409's second point was reaching for: an agent emitting an ext
+        // method codeg has never heard of was previously indistinguishable from
+        // an agent saying nothing at all.
+        tracing::debug!(
+            method = %notification.method(),
+            agent = %agent_type,
+            "[ACP] ignoring unrecognized ext notification"
+        );
     }
 }
 
@@ -8748,35 +8843,41 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_native_steering_stays_off_while_the_registry_disables_it() {
+    fn synthesize_native_steering_requires_all_three_gates() {
         use sacp::schema::Implementation;
         let advertised = meta_map(serde_json::json!({"steering": {"supported": true}}));
-        let proven = Implementation::new("claude-agent-acp", "0.64.0");
+        let proven = Implementation::new("claude-agent-acp", "0.65.0");
+        let stale = Implementation::new("claude-agent-acp", "0.64.1");
 
-        // claude-agent-acp #934: `injected` settles the owning prompt when
-        // the injection lands mid-generation, so the registry policy gate is
-        // None for EVERY agent — a perfect advertisement plus a proven
-        // version must still synthesize to the pull channel. The other two
-        // gates keep their direct coverage above (`init_advertises_steering_*`
-        // / `version_at_least_*`); when upstream ships the fix and the
-        // registry re-enables claude, restore the three-gate positive matrix
-        // here (advertisement × policy × version, including the stale-install
-        // fail-closed arm).
-        assert!(!synthesize_native_steering(
+        // All three gates → native.
+        assert!(synthesize_native_steering(
             AgentType::ClaudeCode,
             Some(&advertised),
             Some(&proven)
         ));
+        // Registry policy gate: codex advertises steering but has no
+        // promptRequired minimum — never native, whatever it reports.
         assert!(!synthesize_native_steering(
             AgentType::Codex,
             Some(&advertised),
             Some(&proven)
+        ));
+        // Runtime proof gate: 0.64.1 advertises steering identically but still
+        // settles the owning prompt on a mid-generation `injected` (#934, fixed
+        // in 0.65.0 by #958). Launch prefers a PATH-resolved install over the
+        // pinned package, so this arm is what keeps such a user on the pull
+        // channel — as does a missing `agent_info`.
+        assert!(!synthesize_native_steering(
+            AgentType::ClaudeCode,
+            Some(&advertised),
+            Some(&stale)
         ));
         assert!(!synthesize_native_steering(
             AgentType::ClaudeCode,
             Some(&advertised),
             None
         ));
+        // Advertisement gate.
         assert!(!synthesize_native_steering(
             AgentType::ClaudeCode,
             None,
@@ -9330,6 +9431,21 @@ mod tests {
             }
             _ => panic!("expected ClaudeSdkMessage"),
         }
+    }
+
+    #[test]
+    fn is_known_ext_method_covers_every_mapped_method() {
+        // The anti-log-storm invariant: `_claude/sdkMessage` arrives for EVERY
+        // SDK message but only maps when it is an API retry, so it must be
+        // recognized here — otherwise each unmapped one logs a line on a
+        // per-message hot path.
+        assert!(is_known_ext_method(CLAUDE_SDK_EXT_METHOD));
+        for method in GROK_EXT_UPDATE_METHODS {
+            assert!(is_known_ext_method(method), "{method} must be known");
+        }
+        // A method no mapper claims is exactly what the log is for.
+        assert!(!is_known_ext_method("_vendor/somethingNew"));
+        assert!(!is_known_ext_method("session/update"));
     }
 
     #[test]

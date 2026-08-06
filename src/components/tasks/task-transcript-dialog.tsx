@@ -34,10 +34,11 @@ import {
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { getFolderConversation, workTaskEvents } from "@/lib/api"
+import { FOLLOW_UP_SCENARIOS } from "@/lib/task-follow-up"
 import {
   extractRounds,
   firstTextOfParts,
-  matchRoundKind,
+  matchRound,
   type TaskRound,
 } from "@/lib/task-rounds"
 import { type AgentType, type WorkTask } from "@/lib/types"
@@ -156,13 +157,21 @@ function TaskTranscriptBody({
   }, [task.id, runSeq])
   const userTurnHeader = useCallback(
     (group: ResolvedMessageGroup) => {
-      switch (matchRoundKind(rounds, firstTextOfParts(group.parts))) {
+      const round = matchRound(rounds, firstTextOfParts(group.parts))
+      switch (round?.kind) {
         case "work":
           return t("phaseWork")
         case "retry":
           return t("phaseRetry")
-        case "return":
-          return t("phaseReturn")
+        case "return": {
+          // Name the actual scenario — "rework" and "answer my question" are
+          // both `return` rounds. Rounds from before scenarios existed carry no
+          // intent and keep the generic label.
+          const scenario = FOLLOW_UP_SCENARIOS.find(
+            (s) => s.intent === round.intent
+          )
+          return scenario ? t(scenario.labelKey) : t("phaseReturn")
+        }
         case "merge":
           return t("phaseMerge")
         default:

@@ -30,6 +30,16 @@ const h = vi.hoisted(() => ({
   listAll: vi.fn(async () => [] as unknown[]),
   listOpenFolders: vi.fn(async () => [] as unknown[]),
   listAllFolders: vi.fn(async () => [] as unknown[]),
+  closeTabsByFolder: vi.fn(),
+}))
+
+// The folder-delete branch reaches into the tab store imperatively; stub it so
+// this suite stays on the workspace store (the real action is exercised by the
+// sidebar's own remove-folder path).
+vi.mock("@/stores/tab-store", () => ({
+  useTabStore: {
+    getState: () => ({ closeTabsByFolder: h.closeTabsByFolder }),
+  },
 }))
 
 vi.mock("@/lib/platform", () => ({
@@ -203,6 +213,7 @@ beforeEach(() => {
   h.listOpenFolders.mockResolvedValue([])
   h.listAllFolders.mockClear()
   h.listAllFolders.mockResolvedValue([])
+  h.closeTabsByFolder.mockClear()
   // The store is a module-level singleton: restore pristine state (including
   // the delete tombstones) so state can't leak between tests.
   resetAppWorkspaceStore()
@@ -393,6 +404,34 @@ describe("AppWorkspaceProvider folder://changed sync", () => {
       folder: makeFolder({ id: 12, name: "renamed" }),
     })
     expect(screen.getByTestId("folder-ids")).toHaveTextContent("12,13")
+  })
+
+  it("drops a folder from both lists on a folder delete event", async () => {
+    // A task worktree removed after its merge must leave the sidebar right
+    // away — otherwise it lingers until the next full `fetchFolders` (reload).
+    await mountProvider()
+    emitFolder({ kind: "upsert", folder: makeFolder({ id: 12, parent_id: 1 }) })
+    emitFolder({ kind: "upsert", folder: makeFolder({ id: 13 }) })
+    emitFolder({ kind: "deleted", id: 12 })
+    expect(screen.getByTestId("folder-ids")).toHaveTextContent("13")
+    expect(screen.getByTestId("folder-ids")).not.toHaveTextContent("12")
+    expect(screen.getByTestId("all-folder-ids")).not.toHaveTextContent("12")
+  })
+
+  it("ignores a delete for a folder it never knew about", async () => {
+    await mountProvider()
+    emitFolder({ kind: "upsert", folder: makeFolder({ id: 13 }) })
+    emitFolder({ kind: "deleted", id: 99 })
+    expect(screen.getByTestId("folder-ids")).toHaveTextContent("13")
+  })
+
+  it("closes the folder's tabs alongside the removal", async () => {
+    // The backend only deletes PERSISTED tabs; device-local drafts would
+    // otherwise stay open on a cwd that no longer exists.
+    await mountProvider()
+    emitFolder({ kind: "upsert", folder: makeFolder({ id: 12, parent_id: 1 }) })
+    emitFolder({ kind: "deleted", id: 12 })
+    expect(h.closeTabsByFolder).toHaveBeenCalledWith(12)
   })
 
   it("re-fetches folders on transport reconnect (disconnect backstop)", async () => {

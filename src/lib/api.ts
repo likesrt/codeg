@@ -11,6 +11,7 @@ import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
+import type { FollowUpIntent } from "./task-follow-up"
 import type {
   AgentType,
   AgentDelegationDefaults,
@@ -1976,6 +1977,84 @@ export async function gitContinueOperation(
   return getTransport().call("git_continue_operation", { path, operation })
 }
 
+/**
+ * How many `openAppWindow` calls are still waiting on each window name. Two
+ * clicks on the same action are handed the very same reserved window, so a
+ * failure may only tear it down once nothing else is still racing for it.
+ */
+const appWindowReservations = new Map<string, number>()
+
+function reserveAppWindow(name: string): void {
+  appWindowReservations.set(name, (appWindowReservations.get(name) ?? 0) + 1)
+}
+
+/** Drops one reservation and reports how many remain for that name. */
+function releaseAppWindow(name: string): number {
+  const remaining = Math.max(0, (appWindowReservations.get(name) ?? 1) - 1)
+  if (remaining > 0) appWindowReservations.set(name, remaining)
+  else appWindowReservations.delete(name)
+  return remaining
+}
+
+/**
+ * True while a window still shows the blank placeholder we reserved — i.e. it
+ * holds nothing worth keeping. Reading `location` on a cross-origin window
+ * throws; such a window is not one of ours, so treat it as occupied.
+ */
+function isBlankAppWindow(win: Window): boolean {
+  try {
+    return win.location.href === "about:blank"
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Open a same-origin app window (commit / push / settings / …) whose target
+ * path is only known after a backend round trip.
+ *
+ * The window must be RESERVED inside the click's own call stack: in web mode
+ * that round trip is a real HTTP request, far longer than any browser's
+ * user-activation window, so calling `window.open(path)` after the await is
+ * reliably swallowed by the popup blocker. (Issue #410 is the markdown-link
+ * variant of the same bug, where the gap was only a microtask.)
+ *
+ * Reserving with an EMPTY url is what makes this safe to retrofit: an empty
+ * url never navigates, so a name that already maps to an open window is simply
+ * handed back — preserving today's reuse-by-name behaviour, which
+ * `openPushWindow` relies on to retarget an already-open push window. And
+ * because no window features are passed, a `null` return really does mean
+ * "blocked" here, unlike the `noreferrer` popups in ai-elements/link-safety.tsx
+ * (those return null even on success).
+ */
+async function openAppWindow(
+  name: string,
+  resolvePath: () => Promise<{ path: string }>
+): Promise<void> {
+  const win = window.open("", name)
+  if (!win) {
+    throw new Error(
+      "Popup blocked by the browser. Allow popups for this site and try again."
+    )
+  }
+
+  reserveAppWindow(name)
+  try {
+    const { path } = await resolvePath()
+    win.location.href = path
+  } catch (error) {
+    // Tear the placeholder down only once nothing else is waiting on this name
+    // AND nobody has navigated it meanwhile: a concurrent request for the same
+    // window may still succeed, and it shares this exact window. Checking for
+    // the blank placeholder (rather than remembering "I created it") is also
+    // what keeps a window the user already had open — which always carries a
+    // real document — from being closed by an unrelated failure.
+    if (releaseAppWindow(name) === 0 && isBlankAppWindow(win)) win.close()
+    throw error
+  }
+  releaseAppWindow(name)
+}
+
 export async function openMergeWindow(
   folderId: number,
   operation: string,
@@ -1991,16 +2070,14 @@ export async function openMergeWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  const result = await getTransport().call<{ path: string }>(
-    "open_merge_window",
-    {
+  return openAppWindow(`merge-${folderId}`, () =>
+    getTransport().call<{ path: string }>("open_merge_window", {
       folderId,
       operation,
       upstreamCommit: upstreamCommit ?? null,
       locale,
-    }
+    })
   )
-  window.open(result.path, `merge-${folderId}`)
 }
 
 export async function openStashWindow(folderId: number): Promise<void> {
@@ -2012,11 +2089,12 @@ export async function openStashWindow(folderId: number): Promise<void> {
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  const result = await getTransport().call<{ path: string }>(
-    "open_stash_window",
-    { folderId, locale }
+  return openAppWindow(`stash-${folderId}`, () =>
+    getTransport().call<{ path: string }>("open_stash_window", {
+      folderId,
+      locale,
+    })
   )
-  window.open(result.path, `stash-${folderId}`)
 }
 
 /** `branch` preselects the push target; omitted means the checked-out branch. */
@@ -2033,14 +2111,16 @@ export async function openPushWindow(
       branch: branch ?? null,
     })
   }
-  const result = await getTransport().call<{ path: string }>(
-    "open_push_window",
-    { folderId, locale, branch: branch ?? null }
-  )
   // Reusing the window NAME navigates an already-open push window to the new
   // URL, so the preselected branch applies there too (the desktop path gets the
   // same effect from the `push://retarget-branch` event).
-  window.open(result.path, `push-${folderId}`)
+  return openAppWindow(`push-${folderId}`, () =>
+    getTransport().call<{ path: string }>("open_push_window", {
+      folderId,
+      locale,
+      branch: branch ?? null,
+    })
+  )
 }
 
 export async function gitStashPush(
@@ -2323,11 +2403,12 @@ export async function openCommitWindow(folderId: number): Promise<void> {
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  const result = await getTransport().call<{ path: string }>(
-    "open_commit_window",
-    { folderId, locale }
+  return openAppWindow(`commit-${folderId}`, () =>
+    getTransport().call<{ path: string }>("open_commit_window", {
+      folderId,
+      locale,
+    })
   )
-  window.open(result.path, `commit-${folderId}`)
 }
 
 export type SettingsSection =
@@ -2359,15 +2440,13 @@ export async function openSettingsWindow(
     })
   }
   // Web mode: open in new window
-  const result = await getTransport().call<{ path: string }>(
-    "open_settings_window",
-    {
+  return openAppWindow(`settings-${section ?? "general"}`, () =>
+    getTransport().call<{ path: string }>("open_settings_window", {
       section: section ?? null,
       agentType: options?.agentType ?? null,
       locale,
-    }
+    })
   )
-  window.open(result.path, `settings-${section ?? "general"}`)
 }
 
 export interface OpenImportSessionsWindowOptions {
@@ -2387,11 +2466,11 @@ export async function openImportSessionsWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  const result = await getTransport().call<{ path: string }>(
-    "open_import_sessions_window",
-    { focusPath }
+  return openAppWindow("import-sessions", () =>
+    getTransport().call<{ path: string }>("open_import_sessions_window", {
+      focusPath,
+    })
   )
-  window.open(result.path, "import-sessions")
 }
 
 export async function openProjectBootWindow(source?: string): Promise<void> {
@@ -2809,25 +2888,51 @@ export async function workTaskStartAll(
   return getTransport().call("work_task_start_all", { folderId })
 }
 
-export async function workTaskRetry(id: number): Promise<void> {
-  return getTransport().call("work_task_retry", { id })
+/** failed → queued. `note` (optional) reaches the retry prompt. */
+export async function workTaskRetry(
+  id: number,
+  note?: string | null
+): Promise<void> {
+  return getTransport().call("work_task_retry", { id, note: note ?? null })
 }
 
-/** canceled → todo (back onto the board; started again explicitly). */
-export async function workTaskRequeue(id: number): Promise<void> {
-  return getTransport().call("work_task_requeue", { id })
+/**
+ * canceled → todo (back onto the board; started again explicitly). `note`
+ * (optional) reaches the next run's prompt — a cancel usually had a reason.
+ */
+export async function workTaskRequeue(
+  id: number,
+  note?: string | null
+): Promise<void> {
+  return getTransport().call("work_task_requeue", { id, note: note ?? null })
 }
 
-/** Return a reviewed task to the agent with feedback. */
+/**
+ * Follow up on a reviewed task. `intent` picks the framing the agent receives
+ * (see `lib/task-follow-up`); omitted means `revise`.
+ */
 export async function workTaskReturn(
   id: number,
-  feedback: string
+  feedback: string,
+  intent?: FollowUpIntent
 ): Promise<void> {
-  return getTransport().call("work_task_return", { id, feedback })
+  return getTransport().call("work_task_return", {
+    id,
+    feedback,
+    intent: intent ?? null,
+  })
 }
 
-export async function workTaskCancel(id: number): Promise<void> {
-  return getTransport().call("work_task_cancel", { id })
+/**
+ * Stop a task. `reason` (optional) is the user's own note about why — it lands
+ * on the `canceled` entry of the progress timeline and is never replayed into
+ * a later run's prompt (a requeue carries its own note for that).
+ */
+export async function workTaskCancel(
+  id: number,
+  reason?: string | null
+): Promise<void> {
+  return getTransport().call("work_task_cancel", { id, reason: reason ?? null })
 }
 
 /** Dispatch the agent-driven merge (`message: null` = the agent writes the
@@ -2842,6 +2947,15 @@ export async function workTaskMerge(
     message,
     deleteWorktree,
   })
+}
+
+/** Finish a reviewed task that has nothing to merge (review → done), taking
+ *  its worktree with it when asked. Refused if the worktree changed after all. */
+export async function workTaskComplete(
+  id: number,
+  deleteWorktree: boolean
+): Promise<void> {
+  return getTransport().call("work_task_complete", { id, deleteWorktree })
 }
 
 export async function workTaskArchive(

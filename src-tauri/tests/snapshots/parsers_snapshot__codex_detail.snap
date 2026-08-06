@@ -38,6 +38,7 @@ expression: detail
         }
       ],
       "timestamp": "[ts]",
+      "duration_ms": 1000,
       "completed_at": "[ts]"
     }
   ]

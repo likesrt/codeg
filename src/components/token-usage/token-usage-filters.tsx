@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Check, ChevronDown, X } from "lucide-react"
+import { Check, ChevronDown, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils"
 export interface FilterOption {
   value: string
   label: string
-  /** Rendered dimmed after the label — a folder path, a token total, … */
+  /** Rendered as a dimmed second line — a folder path, a token total, … */
   hint?: string
 }
 
@@ -24,6 +24,56 @@ const TRIGGER_CLASS = cn(
   "h-8 max-w-[15rem] gap-1.5 rounded-full border-transparent bg-muted/70 px-3",
   "text-[0.8125rem] font-medium shadow-none hover:bg-muted"
 )
+const TRIGGER_ACTIVE_CLASS = "bg-primary/10 text-primary hover:bg-primary/15"
+
+/** One selectable row. Selection is a trailing check so the text column stays
+ *  flush-left — no phantom indent on unchecked rows. */
+function OptionRow({
+  option,
+  active,
+  onClick,
+}: {
+  option: FilterOption
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left outline-none",
+        "hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+        active && "bg-accent/40"
+      )}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs leading-snug">
+          {option.label}
+        </span>
+        {option.hint ? (
+          // Paths render LTR even in RTL locales, and the full value survives
+          // truncation via the tooltip.
+          <span
+            dir="ltr"
+            title={option.hint}
+            className="block truncate text-start font-mono text-[0.625rem] leading-snug text-muted-foreground"
+          >
+            {option.hint}
+          </span>
+        ) : null}
+      </span>
+      <Check
+        aria-hidden="true"
+        className={cn(
+          "size-3.5 shrink-0 text-primary",
+          active ? "opacity-100" : "opacity-0"
+        )}
+      />
+    </button>
+  )
+}
 
 /**
  * One dimension of the dashboard filter: a pill that opens a searchable
@@ -44,6 +94,7 @@ export function MultiSelectFilter({
   emptyLabel,
   icon: Icon,
 }: {
+  /** The dimension's name — also the summary prefix when several are picked. */
   label: string
   allLabel: string
   options: FilterOption[]
@@ -67,12 +118,14 @@ export function MultiSelectFilter({
   }, [options, query])
 
   const selectedSet = useMemo(() => new Set(selected), [selected])
+  // "Folders · 3" rather than an anonymous count — the pill still says which
+  // dimension it is filtering once the chosen labels no longer fit.
   const summary =
     selected.length === 0
       ? allLabel
       : selected.length === 1
         ? (options.find((o) => o.value === selected[0])?.label ?? selected[0])
-        : t("nSelected", { count: selected.length })
+        : `${label} · ${selected.length}`
 
   const toggle = (value: string) => {
     onChange(
@@ -83,7 +136,7 @@ export function MultiSelectFilter({
   }
 
   return (
-    <Popover>
+    <Popover onOpenChange={(open) => !open && setQuery("")}>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -91,8 +144,7 @@ export function MultiSelectFilter({
           variant="outline"
           className={cn(
             TRIGGER_CLASS,
-            selected.length > 0 &&
-              "bg-primary/10 text-primary hover:bg-primary/15"
+            selected.length > 0 && TRIGGER_ACTIVE_CLASS
           )}
           aria-label={label}
         >
@@ -101,71 +153,129 @@ export function MultiSelectFilter({
           <ChevronDown className="size-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 rounded-xl p-1.5">
-        <div className="flex items-center gap-1 px-1 pb-1.5">
-          <Input
+      <PopoverContent
+        align="start"
+        // gap-0: the shared PopoverContent is a `flex flex-col gap-4` — left
+        // alone it injects 16px seams between the search header, the list and
+        // the footer.
+        className="w-72 gap-0 overflow-hidden rounded-xl p-0"
+      >
+        {/* Command-palette style search: a bare input under the header rule —
+            the boxed Input with its focus ring is far too loud in a popover
+            this small. */}
+        <div className="flex items-center gap-2 border-b border-border px-3">
+          <Search
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <input
+            autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchPlaceholder}
-            className="h-7 rounded-lg text-xs"
+            aria-label={searchPlaceholder}
+            className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
-          {selected.length > 0 && (
-            <Button
+          {query && (
+            <button
               type="button"
-              size="icon"
-              variant="ghost"
-              className="size-7 shrink-0 rounded-lg"
-              aria-label={allLabel}
-              onClick={() => onChange([])}
+              onClick={() => setQuery("")}
+              aria-label={t("clearFilter")}
+              className="shrink-0 rounded p-0.5 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               <X className="size-3.5" />
-            </Button>
+            </button>
           )}
         </div>
-        <ScrollArea className="max-h-64">
-          <div className="space-y-0.5 pr-1">
+        <ScrollArea className="max-h-72">
+          <div className="space-y-px p-1.5">
             {filtered.length === 0 ? (
-              <p className="px-2 py-3 text-center text-xs text-muted-foreground">
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
                 {emptyLabel}
               </p>
             ) : (
-              filtered.map((o) => {
-                const active = selectedSet.has(o.value)
-                return (
-                  <button
-                    key={o.value}
-                    type="button"
-                    onClick={() => toggle(o.value)}
-                    aria-pressed={active}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs outline-none",
-                      "hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
-                    )}
-                  >
-                    <Check
-                      className={cn(
-                        "size-3.5 shrink-0",
-                        active ? "opacity-100 text-primary" : "opacity-0"
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                    {o.hint ? (
-                      <span className="shrink-0 truncate text-[0.625rem] text-muted-foreground">
-                        {o.hint}
-                      </span>
-                    ) : null}
-                  </button>
-                )
-              })
+              filtered.map((o) => (
+                <OptionRow
+                  key={o.value}
+                  option={o}
+                  active={selectedSet.has(o.value)}
+                  onClick={() => toggle(o.value)}
+                />
+              ))
             )}
           </div>
         </ScrollArea>
+        {selected.length > 0 && (
+          <div className="border-t border-border p-1.5">
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              className="w-full rounded-lg px-2.5 py-1.5 text-center text-xs text-muted-foreground outline-none transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("clearFilter")}
+            </button>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   )
 }
 
-/** A segmented pill group — used for the range presets and bucket width. */
+/**
+ * A single-choice pill — holds the range presets that did not earn a
+ * permanent segment (this month, this year, all time, custom). Shows the
+ * chosen option's label and the active tint while one of its options is
+ * selected; a plain "More" otherwise.
+ */
+export function SingleSelectFilter({
+  placeholder,
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: {
+  placeholder: string
+  ariaLabel: string
+  options: FilterOption[]
+  /** `null` when none of this pill's options is the active one. */
+  value: string | null
+  onChange: (next: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const current = value ? options.find((o) => o.value === value) : undefined
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className={cn(TRIGGER_CLASS, current && TRIGGER_ACTIVE_CLASS)}
+          aria-label={ariaLabel}
+        >
+          <span className="truncate">{current?.label ?? placeholder}</span>
+          <ChevronDown className="size-3.5 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-44 gap-px rounded-xl p-1.5">
+        {options.map((o) => (
+          <OptionRow
+            key={o.value}
+            option={o}
+            active={o.value === value}
+            onClick={() => {
+              onChange(o.value)
+              setOpen(false)
+            }}
+          />
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** A segmented pill group — used for the hot range presets and bucket width. */
 export function SegmentedFilter<T extends string>({
   value,
   options,

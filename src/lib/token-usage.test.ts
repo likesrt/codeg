@@ -4,6 +4,7 @@ import {
   addLocalDays,
   averagePerActiveDay,
   averagePerConversation,
+  averageTurnsPerConversation,
   buildHeatMatrix,
   cacheHitRate,
   computeDelta,
@@ -11,6 +12,8 @@ import {
   foldBreakdown,
   formatDuration,
   formatTokensPrecise,
+  freshTokens,
+  idleDays,
   localTzOffsetMinutes,
   peakHour,
   peakPoint,
@@ -175,9 +178,20 @@ describe("startOfLocalDay / addLocalDays", () => {
 })
 
 describe("suggestBucket", () => {
-  it("uses days for short ranges, weeks for a year, months beyond", () => {
+  const unbounded = { start: null, end: null }
+
+  it("maps named presets directly", () => {
+    expect(suggestBucket("7d", unbounded)).toBe("day")
+    expect(suggestBucket("30d", unbounded)).toBe("day")
+    expect(suggestBucket("thisMonth", unbounded)).toBe("day")
+    expect(suggestBucket("90d", unbounded)).toBe("week")
+    expect(suggestBucket("thisYear", unbounded)).toBe("month")
+    expect(suggestBucket("all", unbounded)).toBe("week")
+  })
+
+  it("sizes a custom range by its span — months past one year", () => {
     const from = (days: number) =>
-      suggestBucket({
+      suggestBucket("custom", {
         start: "2026-01-01T00:00:00.000Z",
         end: new Date(
           Date.parse("2026-01-01T00:00:00.000Z") + days * 86_400_000
@@ -186,11 +200,16 @@ describe("suggestBucket", () => {
     expect(from(30)).toBe("day")
     expect(from(92)).toBe("day")
     expect(from(200)).toBe("week")
+    expect(from(366)).toBe("week")
+    expect(from(367)).toBe("month")
     expect(from(1000)).toBe("month")
   })
 
-  it("defaults an unbounded range to weeks", () => {
-    expect(suggestBucket({ start: null, end: null })).toBe("week")
+  it("defaults a half-open custom range to weeks", () => {
+    expect(suggestBucket("custom", unbounded)).toBe("week")
+    expect(
+      suggestBucket("custom", { start: "2026-01-01T00:00:00.000Z", end: null })
+    ).toBe("week")
   })
 })
 
@@ -292,6 +311,85 @@ describe("averages", () => {
       averagePerActiveDay(totals({ total_tokens: 90, active_days: 3 }))
     ).toBe(30)
     expect(averagePerActiveDay(totals({ total_tokens: 90 }))).toBe(0)
+    expect(
+      averageTurnsPerConversation(
+        totals({ turn_count: 30, conversation_count: 4 })
+      )
+    ).toBe(7.5)
+    expect(averageTurnsPerConversation(totals({ turn_count: 30 }))).toBe(0)
+  })
+})
+
+describe("freshTokens", () => {
+  it("is everything the cache did not serve", () => {
+    expect(
+      freshTokens(totals({ total_tokens: 100, cache_read_tokens: 92 }))
+    ).toBe(8)
+  })
+
+  it("never goes negative on inconsistent inputs", () => {
+    expect(
+      freshTokens(totals({ total_tokens: 10, cache_read_tokens: 20 }))
+    ).toBe(0)
+  })
+})
+
+describe("idleDays", () => {
+  it("subtracts active days from the bounded range's calendar days", () => {
+    const r = report({
+      range_start: localMidnightIso(2026, 7, 6),
+      range_end: localMidnightIso(2026, 8, 5), // exclusive → 30 days
+      totals: totals({ active_days: 26 }),
+    })
+    expect(idleDays(r)).toBe(4)
+  })
+
+  it("counts local calendar days on the backend's all-time shape", () => {
+    // An unbounded request comes back clamped to the data: range_start is the
+    // first activity *instant* (mid-morning, not midnight) and range_end is
+    // one millisecond past the last. July 1 09:00 → July 10 15:00 spans 10
+    // calendar days even though it is only ~9.25 elapsed days; 7 active days
+    // leave 3 idle.
+    const r = report({
+      range_start: new Date(2026, 6, 1, 9, 0).toISOString(),
+      range_end: new Date(2026, 6, 10, 15, 0, 0, 1).toISOString(),
+      first_activity_at: new Date(2026, 6, 1, 9, 0).toISOString(),
+      last_activity_at: new Date(2026, 6, 10, 15, 0).toISOString(),
+      totals: totals({ active_days: 7 }),
+    })
+    expect(idleDays(r)).toBe(3)
+  })
+
+  it("falls back to the activity span when the range echo is absent", () => {
+    const r = report({
+      first_activity_at: localMidnightIso(2026, 7, 1),
+      last_activity_at: new Date(2026, 6, 10, 15, 30).toISOString(),
+      totals: totals({ active_days: 7 }),
+    })
+    expect(idleDays(r)).toBe(3)
+  })
+
+  it("does not let an exclusive midnight bound bleed into an extra day", () => {
+    // range_end at Aug 5 00:00 exclusive means Aug 4 is the last counted day:
+    // stepping back one tick must land the span at 30 days, not 31.
+    const r = report({
+      range_start: localMidnightIso(2026, 7, 6),
+      range_end: localMidnightIso(2026, 8, 5),
+      totals: totals({ active_days: 30 }),
+    })
+    expect(idleDays(r)).toBe(0)
+  })
+
+  it("is null when the span is unknowable and never negative", () => {
+    expect(idleDays(report())).toBeNull()
+    const r = report({
+      range_start: localMidnightIso(2026, 8, 1),
+      range_end: localMidnightIso(2026, 8, 3),
+      // More recorded active days than the window holds (clock skew) clamps
+      // to zero instead of reporting negative idle time.
+      totals: totals({ active_days: 5 }),
+    })
+    expect(idleDays(r)).toBe(0)
   })
 })
 

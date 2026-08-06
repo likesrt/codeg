@@ -1298,6 +1298,10 @@ pub fn build_router(
             post(handlers::work_task::work_task_merge),
         )
         .route(
+            "/work_task_complete",
+            post(handlers::work_task::work_task_complete),
+        )
+        .route(
             "/work_task_archive",
             post(handlers::work_task::work_task_archive),
         )

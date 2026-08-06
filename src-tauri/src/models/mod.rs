@@ -43,8 +43,8 @@ pub use token_usage::{
     TokenUsageSyncStatus, TokenUsageTotals,
 };
 pub use work_task::{
-    WorkTaskChangedFile, WorkTaskConfig, WorkTaskDraft, WorkTaskEventInfo, WorkTaskFolderSettings,
-    WorkTaskInfo, WorkTaskMergeState, WorkTaskPreflight, WorkTaskStatus,
+    FollowUpIntent, WorkTaskChangedFile, WorkTaskConfig, WorkTaskDraft, WorkTaskEventInfo,
+    WorkTaskFolderSettings, WorkTaskInfo, WorkTaskMergeState, WorkTaskPreflight, WorkTaskStatus,
     WorkTaskTemplateDraft, WorkTaskTemplateInfo, STAGE_PROMPT_ALL,
 };
 #[cfg(feature = "tauri-runtime")]

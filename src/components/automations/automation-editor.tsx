@@ -10,13 +10,10 @@ import {
   RichComposer,
   type RichComposerHandle,
 } from "@/components/chat/composer/rich-composer"
-import {
-  useReferenceSearch,
-  type ReferenceGroupLabels,
-} from "@/components/chat/composer/use-reference-search"
+import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
+import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import { docToPromptBlocks } from "@/components/chat/composer/to-prompt-blocks"
 import { isComposerChromeClick } from "@/components/chat/composer/composer-commands"
-import type { MentionUiLabels } from "@/components/chat/composer/suggestion/types"
 import {
   AgentConfigSection,
   effectiveSelections,
@@ -85,8 +82,6 @@ export function AutomationEditor({
   onBackToTemplates,
 }: AutomationEditorProps) {
   const t = useTranslations("Automations")
-  // The @-mention panel chrome reuses the chat composer's existing keys.
-  const tComposer = useTranslations("Folder.chat.messageInput")
   const folders = useAppWorkspaceStore((s) => s.folders)
 
   const [name, setName] = useState(automation?.name ?? "")
@@ -158,26 +153,8 @@ export function AutomationEditor({
   // config snapshot scoped to the right folder.
   const folderPathResolving = folderId != null && folderPath == null
 
-  const referenceGroupLabels = useMemo<ReferenceGroupLabels>(
-    () => ({
-      file: tComposer("mentionGroupFile"),
-      agent: tComposer("mentionGroupAgent"),
-      session: tComposer("mentionGroupSession"),
-      commit: tComposer("mentionGroupCommit"),
-      skill: tComposer("mentionGroupSkill"),
-    }),
-    [tComposer]
-  )
-  const mentionUiLabels = useMemo<MentionUiLabels>(
-    () => ({
-      empty: tComposer("mentionEmpty"),
-      loading: tComposer("mentionLoading"),
-      listbox: tComposer("mentionListLabel"),
-      more: tComposer("mentionMore"),
-      count: (count: number) => tComposer("mentionCount", { count }),
-    }),
-    [tComposer]
-  )
+  const { groupLabels: referenceGroupLabels, uiLabels: mentionUiLabels } =
+    useComposerMentionLabels()
   // Live data sources for the @ panel (files/agents/sessions/commits). All
   // transport-only — no live ACP session needed; just the folder path.
   const referenceSearch = useReferenceSearch({

@@ -168,7 +168,7 @@ describe("TaskSettingsDialog stage prompts", () => {
       "All stages",
       "Task run",
       "Retry run",
-      "Rework",
+      "Follow-up",
       "Merge",
     ]) {
       await user.click(screen.getByRole("tab", { name: stage }))

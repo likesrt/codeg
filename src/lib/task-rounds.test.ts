@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   extractRounds,
   firstTextOfParts,
+  matchRound,
   matchRoundKind,
 } from "@/lib/task-rounds"
 import type { WorkTaskEvent } from "@/lib/types"
@@ -36,6 +37,24 @@ describe("extractRounds", () => {
       { kind: "work", promptHead: "Fix the login flow" },
       { kind: "merge", promptHead: "The user accepted" },
     ])
+  })
+
+  it("carries the follow-up scenario of a return round", () => {
+    const rounds = extractRounds([
+      event(1, "round", {
+        kind: "return",
+        intent: "question",
+        prompt_head: "The user has a question",
+      }),
+      // Rounds recorded before scenarios existed carry no intent — the viewer
+      // falls back to the generic phase label for those.
+      event(2, "round", {
+        kind: "return",
+        prompt_head: "The user reviewed your work",
+      }),
+    ])
+    expect(rounds[0].intent).toBe("question")
+    expect(rounds[1].intent).toBeUndefined()
   })
 })
 
@@ -77,6 +96,22 @@ describe("matchRoundKind", () => {
     expect(matchRoundKind(rounds, "A manual steering message")).toBeNull()
     expect(matchRoundKind(rounds, "   ")).toBeNull()
     expect(matchRoundKind([], "Fix the login flow and more")).toBeNull()
+  })
+})
+
+describe("matchRound", () => {
+  it("returns the whole round, so the viewer can name the scenario", () => {
+    const rounds = extractRounds([
+      event(1, "round", {
+        kind: "return",
+        intent: "verify",
+        prompt_head: "The user wants this task checked over",
+      }),
+    ])
+    expect(
+      matchRound(rounds, "The user wants this task checked over before they")
+    ).toMatchObject({ kind: "return", intent: "verify" })
+    expect(matchRound(rounds, "something else")).toBeNull()
   })
 })
 
