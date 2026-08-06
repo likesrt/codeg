@@ -32,9 +32,10 @@ SCRIPTS=(
 
 # 代理相关变量（select_proxy 会设置）
 # CODEG_PROXY_MODE: direct（直连）/ gh（GH 反向代理前缀）/ forward（HTTP/SOCKS 转发代理）
+# 留空表示未指定，select_proxy 会进入交互式菜单；用户显式 export 后则免交互
 # PROXY_PREFIX: gh 模式下归一化后的代理前缀（保证末尾带 /）
 # FORWARD_PROXY: forward 模式下的转发代理 URL
-CODEG_PROXY_MODE="direct"
+CODEG_PROXY_MODE=""
 PROXY_PREFIX=""
 FORWARD_PROXY=""
 
