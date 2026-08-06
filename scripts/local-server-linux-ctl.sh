@@ -202,18 +202,22 @@ curl_proxy_args() {
 
 # 统一下载函数：--noproxy '*' 避免系统 ALL_PROXY 与代理前缀叠加；
 # 默认 HTTP/2，失败自动回退 --http1.1，兼容各类代理
+# 失败时通过 stderr 输出 HTTP 状态码，便于诊断
 # 参数：透传给 curl 的所有参数
 # 返回：curl 的退出码
 dl() {
   # shellcheck disable=SC2086
-  local args
+  local args code
   args="$(curl_proxy_args)"
-  if curl $args "$@" 2>/dev/null; then
-    return 0
-  fi
-  if curl $args --http1.1 "$@" 2>/dev/null; then
-    return 0
-  fi
+  code=$(curl $args -fsSL -w '%{http_code}' "$@" 2>/dev/null -o /dev/null) || code="${code:-000}"
+  case "$code" in
+    2*) return 0 ;;
+  esac
+  code=$(curl $args --http1.1 -fsSL -w '%{http_code}' "$@" 2>/dev/null -o /dev/null) || code="${code:-000}"
+  case "$code" in
+    2*) return 0 ;;
+  esac
+  echo "    └ HTTP 状态：$code" >&2
   return 1
 }
 
@@ -265,6 +269,7 @@ download_with_fallback() {
 
   for proxy in "${proxies[@]}"; do
     [ -z "$proxy" ] && continue
+    [ -n "${2:-}" ] && log_info "尝试：${proxy}${url#"https://"}"
     if dl -fsSL --connect-timeout 10 --max-time 120 "${proxy}${url}" "${out_args[@]}"; then
       [ -n "${2:-}" ] && log_info "下载成功：${url#"https://"}（via ${proxy}）"
       return 0
