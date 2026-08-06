@@ -444,6 +444,7 @@ do_update() {
 }
 
 # 仅更新管理脚本（codeg 和 codeg-init-tools），不更新二进制
+# 下载到临时文件再 mv 原子替换，避免覆盖正在运行的脚本导致 bash 读取错乱
 # 参数：无
 # 返回：无
 do_update_scripts() {
@@ -452,11 +453,17 @@ do_update_scripts() {
   for entry in "${SCRIPTS[@]}"; do
     local remote_file="${entry%%:*}"
     local local_name="${entry##*:}"
-    echo "  下载 $remote_file -> /usr/local/bin/$local_name"
-    if ! download_with_fallback "$RAW_BASE/$remote_file" "/usr/local/bin/$local_name"; then
+    local target="/usr/local/bin/$local_name"
+    local tmp
+    tmp=$(mktemp)
+    echo "  下载 $remote_file -> $target"
+    if ! download_with_fallback "$RAW_BASE/$remote_file" "$tmp"; then
+      rm -f "$tmp"
       log_error "所有代理均下载失败：$RAW_BASE/$remote_file"
     fi
-    chmod +x "/usr/local/bin/$local_name"
+    chmod +x "$tmp"
+    # mv 换 inode，bash 仍读旧文件，不会读到半截内容
+    mv -f "$tmp" "$target"
   done
   echo "管理脚本更新完成"
 }
