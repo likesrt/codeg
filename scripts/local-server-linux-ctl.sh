@@ -232,6 +232,48 @@ check_url() {
     curl $args --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
 }
 
+# 规范化已经带 GH 反向代理前缀的 URL，避免重复拼接代理地址
+# 参数：$1 - 待处理 URL
+# 返回：echo 输出规范化后的 URL
+normalize_download_url() {
+  local url="$1"
+  local proxy_host
+  case "$url" in
+    http://*|https://*) ;;
+    *)
+      # 某些旧版本/环境变量可能只保留代理主机名，先恢复协议
+      for proxy in "${GH_PROXIES[@]}"; do
+        proxy_host="${proxy#https://}"
+        proxy_host="${proxy_host#http://}"
+        case "$url" in
+          "$proxy_host"*) url="https://$url"; break ;;
+        esac
+      done
+      ;;
+  esac
+  for proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$proxy"*) echo "$url"; return ;;
+    esac
+  done
+  echo "$url"
+}
+
+# 根据代理前缀构造目标 URL；目标已经带反向代理前缀时原样返回
+# 参数：$1 - 代理前缀，$2 - GitHub URL
+# 返回：echo 输出最终 URL
+build_proxy_url() {
+  local proxy="$1"
+  local url
+  url="$(normalize_download_url "$2")"
+  for known_proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$known_proxy"*) echo "$url"; return ;;
+    esac
+  done
+  echo "${proxy}${url}"
+}
+
 # 下载单个 GitHub URL，按当前代理模式取 URL 并下载，失败则按优先级回退
 # 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径（可选，省略则输出到 stdout）
 # 返回：成功返回 0，全部失败返回 1
@@ -269,8 +311,10 @@ download_with_fallback() {
 
   for proxy in "${proxies[@]}"; do
     [ -z "$proxy" ] && continue
-    [ -n "${2:-}" ] && log_info "尝试：${proxy}${url#"https://"}"
-    if dl -fsSL --connect-timeout 10 --max-time 120 "${proxy}${url}" "${out_args[@]}"; then
+    local target_url
+    target_url="$(build_proxy_url "$proxy" "$url")"
+    [ -n "${2:-}" ] && log_info "尝试：$target_url"
+    if dl -fsSL --connect-timeout 10 --max-time 120 "$target_url" "${out_args[@]}"; then
       [ -n "${2:-}" ] && log_info "下载成功：${url#"https://"}（via ${proxy}）"
       return 0
     fi
