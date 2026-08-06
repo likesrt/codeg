@@ -9,8 +9,11 @@ set -euo pipefail
 #       或：bash local-server-linux-install.sh [--force]
 # 国内服务器如果无法下载本脚本，可使用代理（按优先级：ghdk.ansss.de > ghproxy.net > github.dpik.top > gh-proxy.com > cdn.gh-proxy.com）：
 #       curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/likesrt/codeg/main/scripts/local-server-linux-install.sh | bash
-# 也可通过环境变量 CODEG_PROXY 指定代理前缀（设为 none 强制直连）：
-#       CODEG_PROXY=https://ghproxy.net/ bash local-server-linux-install.sh
+# 代理方式可通过环境变量免交互指定：
+#   CODEG_PROXY_MODE=direct                       直连 GitHub
+#   CODEG_PROXY_MODE=gh                           使用内置 GH 反向代理列表（自动选第一个可用）
+#   CODEG_PROXY=https://ghproxy.net/              使用指定 GH 反向代理前缀（自动适配末尾 /）
+#   CODEG_FORWARD_PROXY=socks5h://127.0.0.1:1080  使用 HTTP/SOCKS 转发代理
 # ============================================================
 
 # ===== 常量 =====
@@ -22,7 +25,7 @@ BIN_REPO="xintaofei/codeg"
 GITHUB_API="https://api.github.com/repos/$BIN_REPO/releases/latest"
 BIN_BASE="https://github.com/$BIN_REPO"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main/scripts"
-# GitHub 代理列表（按优先级排列，全部失败则报错）
+# GitHub 反向代理列表（按优先级排列，全部失败则报错）
 GH_PROXIES=(
   "https://ghdk.ansss.de/"
   "https://ghproxy.net/"
@@ -38,11 +41,13 @@ ENV_FILE="/opt/codeg/.env"
 VERSION_FILE="/opt/codeg/.version"
 SERVICE_FILE="/etc/systemd/system/codeg-server.service"
 
-# 代理相关变量（detect_proxy 会设置，按域名独立控制）
-API_NEED_PROXY=0
-RAW_NEED_PROXY=0
-DOWNLOAD_NEED_PROXY=0
+# 代理相关变量（select_proxy 会设置）
+# CODEG_PROXY_MODE: direct（直连）/ gh（GH 反向代理前缀）/ forward（HTTP/SOCKS 转发代理）
+# PROXY_PREFIX: gh 模式下归一化后的代理前缀（保证末尾带 /）
+# FORWARD_PROXY: forward 模式下的转发代理 URL
+CODEG_PROXY_MODE="direct"
 PROXY_PREFIX=""
+FORWARD_PROXY=""
 
 # 系统依赖列表
 SYSTEM_DEPS=(
@@ -94,35 +99,105 @@ detect_arch() {
   esac
 }
 
-# 检测单个 URL 是否可直连
-# 参数：$1 - URL
-# 返回：可直连返回 0，不可直连返回 1
-check_url() {
-  curl --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
+# 归一化 GH 反向代理前缀：保证末尾带 /，无协议时补 https://
+# 参数：$1 - 用户输入的代理 URL
+# 返回：echo 输出归一化后的前缀
+normalize_proxy_prefix() {
+  local p="$1"
+  [ -z "$p" ] && return
+  # 无协议时补 https://
+  case "$p" in
+    http://*|https://*) ;;
+    *) p="https://$p" ;;
+  esac
+  # 保证末尾带 /
+  [ "${p: -1}" != "/" ] && p="$p/"
+  echo "$p"
 }
 
-# 统一下载函数，强制 HTTP/1.1 避免代理 HTTP/2 协议错误
+# 返回当前代理模式下 curl 应附加的参数
+# direct: --noproxy '*' （绕开系统 ALL_PROXY，避免代理套代理）
+# gh:     --noproxy '*' （GH 反向代理前缀直接拼接，不走系统转发代理）
+# forward: --noproxy '*' -x <forward_proxy> （显式走用户指定的转发代理）
+# 参数：无
+# 返回：echo 输出 curl 代理参数
+curl_proxy_args() {
+  case "$CODEG_PROXY_MODE" in
+    forward)
+      echo "--noproxy '*' -x $FORWARD_PROXY"
+      ;;
+    *)
+      echo "--noproxy '*'"
+      ;;
+  esac
+}
+
+# 统一下载函数：--noproxy '*' 避免系统 ALL_PROXY 与代理前缀叠加；
+# 默认 HTTP/2，失败自动回退 --http1.1，兼容各类代理
 # 参数：透传给 curl 的所有参数
 # 返回：curl 的退出码
 dl() {
-  curl --http1.1 "$@"
+  # shellcheck disable=SC2086
+  local args
+  args="$(curl_proxy_args)"
+  if curl $args "$@" 2>/dev/null; then
+    return 0
+  fi
+  # 回退到 HTTP/1.1（部分代理对 HTTP/2 支持不佳）
+  if curl $args --http1.1 "$@" 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
-# 下载单个 GitHub URL，按优先级尝试各代理，全部失败则报错
+# 检测单个 URL 是否可达
+# 参数：$1 - URL
+# 返回：可达返回 0，不可达返回 1
+check_url() {
+  # shellcheck disable=SC2086
+  local args
+  args="$(curl_proxy_args)"
+  curl $args -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1 || \
+    curl $args --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
+}
+
+# 下载单个 GitHub URL，按当前代理模式取 URL 并下载，失败则按优先级回退
 # 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径
 # 返回：成功返回 0，全部失败返回 1
 download_with_fallback() {
   local url="$1"
   local output="$2"
 
-  # 直连可用时优先使用原始 GitHub URL
-  if [ "$DOWNLOAD_NEED_PROXY" -eq 0 ] && dl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$output" 2>/dev/null; then
-    log_info "下载成功：${url#"https://"}（直连）" >&2
-    return 0
+  # forward 模式：直接用转发代理访问原始 URL
+  if [ "$CODEG_PROXY_MODE" = "forward" ]; then
+    if dl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$output"; then
+      log_info "下载成功：${url#"https://"}（via $FORWARD_PROXY）" >&2
+      return 0
+    fi
+    return 1
   fi
 
-  for proxy in "${GH_PROXIES[@]}"; do
-    if dl -fsSL --connect-timeout 10 --max-time 300 "${proxy}${url}" -o "$output" 2>/dev/null; then
+  # direct 模式：直接访问原始 URL
+  if [ "$CODEG_PROXY_MODE" = "direct" ]; then
+    if dl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$output"; then
+      log_info "下载成功：${url#"https://"}（直连）" >&2
+      return 0
+    fi
+    return 1
+  fi
+
+  # gh 模式：使用用户指定/自动选中的代理前缀，失败则逐一回退到内置列表
+  local proxies=()
+  [ -n "$PROXY_PREFIX" ] && proxies+=("$PROXY_PREFIX")
+  local p
+  for p in "${GH_PROXIES[@]}"; do
+    [ "$p" = "$PROXY_PREFIX" ] && continue
+    proxies+=("$p")
+  done
+
+  for proxy in "${proxies[@]}"; do
+    [ -z "$proxy" ] && continue
+    if dl -fsSL --connect-timeout 10 --max-time 300 "${proxy}${url}" -o "$output"; then
       log_info "下载成功：${url#"https://"}（via ${proxy}）" >&2
       return 0
     fi
@@ -131,108 +206,135 @@ download_with_fallback() {
   return 1
 }
 
-# 交互式询问代理方式（通过 /dev/tty 读取，支持 curl|bash 管道模式）
-# 参数：无
-# 返回：echo 输出 1（自动检测）、2（使用代理）、3（不使用代理）
-ask_proxy_mode() {
-  # /dev/tty 不可用时（纯非交互环境）走自动检测
-  if [ ! -e /dev/tty ]; then
-    echo 1
-    return
-  fi
-
-  # 菜单文字输出到 stderr，避免被 $(...) 捕获到返回值
-  echo "" >&2
-  echo "请选择 GitHub 代理方式：" >&2
-  echo "  1) 自动检测（推荐）" >&2
-  echo "  2) 使用代理" >&2
-  echo "  3) 不使用代理" >&2
-  read -r -p "请选择 [1-3]（默认 1）: " choice </dev/tty
-  echo "${choice:-1}"
-}
-
-# 检测 GitHub 各域名连通性，按域名独立决定是否使用代理
-# 优先级：CODEG_PROXY 环境变量 > 交互式选择 > 自动检测
-# 参数：无
-# 返回：无。副作用：设置 API/RAW/DOWNLOAD_NEED_PROXY 和 PROXY_PREFIX
-detect_proxy() {
-  # 用户通过环境变量显式指定代理
-  if [ -n "${CODEG_PROXY:-}" ]; then
-    if [ "$CODEG_PROXY" = "none" ]; then
-      log_info "CODEG_PROXY=none，强制不使用代理"
-    else
-      PROXY_PREFIX="$CODEG_PROXY"
-      API_NEED_PROXY=1
-      RAW_NEED_PROXY=1
-      DOWNLOAD_NEED_PROXY=1
-      log_info "使用指定代理：$PROXY_PREFIX"
-    fi
-    return
-  fi
-
-  # 交互式选择代理方式
-  local mode
-  mode=$(ask_proxy_mode)
-  case "$mode" in
-    2)
-      # 用户选择使用代理：取列表中第一个能连通的代理
-      API_NEED_PROXY=1
-      RAW_NEED_PROXY=1
-      DOWNLOAD_NEED_PROXY=1
-      pick_first_proxy
-      log_info "已选择使用代理：$PROXY_PREFIX"
-      return
-      ;;
-    3)
-      # 用户选择不使用代理
-      log_info "已选择不使用代理"
-      return
-      ;;
-  esac
-
-  # 自动检测：分别检测三个域名（api/download 属于二进制仓库，raw 属于脚本仓库）
-  log_info "自动检测 GitHub 连通性 ..."
-  if check_url "https://api.github.com/repos/$BIN_REPO/releases/latest"; then
-    API_NEED_PROXY=0
-  else
-    API_NEED_PROXY=1
-  fi
-
-  if check_url "$RAW_BASE/local-server-linux-install.sh"; then
-    RAW_NEED_PROXY=0
-  else
-    RAW_NEED_PROXY=1
-  fi
-
-  if check_url "$BIN_BASE/releases"; then
-    DOWNLOAD_NEED_PROXY=0
-  else
-    DOWNLOAD_NEED_PROXY=1
-  fi
-
-  local total=$((API_NEED_PROXY + RAW_NEED_PROXY + DOWNLOAD_NEED_PROXY))
-  if [ "$total" -eq 0 ]; then
-    log_info "GitHub 全部可直连，不使用代理"
-  else
-    pick_first_proxy
-    log_info "部分域名需要代理（api=$API_NEED_PROXY raw=$RAW_NEED_PROXY download=$DOWNLOAD_NEED_PROXY），首选代理：$PROXY_PREFIX"
-  fi
-}
-
 # 从 GH_PROXIES 中选第一个能连通的代理，赋值给 PROXY_PREFIX
 # 参数：无
 # 返回：无。副作用：设置 PROXY_PREFIX；全部不可达时回退到列表第一项
 pick_first_proxy() {
-  for proxy in "${GH_PROXIES[@]}"; do
-    [ -z "$proxy" ] && continue
-    if check_url "${proxy}https://raw.githubusercontent.com/$REPO/main/scripts/local-server-linux-install.sh"; then
-      PROXY_PREFIX="$proxy"
+  local p
+  for p in "${GH_PROXIES[@]}"; do
+    [ -z "$p" ] && continue
+    if check_url "${p}https://raw.githubusercontent.com/$REPO/main/scripts/local-server-linux-install.sh"; then
+      PROXY_PREFIX="$p"
       return
     fi
   done
-  # 全部不可达，退回到列表第一个（仍会在实际下载时触发完整回退）
   PROXY_PREFIX="${GH_PROXIES[0]}"
   log_warn "所有代理探测均失败，下载阶段将逐一回退尝试"
+}
+
+# ===== 代理选择 =====
+
+# 交互式选择 GitHub 代理方式（通过 /dev/tty 读取，支持 curl|bash 管道模式）
+# 优先级：环境变量 > 交互式选择
+# 参数：无
+# 返回：无。副作用：设置 CODEG_PROXY_MODE / PROXY_PREFIX / FORWARD_PROXY
+select_proxy() {
+  # 1) CODEG_FORWARD_PROXY 显式指定转发代理 → forward 模式
+  if [ -n "${CODEG_FORWARD_PROXY:-}" ]; then
+    CODEG_PROXY_MODE="forward"
+    FORWARD_PROXY="$CODEG_FORWARD_PROXY"
+    log_info "使用转发代理（CODEG_FORWARD_PROXY）：$FORWARD_PROXY"
+    return
+  fi
+
+  # 2) CODEG_PROXY 显式指定 GH 反向代理前缀 → gh 模式
+  if [ -n "${CODEG_PROXY:-}" ]; then
+    if [ "$CODEG_PROXY" = "none" ] || [ "$CODEG_PROXY" = "direct" ]; then
+      CODEG_PROXY_MODE="direct"
+      log_info "CODEG_PROXY=$CODEG_PROXY，直连 GitHub"
+    else
+      CODEG_PROXY_MODE="gh"
+      PROXY_PREFIX="$(normalize_proxy_prefix "$CODEG_PROXY")"
+      log_info "使用 GH 反向代理（CODEG_PROXY）：$PROXY_PREFIX"
+    fi
+    return
+  fi
+
+  # 3) CODEG_PROXY_MODE 显式指定模式
+  case "${CODEG_PROXY_MODE:-}" in
+    direct)
+      log_info "直连 GitHub（CODEG_PROXY_MODE=direct）"
+      return
+      ;;
+    forward)
+      # 交互式输入转发代理
+      FORWARD_PROXY="$(read_forward_proxy)"
+      [ -z "$FORWARD_PROXY" ] && log_error "未输入转发代理 URL"
+      log_info "使用转发代理：$FORWARD_PROXY"
+      return
+      ;;
+    gh)
+      # gh 模式自动选第一个可用代理
+      pick_first_proxy
+      log_info "使用 GH 反向代理：$PROXY_PREFIX"
+      return
+      ;;
+  esac
+
+  # 4) 交互式菜单（/dev/tty 不可用时默认直连）
+  if [ ! -e /dev/tty ]; then
+    CODEG_PROXY_MODE="direct"
+    log_info "非交互环境，默认直连 GitHub"
+    return
+  fi
+
+  echo "" >&2
+  echo "请选择 GitHub 访问方式：" >&2
+  echo "  1) 直连 GitHub（默认）" >&2
+  echo "  2) 使用 GH 反向代理（内置列表，自动选可用）" >&2
+  echo "  3) 使用自定义 GH 反向代理（手动输入 URL）" >&2
+  echo "  4) 使用 HTTP/SOCKS 转发代理（手动输入）" >&2
+  read -r -p "请选择 [1-4]（默认 1）: " choice </dev/tty
+  choice="${choice:-1}"
+
+  case "$choice" in
+    1)
+      CODEG_PROXY_MODE="direct"
+      log_info "已选择直连 GitHub"
+      ;;
+    2)
+      CODEG_PROXY_MODE="gh"
+      pick_first_proxy
+      log_info "已选择 GH 反向代理：$PROXY_PREFIX"
+      ;;
+    3)
+      CODEG_PROXY_MODE="gh"
+      echo "内置列表（可直接回车使用第一个）：" >&2
+      local idx=1
+      for p in "${GH_PROXIES[@]}"; do
+        echo "  $idx) $p" >&2
+        idx=$((idx + 1))
+      done
+      read -r -p "输入序号或自定义代理 URL（默认 1）: " input </dev/tty
+      input="${input:-1}"
+      if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "${#GH_PROXIES[@]}" ]; then
+        PROXY_PREFIX="${GH_PROXIES[$((input - 1))]}"
+      else
+        PROXY_PREFIX="$(normalize_proxy_prefix "$input")"
+      fi
+      log_info "已选择 GH 反向代理：$PROXY_PREFIX"
+      ;;
+    4)
+      CODEG_PROXY_MODE="forward"
+      FORWARD_PROXY="$(read_forward_proxy)"
+      [ -z "$FORWARD_PROXY" ] && log_error "未输入转发代理 URL"
+      log_info "已选择转发代理：$FORWARD_PROXY"
+      ;;
+    *)
+      CODEG_PROXY_MODE="direct"
+      log_info "无效选项，默认直连 GitHub"
+      ;;
+  esac
+}
+
+# 交互式读取转发代理 URL（通过 /dev/tty）
+# 参数：无
+# 返回：echo 输出代理 URL
+read_forward_proxy() {
+  echo "支持的协议：http://、https://、socks5://、socks5h://（DNS 也走代理，推荐）" >&2
+  echo "示例：socks5h://127.0.0.1:1080  http://user:pass@host:port" >&2
+  read -r -p "请输入转发代理 URL: " input </dev/tty
+  echo "$input"
 }
 
 # ===== 系统依赖安装 =====
@@ -544,8 +646,8 @@ main() {
   arch=$(detect_arch)
   log_info "检测到架构：$arch"
 
-  # 检测 GitHub 代理需求
-  detect_proxy
+  # 选择 GitHub 代理方式
+  select_proxy
 
   # 安装系统依赖
   install_system_deps

@@ -80,11 +80,15 @@ detect_arch() {
   esac
 }
 
-# 统一下载函数，强制 HTTP/1.1 避免代理 HTTP/2 协议错误
+# 统一下载函数：--noproxy '*' 避免系统 ALL_PROXY 与代理前缀叠加；
+# 默认 HTTP/2，失败自动回退 --http1.1，兼容各类代理
 # 参数：透传给 curl 的所有参数
 # 返回：curl 的退出码
 dl() {
-  curl --http1.1 "$@"
+  if curl --noproxy '*' "$@" 2>/dev/null; then
+    return 0
+  fi
+  curl --noproxy '*' --http1.1 "$@" 2>/dev/null
 }
 
 # 询问全局镜像源偏好，设置 MIRROR 变量
@@ -164,17 +168,24 @@ GITHUB_PROXIES=(
   "https://cdn.gh-proxy.com/"
 )
 
-# 尝试从 GitHub 下载文件，自动尝试多个代理直到成功
+# 尝试从 GitHub 下载文件，先直连，再按优先级尝试各代理，全部失败则报错
 # 参数：$1 - GitHub 完整 URL，$2 - 输出文件路径
 # 返回：成功返回 0，所有代理都失败返回 1
 github_download() {
   local url="$1"
   local output="$2"
 
+  # 先尝试直连（--noproxy '*' 绕开系统 ALL_PROXY）
+  if dl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$output" 2>/dev/null; then
+    log_info "下载成功（直连）"
+    return 0
+  fi
+
+  # 按优先级尝试各 GH 反向代理
   for proxy in "${GITHUB_PROXIES[@]}"; do
     local full_url="${proxy}${url}"
     if dl -fsSL --connect-timeout 10 --max-time 120 "$full_url" -o "$output" 2>/dev/null; then
-      log_info "下载成功"
+      log_info "下载成功（via ${proxy}）"
       return 0
     fi
     log_warn "下载失败，尝试下一个源 ..."
