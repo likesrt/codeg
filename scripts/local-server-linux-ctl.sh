@@ -259,6 +259,21 @@ normalize_download_url() {
   echo "$url"
 }
 
+# 根据代理前缀构造目标 URL；目标已经带反向代理前缀时原样返回
+# 参数：$1 - 代理前缀，$2 - GitHub URL
+# 返回：echo 输出最终 URL
+build_proxy_url() {
+  local proxy="$1"
+  local url
+  url="$(normalize_download_url "$2")"
+  for known_proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$known_proxy"*) echo "$url"; return ;;
+    esac
+  done
+  echo "${proxy}${url}"
+}
+
 # 恢复被 GH 反向代理响应重写的脚本 URL。
 # 部分 HubProxy 会把响应正文中的 raw/github URL 也改写成代理 URL，
 # 如果直接保存并执行，会导致后续请求再次套代理前缀。
