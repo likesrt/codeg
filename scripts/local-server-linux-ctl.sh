@@ -259,18 +259,38 @@ normalize_download_url() {
   echo "$url"
 }
 
+# 将已被 GH 代理包装的 URL 还原为 canonical GitHub URL
+# 参数：$1 - 原始或已包装的 URL
+# 返回：echo 输出 canonical URL
+canonicalize_github_url() {
+  local url="$1"
+  local proxy rest
+  for proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$proxy"*)
+        rest="${url#"$proxy"}"
+        case "$rest" in
+          https://raw.githubusercontent.com/*|http://raw.githubusercontent.com/*|https://api.github.com/*|http://api.github.com/*|https://github.com/*|http://github.com/*)
+            url="$rest" ;;
+          raw.githubusercontent.com/*|api.github.com/*|github.com/*)
+            url="https://$rest" ;;
+          *)
+            url="$rest" ;;
+        esac
+        break
+        ;;
+    esac
+  done
+  echo "$url"
+}
+
 # 根据代理前缀构造目标 URL；目标已经带反向代理前缀时原样返回
 # 参数：$1 - 代理前缀，$2 - GitHub URL
 # 返回：echo 输出最终 URL
 build_proxy_url() {
   local proxy="$1"
   local url
-  url="$(normalize_download_url "$2")"
-  for known_proxy in "${GH_PROXIES[@]}"; do
-    case "$url" in
-      "$known_proxy"*) echo "$url"; return ;;
-    esac
-  done
+  url="$(canonicalize_github_url "$(normalize_download_url "$2")")"
   echo "${proxy}${url}"
 }
 

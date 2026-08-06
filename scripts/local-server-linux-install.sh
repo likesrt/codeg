@@ -166,6 +166,97 @@ check_url() {
     curl $args --http1.1 -fsSL --connect-timeout 5 --max-time 10 "$1" >/dev/null 2>&1
 }
 
+# 将已被 GH 代理包装的 URL 还原为 canonical GitHub URL
+# 参数：$1 - 原始或已包装的 URL
+# 返回：echo 输出 canonical URL
+canonicalize_github_url() {
+  local url="$1"
+  local proxy rest
+  for proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$proxy"*)
+        rest="${url#"$proxy"}"
+        case "$rest" in
+          https://raw.githubusercontent.com/*|http://raw.githubusercontent.com/*|https://api.github.com/*|http://api.github.com/*|https://github.com/*|http://github.com/*)
+            url="$rest" ;;
+          raw.githubusercontent.com/*|api.github.com/*|github.com/*)
+            url="https://$rest" ;;
+          *)
+            url="$rest" ;;
+        esac
+        break
+        ;;
+    esac
+  done
+  echo "$url"
+}
+
+# 根据代理前缀构造目标 URL；目标已经带反向代理前缀时原样返回
+# 参数：$1 - 代理前缀，$2 - GitHub URL
+# 返回：echo 输出最终 URL
+build_proxy_url() {
+  local proxy="$1"
+  local url
+  url="$(canonicalize_github_url "$(normalize_download_url "$2")")"
+  echo "${proxy}${url}"
+}
+
+# 规范化已经带 GH 反向代理前缀的 URL，避免重复拼接代理地址
+# 参数：$1 - 待处理 URL
+# 返回：echo 输出规范化后的 URL
+normalize_download_url() {
+  local url="$1"
+  local proxy proxy_host
+  case "$url" in
+    http://*|https://*) ;;
+    *)
+      for proxy in "${GH_PROXIES[@]}"; do
+        proxy_host="${proxy#https://}"
+        proxy_host="${proxy_host#http://}"
+        case "$url" in
+          "$proxy_host"*) url="https://$url"; break ;;
+        esac
+      done
+      ;;
+  esac
+  echo "$url"
+}
+
+# 将已被 GH 代理包装的 URL 还原为 canonical GitHub URL
+# 参数：$1 - 原始或已包装的 URL
+# 返回：echo 输出 canonical URL
+canonicalize_github_url() {
+  local url="$1"
+  local proxy rest
+  for proxy in "${GH_PROXIES[@]}"; do
+    case "$url" in
+      "$proxy"*)
+        rest="${url#"$proxy"}"
+        case "$rest" in
+          https://raw.githubusercontent.com/*|http://raw.githubusercontent.com/*|https://api.github.com/*|http://api.github.com/*|https://github.com/*|http://github.com/*)
+            url="$rest" ;;
+          raw.githubusercontent.com/*|api.github.com/*|github.com/*)
+            url="https://$rest" ;;
+          *)
+            url="$rest" ;;
+        esac
+        break
+        ;;
+    esac
+  done
+  echo "$url"
+}
+
+# 根据代理前缀构造目标 URL；目标已经带反向代理前缀时先还原
+# 参数：$1 - 代理前缀，$2 - GitHub URL
+# 返回：echo 输出最终 URL
+build_proxy_url() {
+  local proxy="$1"
+  local url
+  url="$(canonicalize_github_url "$(normalize_download_url "$2")")"
+  echo "${proxy}${url}"
+}
+
 # 恢复被 GH 反向代理响应重写的脚本 URL。
 # 部分 HubProxy 会把响应正文中的 raw/github URL 也改写成代理 URL，
 # 如果直接保存并执行，会导致后续请求再次套代理前缀。
@@ -223,8 +314,10 @@ download_with_fallback() {
 
   for proxy in "${proxies[@]}"; do
     [ -z "$proxy" ] && continue
-    log_info "尝试：${proxy}${url#"https://"}" >&2
-    if dl -fsSL --connect-timeout 10 --max-time 300 "${proxy}${url}" -o "$output"; then
+    local target_url
+    target_url="$(build_proxy_url "$proxy" "$url")"
+    log_info "尝试：$target_url" >&2
+    if dl -fsSL --connect-timeout 10 --max-time 300 "$target_url" -o "$output"; then
       log_info "下载成功：${url#"https://"}（via ${proxy}）" >&2
       return 0
     fi
