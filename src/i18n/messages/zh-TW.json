@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "資料夾在上",
       "sectionOrderChatsFirst": "聊天在上",
       "statusRunningBadge": "運行中",
+      "runningCountBadge": "{count} 個會話進行中",
       "statusCancelledBadge": "已取消",
       "worktreeRemovedBadge": "來源 worktree 已刪除",
       "conversationCountUnit": "{count} 條",
@@ -2591,7 +2592,7 @@
           "shortcutsNewSearch": "<shortcut>{newConversation}</shortcut> 快速新建會話，<shortcut>{searchConversations}</shortcut> 搜尋歷史會話",
           "slashAtMention": "在輸入框輸入 / 觸發斜線命令，輸入 @ 引用專案內檔案",
           "pasteDropFiles": "直接貼上截圖或把檔案拖到輸入框，即可作為附件",
-          "queueMessage": "agent 回覆中也能繼續輸入並排隊，回答完畢會自動續發",
+          "queueMessage": "智能體回覆中也能繼續輸入並排隊，回答完畢會自動續發",
           "draftAutoSave": "未發送的草稿會自動儲存，重新開啟會話仍在",
           "forkSend": "傳送按鈕旁的下拉選擇「分叉傳送」，從目前位置開一條新分支",
           "exportConversation": "右鍵會話內容區可匯出為 Markdown / HTML / 圖片",
@@ -2602,7 +2603,19 @@
           "webService": "開啟「設定 → Web 服務」後，團隊成員可從瀏覽器接入同一臺 codeg",
           "fusionMode": "開啟檔案或差異後，會自動與會話並排顯示",
           "quickMessages": "點輸入框旁的 + 按鈕選擇「快捷訊息」，可一鍵插入預存片段（在「設定 → 快捷訊息」中管理）",
-          "experts": "透過 + 按鈕裡的「專家技能」可一鍵載入預設角色（除錯 / 規劃等）"
+          "experts": "透過 + 按鈕裡的「專家技能」可一鍵載入預設角色（除錯 / 規劃等）",
+          "taskBoard": "「任務看板」能把一條待辦從頭跑到尾：智能體在獨立工作樹裡執行，你檢視完差異再合併。",
+          "automations": "「自動化」按排程定時執行儲存好的提示詞（例如每晚一次程式碼審查），還能讓每次執行都開一個獨立工作樹。",
+          "tokenUsage": "點擊狀態列左下角的會話數即可開啟「Token 用量」，按日期、智能體、模型與資料夾拆分統計。",
+          "mentionTargets": "@ 不只能引用檔案：還能 @ 另一個智能體把子任務交給它，或引用歷史會話、某次提交、某個技能。",
+          "splitGroups": "右鍵點擊標籤選擇「向右拆分」或「向下拆分」，兩個會話各佔一個分割區同時開著。",
+          "worktrees": "點開分支按鈕選「新增工作樹」，多個智能體就能在同一個儲存庫並行工作，互不覆蓋彼此的檔案。",
+          "importSessions": "之前在終端機裡跑過的會話，用資料夾右鍵選單的「匯入本地會話」就能把那段歷史接進 codeg。",
+          "subSessions": "智能體委派出去的子會話會巢狀顯示在側邊欄的父會話底下，展開就能追蹤每一個子會話做了什麼。",
+          "liveFeedback": "「+」選單裡的「即時回饋」能把一則便條塞進智能體正在跑的這一輪，不用打斷它。",
+          "skillPacks": "設定 → 技能包 裡打包了程式專家、科研與辦公三類技能，可以按智能體分別開關。",
+          "modelProviders": "設定 → 模型供應商 支援填自己的 API key 或端點位址，之後直接在輸入框裡切換模型。",
+          "workspaceBackground": "設定 → 外觀 裡可以換工作區背景圖、調面板不透明度，還能換應用程式字型。"
         },
         "quickActions": {
           "excel": "Excel 活頁簿",
@@ -2676,7 +2689,9 @@
             "description": "前往設定啟用後即可在此使用。",
             "action": "前往啟用",
             "hint": "技能未啟用"
-          }
+          },
+          "scrollPrev": "顯示上一組技能",
+          "scrollNext": "顯示下一組技能"
         }
       },
       "agentSelector": {

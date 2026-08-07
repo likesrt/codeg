@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "Dossiers en haut",
       "sectionOrderChatsFirst": "Discussion en haut",
       "statusRunningBadge": "En cours",
+      "runningCountBadge": "{count, plural, one {# session en cours} other {# sessions en cours}}",
       "statusCancelledBadge": "Annulé",
       "worktreeRemovedBadge": "Worktree d'origine supprimé",
       "conversationCountUnit": "{count, plural, one {# conversation} other {# conversations}}",
@@ -2602,7 +2603,19 @@
           "webService": "Activez Paramètres → Service Web pour que votre équipe accède au même codeg depuis un navigateur.",
           "fusionMode": "Ouvrez un fichier ou un diff pour l'afficher automatiquement à côté de la conversation.",
           "quickMessages": "Ouvrez le bouton + à côté de la saisie et choisissez Messages rapides pour insérer un extrait enregistré (à gérer dans Paramètres → Messages rapides).",
-          "experts": "Le bouton + propose un menu Compétences expertes — chargez en un clic des rôles comme Débogage ou Planification."
+          "experts": "Le bouton + propose un menu Compétences expertes — chargez en un clic des rôles comme Débogage ou Planification.",
+          "taskBoard": "Le Tableau des tâches exécute une tâche de bout en bout : l'agent travaille dans son propre worktree, vous relisez le diff puis fusionnez.",
+          "automations": "Les Automatisations exécutent un prompt enregistré selon un planning — une revue nocturne, un rapport récurrent — et chaque exécution peut avoir son propre worktree.",
+          "tokenUsage": "Cliquez sur le nombre de conversations dans la barre d'état pour ouvrir la Consommation de tokens, détaillée par jour, agent, modèle et dossier.",
+          "mentionTargets": "@ ne sert pas qu'aux fichiers : mentionnez un autre agent pour lui confier une sous-tâche, ou référencez une session passée, un commit ou une compétence.",
+          "splitGroups": "Faites un clic droit sur un onglet et choisissez Diviser à droite ou Diviser en bas pour garder deux conversations dans leurs propres volets.",
+          "worktrees": "Ouvrez le bouton de branche et choisissez Nouveau worktree pour que plusieurs agents travaillent sur le même dépôt sans écraser les fichiers des autres.",
+          "importSessions": "Vous avez déjà lancé des sessions dans le terminal ? Le menu d'un dossier propose Importer les sessions locales pour récupérer cet historique dans codeg.",
+          "subSessions": "Quand un agent délègue, la sous-session apparaît imbriquée sous lui dans la barre latérale : dépliez la ligne pour suivre ce que chacune a fait.",
+          "liveFeedback": "Retour en direct, dans le menu +, glisse une note dans le tour que l'agent exécute déjà, sans l'interrompre.",
+          "skillPacks": "Paramètres → Packs de compétences regroupe experts du code, recherche scientifique et bureautique ; activez-les agent par agent.",
+          "modelProviders": "Paramètres → Fournisseurs de Modèles accepte votre propre clé d'API ou endpoint, puis vous choisissez le modèle dans la zone de saisie.",
+          "workspaceBackground": "Paramètres → Apparence définit une image de fond pour l'espace de travail, l'opacité des panneaux et les polices de l'application."
         },
         "quickActions": {
           "excel": "Classeur Excel",
@@ -2676,7 +2689,9 @@
             "description": "Activez-la dans les Paramètres pour l’utiliser ici.",
             "action": "Activer",
             "hint": "Compétence non activée"
-          }
+          },
+          "scrollPrev": "Afficher les compétences précédentes",
+          "scrollNext": "Afficher plus de compétences"
         }
       },
       "agentSelector": {

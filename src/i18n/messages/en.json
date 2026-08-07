@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "Folders on top",
       "sectionOrderChatsFirst": "Chat on top",
       "statusRunningBadge": "Running",
+      "runningCountBadge": "{count, plural, one {# session running} other {# sessions running}}",
       "statusCancelledBadge": "Cancelled",
       "worktreeRemovedBadge": "Source worktree removed",
       "conversationCountUnit": "{count, plural, one {# conversation} other {# conversations}}",
@@ -2602,7 +2603,19 @@
           "webService": "Enable Settings → Web Service so teammates can reach the same codeg from a browser.",
           "fusionMode": "Open a file or diff to automatically show it alongside the conversation.",
           "quickMessages": "Open the + button next to the input and pick Quick Messages to insert a saved snippet (manage them under Settings → Quick Messages).",
-          "experts": "The + button has an Expert Skills menu — preload roles like Debug or Planning with one click."
+          "experts": "The + button has an Expert Skills menu — preload roles like Debug or Planning with one click.",
+          "taskBoard": "The Task Board runs a to-do end to end — the agent works in its own worktree, then you review the diff and merge.",
+          "automations": "Automations run a saved prompt on a schedule — a nightly review, a recurring report — and each run can get its own worktree.",
+          "tokenUsage": "Click the conversation count in the status bar to open Token Usage — spend broken down by day, agent, model, and folder.",
+          "mentionTargets": "@ pulls in more than files — mention another agent to hand off a subtask, or reference a past session, a commit, or a skill.",
+          "splitGroups": "Right-click a tab and pick Split Right or Split Down to keep two conversations open in their own panes.",
+          "worktrees": "Open the branch button and pick New worktree so several agents can work the same repo without overwriting each other's files.",
+          "importSessions": "Already ran sessions in the terminal? A folder's menu has Import local sessions — bring that history into codeg.",
+          "subSessions": "When an agent delegates, the sub-session appears nested under it in the sidebar — expand the row to follow what each one did.",
+          "liveFeedback": "Live feedback in the + menu drops a note into the turn the agent is already running, without interrupting it.",
+          "skillPacks": "Settings → Skill Packs bundles coding experts, scientific research, and office skills — switch them on per agent.",
+          "modelProviders": "Settings → Model Providers takes your own API key or endpoint, and you pick the model right in the composer.",
+          "workspaceBackground": "Settings → Appearance sets a workspace background image, panel opacity, and the app's fonts."
         },
         "quickActions": {
           "excel": "Excel Workbook",
@@ -2676,7 +2689,9 @@
             "description": "Enable it in Settings to use it here.",
             "action": "Enable",
             "hint": "Skill not enabled"
-          }
+          },
+          "scrollPrev": "Show previous skills",
+          "scrollNext": "Show more skills"
         }
       },
       "agentSelector": {

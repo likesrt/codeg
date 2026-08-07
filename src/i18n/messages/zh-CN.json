@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "文件夹在上",
       "sectionOrderChatsFirst": "聊天在上",
       "statusRunningBadge": "运行中",
+      "runningCountBadge": "{count} 个会话进行中",
       "statusCancelledBadge": "已取消",
       "worktreeRemovedBadge": "源 worktree 已删除",
       "conversationCountUnit": "{count} 条",
@@ -2591,7 +2592,7 @@
           "shortcutsNewSearch": "<shortcut>{newConversation}</shortcut> 快速新建会话，<shortcut>{searchConversations}</shortcut> 搜索历史会话",
           "slashAtMention": "在输入框输入 / 触发斜杠命令，输入 @ 引用项目内文件",
           "pasteDropFiles": "直接粘贴截图或把文件拖到输入框，即可作为附件",
-          "queueMessage": "agent 回复中也能继续输入并排队，回答完毕会自动续发",
+          "queueMessage": "智能体回复中也能继续输入并排队，回答完毕会自动续发",
           "draftAutoSave": "未发送的草稿会自动保存，重新打开会话仍在",
           "forkSend": "发送按钮旁的下拉选择「分叉发送」，从当前位置开一条新分支",
           "exportConversation": "右键会话内容区可导出为 Markdown / HTML / 图片",
@@ -2602,7 +2603,19 @@
           "webService": "开启「设置 → Web 服务」后，团队成员可从浏览器接入同一台 codeg",
           "fusionMode": "打开文件或差异后，会自动与会话并排显示",
           "quickMessages": "点输入框旁的 + 按钮选择「快捷消息」，可一键插入预存片段（在「设置 → 快捷消息」中管理）",
-          "experts": "通过 + 按钮里的「专家技能」可一键加载预设角色（调试 / 规划等）"
+          "experts": "通过 + 按钮里的「专家技能」可一键加载预设角色（调试 / 规划等）",
+          "taskBoard": "「任务看板」能把一条待办从头跑到尾：智能体在独立工作树里干活，你 review 完差异再合并。",
+          "automations": "「自动化」按计划定时跑保存好的提示词（比如每晚一次代码评审），还能让每次运行都开一个独立工作树。",
+          "tokenUsage": "点击状态栏左下角的会话数即可打开「Token 用量」，按天、智能体、模型和文件夹拆分统计。",
+          "mentionTargets": "@ 不只能引用文件：还能 @ 另一个智能体把子任务交给它，或引用历史会话、某次提交、某个技能。",
+          "splitGroups": "右键点击标签选择「向右拆分」或「向下拆分」，两个会话各占一个分栏同时开着。",
+          "worktrees": "点开分支按钮选「新建工作树」，多个智能体就能在同一个仓库并行干活，互不覆盖彼此的文件。",
+          "importSessions": "之前在终端里跑过的会话，用文件夹右键菜单的「导入本地会话」就能把那段历史接进 codeg。",
+          "subSessions": "智能体委派出去的子会话会嵌套显示在侧边栏的父会话下面，展开就能跟踪每一个子会话做了什么。",
+          "liveFeedback": "「+」菜单里的「实时反馈」能把一条便条塞进智能体正在跑的这一轮，不用打断它。",
+          "skillPacks": "设置 → 技能包 里打包了编程专家、科研和办公三类技能，可以按智能体分别开关。",
+          "modelProviders": "设置 → 模型供应商 支持填自己的 API key 或接口地址，之后直接在输入框里切换模型。",
+          "workspaceBackground": "设置 → 外观 里可以换工作区背景图、调面板不透明度，还能换应用字体。"
         },
         "quickActions": {
           "excel": "Excel 工作簿",
@@ -2676,7 +2689,9 @@
             "description": "前往设置启用后即可在此使用。",
             "action": "去启用",
             "hint": "技能未启用"
-          }
+          },
+          "scrollPrev": "显示上一组技能",
+          "scrollNext": "显示下一组技能"
         }
       },
       "agentSelector": {

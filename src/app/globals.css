@@ -1124,7 +1124,7 @@
 }
 
 /* 折叠态内容底部渐隐（会话用户消息、提交 tab 的提交信息…）：遮罩内容本身而非叠加层，跟
-   .qa-marquee-viewport / .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区
+   .qa-rail-viewport / .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区
    背景图后的半透明 ws-msg-secondary。不属于下面的 ws- 门控家族，始终生效。 */
 .collapsed-content-fade {
   -webkit-mask-image: linear-gradient(
@@ -1460,42 +1460,71 @@
   }
 }
 
-/* Welcome-page quick actions: single-row seamless marquee. The motion is driven
-   by a JS requestAnimationFrame loop (see quick-actions.tsx) that sets the track
-   transform every frame — NOT a CSS animation. A CSS transform animation gets
-   composited, and on hover-pause WebKit reverts to the (slightly-behind)
-   main-thread clock, snapping the row backwards; setting the transform
-   explicitly each frame means pausing just stops updating, so it freezes in
-   place. CSS here only does the visuals + the reduced-motion fallback. */
+/* Welcome-page quick actions: the skill rail (see quick-actions.tsx). A plain
+   horizontal scroller — paging is done by the two arrow buttons calling
+   `scrollBy`, so nothing here animates. The native scrollbar is hidden: the row
+   is 2rem tall and the arrows (plus the edge fade below) already advertise that
+   there is more to the side.
 
-/* Both-edge fade so bars scroll in/out softly instead of clipping at a hard
-   border. Background-agnostic (masks the content itself, not an overlay). */
-.qa-marquee-viewport {
+   Each edge fade is gated on its own `data-fade-*` attribute, which the
+   component sets only while there is content to scroll that way — so a rail
+   whose bars all fit renders with hard, unfaded ends instead of pointlessly
+   dimming the first and last bar. The zero-width default collapses the gradient
+   stop pair onto itself, which is a no-op mask. Background-agnostic (it masks
+   the content itself, not an overlay). */
+.qa-rail-viewport {
+  --qa-fade-start: 0rem;
+  --qa-fade-end: 0rem;
+  overflow-x: auto;
+  scrollbar-width: none;
   -webkit-mask-image: linear-gradient(
     to right,
     transparent,
-    #000 1.5rem,
-    #000 calc(100% - 1.5rem),
+    #000 var(--qa-fade-start),
+    #000 calc(100% - var(--qa-fade-end)),
     transparent
   );
   mask-image: linear-gradient(
     to right,
     transparent,
-    #000 1.5rem,
-    #000 calc(100% - 1.5rem),
+    #000 var(--qa-fade-start),
+    #000 calc(100% - var(--qa-fade-end)),
     transparent
   );
 }
 
-/* Reduced motion: the rAF loop bails, so drop the transform and turn the
-   viewport into a normal horizontal scroller with the duplicate copy hidden. */
-@media (prefers-reduced-motion: reduce) {
-  .qa-marquee-viewport {
-    overflow-x: auto;
-  }
-  .qa-marquee-track > [data-qa-clone] {
-    display: none;
-  }
+.qa-rail-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+/* `--qa-fade-start/-end` are LOGICAL (the component knows which end of the
+   content it is at, not which side of the screen that is), but a gradient's
+   `to right` is physical — so under RTL the two fades would land on the wrong
+   edges. Flipping the gradient to `to left` puts the start stop back on the
+   physical right, which is where the content starts in Arabic. */
+[dir="rtl"] .qa-rail-viewport {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    transparent,
+    #000 var(--qa-fade-start),
+    #000 calc(100% - var(--qa-fade-end)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to left,
+    transparent,
+    #000 var(--qa-fade-start),
+    #000 calc(100% - var(--qa-fade-end)),
+    transparent
+  );
+}
+
+.qa-rail-viewport[data-fade-start] {
+  --qa-fade-start: 1.5rem;
+}
+
+.qa-rail-viewport[data-fade-end] {
+  --qa-fade-end: 1.5rem;
 }
 
 /* Workspace panel show/hide slide. Toggling the left sidebar, right aux panel,

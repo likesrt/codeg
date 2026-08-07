@@ -169,7 +169,7 @@ const FolderHeader = memo(function FolderHeader({
   folderName,
   folderAlias,
   folderPath,
-  count,
+  runningCount,
   expanded,
   themeColor,
   appThemeColor,
@@ -199,7 +199,13 @@ const FolderHeader = memo(function FolderHeader({
   /** User-set alias, or null. When present the header shows `alias [name]`. */
   folderAlias: string | null
   folderPath: string
-  count: number
+  /**
+   * How many of this group's sessions are currently RUNNING (`in_progress`) —
+   * not how many it holds. Zero renders no badge at all: the header's job is to
+   * flag live activity you'd otherwise have to expand the folder to notice, and
+   * a total-count chip on every row was noise (expanding shows the rows).
+   */
+  runningCount: number
   expanded: boolean
   themeColor: FolderThemeColor
   appThemeColor: ThemeColor
@@ -389,20 +395,37 @@ const FolderHeader = memo(function FolderHeader({
                       />
                     )}
                   </span>
-                  <span
-                    className={cn(
-                      "inline-flex shrink-0 items-center justify-center",
-                      "h-[0.9375rem] min-w-[1rem] rounded-[0.3125rem] px-[0.25rem]",
-                      "text-[0.625rem] font-semibold leading-none tabular-nums",
-                      "bg-primary/10 text-primary"
-                    )}
-                  >
-                    {count}
-                  </span>
+                  {/* Live-activity badge: the number of RUNNING sessions in this
+                      group, and nothing at all when none are. Amber (not the
+                      primary tint the old total-count chip used) is the same
+                      "running" semantic the conversation cards spin in amber, so
+                      the two read as one signal. amber-700 (not the card's
+                      amber-600) carries the light-mode fill: at 0.625rem this is
+                      small text, and amber-600 on the tinted surface lands near
+                      3:1 — under the AA floor amber-700 (~4.7:1) clears. */}
+                  {runningCount > 0 && (
+                    <span
+                      title={t("runningCountBadge", { count: runningCount })}
+                      className={cn(
+                        "inline-flex shrink-0 items-center justify-center",
+                        "h-[0.9375rem] min-w-[1rem] rounded-[0.3125rem] px-[0.25rem]",
+                        "text-[0.625rem] font-semibold leading-none tabular-nums",
+                        "bg-amber-500/12 text-amber-700",
+                        "dark:bg-amber-400/15 dark:text-amber-300"
+                      )}
+                    >
+                      <span aria-hidden>{runningCount}</span>
+                      <span className="sr-only">
+                        {t("runningCountBadge", { count: runningCount })}
+                      </span>
+                    </span>
+                  )}
                   {/* Disclosure chevron mirrors the section headers: hover-revealed,
                     rotates on expand. The persistent open/closed state still reads
-                    from the folder icon on the left; this is the matching affordance
-                    that makes folder + section headers feel like one family.
+                    from the folder icon on the left, which is why the chevron can
+                    stay hidden at rest in BOTH states (collapsed included) — it is
+                    a redundant affordance, not the only one. Touch keeps it pinned
+                    on, since there is no hover to reveal it there.
                     NOTE: `group-focus-within` (not `group-focus-visible` like the
                     section header) is intentional — here the `group` is the outer
                     row wrapper and focus lands on a child (the toggle button or the
@@ -414,12 +437,9 @@ const FolderHeader = memo(function FolderHeader({
                     className={cn(
                       "h-3 w-3 shrink-0 text-muted-foreground/60",
                       "transition-[transform,opacity] duration-200 ease-out",
-                      // Collapsed: always visible (mirrors the section headers, so a
-                      // folded folder shows the same reopen affordance). Expanded:
-                      // hover/focus-only.
-                      expanded
-                        ? "rotate-90 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
-                        : "opacity-100"
+                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                      "[@media(hover:none)]:opacity-100",
+                      expanded && "rotate-90"
                     )}
                   />
                 </div>
@@ -1084,6 +1104,23 @@ export function SidebarConversationList({
     const map = new Map<number, number>()
     for (const conv of conversations) {
       if (conv.pinned_at != null) continue
+      const groupId = displayChildToParent.get(conv.folder_id) ?? conv.folder_id
+      map.set(groupId, (map.get(groupId) ?? 0) + 1)
+    }
+    return map
+  }, [conversations, displayChildToParent])
+
+  // Running (`in_progress`) sessions per display group — what the folder header
+  // badge shows. Counted off the FULL conversation list rather than `byFolder`
+  // on purpose: the badge answers "is there work running in here", so neither
+  // the "Show completed" filter nor a session being pinned into the Pinned
+  // section should be able to hide it. Deliberately NOT a `buildRows` input, so
+  // a status event never rebuilds the row model — it only changes one number on
+  // one memoized header.
+  const folderRunningCounts = useMemo(() => {
+    const map = new Map<number, number>()
+    for (const conv of conversations) {
+      if (conv.status !== "in_progress") continue
       const groupId = displayChildToParent.get(conv.folder_id) ?? conv.folder_id
       map.set(groupId, (map.get(groupId) ?? 0) + 1)
     }
@@ -2039,13 +2076,15 @@ export function SidebarConversationList({
     )
   }
 
-  // Total sessions across a container repo and all its worktrees — the count
+  // Running sessions across a container repo and all its worktrees — the count
   // shown on the container header (its own sessions live in the root sub-group,
-  // so the bare `byFolder` count would understate the repo family).
-  const containerTotalCount = (repoId: number): number => {
-    let total = byFolder.get(repoId)?.length ?? 0
+  // so the bare per-folder number would understate the repo family).
+  const containerRunningCount = (repoId: number): number => {
+    let total = folderRunningCounts.get(repoId) ?? 0
     const kids = containerChildren.get(repoId)
-    if (kids) for (const kid of kids) total += byFolder.get(kid)?.length ?? 0
+    if (kids) {
+      for (const kid of kids) total += folderRunningCounts.get(kid) ?? 0
+    }
     return total
   }
 
@@ -2071,15 +2110,15 @@ export function SidebarConversationList({
     // folder, consistent with its slot.
     const isWorktree =
       !isRootGroup && showWorktrees && childToParent.has(folderId)
-    // A container repo (has ≥1 open worktree): plain repo glyph but a total count
+    // A container repo (has ≥1 open worktree): plain repo glyph but a count
     // spanning the whole family. Its own sessions render in the root sub-group.
     const isContainer =
       !isRootGroup && showWorktrees && containerRepoIds.has(folderId)
     const variant = isRootGroup ? "root" : isWorktree ? "worktree" : "repo"
     const depth = isRootGroup || isWorktree ? 1 : 0
-    const count = isContainer
-      ? containerTotalCount(folderId)
-      : (byFolder.get(folderId)?.length ?? 0)
+    const runningCount = isContainer
+      ? containerRunningCount(folderId)
+      : (folderRunningCounts.get(folderId) ?? 0)
     const expanded = isRootGroup
       ? !rootGroupCollapsed.has(folderId)
       : opts.collapsed
@@ -2091,7 +2130,7 @@ export function SidebarConversationList({
         folderName={folderEntry?.name ?? String(folderId)}
         folderAlias={folderEntry?.alias ?? null}
         folderPath={folderEntry?.path ?? ""}
-        count={count}
+        runningCount={runningCount}
         expanded={expanded}
         themeColor={folderThemeColor(folderId)}
         appThemeColor={appThemeColor}

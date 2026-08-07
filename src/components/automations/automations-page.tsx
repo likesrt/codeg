@@ -383,28 +383,41 @@ export function AutomationsPage() {
 
   const picker = (onboarding: boolean) => (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4">
-        {onboarding ? (
-          <div className="flex flex-col items-center gap-2 pt-4 text-center">
-            <span className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-              <Zap className="size-6" aria-hidden="true" />
-            </span>
-            <h2 className="text-base font-semibold">{t("onboardTitle")}</h2>
-            <p className="max-w-md text-sm text-muted-foreground">
-              {t("onboardHint")}
-            </p>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              {t("startFromTemplate")}
-            </h2>
-            <Button size="sm" variant="ghost" onClick={closeToDetail}>
-              {t("cancel")}
-            </Button>
-          </div>
-        )}
-        <TemplateGallery onPick={pickTemplate} />
+      {/* Onboarding is the whole page, so the gallery is centered in the shell
+          both ways. Vertical centering rides on `my-auto` inside a
+          `min-h-full` column rather than `justify-center`: when the gallery is
+          taller than the viewport the free space goes negative, auto margins
+          collapse to 0, and it scrolls from the top instead of having its head
+          clipped out of reach. */}
+      <div className="flex min-h-full flex-col">
+        <div
+          className={cn(
+            "mx-auto flex w-full max-w-4xl flex-col gap-6 p-4",
+            onboarding && "my-auto"
+          )}
+        >
+          {onboarding ? (
+            <div className="flex flex-col items-center gap-2 text-center">
+              <span className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                <Zap className="size-6" aria-hidden="true" />
+              </span>
+              <h2 className="text-base font-semibold">{t("onboardTitle")}</h2>
+              <p className="max-w-md text-sm text-muted-foreground">
+                {t("onboardHint")}
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {t("startFromTemplate")}
+              </h2>
+              <Button size="sm" variant="ghost" onClick={closeToDetail}>
+                {t("cancel")}
+              </Button>
+            </div>
+          )}
+          <TemplateGallery onPick={pickTemplate} />
+        </div>
       </div>
     </ScrollArea>
   )
@@ -520,7 +533,15 @@ export function AutomationsPage() {
         // there is no toolbar padding to add to).
         <div className="min-h-0 flex-1 p-4">
           <div className={cn(SHELL_CLASS, DETAIL_SURFACE_CLASS)}>
-            {mode === "editor" && editing ? editorPane : picker(true)}
+            {/* SHELL_CLASS is a flex row (it splits into two columns when the
+                list exists), so its lone child here must be told to fill it.
+                Without `flex-1` the scroller shrink-wraps the gallery's
+                intrinsic width, pinning the whole empty state to the left edge
+                with a dead gutter on the right — and `mx-auto` inside it has no
+                free space left to center in. */}
+            <div className="min-w-0 flex-1">
+              {mode === "editor" && editing ? editorPane : picker(true)}
+            </div>
           </div>
         </div>
       )}

@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "Carpetas arriba",
       "sectionOrderChatsFirst": "Chat arriba",
       "statusRunningBadge": "Ejecutando",
+      "runningCountBadge": "{count, plural, one {# sesión en ejecución} other {# sesiones en ejecución}}",
       "statusCancelledBadge": "Cancelado",
       "worktreeRemovedBadge": "Worktree de origen eliminado",
       "conversationCountUnit": "{count, plural, one {# conversación} other {# conversaciones}}",
@@ -2602,7 +2603,19 @@
           "webService": "Activa Ajustes → Servicio web para que tu equipo acceda al mismo codeg desde un navegador.",
           "fusionMode": "Abre un archivo o diff para mostrarlo automáticamente junto a la conversación.",
           "quickMessages": "Abre el botón + junto a la entrada y elige Mensajes rápidos para insertar un fragmento guardado (gestiónalos en Ajustes → Mensajes rápidos).",
-          "experts": "El botón + tiene un menú Habilidades expertas: carga roles como Depuración o Planificación con un clic."
+          "experts": "El botón + tiene un menú Habilidades expertas: carga roles como Depuración o Planificación con un clic.",
+          "taskBoard": "El Tablero de tareas ejecuta una tarea de principio a fin: el agente trabaja en su propio worktree y tú revisas el diff antes de fusionar.",
+          "automations": "Las Automatizaciones ejecutan un prompt guardado según un horario —una revisión nocturna, un informe recurrente— y cada ejecución puede tener su propio worktree.",
+          "tokenUsage": "Haz clic en el número de conversaciones de la barra de estado para abrir Uso de tokens, desglosado por día, agente, modelo y carpeta.",
+          "mentionTargets": "@ no solo trae archivos: menciona a otro agente para delegarle una subtarea, o referencia una sesión anterior, un commit o una habilidad.",
+          "splitGroups": "Haz clic derecho en una pestaña y elige Dividir a la derecha o Dividir abajo para mantener dos conversaciones en paneles propios.",
+          "worktrees": "Abre el botón de rama y elige Nuevo worktree para que varios agentes trabajen en el mismo repositorio sin pisarse los archivos.",
+          "importSessions": "¿Ya ejecutaste sesiones en la terminal? El menú de una carpeta tiene Importar sesiones locales para traer ese historial a codeg.",
+          "subSessions": "Cuando un agente delega, la subsesión aparece anidada bajo él en la barra lateral: despliega la fila para seguir lo que hizo cada una.",
+          "liveFeedback": "Comentarios en vivo, en el menú +, inserta una nota en el turno que el agente ya está ejecutando, sin interrumpirlo.",
+          "skillPacks": "Configuración → Paquetes de habilidades reúne expertos de programación, investigación científica y ofimática; actívalos por agente.",
+          "modelProviders": "Configuración → Proveedores de Modelos acepta tu propia clave de API o endpoint, y el modelo lo eliges desde el cuadro de entrada.",
+          "workspaceBackground": "Configuración → Apariencia define una imagen de fondo del espacio de trabajo, la opacidad de los paneles y las fuentes de la app."
         },
         "quickActions": {
           "excel": "Libro de Excel",
@@ -2676,7 +2689,9 @@
             "description": "Actívala en Ajustes para usarla aquí.",
             "action": "Activar",
             "hint": "Habilidad no activada"
-          }
+          },
+          "scrollPrev": "Mostrar habilidades anteriores",
+          "scrollNext": "Mostrar más habilidades"
         }
       },
       "agentSelector": {

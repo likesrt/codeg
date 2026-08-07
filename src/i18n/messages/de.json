@@ -1457,6 +1457,7 @@
       "sectionOrderFoldersFirst": "Ordner oben",
       "sectionOrderChatsFirst": "Chat oben",
       "statusRunningBadge": "Läuft",
+      "runningCountBadge": "{count, plural, one {# laufende Sitzung} other {# laufende Sitzungen}}",
       "statusCancelledBadge": "Abgebrochen",
       "worktreeRemovedBadge": "Quell-Worktree entfernt",
       "conversationCountUnit": "{count, plural, one {# Konversation} other {# Konversationen}}",
@@ -2602,7 +2603,19 @@
           "webService": "Aktiviere Einstellungen → Webdienst, damit Teammitglieder dasselbe codeg im Browser nutzen können.",
           "fusionMode": "Öffne eine Datei oder ein Diff, um es automatisch neben der Konversation zu sehen.",
           "quickMessages": "Klicke auf die +-Schaltfläche neben der Eingabe und wähle Schnellnachrichten, um ein gespeichertes Snippet einzufügen (verwaltbar unter Einstellungen → Schnellnachrichten).",
-          "experts": "Die +-Schaltfläche hat ein Menü Expertenfähigkeiten – lade Rollen wie Debugging oder Planung mit einem Klick."
+          "experts": "Die +-Schaltfläche hat ein Menü Expertenfähigkeiten – lade Rollen wie Debugging oder Planung mit einem Klick.",
+          "taskBoard": "Das Aufgabenboard führt ein To-do von Anfang bis Ende aus: Der Agent arbeitet in einem eigenen Worktree, du prüfst das Diff und mergest.",
+          "automations": "Automatisierungen führen einen gespeicherten Prompt nach Zeitplan aus – etwa ein nächtliches Review – und jeder Lauf kann einen eigenen Worktree bekommen.",
+          "tokenUsage": "Klicke auf die Konversationszahl in der Statusleiste, um den Token-Verbrauch zu öffnen – aufgeschlüsselt nach Tag, Agent, Modell und Ordner.",
+          "mentionTargets": "@ holt mehr als Dateien: Erwähne einen anderen Agenten, um eine Teilaufgabe abzugeben, oder verweise auf eine frühere Sitzung, einen Commit oder einen Skill.",
+          "splitGroups": "Rechtsklick auf einen Tab, dann Nach rechts teilen oder Nach unten teilen – so bleiben zwei Konversationen in eigenen Bereichen offen.",
+          "worktrees": "Öffne die Branch-Schaltfläche und wähle Neuer Worktree, damit mehrere Agenten dasselbe Repository bearbeiten, ohne sich gegenseitig die Dateien zu überschreiben.",
+          "importSessions": "Schon Sitzungen im Terminal gelaufen? Im Menü eines Ordners holt Lokale Sitzungen importieren diesen Verlauf nach codeg.",
+          "subSessions": "Delegiert ein Agent, erscheint die Untersitzung in der Seitenleiste verschachtelt darunter – klapp die Zeile auf, um jeder einzeln zu folgen.",
+          "liveFeedback": "Live-Feedback im +-Menü schiebt eine Notiz in den Zug, den der Agent gerade ausführt – ohne ihn zu unterbrechen.",
+          "skillPacks": "Einstellungen → Skill-Pakete bündelt Coding-Experten, wissenschaftliche Recherche und Office-Skills – pro Agent aktivierbar.",
+          "modelProviders": "Einstellungen → Modellanbieter nimmt deinen eigenen API-Key oder Endpunkt entgegen; das Modell wählst du danach direkt im Eingabefeld.",
+          "workspaceBackground": "Einstellungen → Darstellung setzt ein Hintergrundbild für den Arbeitsbereich, die Panel-Deckkraft und die Schriftarten der App."
         },
         "quickActions": {
           "excel": "Excel-Arbeitsmappe",
@@ -2676,7 +2689,9 @@
             "description": "Aktiviere ihn in den Einstellungen, um ihn hier zu nutzen.",
             "action": "Aktivieren",
             "hint": "Skill nicht aktiviert"
-          }
+          },
+          "scrollPrev": "Vorherige Skills anzeigen",
+          "scrollNext": "Weitere Skills anzeigen"
         }
       },
       "agentSelector": {
