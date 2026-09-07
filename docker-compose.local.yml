@@ -1,0 +1,69 @@
+# 如果要使用你现在的本地部署文件 docker-compose.local.yml，在项目根目录执行：
+# ```bash
+# docker compose -f docker-compose.local.yml up -d
+# ```
+# 如果需要重新构建镜像：
+# ```bash
+# docker compose -f docker-compose.local.yml up -d --build
+# ```
+
+# 如果要在持久化 home 中按需安装 Python/Node/Rust/Bun 等工具链：
+# ```bash
+# docker exec -it codeg codeg init tool
+# ```
+
+services:
+  codeg:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    # image: ghcr.io/likesrt/codeg:latest
+    container_name: codeg
+    labels:
+      - createdBy=Apps
+    networks:
+      - 1panel-network
+    ports:
+      # Codeg Web 服务：宿主机访问 http://<服务器IP>:3080
+      - "3080:3080"
+      # noVNC HTTPS Web 桌面：宿主机访问 https://<服务器IP>:49999
+      - "49999:6080"
+      # 预留给容器内开发服务使用，例如 npm/pnpm/yarn dev、Python 服务等
+      - "50000-50100:50000-50100"
+    volumes:
+      # codeg 用户目录：持久化 Claude Code、Codex、OpenCode、nvm、pyenv、Rust、Bun、npm/pnpm/yarn 全局包和缓存
+      - ./home/codeg:/home/codeg
+      # Codeg 数据目录：持久化 SQLite 数据库、tokens.json、uploads、pets、凭据 helper 等
+      - ./data:/data
+    # 子代理会用到 bubblewrap / namespace / unshare；这里放宽容器限制以保证本地开发可用
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    environment:
+      # 容器时区
+      - TZ=Asia/Shanghai
+
+      # Codeg HTTP 端口，需与上方 3080:3080 的容器端口保持一致
+      - CODEG_PORT=3080
+      # Codeg 绑定地址；容器内必须绑定 0.0.0.0，宿主机才能访问
+      - CODEG_HOST=0.0.0.0
+      # Codeg 认证令牌；部署后请改成高强度随机字符串
+      - CODEG_TOKEN=change-me
+      # Codeg 持久化数据目录；数据库、uploads、pets、tokens 都会放在这里
+      - CODEG_DATA_DIR=/data
+      # Codeg 前端静态文件目录；Dockerfile 会把 Next.js 构建产物复制到这里
+      - CODEG_STATIC_DIR=/app/web
+      # 启动容器时是否在后台自动执行 `codeg init tool`；首次部署想自动补齐工具链时改成 true
+      - CODEG_INIT_TOOL_ON_START=false
+      # codeg-mcp 是多智能体委托/协作的伴生进程；显式指定路径可避免自动发现失败导致委托能力不可用
+      - CODEG_MCP_BIN=/usr/local/bin/codeg-mcp
+
+      # noVNC HTTPS Web 远程桌面密码；部署后请改成高强度随机字符串
+      - VNC_PASSWORD=change-me
+    restart: unless-stopped
+
+networks:
+  1panel-network:
+    external: true

@@ -1,0 +1,160 @@
+name: Local Server Linux Release
+
+# 手动触发：打包 Linux amd64/arm64 二进制和 web 资源，上传到 GitHub Release。
+# 用于服务器一键部署（curl install.sh | bash 方式）。
+on:
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: short
+  HUSKY: 0
+
+concurrency:
+  group: local-server-linux-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 前端构建：pnpm build 产出 Next.js 静态导出，打包为 tar.gz
+  build-web:
+    name: Build web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Package web assets
+        run: tar czf codeg-web.tar.gz out/
+
+      - name: Upload web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeg-web
+          path: codeg-web.tar.gz
+          retention-days: 1
+
+  # 后端编译：matrix 原生编译 amd64 和 arm64，避免交叉编译的复杂配置
+  build-server:
+    name: Build server (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          shared-key: local-server-linux-${{ matrix.arch }}
+
+      - name: Build codeg-server and codeg-mcp
+        working-directory: src-tauri
+        run: |
+          cargo build --release --bin codeg-server --bin codeg-mcp --no-default-features
+
+      - name: Rename binaries
+        run: |
+          mkdir -p dist
+          cp src-tauri/target/release/codeg-server "dist/codeg-server-linux-${{ matrix.arch }}"
+          cp src-tauri/target/release/codeg-mcp "dist/codeg-mcp-linux-${{ matrix.arch }}"
+          chmod +x "dist/codeg-server-linux-${{ matrix.arch }}" "dist/codeg-mcp-linux-${{ matrix.arch }}"
+
+      - name: Smoke test (amd64 only)
+        if: matrix.arch == 'amd64'
+        run: |
+          "dist/codeg-server-linux-amd64" --version
+          "dist/codeg-mcp-linux-amd64" --help | grep -F 'codeg-mcp --parent-connection-id'
+
+      - name: Upload server artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeg-server-${{ matrix.arch }}
+          path: dist/
+          retention-days: 1
+
+  # 创建极简 Release：仅作二进制分发载体，不维护 changelog
+  release:
+    name: Create release
+    needs: [build-web, build-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-web
+          path: dist
+
+      - name: Download amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-server-amd64
+          path: dist
+
+      - name: Download arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: codeg-server-arm64
+          path: dist
+
+      - name: Restore exec permissions
+        run: |
+          chmod +x dist/codeg-server-linux-amd64 dist/codeg-mcp-linux-amd64
+          chmod +x dist/codeg-server-linux-arm64 dist/codeg-mcp-linux-arm64
+
+      - name: Verify assets
+        run: |
+          ls -lh dist/
+          test -f dist/codeg-web.tar.gz
+          test -x dist/codeg-server-linux-amd64
+          test -x dist/codeg-mcp-linux-amd64
+          test -x dist/codeg-server-linux-arm64
+          test -x dist/codeg-mcp-linux-arm64
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="local-server-linux-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Codeg Server Linux release" \
+            --repo "${{ github.repository }}" \
+            dist/codeg-server-linux-amd64 \
+            dist/codeg-mcp-linux-amd64 \
+            dist/codeg-server-linux-arm64 \
+            dist/codeg-mcp-linux-arm64 \
+            dist/codeg-web.tar.gz
+          echo "Release created: $TAG"
